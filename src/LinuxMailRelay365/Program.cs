@@ -13,6 +13,19 @@ internal static class Program
         {
             ("Security plans", SecurityOptionsSelfTest.Run),
             ("Mail routing safety", MailRoutingPlanStore.SelfTest),
+            ("Embedded backup / restore", () =>
+            {
+                var listing = EmbeddedAssets.BuildRecoveryBundle("--list");
+                var embedded = EmbeddedAssets.BuildLinuxBundle(["--prepare-only", "--certificate-days", "1"]);
+                try
+                {
+                    EmbeddedAssets.BuildRecoveryBundle("--restore", "../etc");
+                    return false;
+                }
+                catch (ArgumentException) { }
+                return listing.Contains("LMR365_RECOVERY", StringComparison.Ordinal) &&
+                       embedded.Contains("LMR365_RECOVERY", StringComparison.Ordinal);
+            }),
             ("Tenant discovery", TenantDiscovery.SelfTest),
             ("Diagnostic privacy", DiagnosticJournal.SelfTest)
         };

@@ -29,3 +29,12 @@ and an already-issued access token may remain valid until expiry.
 
 Do not paste private keys, tokens, MFA codes or password-containing logs into
 GitHub issues. No diagnostic upload is automatic.
+
+## Backups and Restore
+
+The Linux recovery helper writes root-only archives under `/var/backups/linuxmailrelay365`.
+They can contain mail server configuration, **private signing keys and other credentials**.
+Never publish, upload, share, or attach these archives to issue reports. The Windows
+wizard transfers only opaque backup identifiers and status, never backup contents.
+Restoration covers `/etc/postfix`, the dedicated M365 transport and recorded
+service state; it does not roll back packages, DNS, firewall or external files.
