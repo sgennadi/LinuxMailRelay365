@@ -16,6 +16,9 @@ ACTIVATE_ONLY=0
 LISTEN_IP=''
 TRUSTED_NETWORKS=()
 VALIDATE_NETWORK_ONLY=0
+FORCE_REPLACE=0
+FORCE_ACK=''
+SNAPSHOT_ID=''
 
 usage() {
   cat <<'EOF'
@@ -23,7 +26,9 @@ Usage (run as root):
   bash install-postfix-m365-xoauth2.sh \
     --tenant-id GUID --client-id GUID --mailbox alerts@example.com
 
-Optional: --allow-existing   Explicit override for existing Postfix routes.
+Optional: --allow-existing   Legacy advanced flag (not sufficient for replacement).
+          --force-replace    Force replacement of detected Postfix after backup.
+          --confirm-force-replace REPLACE_POSTFIX_CONFIG  Required explicit acknowledgement.
           --listen-ip IPv4   Bind local IPv4 interface + loopback for SMTP.
           --trusted-network CIDR  Permit client RFC1918 subnet (repeatable).
           --validate-network-only  Validate ingress without modifying anything.
@@ -44,6 +49,8 @@ while [ "$#" -gt 0 ]; do
     --client-id) CLIENT="${2:?}"; shift 2 ;;
     --mailbox) MAILBOX="${2:?}"; shift 2 ;;
     --allow-existing) ALLOW_EXISTING=1; shift ;;
+    --force-replace) FORCE_REPLACE=1; shift ;;
+    --confirm-force-replace) FORCE_ACK="${2:?}"; shift 2 ;;
     --listen-ip) LISTEN_IP="${2:?}"; shift 2 ;;
     --trusted-network) TRUSTED_NETWORKS+=("${2:?}"); shift 2 ;;
     --validate-network-only) VALIDATE_NETWORK_ONLY=1; shift ;;
@@ -170,12 +177,53 @@ if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] &&
   exit 1
 fi
 
-# Even default values cannot prove that an existing Postfix is unused.
+# Existing Postfix is valuable regardless of defaults or relayhost settings.
+# Force mode requires a specific administrator acknowledgement and verified
+# root-only snapshot before ANY package or configuration modification.
 if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] &&
-   command -v postconf >/dev/null 2>&1 && [ "$ALLOW_EXISTING" -eq 0 ]; then
-  echo 'Existing Postfix detected. Refusing to change ANY live mail routes by default.' >&2
-  echo 'Select Preserve Existing Mail or explicitly approve --allow-existing.' >&2
-  exit 1
+   command -v postconf >/dev/null 2>&1; then
+  if [ "$FORCE_REPLACE" -ne 1 ] || [ "$FORCE_ACK" != REPLACE_POSTFIX_CONFIG ]; then
+    echo 'Existing Postfix detected. Refusing to change ANY live mail routes by default.' >&2
+    echo 'Force requires --force-replace --confirm-force-replace REPLACE_POSTFIX_CONFIG.' >&2
+    exit 1
+  fi
+elif [ "$FORCE_REPLACE" -eq 1 ]; then
+  echo 'Force Replace only applies to detected Postfix. No changes made.' >&2
+  exit 2
+fi
+
+if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ]; then
+  [ -f "$SCRIPT_DIR/mail-config-recovery.sh" ] || {
+    echo 'Recovery helper missing. Refusing to install.' >&2; exit 1;
+  }
+  snapshot="$(bash "$SCRIPT_DIR/mail-config-recovery.sh" --backup)" || {
+    echo 'Pre-change backup failed. No changes made.' >&2; exit 1;
+  }
+  SNAPSHOT_ID="$(printf '%s\n' "$snapshot" | sed -n 's/^BACKUP_ID=//p')"
+  if ! [[ "$SNAPSHOT_ID" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ ]]; then
+    echo 'Backup ID invalid or missing. Refusing to install.' >&2; exit 1
+  fi
+  bash "$SCRIPT_DIR/mail-config-recovery.sh" --verify "$SNAPSHOT_ID" >/dev/null || exit 1
+  printf 'VERIFIED_PRE_CHANGE_BACKUP_ID=%s\n' "$SNAPSHOT_ID"
+  rollback_if_failed() {
+    local rc=$?
+    trap - EXIT
+    if [ "$rc" -ne 0 ]; then
+      echo "Postfix setup failed. Pre-change backup ID: $SNAPSHOT_ID" >&2
+      if [ "$FORCE_REPLACE" -eq 1 ]; then
+        echo 'Attempting automatic Postfix configuration rollback...' >&2
+        if bash "$SCRIPT_DIR/mail-config-recovery.sh" --restore "$SNAPSHOT_ID"; then
+          echo 'Automatic configuration rollback succeeded.' >&2
+        else
+          echo 'CRITICAL: automatic rollback failed. Manual restore is needed.' >&2
+        fi
+      else
+        echo 'Fresh installation failed; examine logs and restore manually if needed.' >&2
+      fi
+    fi
+    exit "$rc"
+  }
+  trap rollback_if_failed EXIT
 fi
 
 if [ "$PREPARE_ONLY" -eq 1 ] || [ "$ROTATE_ONLY" -eq 1 ]; then
