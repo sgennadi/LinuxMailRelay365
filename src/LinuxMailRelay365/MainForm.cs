@@ -27,6 +27,13 @@ internal sealed class MainForm : Form
     private readonly TextBox mailbox = Field("");
     private readonly TextBox testRecipient = Field("");
     private readonly CheckBox allowExisting = new() { AutoSize = true };
+    private readonly ComboBox mailTransport = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
+    private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
+    private readonly CheckBox preserveExistingMail = new() { AutoSize = true, Checked = true };
+    private readonly TextBox acceptedDomain = Field("");
+    private MailRoutingPlan routingPlan = new();
+    private string? routingIdentity;
+    private bool routingLoading;
     private readonly CheckBox hardwareRequest = new() { AutoSize = true };
     private readonly CheckBox ipRequest = new() { AutoSize = true };
     private readonly CheckBox monitoringRequest = new() { AutoSize = true };
@@ -87,6 +94,21 @@ internal sealed class MainForm : Form
         sshPassword.UseSystemPasswordChar = true;
         sudoPassword.UseSystemPasswordChar = true;
         sshAuthMode.Items.AddRange(["SSH key / ssh-agent", "SSH username + password"]);
+        mailTransport.Items.AddRange([
+            "XOAUTH2 · sender mailbox (available)",
+            "M365 SMTP Connector · verified domain (planned, no provisioning)"
+        ]);
+        senderPolicy.Items.AddRange([
+            "Fixed Microsoft 365 sender mailbox (available)",
+            "Preserve verified domain sender (connector only, planned)",
+            "Masquerade subdomains (connector only, planned)"
+        ]);
+        mailTransport.SelectedIndex = 0;
+        senderPolicy.SelectedIndex = 0;
+        mailTransport.SelectedIndexChanged += (_, _) => SaveRoutingChoices();
+        senderPolicy.SelectedIndexChanged += (_, _) => SaveRoutingChoices();
+        preserveExistingMail.CheckedChanged += (_, _) => SaveRoutingChoices();
+        acceptedDomain.Leave += (_, _) => SaveRoutingChoices();
         tenantSelector.AccessibleName = "Choose Microsoft Entra tenant";
         tenantSelector.SelectedIndexChanged += (_, _) =>
         {
@@ -307,10 +329,32 @@ internal sealed class MainForm : Form
                     "אימות מנהל חד-פעמי; הרשאה מוגבלת לתיבת דואר אחת.")));
                 break;
             case 3:
-                allowExisting.Text = T("Разрешить изменять существующую конфигурацию Postfix (расширенная операция)",
-                                       "Allow changes to an existing customized Postfix (advanced)",
-                                       "אפשר לשנות תצורת Postfix קיימת");
+                EnsureRoutingLoaded();
+                AddLine(page, UiTheme.Text(T("Отправка через Microsoft 365", "Microsoft 365 delivery method", "שיטת שליחה דרך Microsoft 365")));
+                AddLine(page, mailTransport);
+                AddLine(page, UiTheme.Text(T("Обработка адреса отправителя", "Sender address handling", "טיפול בכתובת השולח")));
+                AddLine(page, senderPolicy);
+                AddField(page, T("Подтверждённый домен (необязательно для XOAUTH2)",
+                                 "Verified accepted domain (not needed for XOAUTH2)",
+                                 "דומיין מאומת (לא נדרש ל-XOAUTH2)"), acceptedDomain);
+                preserveExistingMail.Text = T(
+                    "Сохранять существующий MTA и его маршруты (по умолчанию, безопасно)",
+                    "Preserve existing MTA and routes (safe default)",
+                    "שמירה על שרת דואר קיים והניתוב שלו");
+                AddLine(page, preserveExistingMail);
+                allowExisting.Text = T(
+                    "Явно разрешить замену маршрутов существующего Postfix (опасно)",
+                    "Explicitly allow replacing existing Postfix routes (advanced)",
+                    "אישור לשינוי נתיבי Postfix קיימים");
                 AddLine(page, allowExisting);
+                AddLine(page, UiTheme.Text(T(
+                    "Маскарад и Connector пока доступны только как план. Никакие изменения домена, MX, SPF, DKIM, DMARC или маршрутов существующего MTA не выполняются автоматически. Если MTA уже установлен, режим сохранения блокирует его изменение.",
+                    "Masquerade and Connector are planning-only in this preview. No domain, MX, SPF, DKIM, DMARC, or existing MTA routes change automatically. Preserve mode blocks modifications of an existing MTA.",
+                    "Connector והסוואת כתובות הם לתכנון בלבד. הגדרות שרת הדואר הקיים לא משתנות.")));
+                AddAction(page, T("Проверить почтовый сервер и маршруты (только чтение)",
+                                  "Inspect existing MTA and routing (read-only)",
+                                  "בדיקת שרת הדואר והניתוב"),
+                    InspectMailRoutingAsync, false, "check", "preflight");
                 AddAction(page, T("Проверка перед установкой", "Preflight read-only check", "בדיקה לפני התקנה"), PreflightAsync, false, "check", "preflight");
                 AddAction(page, T("Установить и настроить Linux", "Install and configure Linux", "התקנה והגדרה ב-Linux"), ApplyAsync, true, "download", "postfix");
                 AddLine(page, UiTheme.Text(T(
@@ -455,6 +499,57 @@ internal sealed class MainForm : Form
 
     private string StatePath(Guid tenantId) => Path.Combine(dataDirectory,
         "state-" + tenantId.ToString("N") + "-" + SecurityOptionsStore.Identity(Endpoint()) + ".json");
+
+    private void EnsureRoutingLoaded()
+    {
+        string identity;
+        try { identity = MailRoutingPlanStore.Identity(host.Text, sshPort.Text, sshUser.Text); }
+        catch (ArgumentException) { return; }
+        if (routingIdentity == identity) return;
+        routingLoading = true;
+        try
+        {
+            routingPlan = MailRoutingPlanStore.Load(dataDirectory, identity);
+            mailTransport.SelectedIndex = routingPlan.Transport == "connector" ? 1 : 0;
+            senderPolicy.SelectedIndex = routingPlan.SenderPolicy switch
+            {
+                "preserve-domain" => 1, "masquerade" => 2, _ => 0
+            };
+            preserveExistingMail.Checked = routingPlan.PreserveExistingMail;
+            acceptedDomain.Text = routingPlan.VerifiedDomain;
+            allowExisting.Checked = false;
+            routingIdentity = identity;
+        }
+        finally { routingLoading = false; }
+    }
+
+    private void SaveRoutingChoices()
+    {
+        if (routingLoading || routingIdentity is null) return;
+        routingPlan.Transport = mailTransport.SelectedIndex == 1 ? "connector" : "oauth2";
+        routingPlan.SenderPolicy = senderPolicy.SelectedIndex switch
+        {
+            1 => "preserve-domain", 2 => "masquerade", _ => "fixed-mailbox"
+        };
+        routingPlan.PreserveExistingMail = preserveExistingMail.Checked;
+        routingPlan.VerifiedDomain = acceptedDomain.Text.Trim().ToLowerInvariant();
+        // Operators can edit domain while typing. Save only valid completed values.
+        try { MailRoutingPlanStore.Save(dataDirectory, routingIdentity, routingPlan); }
+        catch (InvalidDataException) { }
+    }
+
+    private async Task InspectMailRoutingAsync()
+    {
+        var endpoint = Endpoint();
+        var report = await SshRemote.ProbeSecurityAsync(
+            endpoint, EmbeddedAssets.SecurityProbe, CancellationToken.None);
+        report.EnsureSuccess();
+        var inventory = MailRoutingInventory.Parse(report.StdOut);
+        WriteLine("Existing MTA: " + inventory.Mta + "; relayhost: " + inventory.CurrentRelay +
+                  "; transport: " + inventory.CurrentTransport);
+        if (inventory.Mta != "none")
+            WriteLine("Existing mail flows detected. Preserve mode will NOT change them.");
+    }
 
     private void EnsureSecurityLoaded()
     {
@@ -757,6 +852,22 @@ internal sealed class MainForm : Form
 
     private async Task ApplyAsync()
     {
+        EnsureRoutingLoaded();
+        var chosenTransport = mailTransport.SelectedIndex == 1 ? "connector" : "oauth2";
+        var chosenSender = senderPolicy.SelectedIndex;
+        if (chosenTransport != "oauth2" || chosenSender != 0)
+            throw new NotSupportedException("Connector and sender masquerade are planning-only in this preview. No Postfix changes were applied.");
+        var endpoint = Endpoint();
+        var observed = await SshRemote.ProbeSecurityAsync(endpoint,
+            EmbeddedAssets.SecurityProbe, CancellationToken.None);
+        observed.EnsureSuccess();
+        var inventory = MailRoutingInventory.Parse(observed.StdOut);
+        if (inventory.Mta is "sendmail" or "exim")
+            throw new NotSupportedException("Existing Sendmail/Exim is preserved. Safe migration/sidecar deployment is not implemented yet.");
+        if (inventory.Mta == "postfix" && preserveExistingMail.Checked)
+            throw new NotSupportedException("Existing Postfix detected. Preserve Existing Mail cannot safely change global Postfix routes in this preview. No changes made.");
+        if (inventory.Mta == "postfix" && !allowExisting.Checked)
+            throw new InvalidOperationException("To replace existing Postfix routes, uncheck Preserve Existing Mail and explicitly approve the advanced override.");
         var state = await ReadyStateAsync();
         var approval = MessageBox.Show(this,
             T("Применить настройку Postfix на Linux? Конфигурация будет сохранена в резервных копиях.\nНе продолжайте, если сервер обслуживает другую почту без предварительной проверки.",

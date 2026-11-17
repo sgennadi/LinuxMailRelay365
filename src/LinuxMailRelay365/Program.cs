@@ -12,6 +12,7 @@ internal static class Program
         var checks = new List<(string Name, Func<bool> Run)>
         {
             ("Security plans", SecurityOptionsSelfTest.Run),
+            ("Mail routing safety", MailRoutingPlanStore.SelfTest),
             ("Tenant discovery", TenantDiscovery.SelfTest),
             ("Diagnostic privacy", DiagnosticJournal.SelfTest)
         };

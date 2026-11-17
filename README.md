@@ -35,6 +35,33 @@ On Exchange Online the installer changes only the selected mailbox
 Entra Security Defaults, Conditional Access, SPF, DKIM, DMARC or connectors.
 Existing tenant policies may still block submission.
 
+## Domain, sender rewriting and existing mail safety
+
+The wizard now exposes **XOAUTH2 fixed mailbox** (implemented), plus a
+**Microsoft 365 SMTP Connector** and **sender masquerade/preserve original
+sender** as explicitly **planning-only** options. It remembers these routing
+preferences separately per Linux host. The wizard **refuses to deploy**
+Connector, masquerade, or sender-preservation routing until a corresponding
+tested transport exists. It never changes MX, SPF, DKIM, DMARC or Exchange
+accepted domains automatically.
+
+**Safe default for existing Linux:** Preserve Existing Mail is ON. Before
+applying any Postfix changes, the wizard runs a read-only Linux MTA probe.
+Existing Postfix is left untouched in Preserve mode. Sendmail and Exim are
+always left untouched. An intentional override for existing Postfix requires
+turning off Preserve and ticking the advanced override, followed by the
+existing confirmation dialog. Existing routes cannot yet be transparently
+preserved while adding a separate M365 listener; that mode is not implemented.
+
+**XOAUTH2** uses one Exchange-authorized sender mailbox per server; the
+transport rewrites the message From and envelope sender to the authorized
+mailbox. No extra Postfix domain masquerading is required. **Connector
+routing** is a future implementation for using any sender in a verified
+accepted domain; it must check TCP/25, trusted public IP or matching TLS
+certificate, sender domain, and anti-open-relay rules before activation.
+An optional masquerade rule must never apply to existing messages without
+specific user approval and a verified sender mapping.
+
 ## Security Center: precisely what works today
 
 | Mechanism | Discovery | Default | Activation in this preview |
