@@ -60,7 +60,7 @@ if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] && [ "$ACTIVATE_ONLY" -
 fi
 GUID_REGEX='^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$'
 MAILBOX_REGEX='^[^[:space:]<>@]+@[^[:space:]<>@]+$'
-if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] && [ "$ACTIVATE_ONLY" -ne 1 ] && [[ ! "$TENANT" =~ $GUID_REGEX || ! "$CLIENT" =~ $GUID_REGEX || ! "$MAILBOX" =~ $MAILBOX_REGEX ]]; then
+if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] && [ "$ACTIVATE_ONLY" -ne 1 ] && [ "$VALIDATE_NETWORK_ONLY" -ne 1 ] && [[ ! "$TENANT" =~ $GUID_REGEX || ! "$CLIENT" =~ $GUID_REGEX || ! "$MAILBOX" =~ $MAILBOX_REGEX ]]; then
   echo 'Invalid tenant/client GUID or mailbox address' >&2
   exit 2
 fi
