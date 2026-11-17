@@ -69,7 +69,7 @@ backup() {
   if ! tar --acls --xattrs --numeric-owner -C / -czpf "$staging/config.tar.gz" -T "$staging/files.txt"; then
     rm -rf -- "$staging"; return 1
   fi
-  if ! ( cd "$staging" && sha256sum config.tar.gz > SHA256SUMS &&
+  if ! ( cd "$staging" && sha256sum config.tar.gz state.txt > SHA256SUMS &&
          sha256sum --status -c SHA256SUMS &&
          tar -tzf config.tar.gz >/dev/null ); then
     rm -rf -- "$staging"
