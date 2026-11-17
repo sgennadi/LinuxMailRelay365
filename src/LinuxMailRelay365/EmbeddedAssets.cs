@@ -24,7 +24,7 @@ internal static class EmbeddedAssets
         // Only validated, fixed-format arguments; never interpolate untrusted shell text.
         foreach (string item in args)
         {
-            if (item.Length > 320 || item.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_' or '@' or ':')))
+            if (item.Length > 320 || item.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_' or '@' or ':' or '/')))
                 throw new ArgumentException("Invalid installer argument format.");
         }
         string enc(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value));

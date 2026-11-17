@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.4 — source only, not a verified production release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.5 — source only, not a verified production release.**
 
 ## Intended workflow
 
@@ -34,6 +34,23 @@ On Exchange Online the installer changes only the selected mailbox
 `Application SMTP.SendAsApp` role. It does **not** change global SMTP AUTH,
 Entra Security Defaults, Conditional Access, SPF, DKIM, DMARC or connectors.
 Existing tenant policies may still block submission.
+
+## Optional internal SMTP clients
+
+The installed Postfix listens on **loopback only by default**. For programs on
+other machines, the Wizard can explicitly set a local RFC1918 IPv4 listener
+and one or more trusted RFC1918 client CIDRs. These values are checked before
+installation; wildcards and public client networks are rejected. This does not
+provision a firewall or grant internet access. Existing Postfix still requires
+a separately approved override, and the default **Preserve Existing Mail**
+mode refuses modifications to an existing MTA.
+
+Example for a fresh Linux relay: listener `192.168.50.10`, trusted client
+network `192.168.50.0/24`. SMTP is **not authenticated per client** in this
+mode; every authorized client in a trusted network can submit mail as the
+configured mailbox. Use narrow subnets and host firewall rules, and do not
+forward public SMTP traffic to this port. SMTP submission from a trusted LAN
+remains unencrypted until separate TLS listener support is implemented.
 
 ## Domain, sender rewriting and existing mail safety
 
@@ -101,7 +118,7 @@ bash -n linux/probe-linux.sh linux/install-postfix-m365-xoauth2.sh
 
 Public Windows CI builds **single EXE** self-contained preview artifacts for **win-x64 and win-arm64** without private GitHub secrets and runs `LinuxMailRelay365.exe --self-test` on Windows x64. The optional shared updater is used when restored on the developer's Windows machine. The fallback only checks releases: it does not download or install updates.
 
-## Windows interface (Preview 4)
+## Windows interface (Preview 5)
 
 - Original multi-size `.ico` embedded in the application and shown in its main window.
 - Unified compact HiDPI-aware outlined buttons with vector glyphs (SSH, cloud, shield, upload, diagnostics, refresh).

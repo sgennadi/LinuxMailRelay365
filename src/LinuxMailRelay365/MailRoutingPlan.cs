@@ -13,6 +13,8 @@ internal sealed class MailRoutingPlan
     public string SenderPolicy { get; set; } = "fixed-mailbox";
     public bool PreserveExistingMail { get; set; } = true;
     public string VerifiedDomain { get; set; } = "";
+    public string ListenIpv4 { get; set; } = "";
+    public string TrustedCidrs { get; set; } = "";
 }
 
 internal sealed record MailRoutingInventory(string Mta, string CurrentRelay, string CurrentTransport)
@@ -77,6 +79,29 @@ internal static class MailRoutingPlanStore
              !Regex.IsMatch(state.VerifiedDomain, @"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
                  RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)))
             throw new InvalidDataException("The accepted mail domain must be a valid DNS name.");
+        if (state.ListenIpv4.Length > 0)
+        {
+            if (!System.Net.IPAddress.TryParse(state.ListenIpv4, out var address) ||
+                address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                throw new InvalidDataException("SMTP listen IP must be a valid IPv4.");
+            byte[] b = address.GetAddressBytes();
+            if (!((b[0] == 10) || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) ||
+                  (b[0] == 192 && b[1] == 168)) || string.IsNullOrWhiteSpace(state.TrustedCidrs))
+                throw new InvalidDataException("Remote SMTP requires a private listener IP and trusted client CIDRs.");
+        }
+        else if (!string.IsNullOrWhiteSpace(state.TrustedCidrs))
+            throw new InvalidDataException("Trusted client networks require a listener IPv4.");
+        var cidrs = state.TrustedCidrs.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (cidrs.Length > 8)
+            throw new InvalidDataException("At most 8 trusted client networks are allowed.");
+        foreach (string cidr in cidrs)
+        {
+            var pieces = cidr.Split('/');
+            if (pieces.Length != 2 || !System.Net.IPAddress.TryParse(pieces[0], out var ip) ||
+                ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork ||
+                !int.TryParse(pieces[1], out int bits) || bits is < 8 or > 32)
+                throw new InvalidDataException("Invalid trusted network CIDR: " + cidr);
+        }
     }
 
     internal static void Save(string directory, string identity, MailRoutingPlan state)
@@ -108,6 +133,13 @@ internal static class MailRoutingPlanStore
             if (Load(folder, a).Transport != "connector" ||
                 Load(folder, b).Transport != "oauth2") return false;
             var old = MailRoutingInventory.Parse("PROBE_VERSION=2\nMTA=postfix\nPOSTFIX_RELAY=[mail.example]\n");
+            var privateMail = new MailRoutingPlan {
+                ListenIpv4 = "192.168.2.5", TrustedCidrs = "192.168.2.0/24" };
+            Validate(privateMail);
+            try {
+                Validate(new MailRoutingPlan { TrustedCidrs = "0.0.0.0/0" });
+                return false;
+            } catch (InvalidDataException) { }
             if (old.Mta != "postfix" || old.CurrentRelay != "[mail.example]") return false;
             var contents = File.ReadAllText(PathFor(folder, a));
             return !contents.Contains("password", StringComparison.OrdinalIgnoreCase) &&

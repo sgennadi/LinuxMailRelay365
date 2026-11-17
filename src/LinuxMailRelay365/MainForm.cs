@@ -31,6 +31,8 @@ internal sealed class MainForm : Form
     private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly CheckBox preserveExistingMail = new() { AutoSize = true, Checked = true };
     private readonly TextBox acceptedDomain = Field("");
+    private readonly TextBox smtpListenIp = Field("");
+    private readonly TextBox smtpTrustedCidrs = Field("");
     private MailRoutingPlan routingPlan = new();
     private string? routingIdentity;
     private bool routingLoading;
@@ -109,6 +111,8 @@ internal sealed class MainForm : Form
         senderPolicy.SelectedIndexChanged += (_, _) => SaveRoutingChoices();
         preserveExistingMail.CheckedChanged += (_, _) => SaveRoutingChoices();
         acceptedDomain.Leave += (_, _) => SaveRoutingChoices();
+        smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
+        smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         tenantSelector.AccessibleName = "Choose Microsoft Entra tenant";
         tenantSelector.SelectedIndexChanged += (_, _) =>
         {
@@ -337,6 +341,16 @@ internal sealed class MainForm : Form
                 AddField(page, T("Подтверждённый домен (необязательно для XOAUTH2)",
                                  "Verified accepted domain (not needed for XOAUTH2)",
                                  "דומיין מאומת (לא נדרש ל-XOAUTH2)"), acceptedDomain);
+                AddField(page, T("Локальный IPv4 для SMTP (пусто = только loopback)",
+                                 "Local IPv4 SMTP listener (blank = loopback only)",
+                                 "כתובת IPv4 מקומית לקבלת SMTP"), smtpListenIp);
+                AddField(page, T("Доверенные сети RFC1918, CIDR через запятую (необязательно)",
+                                 "Trusted RFC1918 client CIDRs, comma separated (optional)",
+                                 "רשתות מקומיות מורשות, CIDR"), smtpTrustedCidrs);
+                AddLine(page, UiTheme.Text(T(
+                    "По умолчанию только 127.0.0.1. Сетевые клиенты допускаются только с указанной локальной IPv4 и из доверенных подсетей. Существующий Postfix не изменяется без отдельного разрешения.",
+                    "Default: 127.0.0.1 only. Remote SMTP requires an explicit private listener IP and trusted client subnets. Existing Postfix is never changed without approval.",
+                    "ברירת מחדל: חיבור מקומי בלבד. נדרש אישור נפרד לכל שינוי בשרת קיים.")));
                 preserveExistingMail.Text = T(
                     "Сохранять существующий MTA и его маршруты (по умолчанию, безопасно)",
                     "Preserve existing MTA and routes (safe default)",
@@ -517,6 +531,8 @@ internal sealed class MainForm : Form
             };
             preserveExistingMail.Checked = routingPlan.PreserveExistingMail;
             acceptedDomain.Text = routingPlan.VerifiedDomain;
+            smtpListenIp.Text = routingPlan.ListenIpv4;
+            smtpTrustedCidrs.Text = routingPlan.TrustedCidrs;
             allowExisting.Checked = false;
             routingIdentity = identity;
         }
@@ -533,6 +549,8 @@ internal sealed class MainForm : Form
         };
         routingPlan.PreserveExistingMail = preserveExistingMail.Checked;
         routingPlan.VerifiedDomain = acceptedDomain.Text.Trim().ToLowerInvariant();
+        routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
+        routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
         // Operators can edit domain while typing. Save only valid completed values.
         try { MailRoutingPlanStore.Save(dataDirectory, routingIdentity, routingPlan); }
         catch (InvalidDataException) { }
@@ -853,6 +871,9 @@ internal sealed class MainForm : Form
     private async Task ApplyAsync()
     {
         EnsureRoutingLoaded();
+        routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
+        routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
+        MailRoutingPlanStore.Validate(routingPlan);
         var chosenTransport = mailTransport.SelectedIndex == 1 ? "connector" : "oauth2";
         var chosenSender = senderPolicy.SelectedIndex;
         if (chosenTransport != "oauth2" || chosenSender != 0)
@@ -877,7 +898,18 @@ internal sealed class MainForm : Form
         if (approval != DialogResult.Yes) return;
         var arguments = new List<string> { "--tenant-id", state.Tenant.ToString(), "--client-id", state.Client,
                                            "--mailbox", state.Mailbox };
-        if (allowExisting.Checked) arguments.Add("--allow-existing");
+        if (allowExisting.Checked && !preserveExistingMail.Checked) arguments.Add("--allow-existing");
+        if (routingPlan.ListenIpv4.Length > 0)
+        {
+            arguments.Add("--listen-ip");
+            arguments.Add(routingPlan.ListenIpv4);
+            foreach (var cidr in routingPlan.TrustedCidrs.Split(',',
+                         StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                arguments.Add("--trusted-network");
+                arguments.Add(cidr);
+            }
+        }
         WriteLine("Installing Postfix XOAUTH2 transport (no mailbox passwords, no refresh token, no client secret)...");
         var result = await SshRemote.RunRootScriptAsync(Endpoint(),
             EmbeddedAssets.BuildLinuxBundle([.. arguments]), TimeSpan.FromMinutes(15));
