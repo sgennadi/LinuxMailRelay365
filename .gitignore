@@ -1,0 +1,21 @@
+# Visual Studio / .NET
+**/bin/
+**/obj/
+.vs/
+.idea/
+# Private shared module cloned with restore-modules.ps1
+modules/
+# Tests, editor data
+**/__pycache__/
+*.pyc
+*.user
+# No secrets in Git
+*.pem
+*.pfx
+*.key
+*.token
+*.secret
+*credentials*.json
+*.local.json
+# Generated preview archives
+*.zip
