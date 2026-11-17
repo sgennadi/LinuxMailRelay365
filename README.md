@@ -11,6 +11,30 @@ Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Po
 5. Back up existing Postfix configuration and install dedicated Linux Python XOAUTH2 pipe transport. Existing Sendmail/Exim MTA is detected and **not silently replaced**. Run token check, queue check and test email.
 6. Open **Security Center** again from the diagnostics step for future checks and opt-in planning.
 
+## Multiple Linux servers and sender mailboxes
+
+Each Linux host can use a **different primary Microsoft 365 sender mailbox** and its
+own **certificate**, while sharing the same Entra Application (Client ID). The
+Exchange provisioner now derives a **separate mailbox-specific RBAC management scope
+and assignment** for each sender, instead of reusing one app-wide management scope.
+Adding another host does not retag or modify previously configured mailboxes.
+Previously installed single-mailbox app-wide scopes are preserved for the matching
+mailbox only. If CustomAttribute15 is already assigned for another purpose, the
+wizard fails closed and does not overwrite the attribute.
+
+**Security limitation:** every valid certificate on a shared app can use **the union
+of all mailbox scopes**. These assignments do not bind an individual certificate
+to an individual mailbox. For strong per-host isolation, create one Entra app per
+Linux host. Windows state and protection preferences are scoped per SSH endpoint;
+one host is configured with one sender mailbox in this preview.
+
+On Exchange Online the installer changes only the selected mailbox
+(`Set-CASMailbox -SmtpClientAuthenticationDisabled $false` and its free
+`CustomAttribute15`) and creates/verifies the minimum
+`Application SMTP.SendAsApp` role. It does **not** change global SMTP AUTH,
+Entra Security Defaults, Conditional Access, SPF, DKIM, DMARC or connectors.
+Existing tenant policies may still block submission.
+
 ## Security Center: precisely what works today
 
 | Mechanism | Discovery | Default | Activation in this preview |

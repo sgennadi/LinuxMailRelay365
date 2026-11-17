@@ -139,9 +139,23 @@ try {
     if ($target.PrimarySmtpAddress.ToString().ToLowerInvariant() -ne $Mailbox) {
         throw 'Use the mailbox PRIMARY SMTP address.'
     }
-    $prefix = 'LMR365-' + $clientId.ToString('N').Substring(0,16)
+    # Multiple Linux hosts can share one Entra application but use DIFFERENT
+    # mailboxes. RBAC scope names and tags must be unique for each mailbox.
+    # These scopes are an APP-level union, not separate per-certificate grants.
+    $appPrefix = 'LMR365-' + $clientId.ToString('N').Substring(0,16)
+    $mailboxKey = [Convert]::ToHexString(
+        [System.Security.Cryptography.SHA256]::HashData(
+            [System.Text.Encoding]::UTF8.GetBytes($Mailbox))).Substring(0,16)
+    $prefix = $appPrefix + '-' + $mailboxKey
     $tag = $prefix
     $existingTag = $target.CustomAttribute15
+    if ($existingTag -eq $appPrefix) {
+        # Preview 4 used an app-wide tag. Keep it for this already-configured
+        # mailbox; never retag or remove its existing management scope.
+        $prefix = $appPrefix
+        $tag = $appPrefix
+        Write-Host 'Preserving compatible legacy mailbox scope.'
+    }
     if ($existingTag -and $existingTag -ne $tag) {
         throw 'CustomAttribute15 is already used on this mailbox; refusing to overwrite it.'
     }
