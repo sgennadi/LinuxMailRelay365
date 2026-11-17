@@ -30,6 +30,7 @@
     <EmbeddedResource Include="../../linux/install-postfix-m365-xoauth2.sh" LogicalName="LinuxMailRelay365.linux.install.sh" />
     <EmbeddedResource Include="../../linux/m365_xoauth2_transport.py" LogicalName="LinuxMailRelay365.linux.transport.py" />
     <EmbeddedResource Include="../../linux/probe-linux.sh" LogicalName="LinuxMailRelay365.linux.security-probe.sh" />
+    <EmbeddedResource Include="../../linux/mail-config-recovery.sh" LogicalName="LinuxMailRelay365.linux.recovery.sh" />
     <EmbeddedResource Include="../../windows/Test-LinuxMailRelay365Security.ps1" LogicalName="LinuxMailRelay365.windows.cloud-security-probe.ps1" />
     <EmbeddedResource Include="../../windows/Initialize-LinuxMailRelay365.ps1" LogicalName="LinuxMailRelay365.windows.provision.ps1" />
     <EmbeddedResource Include="../../windows/Discover-LinuxMailRelay365Tenants.ps1" LogicalName="LinuxMailRelay365.windows.tenant-discovery.ps1" />
