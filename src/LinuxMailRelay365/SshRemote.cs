@@ -141,7 +141,7 @@ internal static class SshRemote
                 finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(bytes); }
             }
             await executing;
-            return new RemoteResult(job.ExitStatus, job.Result, job.Error);
+            return new RemoteResult(job.ExitStatus ?? 255, job.Result, job.Error);
         }, cancellationToken);
     }
 
