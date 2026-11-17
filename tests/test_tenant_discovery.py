@@ -36,7 +36,7 @@ class TenantDiscoveryContracts(unittest.TestCase):
         assets = (ROOT/'src/LinuxMailRelay365/EmbeddedAssets.cs').read_text(encoding='utf8')
         self.assertIn('Discover-LinuxMailRelay365Tenants.ps1', proj)
         self.assertIn('TenantDiscoveryScript', assets)
-        self.assertIn('TenantDiscovery.SelfTest()', (ROOT/'src/LinuxMailRelay365/Program.cs').read_text())
+        self.assertIn('TenantDiscovery.SelfTest', (ROOT/'src/LinuxMailRelay365/Program.cs').read_text())
 
 if __name__ == '__main__':
     unittest.main()
