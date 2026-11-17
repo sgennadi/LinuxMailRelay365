@@ -13,6 +13,9 @@ PREPARE_ONLY=0
 CERT_DAYS=365
 ROTATE_ONLY=0
 ACTIVATE_ONLY=0
+LISTEN_IP=''
+TRUSTED_NETWORKS=()
+VALIDATE_NETWORK_ONLY=0
 
 usage() {
   cat <<'EOF'
@@ -20,7 +23,10 @@ Usage (run as root):
   bash install-postfix-m365-xoauth2.sh \
     --tenant-id GUID --client-id GUID --mailbox alerts@example.com
 
-Optional: --allow-existing   Permit modification of existing custom Postfix.
+Optional: --allow-existing   Explicit override for existing Postfix routes.
+          --listen-ip IPv4   Bind local IPv4 interface + loopback for SMTP.
+          --trusted-network CIDR  Permit client RFC1918 subnet (repeatable).
+          --validate-network-only  Validate ingress without modifying anything.
           --prepare-only     Generate certificate and dedicated local account.
           --certificate-days N (1..365, default 365).
           --rotate-only      Prepare a SECOND certificate without disrupting the old one.
@@ -38,6 +44,9 @@ while [ "$#" -gt 0 ]; do
     --client-id) CLIENT="${2:?}"; shift 2 ;;
     --mailbox) MAILBOX="${2:?}"; shift 2 ;;
     --allow-existing) ALLOW_EXISTING=1; shift ;;
+    --listen-ip) LISTEN_IP="${2:?}"; shift 2 ;;
+    --trusted-network) TRUSTED_NETWORKS+=("${2:?}"); shift 2 ;;
+    --validate-network-only) VALIDATE_NETWORK_ONLY=1; shift ;;
     --prepare-only) PREPARE_ONLY=1; shift ;;
     --rotate-only) ROTATE_ONLY=1; shift ;;
     --activate-only) ACTIVATE_ONLY=1; shift ;;
@@ -46,8 +55,7 @@ while [ "$#" -gt 0 ]; do
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
-[ "$(id -u)" -eq 0 ] || { echo 'Run as root (sudo bash ...)' >&2; exit 1; }
-if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] && [ "$ACTIVATE_ONLY" -ne 1 ]; then
+if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] && [ "$ACTIVATE_ONLY" -ne 1 ] && [ "$VALIDATE_NETWORK_ONLY" -ne 1 ]; then
   [ -n "$TENANT" ] && [ -n "$CLIENT" ] && [ -n "$MAILBOX" ] || { usage >&2; exit 2; }
 fi
 GUID_REGEX='^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$'
@@ -64,6 +72,63 @@ fi
 if [ "$ACTIVATE_ONLY" -eq 1 ] && [ "$ROTATE_ONLY" -eq 1 ]; then
   echo 'Choose only one lifecycle action.' >&2
   exit 2
+fi
+
+
+# Validate before touching Postfix, packages, identities or certificates.
+validate_ingress() {
+  if [ -z "$LISTEN_IP" ]; then
+    if [ "${#TRUSTED_NETWORKS[@]}" -ne 0 ]; then
+      echo 'Trusted client networks require an explicit --listen-ip.' >&2; return 2
+    fi
+    return 0
+  fi
+  if [ "${#TRUSTED_NETWORKS[@]}" -eq 0 ] || [ "${#TRUSTED_NETWORKS[@]}" -gt 8 ]; then
+    echo 'Remote SMTP requires 1..8 trusted RFC1918 CIDRs.' >&2; return 2
+  fi
+  command -v python3 >/dev/null 2>&1 || {
+    echo 'Python 3 is required for SMTP ingress validation.' >&2; return 2;
+  }
+  python3 - "$LISTEN_IP" "${TRUSTED_NETWORKS[@]}" <<'PY'
+import ipaddress, sys
+try:
+    ip = ipaddress.ip_address(sys.argv[1])
+    if not isinstance(ip, ipaddress.IPv4Address) or str(ip) != sys.argv[1] or (
+        ip.is_unspecified or ip.is_loopback or ip.is_multicast or
+        ip.is_link_local or ip.is_reserved):
+        raise ValueError("Listener must be an explicit non-loopback IPv4")
+    allowed = [ipaddress.ip_network(s) for s in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+    for cidr in sys.argv[2:]:
+        network = ipaddress.ip_network(cidr, strict=True)
+        if not isinstance(network, ipaddress.IPv4Network) or not any(
+            network.subnet_of(private) for private in allowed):
+            raise ValueError("Trusted clients must belong to a specific RFC1918 subnet")
+except ValueError as exc:
+    sys.stderr.write("SMTP ingress policy rejected: " + str(exc) + "\n")
+    sys.exit(2)
+PY
+}
+validate_ingress
+if [ "$VALIDATE_NETWORK_ONLY" -eq 1 ]; then
+  if [ -n "$LISTEN_IP" ]; then
+    echo 'VALIDATED: local listener + RFC1918 clients; no changes.'
+  else
+    echo 'VALIDATED: loopback SMTP only; no changes.'
+  fi
+  exit 0
+fi
+[ "$(id -u)" -eq 0 ] || { echo 'Run as root (sudo bash ...)' >&2; exit 1; }
+if [ "$PREPARE_ONLY" -eq 1 ] || [ "$ROTATE_ONLY" -eq 1 ] || [ "$ACTIVATE_ONLY" -eq 1 ]; then
+  if [ -n "$LISTEN_IP" ] || [ "${#TRUSTED_NETWORKS[@]}" -gt 0 ]; then
+    echo 'Listener options apply only during full installation.' >&2; exit 2
+  fi
+fi
+if [ -n "$LISTEN_IP" ]; then
+  command -v ip >/dev/null 2>&1 || { echo 'iproute2 is required to check the local interface.' >&2; exit 2; }
+  if ! ip -o -4 addr show | awk '{split($4,a,"/");print a[1]}' | grep -Fxq -- "$LISTEN_IP"; then
+    echo 'SMTP listener IP is not assigned to a local interface.' >&2; exit 2
+  fi
 fi
 
 CONF_DIR=/etc/postfix/m365-oauth
@@ -105,15 +170,12 @@ if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] &&
   exit 1
 fi
 
-# Warn or abort before installing/modifying an actively customized MTA.
-if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] && command -v postconf >/dev/null 2>&1 && [ "$ALLOW_EXISTING" -eq 0 ]; then
-  OLD_RELAY="$(postconf -h relayhost 2>/dev/null || true)"
-  OLD_TRANSPORT="$(postconf -h default_transport 2>/dev/null || true)"
-  if [ -n "$OLD_RELAY" ] || { [ -n "$OLD_TRANSPORT" ] && [ "$OLD_TRANSPORT" != 'smtp' ] && [ "$OLD_TRANSPORT" != 'm365xoauth2:' ]; }; then
-    echo 'Existing custom Postfix relay/transport detected. No changes made.' >&2
-    echo 'Review the current setup, then rerun with --allow-existing if intended.' >&2
-    exit 1
-  fi
+# Even default values cannot prove that an existing Postfix is unused.
+if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] &&
+   command -v postconf >/dev/null 2>&1 && [ "$ALLOW_EXISTING" -eq 0 ]; then
+  echo 'Existing Postfix detected. Refusing to change ANY live mail routes by default.' >&2
+  echo 'Select Preserve Existing Mail or explicitly approve --allow-existing.' >&2
+  exit 1
 fi
 
 if [ "$PREPARE_ONLY" -eq 1 ] || [ "$ROTATE_ONLY" -eq 1 ]; then
@@ -204,10 +266,16 @@ STAMP="$(date -u +'%Y%m%dT%H%M%SZ')"
 cp -p /etc/postfix/main.cf "/etc/postfix/main.cf.pre-m365.$STAMP"
 cp -p /etc/postfix/master.cf "/etc/postfix/master.cf.pre-m365.$STAMP"
 
-# The local SMTP listener stays on loopback, so this host cannot be used
-# remotely as an unauthorized relay from the DMZ.
-postconf -e 'inet_interfaces = loopback-only'
-postconf -e 'mynetworks = 127.0.0.0/8 [::1]/128'
+# Fresh Linux stays local-only unless the administrator specifies a listener
+# and trusted client CIDRs. Existing Postfix needs explicit approval above.
+if [ -n "$LISTEN_IP" ]; then
+  postconf -e "inet_interfaces = 127.0.0.1, $LISTEN_IP"
+  postconf -e "mynetworks = 127.0.0.0/8 [::1]/128 ${TRUSTED_NETWORKS[*]}"
+else
+  postconf -e 'inet_interfaces = loopback-only'
+  postconf -e 'mynetworks = 127.0.0.0/8 [::1]/128'
+fi
+postconf -e 'smtpd_client_restrictions = permit_mynetworks, reject'
 postconf -e 'smtpd_relay_restrictions = permit_mynetworks, reject_unauth_destination'
 postconf -e 'mydestination = localhost, localhost.localdomain'
 postconf -e 'default_transport = m365xoauth2:'
