@@ -25,7 +25,7 @@ internal sealed class DiagnosticJournal
     {
         "ssh" or "linux-security" or "entra" or "tenant-discovery" or
         "postfix" or "preflight" or "token" or "smtp-test" or "update" or
-        "certificate" or "diagnostics" => kind,
+        "certificate" or "diagnostics" or "backup" or "restore" => kind,
         _ => "other"
     };
     private static string Result(string result) => result switch

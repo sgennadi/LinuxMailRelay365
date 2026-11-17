@@ -27,6 +27,9 @@ internal sealed class MainForm : Form
     private readonly TextBox mailbox = Field("");
     private readonly TextBox testRecipient = Field("");
     private readonly CheckBox allowExisting = new() { AutoSize = true };
+    private readonly ComboBox backupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
+    private MailRoutingInventory? inspectedMail;
+    private string? inspectedServerIdentity;
     private readonly ComboBox mailTransport = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly CheckBox preserveExistingMail = new() { AutoSize = true, Checked = true };
@@ -356,11 +359,31 @@ internal sealed class MainForm : Form
                     "Preserve existing MTA and routes (safe default)",
                     "שמירה על שרת דואר קיים והניתוב שלו");
                 AddLine(page, preserveExistingMail);
-                allowExisting.Text = T(
-                    "Явно разрешить замену маршрутов существующего Postfix (опасно)",
-                    "Explicitly allow replacing existing Postfix routes (advanced)",
-                    "אישור לשינוי נתיבי Postfix קיימים");
-                AddLine(page, allowExisting);
+                if (inspectedMail is not null && inspectedServerIdentity == TryCurrentIdentity())
+                {
+                    AddLine(page, UiTheme.Text("Detected MTA: " + inspectedMail.Mta +
+                        "; relay: " + inspectedMail.CurrentRelay +
+                        "; default transport: " + inspectedMail.CurrentTransport));
+                    if (inspectedMail.Mta == "postfix")
+                    {
+                        allowExisting.Text = T("Force Replace Configuration (опасно, только после backup)",
+                            "Force Replace Configuration (destructive; verified backup required)",
+                            "החלפה כפויה של תצורת Postfix (מסוכן)");
+                        AddLine(page, allowExisting);
+                        AddLine(page, UiTheme.Text(T(
+                            "ВНИМАНИЕ: будет заменена конфигурация Postfix и перезапущена служба. Возможен перерыв входящей и исходящей почты. Сначала будет создан и проверен backup; Restore доступен позже.",
+                            "WARNING: Existing Postfix routes and settings will be overwritten and service restarted. Mail may be interrupted. A verified backup is required; Restore remains available later.",
+                            "אזהרה: תצורת Postfix הקיימת תוחלף וייתכן שיבוש בדואר.")));
+                    }
+                }
+                else
+                {
+                    allowExisting.Checked = false;
+                    AddLine(page, UiTheme.Text(T(
+                        "Для разблокировки Force Replace сначала выполните проверку существующего MTA.",
+                        "Run the read-only MTA inspection before Force Replace can be offered.",
+                        "יש לבדוק תחילה את שרת הדואר.")));
+                }
                 AddLine(page, UiTheme.Text(T(
                     "Маскарад и Connector пока доступны только как план. Никакие изменения домена, MX, SPF, DKIM, DMARC или маршрутов существующего MTA не выполняются автоматически. Если MTA уже установлен, режим сохранения блокирует его изменение.",
                     "Masquerade and Connector are planning-only in this preview. No domain, MX, SPF, DKIM, DMARC, or existing MTA routes change automatically. Preserve mode blocks modifications of an existing MTA.",
@@ -371,6 +394,17 @@ internal sealed class MainForm : Form
                     InspectMailRoutingAsync, false, "check", "preflight");
                 AddAction(page, T("Проверка перед установкой", "Preflight read-only check", "בדיקה לפני התקנה"), PreflightAsync, false, "check", "preflight");
                 AddAction(page, T("Установить и настроить Linux", "Install and configure Linux", "התקנה והגדרה ב-Linux"), ApplyAsync, true, "download", "postfix");
+                AddAction(page, T("Создать проверенную резервную копию сейчас", "Create verified backup now", "יצירת גיבוי מאומת"),
+                    BackupNowAsync, false, "shield", "backup");
+                AddAction(page, T("Показать доступные резервные копии", "List verified backups", "רשימת גיבויים"),
+                    ListBackupsAsync, false, "refresh", "backup");
+                if (backupSelector.Items.Count > 0)
+                {
+                    AddLine(page, UiTheme.Text(T("Выберите backup для восстановления", "Select backup to restore", "בחר גיבוי לשחזור")));
+                    AddLine(page, backupSelector);
+                }
+                AddAction(page, T("Восстановить выбранную конфигурацию...", "Restore selected configuration...", "שחזור תצורה קודמת"),
+                    RestoreBackupAsync, false, "back", "restore");
                 AddLine(page, UiTheme.Text(T(
                     "Postfix будет принимать локальную почту и отправлять её через XOAUTH2. Не используйте этот профиль без проверки, если сервер уже принимает почту извне.",
                     "Postfix will use a local-only listener and XOAUTH2 transport. Review existing inbound-mail setups before applying.",
@@ -380,6 +414,8 @@ internal sealed class MainForm : Form
                 AddField(page, T("Кому отправить тестовое письмо", "Test recipient", "נמען בדיקה"), testRecipient);
                 AddAction(page, T("Проверить токен и очередь", "Check OAuth token and mail queue", "בדיקת אסימון ותור"), DiagnosticsAsync, true, "check", "token");
                 AddAction(page, T("Отправить тестовое письмо", "Send test email", "שלח הודעת בדיקה"), SendTestAsync, false, "send", "smtp-test");
+                AddAction(page, T("Резервные копии и Restore", "Backup & Restore", "גיבוי ושחזור"),
+                    OpenBackupStepAsync, false, "shield", "backup");
                 previewUpdates.Text = T("Включая Preview/RC", "Include Preview/RC", "כולל גרסאות ניסיון");
                 AddLine(page, previewUpdates);
                 AddAction(page, T("Проверить обновление GitHub", "Check GitHub updates", "בדיקת עדכוני GitHub"), CheckUpdatesAsync, false, "refresh", "update");
@@ -534,6 +570,9 @@ internal sealed class MainForm : Form
             smtpListenIp.Text = routingPlan.ListenIpv4;
             smtpTrustedCidrs.Text = routingPlan.TrustedCidrs;
             allowExisting.Checked = false;
+            inspectedMail = null;
+            inspectedServerIdentity = null;
+            backupSelector.Items.Clear();
             routingIdentity = identity;
         }
         finally { routingLoading = false; }
@@ -563,10 +602,122 @@ internal sealed class MainForm : Form
             endpoint, EmbeddedAssets.SecurityProbe, CancellationToken.None);
         report.EnsureSuccess();
         var inventory = MailRoutingInventory.Parse(report.StdOut);
+        inspectedMail = inventory;
+        inspectedServerIdentity = SecurityOptionsStore.Identity(endpoint);
+        allowExisting.Checked = false;
         WriteLine("Existing MTA: " + inventory.Mta + "; relayhost: " + inventory.CurrentRelay +
                   "; transport: " + inventory.CurrentTransport);
         if (inventory.Mta != "none")
             WriteLine("Existing mail flows detected. Preserve mode will NOT change them.");
+    }
+
+
+    private string? TryCurrentIdentity()
+    {
+        try { return SecurityOptionsStore.Identity(Endpoint()); }
+        catch (Exception ex) when (ex is ArgumentException or FileNotFoundException) { return null; }
+    }
+
+    private bool ConfirmDestructive(string dialogTitle, string explanation, string phrase)
+    {
+        using var dialog = new Form
+        {
+            Text = dialogTitle, StartPosition = FormStartPosition.CenterParent,
+            ClientSize = new Size(675, 270), MinimumSize = new Size(560, 270),
+            BackColor = UiTheme.Canvas, ForeColor = UiTheme.Navy,
+            AutoScaleMode = AutoScaleMode.Dpi, MaximizeBox = false,
+            MinimizeBox = false
+        };
+        var body = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 4,
+            Padding = new Padding(20, 18, 20, 16)
+        };
+        var warning = UiTheme.Text(explanation);
+        warning.MaximumSize = new Size(615, 0);
+        warning.ForeColor = Color.FromArgb(156, 38, 42);
+        AddLine(body, warning);
+        AddLine(body, UiTheme.Text(T("Для подтверждения введите: ", "Type to confirm: ", "הקלד לאישור: ") + phrase));
+        var input = Field("");
+        input.Width = 610;
+        input.AccessibleName = "Explicit destructive operation confirmation";
+        AddLine(body, input);
+        var actions = new FlowLayoutPanel
+        {
+            AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.RightToLeft
+        };
+        var approve = UiTheme.Action(T("Подтвердить действие", "Confirm operation", "אישור"), true, "check");
+        approve.Enabled = false;
+        approve.BackColor = Color.FromArgb(160, 42, 47);
+        approve.ForeColor = Color.White;
+        input.TextChanged += (_, _) =>
+            approve.Enabled = string.Equals(input.Text.Trim(), phrase, StringComparison.Ordinal);
+        approve.Click += (_, _) => { dialog.DialogResult = DialogResult.OK; dialog.Close(); };
+        var cancel = UiTheme.Action(T("Отмена", "Cancel", "ביטול"), false, "back");
+        cancel.Click += (_, _) => { dialog.DialogResult = DialogResult.Cancel; dialog.Close(); };
+        actions.Controls.Add(approve);
+        actions.Controls.Add(cancel);
+        AddLine(body, actions);
+        dialog.AcceptButton = approve;
+        dialog.CancelButton = cancel;
+        dialog.Controls.Add(body);
+        return dialog.ShowDialog(this) == DialogResult.OK;
+    }
+
+    private async Task BackupNowAsync()
+    {
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildRecoveryBundle("--backup"), TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        WriteLine(result.StdOut);
+        WriteLine("Backup stored under /var/backups/linuxmailrelay365 on Linux. Archives never leave the server.");
+    }
+
+    private async Task ListBackupsAsync()
+    {
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildRecoveryBundle("--list"), TimeSpan.FromMinutes(2));
+        result.EnsureSuccess();
+        backupSelector.Items.Clear();
+        foreach (var line in result.StdOut.Split('\n'))
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(line.Trim(),
+                @"^BACKUP_ID=([0-9]{8}T[0-9]{6}Z-[a-f0-9]{12})$");
+            if (match.Success) backupSelector.Items.Add(match.Groups[1].Value);
+        }
+        backupSelector.SelectedIndex = -1;
+        WriteLine("Verified Linux backups: " + backupSelector.Items.Count +
+            ". Select a backup explicitly before Restore.");
+    }
+
+    private async Task RestoreBackupAsync()
+    {
+        if (backupSelector.SelectedItem is not string backupId)
+            throw new InvalidOperationException("List backups and select one verified backup before restoring.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Restore Postfix",
+            T("Существующая конфигурация /etc/postfix будет заменена резервной копией " + backupId +
+              ". Postfix будет перезапущен. Доставка почты может прерваться. Перед восстановлением создаётся ещё одна резервная копия. Пакеты не откатываются.",
+              "This restores the full Postfix configuration from backup " + backupId +
+              ", restarts Postfix and may interrupt mail. A safety backup is made first. Installed packages are NOT reverted.",
+              "השחזור יחליף את הגדרות Postfix ועשוי לשבש דואר."),
+            "RESTORE POSTFIX")) return;
+        WriteLine("Restoring verified Postfix backup: " + backupId);
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildRecoveryBundle("--restore", backupId), TimeSpan.FromMinutes(6));
+        result.EnsureSuccess();
+        WriteLine(result.StdOut);
+        inspectedMail = null;
+        inspectedServerIdentity = null;
+        allowExisting.Checked = false;
+        backupSelector.Items.Clear();
+        WriteLine("Restore complete. Re-run the MTA inspection before any further modifications.");
+    }
+
+    private Task OpenBackupStepAsync()
+    {
+        step = 3;
+        RenderPage();
+        return Task.CompletedTask;
     }
 
     private void EnsureSecurityLoaded()
@@ -883,12 +1034,22 @@ internal sealed class MainForm : Form
             EmbeddedAssets.SecurityProbe, CancellationToken.None);
         observed.EnsureSuccess();
         var inventory = MailRoutingInventory.Parse(observed.StdOut);
+        if (inspectedMail is null || inspectedServerIdentity != SecurityOptionsStore.Identity(endpoint))
+            throw new InvalidOperationException("First inspect the existing Linux mail server. No changes made.");
+        if (inspectedMail != inventory)
+            throw new InvalidOperationException("Linux mail routing changed since inspection. Run MTA inspection again.");
         if (inventory.Mta is "sendmail" or "exim")
             throw new NotSupportedException("Existing Sendmail/Exim is preserved. Safe migration/sidecar deployment is not implemented yet.");
         if (inventory.Mta == "postfix" && preserveExistingMail.Checked)
-            throw new NotSupportedException("Existing Postfix detected. Preserve Existing Mail cannot safely change global Postfix routes in this preview. No changes made.");
+            throw new NotSupportedException("Existing Postfix is protected by Preserve Existing Mail. No changes made.");
         if (inventory.Mta == "postfix" && !allowExisting.Checked)
-            throw new InvalidOperationException("To replace existing Postfix routes, uncheck Preserve Existing Mail and explicitly approve the advanced override.");
+            throw new InvalidOperationException("Force Replace requires explicit selection after MTA inspection.");
+        bool force = inventory.Mta == "postfix";
+        if (force && !ConfirmDestructive("LinuxMailRelay365 | Force Replace Postfix",
+            T("ОПАСНО: будут перезаписаны настройки Postfix, включая маршруты, входящую почту и параметры SMTP. Будет создан и проверен полный backup /etc/postfix. Возможен перерыв почтового обслуживания.",
+              "DANGER: Postfix settings and routes will be overwritten; inbound and outbound mail may be interrupted. A verified /etc/postfix backup is mandatory; automatic rollback is attempted on failure.",
+              "אזהרה: הגדרות Postfix יוחלפו. ייווצר גיבוי מאומת."),
+            "REPLACE POSTFIX")) return;
         var state = await ReadyStateAsync();
         var approval = MessageBox.Show(this,
             T("Применить настройку Postfix на Linux? Конфигурация будет сохранена в резервных копиях.\nНе продолжайте, если сервер обслуживает другую почту без предварительной проверки.",
@@ -898,7 +1059,12 @@ internal sealed class MainForm : Form
         if (approval != DialogResult.Yes) return;
         var arguments = new List<string> { "--tenant-id", state.Tenant.ToString(), "--client-id", state.Client,
                                            "--mailbox", state.Mailbox };
-        if (allowExisting.Checked && !preserveExistingMail.Checked) arguments.Add("--allow-existing");
+        if (force)
+        {
+            arguments.Add("--force-replace");
+            arguments.Add("--confirm-force-replace");
+            arguments.Add("REPLACE_POSTFIX_CONFIG");
+        }
         if (routingPlan.ListenIpv4.Length > 0)
         {
             arguments.Add("--listen-ip");
@@ -916,6 +1082,9 @@ internal sealed class MainForm : Form
         result.EnsureSuccess();
         WriteLine(result.StdOut);
         WriteLine("Postfix installation finished; Microsoft 365 delivery must be verified with a test message.");
+        inspectedMail = null;
+        inspectedServerIdentity = null;
+        allowExisting.Checked = false;
     }
 
     private async Task DiagnosticsAsync()

@@ -52,6 +52,33 @@ configured mailbox. Use narrow subnets and host firewall rules, and do not
 forward public SMTP traffic to this port. SMTP submission from a trusted LAN
 remains unencrypted until separate TLS listener support is implemented.
 
+## Force Replace, Backup & Restore (Preview)
+
+Force Replace is **hidden until the Wizard reads the Linux MTA state**.
+Only an existing Postfix unlocks the option. It is OFF by default, and
+Preserve Existing Mail remains ON. Existing Sendmail/Exim, partially detected
+MTA states, and changed Postfix routes are blocked.
+
+To replace an existing Postfix, the operator must turn off Preserve Existing
+Mail, check Force Replace, and type **REPLACE POSTFIX** in a warning dialog.
+The Linux installer independently requires
+`--force-replace --confirm-force-replace REPLACE_POSTFIX_CONFIG`.
+It creates a root-only snapshot of the full `/etc/postfix` directory
+(including keys, if present), the M365 transport and recorded service state
+under `/var/backups/linuxmailrelay365`. The tar.gz SHA-256 is verified
+before the installer changes any settings. Snapshot IDs, never archives or
+configuration contents, return to Windows.
+
+A failing forced installation attempts an automatic restore; a failed
+restore is reported as critical rather than silently declaring success.
+The Wizard also provides **Create verified backup**, **List verified
+backups** and **Restore selected configuration**. Restore requires typing
+**RESTORE POSTFIX**, creates a separate pre-restore safety snapshot and
+verifies the selected snapshot. Linux packages, firewall rules, external
+mail routing, DNS records and external files referenced by Postfix
+are **not** included in the snapshot or rolled back; test on a nonproduction
+server before using Force Replace.
+
 ## Domain, sender rewriting and existing mail safety
 
 The wizard now exposes **XOAUTH2 fixed mailbox** (implemented), plus a

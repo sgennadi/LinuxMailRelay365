@@ -16,6 +16,8 @@ if has postconf; then
   val MTA postfix
   val POSTFIX_RELAY "$(postconf -h relayhost 2>/dev/null || true)"
   val POSTFIX_TRANSPORT "$(postconf -h default_transport 2>/dev/null || true)"
+elif [ -e /etc/postfix ]; then
+  val MTA unknown
 elif [ -f /etc/mail/sendmail.cf ] || { has rpm && rpm -q sendmail >/dev/null 2>&1; }; then
   val MTA sendmail
 elif has exim || has exim4; then
