@@ -73,6 +73,12 @@ Only "REBOOT_CONTINUITY_RESULT=local_services_continuity_verified" combined with
 
 Rehearse root-only recovery archives with no production credentials. Inspect restored certificate/trust and Postfix policies. If the rollback verification fails, manually restore from the approved VM snapshot.
 
+For EOP route maintenance, **pause application submissions** and verify the
+dedicated sidecar queue is empty before changing transports. The route manager
+refuses to apply/restore over queued messages, preserves root-only snapshots
+and checks the installed custom SMTP port; this does not remove the need for a
+maintenance window or a proper disaster-recovery plan.
+
 ## 5. Microsoft 365 delivery verification
 
 With explicit tenant administrator access on a TEST tenant, validate app-only OAuth2, Exchange scoped SMTP.SendAsApp grant, accepted domain and approved mailbox. For Connector verify the actual tenant inbound Connector, authorized unshared public IP or matching TLS identity, and outbound TCP 25. For Direct Send enforce INTERNAL recipient scope. The current Connector/Direct Send wizard options only inspect/plan; they DO NOT deploy a Connector, change MX/SPF/DKIM/DMARC or change Postfix.
