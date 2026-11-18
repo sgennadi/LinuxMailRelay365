@@ -83,8 +83,15 @@ def connectivity(mx_host):
             if not client.has_extn("starttls"):
                 return "starttls_missing"
             client.starttls(context=ssl.create_default_context())
-            client.ehlo("lmr365-read-only-check.invalid")
-        result="tls_12_plus_hostname_verified" # TLS version verified below in local option?
+            # A successful TLS handshake is not sufficient: record only TLS
+            # 1.2/1.3 with system CA and DNS verification, no mail submitted.
+            version = client.sock.version() if client.sock else None
+            if version not in ("TLSv1.2", "TLSv1.3"):
+                return "tls_version_unverified_or_unsupported"
+            code, _ = client.ehlo("lmr365-read-only-check.invalid")
+            if code != 250:
+                return "post_tls_ehlo_failed"
+        result="tls_12_plus_hostname_verified"
     except (OSError,smtplib.SMTPException,ssl.SSLError):
         result="unreachable_or_tls_unverified"
     return result
