@@ -3,12 +3,14 @@
 Python 3.6 compatible. No actual Microsoft 365 send occurs. Live Postfix
 RCPT rejection and sidecar restore are separately covered by Ubuntu smoke.
 """
+import io
 import importlib.util
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "linux" / "manage-sidecar-eop-route.py"
@@ -136,6 +138,29 @@ class EopRouteContracts(unittest.TestCase):
         self.assertIn("connectorApproved", ui)
         self.assertIn("EOP_TLS_CONNECTIVITY=tls_12_plus_hostname_verified", ui)
         self.assertIn("DEPLOY PRIVATE EOP ROUTE", ui)
+
+    def test_refuse_pending_queue_before_changing_or_restoring_route(self):
+        class FakePostqueue:
+            def __init__(self, lines):
+                self.stdout = io.StringIO(lines)
+            def poll(self):
+                return 0
+            def wait(self, timeout=None):
+                return 0
+            def kill(self):
+                pass
+
+        for output, blocked in (("", False),
+                                ('{"queue_name":"deferred","sender":"redacted"}\\n', True)):
+            with self.subTest(blocked=blocked), \
+                 patch.object(eop.shutil, "which", return_value="/usr/sbin/postqueue"), \
+                 patch.object(eop.subprocess, "Popen", return_value=FakePostqueue(output)), \
+                 patch("select.select", side_effect=lambda rd, wr, ex, t: (rd, [], [])):
+                if blocked:
+                    with self.assertRaisesRegex(eop.Refused, "sidecar_queue_not_empty"):
+                        eop.require_empty_sidecar_queue()
+                else:
+                    eop.require_empty_sidecar_queue()
 
     def test_cli_invalid_port_and_no_credentials_or_mail_submission(self):
         for port in ("25", "587", "1023", "65536", "0"):
