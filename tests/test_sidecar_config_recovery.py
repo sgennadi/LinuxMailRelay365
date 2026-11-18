@@ -57,10 +57,28 @@ class ScopedRecoveryTests(unittest.TestCase):
         mod.LOCK = self.original_lock
         mod.OWNER_UID = self.original_uid
 
+    def fake_command(self, argv, **kwargs):
+        if argv[0] == "postqueue" and "-j" in argv:
+            return ""
+        if argv[0] == "postconf" and "-h" in argv:
+            return {
+                "queue_directory": str(self.root / mod.QUEUE),
+                "data_directory": str(self.root / "var/lib/linuxmailrelay365-sidecar"),
+                "inet_interfaces": "127.0.0.1",
+            }[argv[-1]]
+        if argv[0] == "postconf" and "-n" in argv:
+            return "queue_directory = " + str(self.root / mod.QUEUE)
+        if argv[0] == "postconf" and "-M" in argv:
+            return "46500 inet n - n - - smtpd\npickup unix n - n 60 1 pickup"
+        if argv[0] == "systemctl" and argv[1] == "daemon-reload":
+            return ""
+        raise AssertionError("Unexpected system command in synthetic test: " +
+                             " ".join(argv))
+
     def patch_runtime(self):
         self.enterContext(patch.object(mod.os, "geteuid", return_value=0))
         self.enterContext(patch.object(mod, "service_state", side_effect=fake_units))
-        self.enterContext(patch.object(mod, "command", return_value=""))
+        self.enterContext(patch.object(mod, "command", side_effect=self.fake_command))
 
     def enterContext(self, context):
         # unittest.TestCase.enterContext is unavailable on Python 3.6.
@@ -132,9 +150,9 @@ class ScopedRecoveryTests(unittest.TestCase):
         (self.conf / "main.cf").write_text(changed)
         expected, _ = mod.current_state()
         def command(argv, **kwargs):
-            if argv[0] == "postfix":
-                raise mod.Refused("simulated_postfix_config_invalid")
-            return ""
+            if argv[0] == "postconf" and "-M" in argv:
+                raise mod.Refused("simulated_postfix_master_config_invalid")
+            return self.fake_command(argv, **kwargs)
         with patch.object(mod, "command", side_effect=command):
             with self.assertRaises(mod.Refused):
                 mod.restore(backup_id, expected)
@@ -173,6 +191,9 @@ class ScopedRecoveryTests(unittest.TestCase):
         self.assertNotIn("tarfile.extractall", source)
         self.assertIn("stop_sidecar_auth_health_and_timer_before_offline_restore", source)
         self.assertIn("SIDECAR_SERVICES_STARTED", source)
+        self.assertIn('sidecar_queue_directory_must_be_isolated', source)
+        self.assertNotIn('command(["postfix"', source)
+        self.assertIn('command(["postconf", "-c", config, "-M"])', source)
 
 
 if __name__ == "__main__":
