@@ -763,7 +763,12 @@ restore is reported as critical rather than silently declaring success.
 The Wizard also provides **Create verified backup**, **List verified
 backups** and **Restore selected configuration**. Restore requires typing
 **RESTORE POSTFIX**, creates a separate pre-restore safety snapshot and
-verifies the selected snapshot. Linux packages, firewall rules, external
+verifies the selected snapshot. The Linux recovery CLI itself now separately
+refuses manual `--restore ID` unless the administrator explicitly passes
+`--confirm RESTORE_POSTFIX_CONFIGURATION`; failure-rollback uses a distinct
+`AUTO_ROLLBACK_AFTER_FAILED_INSTALL` marker so automatic recovery remains
+available. These markers are confirmations, not authentication mechanisms.
+Linux packages, firewall rules, external
 mail routing, DNS records and external files referenced by Postfix
 are **not** included in the snapshot or rolled back; test on a nonproduction
 server before using Force Replace.
