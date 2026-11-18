@@ -19,6 +19,7 @@ jobs:
           bash -n linux/probe-linux.sh linux/install-postfix-m365-xoauth2.sh linux/mail-config-recovery.sh linux/install-preserve-postfix-sidecar.sh linux/install-direct-send-sidecar.sh linux/install-connector-sidecar.sh linux/network-firewall.sh linux/enable-sidecar-auth-tls.sh linux/restore-sidecar-auth-tls.sh linux/rotate-sidecar-tls.sh linux/install-health-monitor.sh
           python3 -m py_compile linux/audit-existing-smtp.py linux/manage-rhel-selinux-port.py linux/manage-public-smtp.py linux/manage-health-alerts.py linux/audit-m365-dns.py
           python3 -m unittest discover -v -s tests
+          python3 linux/mta-coexistence-doctor.py --self-test
           python3 linux/generate-smtp-client-credential.py --self-test
           python3 linux/rhel-enforcing-live-smoke.py --self-test
   ubuntu-postfix-smoke:
@@ -138,11 +139,13 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_tls_identity.py
           python3 linux/verify-sidecar-tls-identity.py --validate-only --smtp-port 46500 --server-name smtp.example.org | grep -Fx 'CHANGES_APPLIED=no'
           python3 linux/installed-sidecar-audit.py --smtp-port 46500 --no-live-probe | grep -Fx 'CHANGES_APPLIED=no'
-          python3 -m py_compile linux/generate-smtp-client-credential.py linux/rhel-enforcing-live-smoke.py linux/audit-m365-dns.py linux/manage-health-alerts.py linux/manage-public-smtp.py linux/manage-rhel-selinux-port.py linux/platform-compat.py linux/m365_xoauth2_transport.py linux/audit-existing-smtp.py linux/installed-sidecar-audit.py linux/audit-sidecar-auth-archives.py linux/rhel-selinux-doctor.py linux/manage-sidecar-smtp-accounts.py linux/relay-health.py linux/m365-outbound-mode-preflight.py linux/manage-sidecar-eop-route.py linux/verify-reboot-continuity.py linux/verify-sidecar-tls-identity.py
+          python3 -m py_compile linux/mta-coexistence-doctor.py linux/generate-smtp-client-credential.py linux/rhel-enforcing-live-smoke.py linux/audit-m365-dns.py linux/manage-health-alerts.py linux/manage-public-smtp.py linux/manage-rhel-selinux-port.py linux/platform-compat.py linux/m365_xoauth2_transport.py linux/audit-existing-smtp.py linux/installed-sidecar-audit.py linux/audit-sidecar-auth-archives.py linux/rhel-selinux-doctor.py linux/manage-sidecar-smtp-accounts.py linux/relay-health.py linux/m365-outbound-mode-preflight.py linux/manage-sidecar-eop-route.py linux/verify-reboot-continuity.py linux/verify-sidecar-tls-identity.py
           python3 linux/m365_xoauth2_transport.py --help >/dev/null
           bash linux/install-preserve-postfix-sidecar.sh --check-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
           bash linux/network-firewall.sh --validate-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
           bash linux/install-postfix-m365-xoauth2.sh --validate-network-only --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
+          python3 -m unittest discover -v -s tests -p test_mta_coexistence_doctor.py
+          python3 linux/mta-coexistence-doctor.py --self-test
           python3 -m unittest discover -v -s tests -p test_platform_compat.py
 
   windows-build:

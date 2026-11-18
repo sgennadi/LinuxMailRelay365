@@ -612,6 +612,10 @@ internal sealed class MainForm : Form
                                   "Check Linux / SELinux for the selected SMTP port",
                                   "בדיקת לינוקס ו-SELinux עבור יציאת SMTP שנבחרה"),
                                   InspectPlatformAsync, false, "check", "platform");
+                AddAction(page, T("Проверить Sendmail/Exim/Postfix без изменения MTA",
+                                  "Audit Postfix / Sendmail / Exim coexistence (read-only)",
+                                  "בדיקת קיום Postfix / Sendmail / Exim ללא שינוי"),
+                                  InspectMtaCoexistenceAsync, false, "check", "mta-coexistence");
                 AddAction(page, T("Диагностика SELinux Enforcing для RHEL (только чтение)",
                                   "RHEL SELinux Enforcing acceptance report (read-only)",
                                   "דוח SELinux Enforcing ל-RHEL ללא שינויים"),
@@ -2275,6 +2279,18 @@ internal sealed class MainForm : Form
         if (!result.StdOut.Contains("RHEL_PORT_RESTORED=yes", StringComparison.Ordinal))
             throw new InvalidOperationException("SELinux policy restore was not confirmed.");
         WriteLine(result.StdOut);
+    }
+
+    private async Task InspectMtaCoexistenceAsync()
+    {
+        int port = RhelCustomPort();
+        var report = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildMtaCoexistenceBundle(port), TimeSpan.FromSeconds(70));
+        report.EnsureSuccess();
+        WriteLine(report.StdOut);
+        WriteLine("Read-only MTA coexistence inventory: no package replacement, service restart, MX changes, or configuration updates. " +
+                  "Exim/Sendmail hosts remain manual-isolation candidates unless independent Postfix was already installed and reviewed. " +
+                  "An active second MTA or unverified package conflict must block automatic installation.");
     }
 
     private async Task InspectPlatformAsync()

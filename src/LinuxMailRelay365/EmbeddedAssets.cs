@@ -23,6 +23,7 @@ internal static class EmbeddedAssets
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
+    internal static string MtaCoexistenceDoctor => Text("LinuxMailRelay365.linux.mta-coexistence-doctor.py");
     internal static string RhelSelinuxDoctor => Text("LinuxMailRelay365.linux.rhel-selinux-doctor.py");
     internal static string RhelEnforcingLiveSmoke => Text("LinuxMailRelay365.linux.rhel-enforcing-live-smoke.py");
     internal static string RhelSelinuxPortManager => Text("LinuxMailRelay365.linux.rhel-selinux-port-manager.py");
@@ -713,6 +714,18 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/selinux-port.py\" <<'LMR365_PORT_POLICY'\n" +
                Encode(RhelSelinuxPortManager) + "\nLMR365_PORT_POLICY\n" +
                "python3 \"$work/selinux-port.py\" " + args + "\n";
+    }
+
+    internal static string BuildMtaCoexistenceBundle(int port)
+    {
+        if (port is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(port));
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-mta-audit.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/mta.py\" <<'LMR365_MTA_AUDIT'\n" +
+               Encode(MtaCoexistenceDoctor) + "\nLMR365_MTA_AUDIT\n" +
+               "python3 \"$work/mta.py\" --smtp-port " + port + "\n";
     }
 
     internal static string BuildPlatformCompatBundle(int smtpPort)

@@ -499,6 +499,23 @@ archive for each activation. AUTH/TLS downgrade, certificate rotation and
 EOP re-routing refuse to operate while public submission remains active.
 **No Stable release is implied.**
 
+## Existing Sendmail / Exim / Postfix coexistence (Preview 15)
+
+The Advanced SMTP Wizard now includes an entirely read-only MTA coexistence
+audit. It detects which native mail services are currently active (including
+Sendmail and Exim), whether Postfix CLI/configuration is already installed,
+whether the dedicated LinuxMailRelay365 sidecar exists, and whether the custom
+port is currently occupied. It deliberately refuses to claim a safe
+installation if two native MTA services are active or systemd cannot establish
+service state.
+
+For a Sendmail/Exim host, only an already installed independent Postfix
+binary/configuration is a manual coexistence candidate. The Wizard will NOT
+remove, replace, restart or package-install Postfix over the operating MTA.
+Full automatic Sendmail/Exim-hosted relay activation is still blocked pending
+real mixed-MTA/package-manager and port isolation smoke tests. No "supported"
+claim is made from a container-only probe.
+
 ## Generate a strong per-application SMTP password (Preview 15)
 
 Advanced SMTP now provides a one-time password generation action.
