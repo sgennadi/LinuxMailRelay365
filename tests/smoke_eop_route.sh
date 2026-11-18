@@ -97,4 +97,39 @@ test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$PRIMARY
 sudo test ! -e /var/lib/linuxmailrelay365-eop-route-recovery/active.json
 sudo test -d /var/lib/linuxmailrelay365-eop-route-recovery
 sudo systemctl is-active --quiet linuxmailrelay365-sidecar.service
+
+echo '=== Real Postfix regexp lookup for Connector sender policy (NO mail DATA) ==='
+map_root="$(mktemp -d /tmp/lmr365-maps.XXXXXXXX)"
+python3 - "$map_root" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+file = Path("linux/manage-sidecar-eop-route.py")
+spec = importlib.util.spec_from_file_location("local_route", str(file))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+root = Path(sys.argv[1])
+for kind in ("fixed-mailbox", "preserve-domain", "masquerade"):
+    args = SimpleNamespace(mode="connector", sender="alerts@example.org",
+                           recipient_domain=["example.org"], sender_policy=kind)
+    sender, canonical, recipient = module.policy_maps(args)
+    (root / (kind + "-sender.regexp")).write_text(sender, encoding="ascii")
+    (root / (kind + "-canonical.regexp")).write_text(canonical, encoding="ascii")
+PY
+test "$(postmap -q 'ops@lab.example.org' "regexp:$map_root/masquerade-sender.regexp")" = OK
+test "$(postmap -q 'ops@example.org' "regexp:$map_root/masquerade-sender.regexp")" = OK
+test -z "$(postmap -q 'ops@evil.example' "regexp:$map_root/masquerade-sender.regexp" || true)"
+test "$(postmap -q 'ops@lab.example.org' "regexp:$map_root/masquerade-canonical.regexp")" = 'ops@example.org'
+test "$(postmap -q 'ops@dept.lab.example.org' "regexp:$map_root/masquerade-canonical.regexp")" = 'ops@example.org'
+test -z "$(postmap -q 'ops@evil.example' "regexp:$map_root/masquerade-canonical.regexp" || true)"
+test "$(postmap -q 'ops@example.org' "regexp:$map_root/preserve-domain-sender.regexp")" = OK
+test -z "$(postmap -q 'ops@lab.example.org' "regexp:$map_root/preserve-domain-sender.regexp" || true)"
+test -z "$(postmap -q 'ops@example.org' "regexp:$map_root/preserve-domain-canonical.regexp" || true)"
+test "$(postmap -q 'ops@example.org' "regexp:$map_root/fixed-mailbox-canonical.regexp")" = 'alerts@example.org'
+rm -rf -- "$map_root"
+echo 'EOP_CONNECTOR_SENDER_POLICY_POSTMAP=PASS'
+echo 'MAIL_DATA_SENT=no'
+
 echo 'EOP_DIRECT_SEND_APPLY_RESTORE_REAL_SMOKE=PASS'
