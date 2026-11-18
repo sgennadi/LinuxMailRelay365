@@ -32,7 +32,7 @@ Microsoft 365 tenant**. The application remains an unsigned Draft preview.
 - Microsoft 365 Direct Send/Connector preflight and **guarded outbound route
   switching on an already installed isolated Postfix**; no tenant-side
   Connector provisioning or verified real delivery. Direct Send is
-  internal-recipient-only; Internet-wide SMTP remains BLOCKED.
+  internal-recipient-only; public inbound SMTP is a separate guarded expert-only action.
 
 ## Direct Send / Connector — guarded sidecar outbound route (Preview)
 
@@ -441,7 +441,7 @@ mailbox, Tenant, subnet or port:
   public-Internet plan. Missing inputs are shown as *not selected*.
   **Advanced Connector/Direct Send routes are not assumed deployed** until
   the operator performs the separate guarded Apply action and verification;
-  sender preservation and masquerade remain blocked.
+  Connector sender preservation and subdomain masquerade require separate review and Apply.
 - A read-only, translated **client SMTP setup guide** (RU/EN/HE) below the
   diagram can be copied with one button, without copying credentials or
   private keys and without resetting the Wizard scroll position.
@@ -587,9 +587,7 @@ server before using Force Replace.
 The Wizard supports **XOAUTH2 fixed mailbox** and a separate guarded
 **Advanced SMTP Direct Send/Connector outbound route** on an already installed
 isolated Postfix. It stores nonsecret per-host preferences, but tenant
-domain/Connector approval checkboxes are never persisted. Multiple
-independent sender identities, sender preservation and masquerade remain
-blocked. The app never provisions tenant Connectors or changes MX,
+domain/Connector approval checkboxes are never persisted. Multiple independent sender identities are not yet mapped per SMTP account. Connector-only accepted-domain sender preservation and subdomain masquerade have their own reviewed Apply and Restore. The app never provisions tenant Connectors or changes MX,
 SPF, DKIM, DMARC or Exchange accepted domains automatically.
 
 **Safe default for existing Linux:** Preserve Existing Mail is ON. Before
@@ -604,12 +602,11 @@ Direct Send or Connector on the isolated sidecar.
 **XOAUTH2** uses one Exchange-authorized sender mailbox per server; the
 transport rewrites the message From and envelope sender to the authorized
 mailbox. No extra Postfix domain masquerading is required. The guarded private
-**Connector route** now configures EOP TCP25 and one fixed sender with
-source/recipient restrictions. It requires an existing tenant Connector
-and explicit operator attestation, **not** automated Exchange validation.
-Using different arbitrary senders or preserving original From is still
-blocked until per-client sender authorization and verified mappings exist.
-Masquerading must never be applied to existing messages without approval.
+**Connector route** configures EOP TCP25 with fixed sender, accepted-domain
+preservation or restricted subdomain masquerade. It requires an already
+verified tenant Connector and explicit attestation, **not** automatic
+Exchange authorization. Per-SMTP-account sender ownership is not enforced;
+arbitrary domains and existing queued messages are not rewritten.
 
 ## Security Center: precisely what works today
 

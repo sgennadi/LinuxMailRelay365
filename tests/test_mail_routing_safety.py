@@ -28,6 +28,8 @@ class MailRoutingSafetyContracts(unittest.TestCase):
         ui=(ROOT/'src/LinuxMailRelay365/MainForm.cs').read_text(encoding='utf8')
         # Sender rewriting is allowed only in an independent Connector sidecar.
         self.assertIn('Connector sender handling is available under the isolated EOP route',ui)
+        self.assertIn('Connector и политики сохранения/маскарада отправителя можно применить',ui)
+        self.assertNotIn('Маскарад и Connector пока доступны только как план',ui)
         self.assertIn('chosenTransport != "oauth2" || chosenSender != 0',ui)
         self.assertIn('ApplyEopRouteAsync',ui)
         self.assertIn('RestoreEopRouteAsync',ui)

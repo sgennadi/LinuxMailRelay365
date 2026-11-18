@@ -547,7 +547,7 @@ internal sealed class MainForm : Form
                 AddLine(page, UiTheme.Text(T(
                     "Публичный SMTP опасен: злоупотребления, утечка учётных данных и блокировки IP/M365. Отметка ничего не открывает; отдельная операция доступна только при проверенном XOAUTH2, AUTH/STARTTLS, Fail2ban, лимитах и мониторинге.",
                     "Public SMTP can attract spam attacks, credential theft and IP/M365 blocking. This checkbox does not open the port; the separate guarded flow requires XOAUTH2, AUTH/STARTTLS, Fail2ban, limits and monitoring.",
-                    "פתיחת SMTP לאינטרנט ללא אימות עלולה לאפשר ספאם ולגרום לחסימת שרת הדואר.")));
+                    "SMTP ציבורי מחייב אימות, STARTTLS, הגבלת קצב וניטור. סימון האפשרות אינו פותח יציאה אוטומטית.")));
                 AddAction(page, T("Проверить порты 443/587, SMTP и firewall (без изменений)",
                                   "Check ports 443/587, SMTP and firewall (read-only)",
                                   "בדיקת יציאות וחומת אש (קריאה בלבד)"),
@@ -751,9 +751,9 @@ internal sealed class MainForm : Form
                     "For an existing Postfix server, Preserve Existing Mail installs a separate Postfix instance on your selected TCP port with a separate queue. Primary port 25, main.cf, master.cf and queue are untouched. Sendmail/Exim sidecars are not yet supported.",
                     "עבור Postfix קיים נוצר מופע נפרד ביציאת SMTP שנבחרה ללא שינוי בתצורה הקיימת.")));
                 AddLine(page, UiTheme.Text(T(
-                    "Маскарад и Connector пока доступны только как план. Никакие изменения домена, MX, SPF, DKIM, DMARC или маршрутов существующего MTA не выполняются автоматически. Если MTA уже установлен, режим сохранения блокирует его изменение.",
+                    "Connector и политики сохранения/маскарада отправителя можно применить только к отдельному Postfix через Advanced SMTP с предварительной проверкой, подтверждением и Restore. Основной MTA, MX, SPF, DKIM и DMARC автоматически не меняются.",
                     "Verified Connector and sender policies can be activated only on an isolated sidecar through explicit Advanced SMTP actions. Domain, MX, SPF, DKIM, DMARC and primary MTA are not automatically altered.",
-                    "Connector והסוואת כתובות הם לתכנון בלבד. הגדרות שרת הדואר הקיים לא משתנות.")));
+                    "ניתן להפעיל Connector ושימור או שינוי דומיין שולח רק בשרת Postfix המבודד, לאחר בדיקה ואישור. הגדרות השרת הראשי אינן משתנות.")));
                 if (existingSmtpAudit is not null && existingSmtpAuditIdentity == TryCurrentIdentity())
                     AddLine(page, UiTheme.Text(existingSmtpAudit.Summary(language.SelectedIndex)));
                 else
@@ -1192,8 +1192,6 @@ internal sealed class MainForm : Form
     private async Task RestoreAuthTlsAsync()
     {
         var endpoint = Endpoint();
-        if (publicInternetRequested.Checked)
-            throw new InvalidOperationException("Uncheck Public Internet SMTP planning before restoring an unauthenticated private relay.");
         if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
             throw new InvalidOperationException("No installed isolated Postfix was detected.");
         int installedPort = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
@@ -1324,8 +1322,6 @@ internal sealed class MainForm : Form
     private async Task RotateTlsCertificateAsync()
     {
         var endpoint = Endpoint();
-        if (publicInternetRequested.Checked)
-            throw new NotSupportedException("Public SMTP must remain blocked during TLS rotation.");
         if (await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None) != true)
             throw new InvalidOperationException("The isolated Postfix does not have verified mandatory STARTTLS and SMTP AUTH.");
         int installedPort = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
@@ -1525,7 +1521,7 @@ internal sealed class MainForm : Form
             "Create only an isolated Postfix listener on custom TCP " + cfg.Port + ". " +
             "Primary Postfix and port 25 stay untouched. Only the declared internal tenant domain " +
             "is eligible for RCPT TO, and the sender is rewritten to one declared address. " +
-            "Public SMTP remains blocked. The Microsoft 365 domain must really be accepted in " +
+            "Public inbound SMTP uses a separate opt-in manager and is never opened by outbound routing. The Microsoft 365 domain must really be accepted in " +
             "the chosen tenant. Client devices must be changed only AFTER testing.",
             "INSTALL PRIVATE DIRECT SEND")) return;
         var applied = await SshRemote.RunRootScriptAsync(endpoint,
@@ -1552,7 +1548,7 @@ internal sealed class MainForm : Form
         if (!preserveExistingMail.Checked)
             throw new InvalidOperationException("Private EOP transport changes require Preserve Existing Mail.");
         if (publicInternetRequested.Checked)
-            throw new InvalidOperationException("Public SMTP ingress is blocked.");
+            throw new InvalidOperationException("Public SMTP inbound requires a separate authenticated TLS workflow; outbound EOP setup never opens public SMTP.");
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
             port is < 1024 or > 65535)
             throw new InvalidDataException("Select an inbound custom SMTP port 1024–65535.");
@@ -2424,7 +2420,7 @@ internal sealed class MainForm : Form
         routingPlan.SidecarPort = selectedPort;
         MailRoutingPlanStore.Validate(routingPlan);
         if (publicInternetRequested.Checked)
-            throw new NotSupportedException("Public Internet SMTP is planning-only and blocked. Without mandatory TLS, SMTP AUTH and abuse controls it would risk an open relay. Clear the option to install local/trusted-only SMTP.");
+            throw new NotSupportedException("The ordinary installer never opens public SMTP. Clear the public plan to install private SMTP, then use Advanced SMTP > reviewed public AUTH/TLS activation.");
         var chosenTransport = mailTransport.SelectedIndex switch
         {
             1 => "connector", 2 => "direct-send", _ => "oauth2"
