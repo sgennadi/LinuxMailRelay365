@@ -396,6 +396,9 @@ print('SMTP_ACCOUNT_REVOKE_REAL_SMOKE=PASS')
 PY
 
 
+echo '=== Real independent Postfix + Dovecot AUTH/TLS scoped recovery ==='
+bash tests/smoke_scoped_auth_recovery.sh "$PORT" "$FIXTURE/next-cert.pem"
+
 echo '=== Verify tamper-guarded private AUTH/TLS restore preflight ==='
 RESTORE_SCRIPT=linux/restore-sidecar-auth-tls.sh
 restore_preview="$(sudo bash "$RESTORE_SCRIPT" --check-only --smtp-port "$PORT")"
