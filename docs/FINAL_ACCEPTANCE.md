@@ -19,6 +19,7 @@
 | Microsoft 365 XOAUTH2 sender transport | Preview | Live Entra tenant + Exchange scoped mailbox + delivered test |
 | Microsoft 365 Direct Send | Fresh isolated installation without Entra/OAuth, or guarded route switch of an existing XOAUTH2 sidecar | Approved accepted domain and real internal recipient receipt |
 | Microsoft 365 Connector | Existing isolated sidecar only; no tenant provisioning | Verified tenant Connector authorization and external recipient receipt |
+| Public-domain DNS MX/SPF/DMARC/DKIM report | Read-only evidence | Verify records against actual Exchange/tenant configuration, DKIM enabled state and recipients |
 | Connector sender preserve accepted domain / masquerade subdomains | Implemented in isolated EOP route, not primary Postfix | Real Postfix envelope/header acceptance, sender authorization and delivery |
 | Internet-wide SMTP listener | Guarded opt-in manager, not production-approved | Real Fail2ban ban drill, external client TLS trust, firewall/NAT, abuse controls and rollback on disposable test host |
 | Signed Stable Windows EXE | Not released | Signing provenance, GUI / x64 / ARM64 production QA |
@@ -42,7 +43,7 @@ On a test machine with a copy of the project branch, run the following commands 
     sudo python3 linux/relay-health.py --smtp-port 46500
     sudo python3 linux/audit-sidecar-auth-archives.py
 
-Inspect all non-success codes. A SELinux smtp_port_t mapping and present socket labels do NOT mean a policy actually authorizes access. On Enforcing machines, collect a redacted AVC report and verify permissions on a disposable test host with approved policy changes. Automatic SMTP AUTH installation remains blocked on unverified RHEL Enforcing/Permissive/unknown modes.
+Inspect all non-success codes. The read-only accepted-domain DNS action inspects public MX, SPF, DKIM selector CNAME and DMARC status without exposing raw TXT data or changing DNS; a matching MX/SPF is NOT Exchange tenant authorization. A SELinux smtp_port_t mapping and present socket labels do NOT mean a policy actually authorizes access. On Enforcing machines, collect a redacted AVC report and verify permissions on a disposable test host with approved policy changes. Automatic SMTP AUTH installation remains blocked on unverified RHEL Enforcing/Permissive/unknown modes.
 
 
 The Wizard can optionally add a missing, unclaimed `smtp_port_t` TCP mapping on

@@ -19,6 +19,8 @@ class AdvancedWizardTests(unittest.TestCase):
         self.assertIn("BuildHealthAlertsBundle",gui)
         self.assertIn("EnableHealthAlertsAsync",gui)
         self.assertIn("DisableHealthAlertsAsync",gui)
+        self.assertIn("BuildM365DnsAuditBundle",gui)
+        self.assertIn("InspectM365DnsAsync",gui)
 
     def test_primary_install_and_preserve_diagram_are_not_hidden(self):
         gui=(ROOT/"src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")

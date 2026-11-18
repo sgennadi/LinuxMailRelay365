@@ -31,6 +31,8 @@ Microsoft 365 tenant**. The application remains an unsigned Draft preview.
 - Read-only RHEL-family SELinux Enforcing acceptance report: TCP port type,
   queue/auth socket and file/process labels. This **does NOT automatically
   install SELinux policy or remove existing Enforcing safety blocks**.
+- Optional read-only MX/SPF/DMARC/DKIM public DNS analysis (no raw TXT values,
+  no tenant authorization claims and no DNS mutations).
 - Microsoft 365 Direct Send/Connector preflight and **guarded outbound route
   switching on an already installed isolated Postfix**; no tenant-side
   Connector provisioning or verified real delivery. Direct Send is
