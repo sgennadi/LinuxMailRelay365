@@ -10,6 +10,7 @@ on_exit() {
   if [ "$result" -ne 0 ]; then
     echo '=== FAILURE: isolated Postfix smoke log ==='
     sudo journalctl -u "$UNIT" --no-pager -n 100 || true
+    sudo journalctl -u linuxmailrelay365-smtp-auth.service --no-pager -n 100 || true
     sudo postfix -c "$CONF" check || true
     sudo systemctl status "$UNIT" --no-pager || true
     echo '=== PRIMARY POSTFIX ==='
@@ -27,7 +28,7 @@ if command -v debconf-set-selections >/dev/null; then
     'postfix postfix/mailname string ci.example.test' | sudo debconf-set-selections
 fi
 sudo apt-get update -qq
-sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postfix iproute2 openssl
+sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postfix iproute2 openssl dovecot-core
 sudo postconf -e 'myhostname = relay-ci.example.test'
 sudo postfix check
 sudo systemctl start postfix
@@ -82,4 +83,74 @@ if sudo bash linux/install-preserve-postfix-sidecar.sh \
 fi
 sudo systemctl is-active --quiet "$UNIT"
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+echo '=== Configure private TLS and hashed SMTP AUTH fixture (no M365 mail sent) ==='
+FIXTURE=/etc/linuxmailrelay365-ci-smtp
+sudo install -d -m 0700 "$FIXTURE"
+sudo openssl req -x509 -newkey rsa:3072 -sha256 -nodes \
+  -keyout "$FIXTURE/privkey.pem" -out "$FIXTURE/fullchain.pem" \
+  -subj /CN=lmr365-ci.example.test \
+  -addext 'subjectAltName=DNS:lmr365-ci.example.test' -days 30 >/dev/null 2>&1
+sudo chmod 0600 "$FIXTURE/privkey.pem"
+sudo chmod 0644 "$FIXTURE/fullchain.pem"
+# Disposable CI-only fixture. Only the salted HASH is stored on disk.
+hash="$(openssl passwd -6 -salt ciRandomSalt ci-fixture-password)"
+printf 'lmr365-ci:{SHA512-CRYPT}%s\n' "$hash" |
+  sudo tee "$FIXTURE/smtp-users" >/dev/null
+sudo chmod 0600 "$FIXTURE/smtp-users"
+
+AUTH_SCRIPT=linux/enable-sidecar-auth-tls.sh
+AUTH_ARGS=(
+  --smtp-port "$PORT" --server-name lmr365-ci.example.test
+  --tls-cert "$FIXTURE/fullchain.pem"
+  --tls-key "$FIXTURE/privkey.pem"
+  --password-file "$FIXTURE/smtp-users"
+)
+echo '=== Reject incorrect custom SMTP port before any change ==='
+if sudo bash "$AUTH_SCRIPT" --check-only --smtp-port 2530 \
+   --server-name lmr365-ci.example.test \
+   --tls-cert "$FIXTURE/fullchain.pem" \
+   --tls-key "$FIXTURE/privkey.pem" --password-file "$FIXTURE/smtp-users"; then
+   echo 'AUTH TLS incorrectly accepted mismatching custom port' >&2; exit 1
+fi
+echo '=== Verify read-only TLS/AUTH preflight ==='
+sudo bash "$AUTH_SCRIPT" --check-only "${AUTH_ARGS[@]}"
+test "$(sudo postconf -c "$CONF" -h smtpd_sasl_auth_enable)" != yes
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+
+echo '=== Enable AUTH/TLS on isolated Postfix only ==='
+sudo bash "$AUTH_SCRIPT" --apply "${AUTH_ARGS[@]}" --confirm ENABLE_PRIVATE_AUTH_TLS
+sudo systemctl is-active --quiet linuxmailrelay365-smtp-auth.service
+test "$(sudo postconf -c "$CONF" -h smtpd_tls_security_level)" = encrypt
+test "$(sudo postconf -c "$CONF" -h smtpd_sasl_auth_enable)" = yes
+test "$(sudo postconf -c "$CONF" -h smtpd_relay_restrictions)" = 'permit_sasl_authenticated, reject'
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+test "$(sudo systemctl is-active postfix)" = "$primary_status"
+test "$(sudo postconf -h queue_directory)" = "$primary_queue"
+echo '=== Exercise SMTP AUTH after STARTTLS, without MAIL FROM/RCPT/DATA ==='
+python3 - "$PORT" <<'PY'
+import smtplib, ssl, sys
+port=int(sys.argv[1])
+with smtplib.SMTP('127.0.0.1', port, timeout=10) as smtp:
+    code,_=smtp.ehlo('fixture.local')
+    assert code==250 and smtp.has_extn('STARTTLS'), 'STARTTLS missing'
+    assert not smtp.has_extn('AUTH'), 'AUTH exposed before encryption'
+    code,_=smtp.docmd('MAIL FROM:<nobody@example.test>')
+    assert code != 250, 'Unsafe plaintext mail submission accepted'
+    smtp.starttls(context=ssl._create_unverified_context())
+    smtp.ehlo('fixture.local')
+    assert smtp.has_extn('AUTH'), 'AUTH missing after STARTTLS'
+    try:
+        smtp.login('lmr365-ci','not-the-ci-fixture-password')
+    except smtplib.SMTPAuthenticationError:
+        pass
+    else:
+        raise AssertionError('Wrong SMTP password was accepted')
+    smtp.login('lmr365-ci','ci-fixture-password')
+print('AUTH_TLS_REAL_SMTP_SMOKE=PASS')
+PY
+if sudo bash "$AUTH_SCRIPT" --apply "${AUTH_ARGS[@]}" --confirm ENABLE_PRIVATE_AUTH_TLS; then
+  echo 'AUTH TLS unexpectedly allowed silent overwrite' >&2; exit 1
+fi
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
 echo 'SIDECAR_REAL_LINUX_SMOKE=PASS'
+
