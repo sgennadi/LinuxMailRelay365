@@ -12,7 +12,7 @@
     <SelfContained>true</SelfContained>
     <PublishTrimmed>false</PublishTrimmed>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <Version>0.1.0-preview.14</Version>
+    <Version>0.1.0-preview.15</Version>
     <!-- Standalone builds work in a public repository. Reuse the user's private
          UniversalUpdater module when it has been restored locally. -->
     <UseSharedUpdater Condition="'$(UseSharedUpdater)' == '' and Exists('../../modules/UniversalUpdater/src/UniversalUpdater.Core/UniversalUpdater.Core.csproj')">true</UseSharedUpdater>
@@ -41,6 +41,7 @@
     <EmbeddedResource Include="../../linux/manage-rhel-selinux-port.py" LogicalName="LinuxMailRelay365.linux.rhel-selinux-port-manager.py" />
     <EmbeddedResource Include="../../linux/manage-sidecar-smtp-accounts.py" LogicalName="LinuxMailRelay365.linux.smtp-account-manager.py" />
     <EmbeddedResource Include="../../linux/relay-health.py" LogicalName="LinuxMailRelay365.linux.relay-health.py" />
+    <EmbeddedResource Include="../../linux/manage-health-alerts.py" LogicalName="LinuxMailRelay365.linux.health-alerts.py" />
     <EmbeddedResource Include="../../linux/install-health-monitor.sh" LogicalName="LinuxMailRelay365.linux.health-monitor-installer.sh" />
     <EmbeddedResource Include="../../linux/verify-reboot-continuity.py" LogicalName="LinuxMailRelay365.linux.reboot-continuity.py" />
     <EmbeddedResource Include="../../linux/m365-outbound-mode-preflight.py" LogicalName="LinuxMailRelay365.linux.outbound-mode-preflight.py" />

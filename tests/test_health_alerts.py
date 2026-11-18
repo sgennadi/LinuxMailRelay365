@@ -67,6 +67,7 @@ class HealthAlertContracts(unittest.TestCase):
             with patch.object(mod, "config", return_value=settings), \
                  patch.object(mod, "STATE", state), \
                  patch.object(mod, "ensure_state_dir"), \
+                 patch.object(mod, "owned_regular"), \
                  patch.object(mod, "health_snapshot", return_value=unhealthy), \
                  patch.object(mod, "webhook_send") as sender:
                 mod.dispatch(46500, now=1000)
@@ -76,6 +77,7 @@ class HealthAlertContracts(unittest.TestCase):
             with patch.object(mod, "config", return_value=settings), \
                  patch.object(mod, "STATE", state), \
                  patch.object(mod, "ensure_state_dir"), \
+                 patch.object(mod, "owned_regular"), \
                  patch.object(mod, "health_snapshot", return_value=healthy), \
                  patch.object(mod, "webhook_send") as sender:
                 mod.dispatch(46500, now=1200)

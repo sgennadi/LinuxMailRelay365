@@ -27,6 +27,7 @@ internal static class EmbeddedAssets
     internal static string PublicSmtpManager => Text("LinuxMailRelay365.linux.public-smtp-manager.py");
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
     internal static string RelayHealth => Text("LinuxMailRelay365.linux.relay-health.py");
+    internal static string HealthAlerts => Text("LinuxMailRelay365.linux.health-alerts.py");
     internal static string HealthMonitorInstaller => Text("LinuxMailRelay365.linux.health-monitor-installer.sh");
     internal static string RebootContinuity => Text("LinuxMailRelay365.linux.reboot-continuity.py");
     internal static string OutboundModePreflight => Text("LinuxMailRelay365.linux.outbound-mode-preflight.py");
@@ -456,6 +457,38 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/relay-health.py\" <<'LMR365_HEALTH_PROBE'\n" +
                Encode(RelayHealth) + "\nLMR365_HEALTH_PROBE\n" +
                "bash \"$work/install.sh\" " + args + "\n";
+    }
+
+    internal static string BuildHealthAlertsBundle(int port, string action, string? configSha = null)
+    {
+        if (port is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(port));
+        if (action is not ("check" or "enable" or "disable" or "status"))
+            throw new ArgumentException("Unsupported health alert operation.");
+        if (action == "enable")
+        {
+            if (configSha is null || !Regex.IsMatch(configSha, @"\A[a-f0-9]{64}\z"))
+                throw new ArgumentException("Reviewed webhook configuration SHA-256 required.");
+        }
+        else if (configSha is not null)
+            throw new ArgumentException("Unexpected webhook configuration hash.");
+        string operation = action switch
+        {
+            "enable" => "--enable", "disable" => "--disable",
+            "status" => "--status", _ => "--check-only"
+        };
+        string args = operation + " --smtp-port " + port;
+        if (action == "enable")
+            args += " --expect-config-sha256 " + configSha +
+                    " --confirm ENABLE_SMTP_HEALTH_WEBHOOK";
+        if (action == "disable")
+            args += " --confirm DISABLE_SMTP_HEALTH_WEBHOOK";
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-health-alerts.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/health-alerts.py\" <<'LMR365_HEALTH_ALERTS'\n" +
+               Encode(HealthAlerts) + "\nLMR365_HEALTH_ALERTS\n" +
+               "python3 \"$work/health-alerts.py\" " + args + "\n";
     }
 
     internal static string BuildRelayHealthBundle(int selectedPort)
