@@ -51,7 +51,7 @@ try:
     for cidr in cidrs:
         net = ipaddress.ip_network(cidr, strict=True)
         if not isinstance(net, ipaddress.IPv4Network) or not any(
-                net.subnet_of(p) for p in private):
+                (net.network_address in p and net.broadcast_address in p) for p in private):
             raise ValueError('Non-RFC1918 CIDR is not allowed')
 except ValueError as exc:
     sys.stderr.write('NETWORK_POLICY=invalid (' + str(exc) + ')\n')
