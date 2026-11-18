@@ -398,6 +398,8 @@ PY
 
 echo '=== Real independent Postfix + Dovecot AUTH/TLS scoped recovery ==='
 bash tests/smoke_scoped_auth_recovery.sh "$PORT" "$FIXTURE/next-cert.pem"
+echo '=== Real isolated multi-sender From Milter and guard-gated Connector ==='
+bash tests/smoke_from_owner_milter.sh "$PORT"
 
 echo '=== Verify tamper-guarded private AUTH/TLS restore preflight ==='
 RESTORE_SCRIPT=linux/restore-sidecar-auth-tls.sh
