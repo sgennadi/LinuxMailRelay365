@@ -625,7 +625,7 @@ server before using Force Replace.
 The Wizard supports **XOAUTH2 fixed mailbox** and a separate guarded
 **Advanced SMTP Direct Send/Connector outbound route** on an already installed
 isolated Postfix. It stores nonsecret per-host preferences, but tenant
-domain/Connector approval checkboxes are never persisted. Multiple independent sender identities are not yet mapped per SMTP account. Connector-only accepted-domain sender preservation and subdomain masquerade have their own reviewed Apply and Restore. The app never provisions tenant Connectors or changes MX,
+domain/Connector approval checkboxes are never persisted. Connector-only accepted-domain sender preservation and subdomain masquerade have a reviewed per-SMTP-login envelope MAIL FROM ownership map, SHA-verified Apply and separate Restore. RFC5322 From headers are NOT validated by this Postfix map; a reviewed Milter or fixed-header policy is required. The app never provisions tenant Connectors or changes MX,
 SPF, DKIM, DMARC or Exchange accepted domains automatically.
 
 **Safe default for existing Linux:** Preserve Existing Mail is ON. Before
@@ -643,8 +643,9 @@ mailbox. No extra Postfix domain masquerading is required. The guarded private
 **Connector route** configures EOP TCP25 with fixed sender, accepted-domain
 preservation or restricted subdomain masquerade. It requires an already
 verified tenant Connector and explicit attestation, **not** automatic
-Exchange authorization. Per-SMTP-account sender ownership is not enforced;
-arbitrary domains and existing queued messages are not rewritten.
+Exchange authorization. Per-SMTP-account MAIL FROM ownership is checked against a
+root-only Linux source file and existing Dovecot logins. RFC5322 From header
+identity and Exchange Online Send As permissions remain separate checks.
 
 ## Security Center: precisely what works today
 
@@ -728,6 +729,22 @@ In Advanced SMTP, the isolated existing XOAUTH2 sidecar route can be switched to
 
 This is not an Exchange Online Send As grant, does not validate header ownership in Microsoft 365 and does not change an existing primary Postfix or queue. Automatic route changes require an empty isolated queue, reviewed SHA-256, explicit tenant attestation and an archived rollback. Public Internet SMTP and unverified RHEL SELinux Enforcing installation remain intentionally blocked.
 
+
+
+For non-fixed Connector sender modes (preserve domain or subdomain masquerade),
+prepare a root:root 0600 Linux-only sender owner file with 1–64 lines,
+using exactly one address and one existing Dovecot SMTP login per line.
+For example: alerts@example.org smtp-app01
+The Wizard reads only the absolute path; the root-side route manager verifies
+SMTP AUTH + mandatory STARTTLS, that each login exists, every address is
+within the tenant-accepted domain or an approved subdomain, and the file's
+SHA-256 has not changed since Preview. Postfix enforces
+reject_authenticated_sender_login_mismatch BEFORE the domain allowlist;
+a successful domain allowlist must never bypass sender-login ownership.
+This checks envelope MAIL FROM; it does NOT compare RFC5322 From headers.
+Use a separately reviewed header-enforcement Milter or fixed sender policy
+where header-level anti-spoofing is required. All client applications need
+an individual authorization and live delivery test.
 
 ### RHEL-family custom SMTP port label (Preview 13)
 

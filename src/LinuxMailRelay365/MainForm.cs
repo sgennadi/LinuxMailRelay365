@@ -1702,6 +1702,15 @@ internal sealed class MainForm : Form
         if (!preview.StdOut.Contains("EOP_ROUTE_PREFLIGHT=ready", StringComparison.Ordinal) ||
             !match.Success)
             throw new InvalidOperationException("EOP route preflight not ready. No changes were made.");
+        string? senderOwnerSha = null;
+        if (opt.Mode == "connector" && opt.SenderPolicy != "fixed-mailbox")
+        {
+            var owner = System.Text.RegularExpressions.Regex.Match(preview.StdOut,
+                @"(?m)^EOP_ROUTE_OWNER_FILE_SHA256=([a-f0-9]{64})\r?$");
+            if (!owner.Success)
+                throw new InvalidDataException("Sender ownership map was not verified at preview; no route changed.");
+            senderOwnerSha = owner.Groups[1].Value;
+        }
         // Verify real EOP MX TLS before any route is switched. The preflight
         // neither authenticates nor sends a message.
         var network = await SshRemote.RunRootScriptAsync(endpoint,
@@ -1730,7 +1739,8 @@ internal sealed class MainForm : Form
                 opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key,
                 expectedMainSha: match.Groups[1].Value, connectorApproved:
                     opt.Mode == "connector" && connectorApproved.Checked,
-                senderPolicy: opt.SenderPolicy, senderOwnerFile: opt.SenderOwnerFile),
+                senderPolicy: opt.SenderPolicy, senderOwnerFile: opt.SenderOwnerFile,
+                expectedOwnerSha: senderOwnerSha),
             TimeSpan.FromMinutes(3));
         applied.EnsureSuccess();
         if (!applied.StdOut.Contains("EOP_ROUTE_APPLIED=yes", StringComparison.Ordinal))

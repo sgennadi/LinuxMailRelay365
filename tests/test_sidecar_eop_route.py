@@ -28,7 +28,7 @@ def opts(mode="direct-send", port=46500, sender="alerts@example.org",
         smtp_port=port, mode=mode, mx_host="example-org.mail.protection.outlook.com",
         sender=sender, recipient_domain=recipients if recipients is not None else ["example.org"],
         public_ip=public_ip, tls_cert=cert, tls_key=key,
-        expect_main_sha256=expected, confirm=confirm,
+        expect_main_sha256=expected, expect_owner_sha256="", confirm=confirm,
         connector_attestation=attestation,
         sender_policy="fixed-mailbox", sender_owner_file="")
 
@@ -82,6 +82,15 @@ class EopRouteContracts(unittest.TestCase):
         self.assertEqual(policy["sender_canonical_maps"], "")
         self.assertIn("reject_authenticated_sender_login_mismatch", policy["smtpd_sender_restrictions"])
         self.assertIn("eop-sender-owners.regexp", policy["smtpd_sender_login_maps"])
+        apply_args = opts(mode="connector", public_ip="8.8.8.8", apply=True,
+                          expected="a"*64, confirm="DEPLOY_PRIVATE_EOP_ROUTE",
+                          attestation="TENANT_CONNECTOR_CHECKED")
+        apply_args.sender_policy = "preserve-domain"
+        apply_args.sender_owner_file = "/root/owners.txt"
+        with self.assertRaisesRegex(eop.Refused, "reviewed_sender_owner_sha256_required"):
+            eop.validate(apply_args)
+        apply_args.expect_owner_sha256 = "c"*64
+        eop.validate(apply_args)
         a.sender_policy = "masquerade"
         eop.validate(a)
         sender, canonical, _ = eop.policy_maps(a)
@@ -190,6 +199,7 @@ class EopRouteContracts(unittest.TestCase):
         self.assertIn("BuildEopRouteBundle", embedded)
         self.assertIn("--sender-policy", embedded)
         self.assertIn("sender-owner-file", SCRIPT.read_text(encoding="utf-8"))
+        self.assertIn("expectedOwnerSha: senderOwnerSha", ui)
         self.assertIn("reject_authenticated_sender_login_mismatch", SCRIPT.read_text(encoding="utf-8"))
         self.assertIn("senderPolicy: opt.SenderPolicy", ui)
         self.assertIn("preserve-domain", ui)

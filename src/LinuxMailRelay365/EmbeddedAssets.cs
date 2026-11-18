@@ -331,7 +331,8 @@ internal static class EmbeddedAssets
         string fixedSender, string acceptedDomain, string publicIp, string certPath,
         string keyPath, string? expectedMainSha = null, bool restore = false,
         bool status = false, bool connectorApproved = false,
-        string senderPolicy = "fixed-mailbox", string senderOwnerFile = "")
+        string senderPolicy = "fixed-mailbox", string senderOwnerFile = "",
+        string? expectedOwnerSha = null)
     {
         if (port is < 1024 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
@@ -374,12 +375,15 @@ internal static class EmbeddedAssets
                     throw new ArgumentException("Invalid absolute Linux certificate path.");
             if (senderPolicy != "fixed-mailbox" && mode == "connector")
             {
+                if (expectedMainSha is not null &&
+                    (expectedOwnerSha is null || !Regex.IsMatch(expectedOwnerSha, @"\A[a-f0-9]{64}\z")))
+                    throw new ArgumentException("Reviewed sender-owner SHA-256 required for Apply.");
                 if (string.IsNullOrEmpty(senderOwnerFile) || senderOwnerFile.Length > 255 ||
                     !Regex.IsMatch(senderOwnerFile, @"\A/[A-Za-z0-9_./-]{1,255}\z") ||
                     senderOwnerFile.Split('/').Contains(".."))
                     throw new ArgumentException("Connector sender preservation needs Linux root-owned sender-login map path.");
             }
-            else if (!string.IsNullOrEmpty(senderOwnerFile))
+            else if (!string.IsNullOrEmpty(senderOwnerFile) || expectedOwnerSha is not null)
                 throw new ArgumentException("Sender login map is for Connector preserve/masquerade only.");
             if (mode == "connector" && expectedMainSha is not null && !connectorApproved)
                 throw new InvalidOperationException("Confirm the existing tenant Connector first.");
@@ -389,6 +393,7 @@ internal static class EmbeddedAssets
                    " --recipient-domain " + acceptedDomain +
                    " --sender-policy " + senderPolicy;
             if (!string.IsNullOrEmpty(senderOwnerFile)) args += " --sender-owner-file " + senderOwnerFile;
+            if (expectedOwnerSha is not null) args += " --expect-owner-sha256 " + expectedOwnerSha;
             if (!string.IsNullOrEmpty(publicIp)) args += " --public-ip " + publicIp;
             if (!string.IsNullOrEmpty(certPath)) args += " --tls-cert " + certPath;
             if (!string.IsNullOrEmpty(keyPath)) args += " --tls-key " + keyPath;
