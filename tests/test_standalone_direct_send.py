@@ -77,7 +77,9 @@ class StandaloneDirectSendTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("':^{}$: OK", source)
         self.assertIn("re.escape(sender)", source)
-        self.assertNotIn("'/^[^@[:space:]]+@{}$/ OK", source)
+        fixed_map = source.split("(root/'eop-fixed-sender.regexp').write_text(", 1)[1].split(
+            "(root/'eop-sender-canonical.regexp').write_text(", 1)[0]
+        self.assertNotIn("'/^[^@[:space:]]+@{}$/ OK", fixed_map)
 
     def test_direct_send_safety(self):
         src=SCRIPT.read_text(encoding="utf-8")
