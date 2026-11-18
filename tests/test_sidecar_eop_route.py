@@ -19,9 +19,10 @@ spec.loader.exec_module(eop)
 
 def opts(mode="direct-send", port=46500, sender="alerts@example.org",
          recipients=None, public_ip="", cert="", key="", apply=False,
-         restore=False, expected="", confirm="", attestation=""):
+         restore=False, status=False, expected="", confirm="", attestation=""):
     return SimpleNamespace(
-        check_only=not apply and not restore, apply=apply, restore=restore,
+        check_only=not apply and not restore and not status, apply=apply, restore=restore,
+        status=status,
         smtp_port=port, mode=mode, mx_host="example-org.mail.protection.outlook.com",
         sender=sender, recipient_domain=recipients if recipients is not None else ["example.org"],
         public_ip=public_ip, tls_cert=cert, tls_key=key,
@@ -112,6 +113,15 @@ class EopRouteContracts(unittest.TestCase):
         b.expect_main_sha256 = "b"*64
         b.confirm = "RESTORE_PRIVATE_EOP_ROUTE"
         eop.validate(b)
+
+    def test_read_only_status_has_no_route_configuration_arguments(self):
+        args = opts(mode=None, sender="", recipients=[], status=True)
+        args.mx_host = ""
+        eop.validate(args)
+        self.assertEqual(args.check_only, False)
+        self.assertTrue(args.status)
+        self.assertIn("--status", SCRIPT.read_text(encoding="utf-8"))
+        self.assertIn("EOP_ROUTE_CURRENT_MAIN_SHA256", SCRIPT.read_text(encoding="utf-8"))
 
     def test_cli_invalid_port_and_no_credentials_or_mail_submission(self):
         for port in ("25", "587", "1023", "65536", "0"):
