@@ -174,6 +174,43 @@ class ScopedRecoveryTests(unittest.TestCase):
             mod.restore(backup_id, expected)
         self.assertTrue((self.queue / "maildrop" / "queue-message").exists())
 
+    def test_primary_queue_and_public_listener_are_never_accepted(self):
+        self.patch_runtime()
+        backup_id = mod.backup()
+        expected, _ = mod.current_state()
+        cases = [
+            ("queue_directory", "/var/spool/postfix"),
+            ("data_directory", "/var/lib/postfix"),
+            ("inet_interfaces", "all"),
+            ("inet_interfaces", "127.0.0.1, 8.8.8.8"),
+        ]
+        for name, value in cases:
+            with self.subTest(parameter=name, value=value):
+                def bad_command(argv, **kwargs):
+                    if argv[0] == "postconf" and "-h" in argv and argv[-1] == name:
+                        return value
+                    return self.fake_command(argv, **kwargs)
+                with patch.object(mod, "command", side_effect=bad_command):
+                    with self.assertRaises(mod.Refused):
+                        mod.restore(backup_id, expected)
+                self.assertEqual(len(list(mod.BASE.glob("20*"))), 1)
+
+    def test_multiple_postfix_smtp_listeners_fail_offline_validation(self):
+        self.patch_runtime()
+        backup_id = mod.backup()
+        (self.conf / "main.cf").write_text("myhostname = modified.example.org\n")
+        expected, _ = mod.current_state()
+        def command(argv, **kwargs):
+            if argv[0] == "postconf" and "-M" in argv:
+                return "46500 inet n - n - - smtpd\n25 inet n - n - - smtpd"
+            return self.fake_command(argv, **kwargs)
+        with patch.object(mod, "command", side_effect=command):
+            with self.assertRaises(mod.Refused):
+                mod.restore(backup_id, expected)
+        self.assertEqual((self.conf / "main.cf").read_text(),
+                         "myhostname = modified.example.org\n")
+        self.assertEqual(len(list(mod.BASE.glob("20*"))), 2)
+
     def test_invalid_paths_and_unauthorized_roots(self):
         for name in ("etc/postfix/main.cf", "../../etc/passwd",
                      "etc/linuxmailrelay365/../postfix/main.cf",
