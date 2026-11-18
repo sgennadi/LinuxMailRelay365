@@ -63,6 +63,26 @@ class ForeignMtaPreservationTests(unittest.TestCase):
             with self.assertRaises(mod.Refused):
                 mod.service_snapshot("exim")
 
+    def test_exim_systemd_aliases_only_allowed_if_main_pid_identical(self):
+        class R:
+            def __init__(self, pid):
+                self.returncode = 0
+                self.stdout = pid + "\n"
+        states = {
+            "postfix.service": "inactive",
+            "exim4.service": "active",
+            "exim.service": "active",
+            "sendmail.service": "inactive",
+        }
+        with mock.patch.object(mod, "unit_status", side_effect=lambda k: states[k]), \
+             mock.patch.object(mod, "command", side_effect=[R("777"), R("777")]):
+            self.assertEqual(mod.service_snapshot("exim"),
+                             ("exim4.service", "777"))
+        with mock.patch.object(mod, "unit_status", side_effect=lambda k: states[k]), \
+             mock.patch.object(mod, "command", side_effect=[R("777"), R("888")]):
+            with self.assertRaises(mod.Refused):
+                mod.service_snapshot("exim")
+
     def test_pre_and_post_mta_fingerprint_detects_changes(self):
         good = "a" * 64
         with mock.patch.object(mod.os, "geteuid", return_value=0), \
