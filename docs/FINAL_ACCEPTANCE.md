@@ -12,7 +12,7 @@
 | SMTP certificate rotation and archived rollback | Preview | Live certificate renewal and client trust |
 | Read-only queue/service/cert health | Preview | Real queue, disk and expiry thresholds |
 | Signed x64/ARM64 Stable release gate | Manual Authenticode trusted signer + pinned publisher + arch/version verification | Real signing credentials, signed binary QA and tenant acceptance needed |
-| Sendmail/Exim/Postfix coexistence audit | Read-only active-service inventory with unknown/mixed MTA fail-closed and owner-unattributed standard SMTP sockets | Mixed-MTA systemd + package coexistence + isolated Postfix live tests required |
+| Sendmail/Exim/Postfix coexistence guard | Read-only MTA inventory plus explicit fixed-sender Direct Send/Connector install path with preinstalled Postfix, FQDN, native service PID/config/port-25 SHA baseline and post-start rollback guard | Live Exim/Sendmail + Postfix package/service/queue/reboot tests on each target OS; RHEL enforcing still blocked |
 | Strong per-app SMTP password generator | Root-only SHA512-CRYPT files and one-time masked GUI reveal | Verify actual Dovecot login, clipboard handling and client configuration |
 | RHEL SELinux Enforcing local SMTP STARTTLS/AUTH probe | Read-only host runtime handshake and label/status checks | Successful SASL login, queue I/O, AVC audit, reboot and M365 delivery still needed |
 | Opt-in 15-min local journald systemd timer | Preview | Verify after real OS reboot |
@@ -44,11 +44,32 @@ On a test machine with a copy of the project branch, run the following commands 
 
     python3 linux/audit-existing-smtp.py
     sudo python3 linux/mta-coexistence-doctor.py --smtp-port 46500
+    python3 linux/guard-foreign-mta.py --self-test
     sudo python3 linux/platform-compat.py --smtp-port 46500
     sudo python3 linux/rhel-selinux-doctor.py --smtp-port 46500
     sudo python3 linux/manage-rhel-selinux-port.py --check-only --smtp-port 46500
     sudo python3 linux/installed-sidecar-audit.py --smtp-port 46500
     sudo python3 linux/recovery-scope-audit.py --smtp-port 46500
+
+For a **disposable VM whose active primary MTA is Exim or Sendmail**,
+review the root-only inventory output and separate sidecar FQDN. Only if Postfix
+binaries are *already installed*, verify the native service and TCP 25 baseline
+under root (no configuration is changed by this command):
+
+    sudo python3 linux/guard-foreign-mta.py --mta exim --hostname relay.example.org
+
+Then run the private fixed-sender Direct Send or Connector installer with
+`--preserve-primary-mta exim`, `--sidecar-hostname relay.example.org`,
+and `--confirm-preserve-primary-mta PRESERVE_EXISTING_EXIM` (or the Sendmail
+equivalent), plus the usual domain/Connector approvals. The installer checks
+the primary MTA fingerprint again after starting only the independent sidecar.
+On guard failure it attempts removal of the new sidecar service/config, but
+preserves its queue for forensic inspection. Verify separately that the
+original MTA PID, TCP25 listener, queue state, active routing and DNS MX are
+unchanged; send a real pre/post test through the existing MTA and a separate
+client test through the new private port. Unknown or mixed active MTA state
+must block the operation. This has **not** been verified on a real
+Exim/Sendmail server, and enforcing SELinux is still blocked.
 
 The optional real SMTP client-authentication acceptance test must run at a
 trusted interactive terminal on an authorized TEST host (never in automation
