@@ -320,6 +320,22 @@ sudo python3 "$ACCOUNT" --smtp-port "$PORT" --operation rotate --username lmr365
 sudo test -d /var/lib/linuxmailrelay365-smtp-account-recovery
 sudo rm -f /tmp/lmr365-hash-sha512.tmp
 echo 'SMTP_ACCOUNT_REAL_ROTATION=PASS'
+python3 - "$PORT" <<'PY'
+import smtplib, ssl, sys
+with smtplib.SMTP('127.0.0.1', int(sys.argv[1]), timeout=10) as c:
+    c.ehlo('password-rotation-check.invalid')
+    c.starttls(context=ssl._create_unverified_context())
+    c.ehlo('password-rotation-check.invalid')
+    try:
+        c.login('lmr365-ci-b','ci-fixture-password-2')
+    except smtplib.SMTPAuthenticationError:
+        pass
+    else:
+        raise AssertionError('Former credential still accepted after rotation')
+    c.login('lmr365-ci-b','disposable-test-credential')
+print('SMTP_ACCOUNT_NEW_PASSWORD_ONLY=PASS')
+PY
+
 echo '=== Verify tamper-guarded private AUTH/TLS restore preflight ==='
 RESTORE_SCRIPT=linux/restore-sidecar-auth-tls.sh
 restore_preview="$(sudo bash "$RESTORE_SCRIPT" --check-only --smtp-port "$PORT")"
