@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.10 — source and GitHub Actions builds; not a verified production release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.11 — source and GitHub Actions builds; not a verified production release.**
 
 ## Intended workflow
 
@@ -124,6 +124,23 @@ mandatory TLS with a valid server certificate, anti-abuse rate limits,
 per-account controls, monitoring, and revocation; a warning acknowledgment
 alone is **not a technical security control**. This preview does not
 implement or claim those capabilities.
+
+## Real Ubuntu/Postfix sidecar smoke test (Preview 11)
+
+GitHub Actions now provisions an **ephemeral Ubuntu runner** with real Postfix,
+creates a temporary certificate (no Entra tenant access), and starts an
+**independent Postfix instance on TCP 2529**. It verifies an actual SMTP
+greeting, separate queue/data directories, unchanged existing
+`/etc/postfix/main.cf` and `master.cf`, unchanged primary service
+and queue path, and rejects an attempt to reinstall the already-present
+secondary instance. The test never submits a message to Microsoft 365
+or contacts any mailbox; it verifies the local SMTP listener only.
+
+CI must report the `ubuntu-postfix-smoke` job as passing before this
+functionality can be considered locally integration-tested. This
+**does not confirm real OAuth2 app authorization, Microsoft 365 SMTP
+submission, recipient delivery, multi-distribution compatibility,
+certificate rotation, or live production readiness**.
 
 ## Preserve Existing Mail: isolated Postfix channel (Preview 9)
 
