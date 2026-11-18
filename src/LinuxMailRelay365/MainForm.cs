@@ -476,6 +476,10 @@ internal sealed class MainForm : Form
                                   "Check SMTP health, queue and certificate expiry (read-only)",
                                   "בדיקת SMTP, תור ואישורים"),
                                   InspectRelayHealthAsync, false, "activity", "smtp-health");
+                AddAction(page, T("Включить мониторинг SMTP каждые 15 минут (journald)...",
+                                  "Enable local SMTP health timer every 15 minutes...",
+                                  "הפעלת ניטור SMTP כל 15 דקות"),
+                                  InstallHealthMonitorAsync, false, "activity", "health-monitor");
                 AddAction(page, T("Открыть порт только доверенным сетям...",
                                   "Open SMTP port for trusted networks only...",
                                   "פתיחת יציאה לרשתות מהימנות בלבד"),
@@ -1244,6 +1248,37 @@ internal sealed class MainForm : Form
             throw new InvalidDataException("SMTP account update did not confirm success; inspect private service logs.");
         WriteLine(applied.StdOut);
         WriteLine("Update/revoke the affected application's SMTP credentials. No Microsoft 365 mailbox or primary Postfix changes were requested.");
+    }
+
+    private async Task InstallHealthMonitorAsync()
+    {
+        var endpoint = Endpoint();
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("Install isolated Postfix before enabling its health monitor.");
+        int installedPort = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) || selectedPort != installedPort)
+            throw new InvalidDataException("The selected custom port must match installed SMTP TCP " + installedPort + ".");
+        var preview = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHealthMonitorBundle(installedPort, false), TimeSpan.FromSeconds(60));
+        preview.EnsureSuccess();
+        if (!preview.StdOut.Contains("HEALTH_TIMER_PREFLIGHT=ready", StringComparison.Ordinal))
+            throw new InvalidOperationException("Local journaled SMTP monitor preflight did not confirm readiness.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Local Health Monitoring",
+            T("Будет добавлен только отдельный systemd timer для SMTP на TCP ",
+              "Install only a dedicated 15-minute systemd health timer for TCP ",
+              "התקנת ניטור SMTP בפורט ") + installedPort +
+            "\n" + T("Результаты сохраняются в локальном journald, внешние уведомления пока не настроены. Основной Postfix и firewall не меняются.",
+                       "Reports are written to local journald only; external notifications are NOT configured. No primary Postfix or firewall changes.",
+                       "דוחות יישמרו ביומן Linux בלבד."),
+            "ENABLE SMTP MONITOR")) return;
+        var applied = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHealthMonitorBundle(installedPort, true), TimeSpan.FromSeconds(90));
+        applied.EnsureSuccess();
+        if (!applied.StdOut.Contains("HEALTH_TIMER_INSTALLED=yes", StringComparison.Ordinal))
+            throw new InvalidOperationException("Monitoring timer installation did not confirm success.");
+        WriteLine(applied.StdOut);
+        WriteLine("Local systemd timer installed. Use journalctl -u linuxmailrelay365-health.service; " +
+                  "integrate your monitoring platform separately for external alerts.");
     }
 
     private async Task CheckOutboundModeAsync()
