@@ -95,13 +95,14 @@ class HealthAlertContracts(unittest.TestCase):
                           "systemctl enable --now", "Set-TransportConfig"):
             self.assertNotIn(forbidden, src)
         proc = subprocess.run([sys.executable, str(SOURCE), "--enable",
-                               "--smtp-port", "46500"], capture_output=True,
-                              text=True, timeout=7)
+                               "--smtp-port", "46500"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True, timeout=7)
         self.assertEqual(proc.returncode, 2)
         self.assertIn("reviewed_sha_and_confirmation_required", proc.stdout)
         self.assertEqual(subprocess.run(
             [sys.executable, str(SOURCE), "--self-test"],
-            capture_output=True, text=True, timeout=7).returncode, 0)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=7).returncode, 0)
 
 
 if __name__ == "__main__":

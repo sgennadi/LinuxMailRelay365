@@ -16,6 +16,9 @@ class AdvancedWizardTests(unittest.TestCase):
         self.assertIn("if (advancedSmtpTools.Checked)",gui)
         self.assertIn("Show advanced SMTP operations and diagnostics",gui)
         self.assertIn("ShowAdvancedSmtpTools",routing)
+        self.assertIn("BuildHealthAlertsBundle",gui)
+        self.assertIn("EnableHealthAlertsAsync",gui)
+        self.assertIn("DisableHealthAlertsAsync",gui)
 
     def test_primary_install_and_preserve_diagram_are_not_hidden(self):
         gui=(ROOT/"src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")

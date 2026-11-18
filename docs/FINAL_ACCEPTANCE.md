@@ -11,7 +11,8 @@
 | Per-client salted hash Add/Rotate/Revoke | Preview | Live independent client/rollback exercise |
 | SMTP certificate rotation and archived rollback | Preview | Live certificate renewal and client trust |
 | Read-only queue/service/cert health | Preview | Real queue, disk and expiry thresholds |
-| Opt-in 15-min local journald systemd timer | Preview | Verify after OS reboot; external alerting not installed |
+| Opt-in 15-min local journald systemd timer | Preview | Verify after real OS reboot |
+| Optional HTTPS webhook health alerts | Preview 15, root-only Linux config | Live incident/recovery delivery, external TLS and receiver alert routing |
 | Root-only real reboot baseline and verification | Implemented | Controlled actual Linux reboot |
 | RHEL 8/9/10, Oracle, Rocky, Alma SELinux port/file/process context audit | Read-only | Real Enforcing process AVC allow/deny integration |
 | RHEL SELinux custom smtp_port_t label preparation and rollback | Implemented with reviewed SHA and explicit confirmation | Verify `semanage port` change/rollback on a real disposable enforcing host; not a full service acceptance |
@@ -67,7 +68,7 @@ The local TLS probe is not evidence that a Windows/client application trusts the
 
 ## 4. Health and real OS reboot
 
-The optional health monitor writes local anonymized status to journald every 15 minutes. It does NOT configure email/SMS/webhook alerts. Verify actual queue thresholds, disk headroom, service readiness and certificate alerts. Inspect:
+The optional health monitor writes local anonymized status to journald every 15 minutes. A separate opt-in HTTPS webhook mode sends anonymized aggregate incident/recovery events, but email/SMS and receiver routing are not provisioned. Verify actual queue thresholds, disk headroom, service readiness and certificate alerts. Inspect:
 
     sudo systemctl status linuxmailrelay365-sidecar.service
     sudo systemctl status linuxmailrelay365-smtp-auth.service

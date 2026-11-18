@@ -103,6 +103,12 @@ def validate_config(raw):
             raise Refused("public_https_fqdn_required")
         if not parsed.path.startswith("/") or any(ord(c) < 32 for c in url):
             raise Refused("webhook_url_invalid")
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            raise Refused("public_https_fqdn_required")
     except (ValueError, AttributeError):
         raise Refused("webhook_url_invalid")
     timeout = raw["timeout_seconds"]

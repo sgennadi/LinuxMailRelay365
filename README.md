@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.14 — source and GitHub Actions builds; not a verified production release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.15 — source and GitHub Actions builds; not a verified production release.**
 
 ## New functionality in development branch (not Stable)
 
@@ -22,7 +22,9 @@ Microsoft 365 tenant**. The application remains an unsigned Draft preview.
   Linux trust is not a substitute for actual client trust validation.**
 - Read-only queue/deferred/oldest-age, disk and certificate-expiry health
   diagnostics; optional 15-minute systemd timer writes to local journald only.
-  External alert delivery is not installed.
+  Opt-in HTTPS webhook alerts are available separately on the existing local
+  timer, with a root-only Linux configuration and no host or message identities.
+  Real notification delivery has not been independently accepted.
 - Root-only pre-reboot configuration snapshot and an explicit post-reboot
   service/configuration comparison that refuses to pass without a changed
   kernel boot ID. GitHub Actions stop/start tests are not a real OS reboot.
@@ -494,6 +496,40 @@ the SHA-guarded private Postfix configuration, retaining a root-only
 archive for each activation. AUTH/TLS downgrade, certificate rotation and
 EOP re-routing refuse to operate while public submission remains active.
 **No Stable release is implied.**
+
+## Optional HTTPS health notifications (Preview 15)
+
+The 15-minute systemd health timer remains local by default. A separate,
+opt-in HTTPS webhook adds confidential alert delivery without altering
+the primary Postfix, mail queue, NAT or firewall. A root-owned 0600
+configuration file at /etc/linuxmailrelay365/health-alerts.json contains
+the webhook URL. Never type a real webhook URL, token or secret into
+the Windows Wizard.
+
+Example configuration for a NONFUNCTIONAL documentation endpoint:
+
+```json
+{
+  "url": "https://hooks.example.org/health-event",
+  "timeout_seconds": 8,
+  "repeat_hours": 24
+}
+```
+
+After securely creating this file on Linux, choose Advanced SMTP > Enable
+HTTPS SMTP health alerts. The Wizard previews SHA-256 and requires typed
+confirmation. It adds a reversible systemd ExecStartPost drop-in to the
+existing timer and does not send anything during preview. Only aggregate
+severity, alert codes and numeric queue/disk/certificate metrics are sent,
+not hostnames, addresses, credentials or message bodies. Incident/recovery
+transitions are deduplicated, with a configurable periodic reminder.
+
+The sender checks all DNS addresses are public, pins the HTTPS connection
+to an approved IP, verifies original-hostname SNI/CA, ignores proxies and
+refuses redirects. It never prints the private webhook URL or response body.
+Disabling alerts removes only the owned drop-in; local monitoring continues.
+The root-only URL file is retained for administrator review. Live incident
+delivery and receiver routing must still be tested before production.
 
 ## Real Ubuntu/Postfix sidecar smoke test (Preview 11)
 
