@@ -94,7 +94,7 @@ def audit(root=ARCHIVE_ROOT, uid=0):
         "AUTH_TLS_ARCHIVE_STATUS": "not_created",
         "AUTH_TLS_ARCHIVE_COUNT": "0",
         "AUTH_TLS_ARCHIVE_POLICY": "manual_retention_required",
-        "AUTH_TLS_ARCHIVE_PRIVATE_CONTENT_EXPOSED": "no",
+        "AUTH_TLS_ARCHIVE_SECRET_FILE_CONTENTS_READ": "no",
         "MICROSOFT365_DELIVERY_VERIFIED": "no",
         "CHANGES_APPLIED": "no",
     }
