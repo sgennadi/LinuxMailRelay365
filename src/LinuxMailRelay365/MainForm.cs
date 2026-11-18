@@ -193,6 +193,7 @@ internal sealed class MainForm : Form
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
+        privateAuthDns.Leave += (_, _) => SaveRoutingChoices();
         advancedSmtpTools.CheckedChanged += (_, _) =>
         {
             if (routingLoading || busy || step != 3) return;
@@ -962,6 +963,7 @@ internal sealed class MainForm : Form
             connectorApproved.Checked = false;
             acceptedDomainApproved.Checked = false;
             smtpListenIp.Text = routingPlan.ListenIpv4;
+            privateAuthDns.Text = routingPlan.PrivateSmtpServerName;
             smtpTrustedCidrs.Text = routingPlan.TrustedCidrs;
             isolatedSmtpPort.Text = routingPlan.SidecarPort.ToString();
             publicInternetRequested.Checked = routingPlan.PublicInternetRequested;
@@ -996,6 +998,7 @@ internal sealed class MainForm : Form
         routingPlan.EopCertificatePath = outboundCertPath.Text.Trim();
         routingPlan.EopKeyPath = outboundCertKeyPath.Text.Trim();
         routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
+        routingPlan.PrivateSmtpServerName = privateAuthDns.Text.Trim();
         routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
         if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int port))
             routingPlan.SidecarPort = port;

@@ -20,10 +20,11 @@ internal sealed class MailRoutingPlan
     public string EopCertificatePath { get; set; } = "";
     public string EopKeyPath { get; set; } = "";
     public string ListenIpv4 { get; set; } = "";
+    // Host-scoped SMTP TLS certificate identity, never secret material.
+    public string PrivateSmtpServerName { get; set; } = "";
     public string TrustedCidrs { get; set; } = "";
     public int SidecarPort { get; set; } = 2525;
-    // A saved REQUEST, not permission to bind to the public internet.
-    // Installing or opening a public SMTP listener is not implemented.
+    // Saved REQUEST only; a separate reviewed action enables public SMTP.
     public bool PublicInternetRequested { get; set; } = false;
     // UI disclosure preference only; never grants SMTP privileges.
     public bool ShowAdvancedSmtpTools { get; set; } = false;
@@ -95,6 +96,12 @@ internal static class MailRoutingPlanStore
                      state.EopCertificatePath, state.EopKeyPath }
             .Any(value => value.Length > 256 || value.Contains('\n') || value.Contains('\r')))
             throw new InvalidDataException("EOP routing option exceeds safe length.");
+        if (state.PrivateSmtpServerName.Length > 253 ||
+            (state.PrivateSmtpServerName.Length > 0 &&
+             !Regex.IsMatch(state.PrivateSmtpServerName,
+                @"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)))
+            throw new InvalidDataException("SMTP TLS server name must be a valid DNS name.");
         if (state.VerifiedDomain.Length > 253 ||
             (state.VerifiedDomain.Length > 0 &&
              !Regex.IsMatch(state.VerifiedDomain, @"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
@@ -149,8 +156,12 @@ internal static class MailRoutingPlanStore
             if (defaults.Transport != "oauth2" || defaults.SenderPolicy != "fixed-mailbox" ||
                 !defaults.PreserveExistingMail || defaults.SidecarPort != 2525 ||
                 defaults.PublicInternetRequested || defaults.ShowAdvancedSmtpTools) return false;
-            Save(folder, b, new MailRoutingPlan { PublicInternetRequested = true, ShowAdvancedSmtpTools = true });
-            if (!Load(folder, b).PublicInternetRequested || !Load(folder, b).ShowAdvancedSmtpTools ||
+            Save(folder, b, new MailRoutingPlan { PublicInternetRequested = true,
+                PrivateSmtpServerName = "smtp-b.example.org", ShowAdvancedSmtpTools = true });
+            if (!Load(folder, b).PublicInternetRequested ||
+                Load(folder, b).PrivateSmtpServerName != "smtp-b.example.org" ||
+                Load(folder, a).PrivateSmtpServerName != "" ||
+                !Load(folder, b).ShowAdvancedSmtpTools ||
                 Load(folder, a).PublicInternetRequested || Load(folder, a).ShowAdvancedSmtpTools)
                 return false;
             Save(folder, a, new MailRoutingPlan {
