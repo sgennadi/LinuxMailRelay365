@@ -101,6 +101,10 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
+      - name: Microsoft 365 Connector/Direct Send read-only audit self-test
+        shell: pwsh
+        run: |
+          ./windows/Test-LinuxMailRelay365OutboundMode.ps1 -SelfTest
       - name: Build portable single EXE x64
         shell: pwsh
         run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-x64 --self-contained true -p:UseSharedUpdater=false -o out/win-x64
