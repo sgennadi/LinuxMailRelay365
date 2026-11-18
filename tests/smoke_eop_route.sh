@@ -61,6 +61,9 @@ for attempt in range(20):
             assert code>=500, 'EXTERNAL RCPT ACCEPTED: '+str(code)
             s.rset()
             code,_=s.mail('spoof@evil.example')
+            if code<500:
+                # Postfix normally delays MAIL FROM checks until RCPT TO.
+                code,_=s.rcpt('internal@example.org')
             assert code>=500, 'FOREIGN SENDER ACCEPTED: '+str(code)
         break
     except (OSError,smtplib.SMTPException,AssertionError) as e:
