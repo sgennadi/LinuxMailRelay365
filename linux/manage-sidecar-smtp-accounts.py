@@ -124,7 +124,7 @@ def root_service_state(port):
                            timeout=8, check=False)
         if p.returncode:
             raise ValueError("isolated_service_not_active")
-    if not (Path("/var/spool/linuxmailrelay365-sidecar/private/auth")).is_socket() if hasattr(Path, "is_socket") else False:
+    if not Path("/var/spool/linuxmailrelay365-sidecar/private/auth").is_socket():
         raise ValueError("auth_socket_missing")
     os_id = ""
     try:
@@ -136,12 +136,22 @@ def root_service_state(port):
     enforcing = Path("/sys/fs/selinux/enforce")
     if enforcing.is_file():
         try:
-            if enforcing.read_text().strip() == "1":
-                raise ValueError("selinux_enforcing_not_integration_verified")
+            mode = enforcing.read_text().strip()
         except OSError:
             raise ValueError("selinux_status_unknown")
+        if mode == "1":
+            raise ValueError("selinux_enforcing_not_integration_verified")
+        if mode != "0":
+            raise ValueError("selinux_status_unknown")
+        if os_id in ("rhel", "ol", "rocky", "almalinux", "centos"):
+            raise ValueError("rhel_selinux_permissive_not_integration_verified")
     elif os_id in ("rhel", "ol", "rocky", "almalinux", "centos"):
-        raise ValueError("rhel_selinux_status_unknown")
+        # A missing enforcement flag does not establish policy is Disabled.
+        value = subprocess.run(["getenforce"], stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True,
+                               timeout=5, check=False) if shutil.which("getenforce") else None
+        if value is None or value.returncode or value.stdout.strip() != "Disabled":
+            raise ValueError("rhel_selinux_status_unknown_or_not_disabled")
 
 
 def read_new_hash(filename):
@@ -258,14 +268,27 @@ def main():
                     try:
                         restart_and_verify()
                     except Exception:
-                        os.replace(str(backup), str(HASHES))
+                        # Recover atomically while preserving the root-only
+                        # backup archive for manual inspection and rollback.
+                        original_fd, original_path = tempfile.mkstemp(
+                            prefix=".rollback.", dir=str(AUTH))
                         try:
+                            with os.fdopen(original_fd, "wb") as f:
+                                f.write(backup.read_bytes())
+                                f.flush()
+                                os.fsync(f.fileno())
+                            os.chown(original_path, 0, original.st_gid)
+                            os.chmod(original_path, 0o640)
+                            os.replace(original_path, str(HASHES))
                             restart_and_verify()
                             raise ValueError("service_restart_failed_rolled_back")
                         except ValueError as e:
                             if str(e) == "service_restart_failed_rolled_back":
                                 raise
                             raise ValueError("service_restart_failed_manual_recovery_required")
+                        finally:
+                            if os.path.exists(original_path):
+                                os.unlink(original_path)
                 finally:
                     if os.path.exists(tmp_name):
                         os.unlink(tmp_name)
