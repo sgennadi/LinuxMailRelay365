@@ -58,6 +58,8 @@ def dovecot_compat(version: str) -> str:
     # Dovecot 2.4 requires a different configuration grammar; fail closed.
     if re.match(r"^2\.3(?:\.|\s|$)", version.strip()):
         return "2_3_compatible"
+    if re.match(r"^2\.4(?:\.|\s|$)", version.strip()):
+        return "2_4_auth_only_candidate"
     return "unsupported_version"
 
 
