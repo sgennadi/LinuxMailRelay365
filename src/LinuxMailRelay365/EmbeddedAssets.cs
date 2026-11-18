@@ -24,6 +24,7 @@ internal static class EmbeddedAssets
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
     internal static string RhelSelinuxDoctor => Text("LinuxMailRelay365.linux.rhel-selinux-doctor.py");
+    internal static string RhelEnforcingLiveSmoke => Text("LinuxMailRelay365.linux.rhel-enforcing-live-smoke.py");
     internal static string RhelSelinuxPortManager => Text("LinuxMailRelay365.linux.rhel-selinux-port-manager.py");
     internal static string PublicSmtpManager => Text("LinuxMailRelay365.linux.public-smtp-manager.py");
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
@@ -632,6 +633,27 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/manage.py\" <<'LMR365_ACCOUNTS'\n" +
                Encode(SmtpAccountManager) + "\nLMR365_ACCOUNTS\n" +
                "python3 \"$work/manage.py\" " + args + "\n";
+    }
+
+    internal static string BuildRhelEnforcingLiveSmokeBundle(int port, string serverDns, string linuxCa = "")
+    {
+        if (port is < 1024 or > 65535 ||
+            serverDns.Length is < 4 or > 253 ||
+            !Regex.IsMatch(serverDns,
+                @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z"))
+            throw new ArgumentException("Use exact installed custom port and TLS DNS hostname.");
+        if (!string.IsNullOrEmpty(linuxCa) &&
+            (!Regex.IsMatch(linuxCa, @"\A/[A-Za-z0-9_./-]{1,255}\z") ||
+             linuxCa.Split('/').Contains("..")))
+            throw new ArgumentException("Invalid reviewed Linux CA path.");
+        string args = "--smtp-port " + port + " --server-name " + serverDns.ToLowerInvariant();
+        if (linuxCa.Length > 0) args += " --ca-file " + linuxCa;
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-enforcing.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/probe.py\" <<'LMR365_ENFORCING_PROBE'\n" +
+               Encode(RhelEnforcingLiveSmoke) + "\nLMR365_ENFORCING_PROBE\n" +
+               "python3 \"$work/probe.py\" " + args + "\n";
     }
 
     internal static string BuildRhelSelinuxDoctorBundle(int selectedPort)

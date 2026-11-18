@@ -616,6 +616,10 @@ internal sealed class MainForm : Form
                                   "RHEL SELinux Enforcing acceptance report (read-only)",
                                   "דוח SELinux Enforcing ל-RHEL ללא שינויים"),
                                   InspectRhelSelinuxAsync, false, "shield", "selinux-doctor");
+                AddAction(page, T("Проверить STARTTLS и AUTH при SELinux Enforcing (без отправки письма)",
+                                  "Test live SELinux Enforcing SMTP STARTTLS/AUTH (no mail)",
+                                  "בדיקת SMTP TLS ואימות ב-SELinux ללא שליחת דואר"),
+                                  ProbeEnforcingSmtpAsync, false, "shield", "selinux-enforcing-live");
                 AddAction(page, T("Подготовить SELinux-метку выбранного SMTP-порта (с подтверждением)",
                                   "Prepare RHEL SELinux custom SMTP port label (review + apply)",
                                   "הכן תווית SELinux ליציאת SMTP"),
@@ -2103,6 +2107,30 @@ internal sealed class MainForm : Form
                   "A real SELinux Enforcing acceptance test must confirm mail-queue and SASL socket access, " +
                   "audit AVC denials, power-cycle restart and Microsoft 365 delivery. " +
                   "This inspection never installs policies or changes SELinux.");
+    }
+
+    private async Task ProbeEnforcingSmtpAsync()
+    {
+        var endpoint = Endpoint();
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("Install and review the isolated SMTP sidecar before live RHEL Enforcing checks.");
+        int port = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selected) || selected != port)
+            throw new InvalidDataException("Selected SMTP port differs from installed custom TCP " + port + ".");
+        string hostname = privateAuthDns.Text.Trim();
+        if (string.IsNullOrEmpty(hostname))
+            throw new InvalidDataException("Enter the private SMTP STARTTLS certificate DNS name first.");
+        var report = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildRhelEnforcingLiveSmokeBundle(port, hostname,
+                privateTlsCaPath.Text.Trim()), TimeSpan.FromSeconds(90));
+        report.EnsureSuccess();
+        WriteLine(report.StdOut);
+        if (!report.StdOut.Contains("RHEL_ENFORCING_LIVE_SMTP=tls_auth_handshake_passed",
+                                   StringComparison.Ordinal))
+            throw new InvalidOperationException("RHEL Enforcing SMTP/TLS local handshake was not verified.");
+        WriteLine("Only loopback STARTTLS certificate and AUTH advertisement were checked in SELinux Enforcing. " +
+                  "No SMTP login, MAIL FROM, RCPT, DATA or mail delivery was attempted. " +
+                  "Production still requires approved policy audit, AVC check, SASL login, queue I/O, OS reboot and M365 receipt.");
     }
 
     private int RhelCustomPort()

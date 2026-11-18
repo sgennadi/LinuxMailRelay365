@@ -11,6 +11,7 @@
 | Per-client salted hash Add/Rotate/Revoke | Preview | Live independent client/rollback exercise |
 | SMTP certificate rotation and archived rollback | Preview | Live certificate renewal and client trust |
 | Read-only queue/service/cert health | Preview | Real queue, disk and expiry thresholds |
+| RHEL SELinux Enforcing local SMTP STARTTLS/AUTH probe | Read-only host runtime handshake and label/status checks | Successful SASL login, queue I/O, AVC audit, reboot and M365 delivery still needed |
 | Opt-in 15-min local journald systemd timer | Preview | Verify after real OS reboot |
 | Optional HTTPS webhook health alerts | Preview 15, root-only Linux config | Live incident/recovery delivery, external TLS and receiver alert routing |
 | Root-only real reboot baseline and verification | Implemented | Controlled actual Linux reboot |

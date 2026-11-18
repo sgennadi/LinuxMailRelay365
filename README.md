@@ -499,6 +499,23 @@ archive for each activation. AUTH/TLS downgrade, certificate rotation and
 EOP re-routing refuse to operate while public submission remains active.
 **No Stable release is implied.**
 
+## RHEL SELinux Enforcing live SMTP handshake test (Preview 15)
+
+A separate expert-only read-only live test checks an ALREADY-installed isolated
+Postfix on the selected custom loopback TCP port, with SELinux truly Enforcing.
+It requires Postfix, Dovecot and the verified smtp_port_t mapping, checks
+installed SASL and mandatory STARTTLS policy, validates relevant file/socket
+SELinux labels, and negotiates CA-trusted TLS 1.2/1.3 with the configured
+certificate DNS name. SMTP AUTH must remain hidden before TLS and be advertised
+after TLS. No credentials, MAIL FROM, RCPT TO or DATA are sent. If any check
+fails, the tool refuses rather than disabling SELinux or changing policies.
+
+This local test is an additional acceptance gate, NOT a production signoff.
+A successful TLS/AUTH advertisement does not prove that the Linux kernel
+allows actual Dovecot password lookup, Postfix queue processing, network
+clients after reboot or Exchange Online delivery. Review AVC denials and
+run real authorized end-to-end tests separately.
+
 ## Optional Microsoft 365 tenant Connector creation (Preview 15)
 
 Advanced SMTP includes Preview NEW tenant Connector and Create NEW reviewed
