@@ -21,6 +21,7 @@ internal static class EmbeddedAssets
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
+    internal static string RhelSelinuxDoctor => Text("LinuxMailRelay365.linux.rhel-selinux-doctor.py");
     internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
     internal static string AuthTlsRestore => Text("LinuxMailRelay365.linux.auth-tls-restore.sh");
     internal static string InstalledSidecarAudit => Text("LinuxMailRelay365.linux.installed-sidecar-audit.py");
@@ -190,6 +191,18 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/enable-auth-tls.sh\" <<'LMR365_AUTH_TLS'\n" +
                Encode(AuthTlsInstaller) + "\nLMR365_AUTH_TLS\n" +
                "bash \"$work/enable-auth-tls.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildRhelSelinuxDoctorBundle(int selectedPort)
+    {
+        if (selectedPort is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(selectedPort));
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-selinux-doctor.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/doctor.py\" <<'LMR365_RHEL_SELINUX'\n" +
+               Encode(RhelSelinuxDoctor) + "\nLMR365_RHEL_SELINUX\n" +
+               "python3 \"$work/doctor.py\" --smtp-port " + selectedPort + "\n";
     }
 
     internal static string BuildPlatformCompatBundle(int smtpPort)
