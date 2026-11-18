@@ -539,6 +539,16 @@ existing properly verified Connector rather than creating a duplicate.
 Emergency cloud revocation requires manually disabling that NEW Connector
 in Exchange Admin Center under approved change control.
 
+### Sidecar detection safeguard
+
+Direct Send and new Connector sidecars have no OAuth app.json identity.
+The Wizard therefore detects an installed sidecar from its dedicated
+Postfix main.cf, master.cf and custom smtp-port marker, rather than
+requiring OAuth credentials. A previously installed fresh sidecar must
+be recognized and must block a second install/overwrite. The legacy
+XOAUTH2 route-switch manager still does not support converting a
+fresh non-OAuth gateway into XOAUTH2; do not assume that Restore does.
+
 ## Fresh independent Connector without OAuth (Preview 15)
 
 The Advanced SMTP Wizard now provides a separate Preview/Install for a NEW,

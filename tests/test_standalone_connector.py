@@ -25,6 +25,14 @@ class FreshConnectorContracts(unittest.TestCase):
                 "--fixed-sender", "alerts@example.org",
                 "--public-ip", "8.8.8.8")
 
+    def test_fresh_sidecar_detection_does_not_require_oauth_identity(self):
+        source = (ROOT / "src/LinuxMailRelay365/SshRemote.cs").read_text(encoding="utf-8")
+        body = source.split("internal static async Task<bool> HasIsolatedSidecarAsync(", 1)[1].split(
+            "internal static async Task<int> GetIsolatedSidecarPortAsync", 1)[0]
+        self.assertIn('"/smtp-port"', body)
+        self.assertIn('"/main.cf"', body)
+        self.assertNotIn("SidecarIdentity", body)
+
     def test_bash_syntax_and_selftest(self):
         shell = subprocess.run(["bash", "-n", str(SCRIPT)],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,

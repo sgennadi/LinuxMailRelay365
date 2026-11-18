@@ -202,7 +202,7 @@ internal static class SshRemote
     {
         var result = await ExecuteAsync(endpoint,
             "if test -r " + SidecarConfig + "/main.cf && test -r " + SidecarConfig +
-            "/master.cf && test -f " + SidecarIdentity +
+            "/master.cf && test -r " + SidecarConfig + "/smtp-port" +
             "; then printf SIDECAR_PRESENT; else printf SIDECAR_ABSENT; fi",
             null, TimeSpan.FromSeconds(30), token);
         result.EnsureSuccess();
