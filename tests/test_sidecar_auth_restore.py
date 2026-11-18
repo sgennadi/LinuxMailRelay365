@@ -66,6 +66,8 @@ class SidecarAuthTlsRestoreTests(unittest.TestCase):
             "main.cf.auth.sha256",
             "master.cf.auth.sha256",
             "main.cf.before-auth",
+            "AUTH_TLS_RESTORE_ERROR=rhel_selinux_permissive_policy_not_verified",
+            "AUTH_TLS_RESTORE_ERROR=selinux_status_unknown_manual_review_required",
             "chmod 0700",
             "systemctl disable --now linuxmailrelay365-smtp-auth.service",
             "postfix -c \"$CONF\" check",
