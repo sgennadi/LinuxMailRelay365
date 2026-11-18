@@ -660,9 +660,16 @@ def verify_restored_postfix():
     for line in master.splitlines():
         fields = line.split()
         if len(fields) >= 2 and fields[1] == "inet":
-            listeners.append(fields)
-    if len(listeners) != 1 or listeners[0][0] != port or \
-            "smtpd" not in listeners[0]:
+            # postconf -M outputs "46500/inet=46500 inet n - n - - smtpd",
+            # NOT a plain master.cf row "46500 inet n - n - - smtpd".
+            # Reject unexpected aliases, duplicate inet services and
+            # non-smtpd commands instead of trusting substring matches.
+            key = fields[0]
+            if len(fields) < 8 or "/" not in key or "=" not in key or \
+                    key != "{0}/inet={0}".format(port) or fields[7] != "smtpd":
+                raise Refused("restored_master_cf_has_unexpected_smtp_listener")
+            listeners.append(key)
+    if len(listeners) != 1:
         raise Refused("restored_master_cf_has_unexpected_smtp_listener")
 
 
