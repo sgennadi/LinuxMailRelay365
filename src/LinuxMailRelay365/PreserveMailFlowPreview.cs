@@ -227,8 +227,8 @@ internal sealed class PreserveMailFlowPreview : Control
                     _ => "Отдельная служба и порт" });
             DrawArrow(graphics, 574, 197, UiTheme.Accent);
             DrawCard(graphics, 626, 148, true,
-                state.NotDeployablePlan ? "M365 · NOT IMPLEMENTED" : "MICROSOFT 365",
-                state.NotDeployablePlan ? "PLANNED ROUTE" : state.DisplayMailbox,
+                state.NotDeployablePlan ? "EOP · ADVANCED ROUTE" : "MICROSOFT 365",
+                state.NotDeployablePlan ? "Check Advanced SMTP" : state.DisplayMailbox,
                 state.NotDeployablePlan
                     ? (language == 1 ? "Do not switch clients" : "Не переключать клиентов")
                     : (language == 1 ? "Recipient is preserved" : "Получатель сохраняется"));
