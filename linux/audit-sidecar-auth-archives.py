@@ -98,6 +98,7 @@ def audit(root=ARCHIVE_ROOT, uid=0):
     result = {
         "AUTH_TLS_ARCHIVE_AUDIT_VERSION": "1",
         "AUTH_TLS_ARCHIVE_STATUS": "not_created",
+        "AUTH_TLS_ARCHIVE_FAILURE_REASON": "none",
         "AUTH_TLS_ARCHIVE_COUNT": "0",
         "AUTH_TLS_ARCHIVE_POLICY": "manual_retention_required",
         "AUTH_TLS_ARCHIVE_SECRET_FILE_CONTENTS_READ": "no",
@@ -128,8 +129,10 @@ def audit(root=ARCHIVE_ROOT, uid=0):
         if not re.fullmatch(r"recovery\.[A-Za-z0-9]{8}", child.name):
             result["AUTH_TLS_ARCHIVE_STATUS"] = "unexpected_entry_manual_review"
             return result
-        if archive_integrity(child, uid) != "verified":
+        reason = archive_integrity(child, uid)
+        if reason != "verified":
             result["AUTH_TLS_ARCHIVE_STATUS"] = "incomplete_or_tampered"
+            result["AUTH_TLS_ARCHIVE_FAILURE_REASON"] = reason
             return result
         valid += 1
     result["AUTH_TLS_ARCHIVE_COUNT"] = str(valid)
