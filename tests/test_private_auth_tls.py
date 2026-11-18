@@ -94,6 +94,12 @@ class PrivateSmtpAuthTlsTests(unittest.TestCase):
         self.assertIn('AuthTlsInstaller', embed)
         self.assertIn('BuildAuthTlsBundle(string[] args)', embed)
         self.assertIn('linux/enable-sidecar-auth-tls.sh', proj)
+        ssh=(ROOT/'src/LinuxMailRelay365/SshRemote.cs').read_text(encoding='utf-8')
+        self.assertIn('IsSidecarAuthTlsEnabledAsync', ssh)
+        self.assertIn('AUTH_TLS', ui)
+        self.assertIn('The wizard intentionally does not store client credentials', ui)
+        self.assertIn('if (authState != false)', ui)
+        self.assertIn("AUTH_TLS_ERROR=one_to_64_hashed_accounts_required", SCRIPT.read_text())
 
 
 if __name__ == '__main__':
