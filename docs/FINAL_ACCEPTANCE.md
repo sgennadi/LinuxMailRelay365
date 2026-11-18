@@ -82,7 +82,8 @@ configuration backup and offline restore on a **disposable VM** only:
     sudo python3 linux/sidecar-config-recovery.py --preview-restore BACKUP_ID
 
 Save the reviewed current SHA from Preview. Stop ONLY the isolated Relay,
-SMTP AUTH and health services/timer, verify its queue is empty, and confirm
+SMTP AUTH and health services/timer, verify its queue is empty and its
+custom TCP listener unbound using `ss`, and confirm
 the baseline of the PRIMARY MTA remains unchanged. Only then execute:
 
     sudo python3 linux/sidecar-config-recovery.py --restore BACKUP_ID --expect-current-sha256 REVIEWED_SHA256 --confirm RESTORE_ISOLATED_RELAY_CONFIGURATION
