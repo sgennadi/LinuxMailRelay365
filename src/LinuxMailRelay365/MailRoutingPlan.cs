@@ -19,6 +19,8 @@ internal sealed class MailRoutingPlan
     // A saved REQUEST, not permission to bind to the public internet.
     // Installing or opening a public SMTP listener is not implemented.
     public bool PublicInternetRequested { get; set; } = false;
+    // UI disclosure preference only; never grants SMTP privileges.
+    public bool ShowAdvancedSmtpTools { get; set; } = false;
 }
 
 internal sealed record MailRoutingInventory(string Mta, string CurrentRelay, string CurrentTransport, string ConfigSha256)
