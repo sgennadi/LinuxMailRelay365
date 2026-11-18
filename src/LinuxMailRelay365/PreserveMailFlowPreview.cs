@@ -7,7 +7,8 @@ namespace LinuxMailRelay365;
 // A data-bound preview, NOT a deployment status. No credentials or private keys.
 internal sealed record PreserveFlowSnapshot(
     string LinuxHost, string Listener, string SmtpPort, string Mailbox,
-    string TenantId, string TrustedCidrs, string? ExistingMta, bool PublicRequested)
+    string TenantId, string TrustedCidrs, string? ExistingMta, bool PublicRequested,
+    bool ConnectorPlanned = false, bool SenderPolicyPlanned = false, string VerifiedDomain = "")
 {
     private static string OneLine(string? value, int limit = 120)
     {
@@ -16,6 +17,7 @@ internal sealed record PreserveFlowSnapshot(
     }
 
     internal bool LocalOnly => string.IsNullOrWhiteSpace(Listener);
+    internal bool NotDeployablePlan => ConnectorPlanned || SenderPolicyPlanned;
     internal string ServerForClient => LocalOnly ? "127.0.0.1" : OneLine(Listener);
     internal string DisplayHost => string.IsNullOrWhiteSpace(LinuxHost)
         ? "(not entered)" : OneLine(LinuxHost);
@@ -36,6 +38,27 @@ internal sealed record PreserveFlowSnapshot(
 
     internal string ClientInstructions(int lang)
     {
+        if (NotDeployablePlan)
+        {
+            string domain = string.IsNullOrWhiteSpace(VerifiedDomain)
+                ? "(not specified)" : OneLine(VerifiedDomain);
+            return lang switch
+            {
+                1 => "LinuxMailRelay365 | NOT READY TO DEPLOY\r\n" +
+                     "Selected: Microsoft 365 Connector or sender-policy option not yet implemented.\r\n" +
+                     "Linux: " + DisplayHost + " | SMTP port: " + DisplayPort +
+                     " | Verified domain: " + domain + "\r\n" +
+                     "Preserve Existing Mail means old clients stay on existing SMTP; do not switch clients to this planned route.\r\n",
+                2 => "LinuxMailRelay365 | תצורה בתכנון, עדיין לא ניתנת להתקנה\r\n" +
+                     "שרת: " + DisplayHost + " | יציאה: " + DisplayPort +
+                     " | דומיין: " + domain + "\r\nאין לשנות הגדרות של יישומים קיימים.\r\n",
+                _ => "LinuxMailRelay365 | ТОЛЬКО ПЛАН, УСТАНОВКА НЕДОСТУПНА\r\n" +
+                     "Выбран режим Microsoft 365 Connector или обработки отправителя, ещё не реализованный в этом Preview.\r\n" +
+                     "Linux: " + DisplayHost + " | Порт SMTP: " + DisplayPort +
+                     " | Проверенный домен: " + domain + "\r\n" +
+                     "Существующие приложения остаются на старом SMTP. НЕ переключайте клиентов на этот маршрут.\r\n"
+            };
+        }
         string listener = ServerForClient;
         string port = DisplayPort;
         string mta = ExistingStatus;
@@ -202,9 +225,12 @@ internal sealed class PreserveMailFlowPreview : Control
                 language switch { 1 => "Separate service, port", 2 => "שירות ויציאה נפרדים",
                     _ => "Отдельная служба и порт" });
             DrawArrow(graphics, 574, 197, UiTheme.Accent);
-            DrawCard(graphics, 626, 148, true, "MICROSOFT 365", state.DisplayMailbox,
-                language switch { 1 => "Recipient is preserved", 2 => "הנמען נשמר",
-                    _ => "Получатель сохраняется" });
+            DrawCard(graphics, 626, 148, true,
+                state.NotDeployablePlan ? "M365 · NOT IMPLEMENTED" : "MICROSOFT 365",
+                state.NotDeployablePlan ? "PLANNED ROUTE" : state.DisplayMailbox,
+                state.NotDeployablePlan
+                    ? (language == 1 ? "Do not switch clients" : "Не переключать клиентов")
+                    : (language == 1 ? "Recipient is preserved" : "Получатель сохраняется"));
 
             DrawText(graphics, (language == 1 ? "Linux: " : "Linux: ") + state.DisplayHost +
                 "    |    Tenant: " + state.DisplayTenant,
