@@ -245,7 +245,7 @@ internal static class EmbeddedAssets
     {
         if (port is < 1024 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
-        if (status && restore || (status || restore) && expectedMainSha is not null && status)
+        if (status && (restore || expectedMainSha is not null))
             throw new ArgumentException("Invalid EOP route action.");
         if (expectedMainSha is not null &&
             !Regex.IsMatch(expectedMainSha, @"\A[a-f0-9]{64}\z"))
