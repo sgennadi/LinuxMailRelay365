@@ -50,6 +50,38 @@ class ScopedRecoveryTests(unittest.TestCase):
         (self.identity / "app.json").chmod(0o600)
         self.queue = self.root / mod.QUEUE
         self.queue.mkdir(parents=True)
+        self.auth_values = {"smtpd_sasl_auth_enable": "no"}
+
+    def install_auth_fixture(self):
+        """A fake but correctly scoped Dovecot 2.3/2.4 file layout."""
+        self.auth_dir = self.root / mod.CONF / "smtp-auth"
+        self.auth_dir.mkdir()
+        for name, contents, mode in (
+            ("dovecot.conf", "auth_mechanisms = plain login\n", 0o644),
+            ("passwd", "test-user:{SHA512-CRYPT}synthetic-hash\n", 0o640),
+            ("fullchain.pem", "public-test-cert\n", 0o644),
+            ("privkey.pem", "private-fixture-key-never-output\n", 0o640),
+        ):
+            target = self.auth_dir / name
+            target.write_text(contents, encoding="ascii")
+            target.chmod(mode)
+        self.unit = self.root / "etc/systemd/system" / mod.AUTH
+        self.unit.parent.mkdir(parents=True, exist_ok=True)
+        self.unit.write_text("[Service]\nExecStart=/usr/sbin/dovecot -F\n",
+                             encoding="ascii")
+        self.auth_values = {
+            "smtpd_sasl_auth_enable": "yes",
+            "smtpd_sasl_type": "dovecot",
+            "smtpd_sasl_path": "private/auth",
+            "smtpd_tls_security_level": "encrypt",
+            "smtpd_tls_auth_only": "yes",
+            "smtpd_relay_restrictions": "permit_sasl_authenticated, reject",
+            "smtpd_recipient_restrictions": "permit_sasl_authenticated, reject",
+            "smtpd_tls_cert_file":
+                "/etc/linuxmailrelay365/smtp-auth/fullchain.pem",
+            "smtpd_tls_key_file":
+                "/etc/linuxmailrelay365/smtp-auth/privkey.pem",
+        }
 
     def reset_module(self):
         mod.ROOT = self.original_root
@@ -63,15 +95,19 @@ class ScopedRecoveryTests(unittest.TestCase):
         if argv[0] == "ss" and "-ltn" in argv:
             return ""
         if argv[0] == "postconf" and "-h" in argv:
-            return {
+            params = {
                 "queue_directory": str(self.root / mod.QUEUE),
                 "data_directory": str(self.root / "var/lib/linuxmailrelay365-sidecar"),
                 "inet_interfaces": "127.0.0.1",
-            }[argv[-1]]
+            }
+            params.update(self.auth_values)
+            return params[argv[-1]]
         if argv[0] == "postconf" and "-n" in argv:
             return "queue_directory = " + str(self.root / mod.QUEUE)
         if argv[0] == "postconf" and "-M" in argv:
             return "46500 inet n - n - - smtpd\npickup unix n - n 60 1 pickup"
+        if argv[0] == "doveconf" and "-n" in argv:
+            return "auth_mechanisms = plain login\npassdb { driver = passwd-file }"
         if argv[0] == "systemctl" and argv[1] == "daemon-reload":
             return ""
         raise AssertionError("Unexpected system command in synthetic test: " +
@@ -279,6 +315,92 @@ class ScopedRecoveryTests(unittest.TestCase):
                 mod.restore(backup_id, expected)
         self.assertEqual((self.conf / "main.cf").read_text(),
                          "myhostname = changed.example.org\n")
+
+    def test_dovecot_tls_auth_offline_restore_with_scoped_local_keys(self):
+        self.patch_runtime()
+        self.install_auth_fixture()
+        backup_id = mod.backup()
+        manifest = mod.verify_snapshot(backup_id)
+        saved = {row["path"] for row in manifest["entries"]}
+        self.assertIn(mod.CONF + "/smtp-auth/passwd", saved)
+        self.assertIn(mod.CONF + "/smtp-auth/privkey.pem", saved)
+        self.assertIn("etc/systemd/system/" + mod.AUTH, saved)
+        old_key = (self.auth_dir / "privkey.pem").read_text()
+        (self.conf / "main.cf").write_text("myhostname = auth-changed.example.org\n")
+        expected, _ = mod.current_state()
+        mod.restore(backup_id, expected)
+        self.assertEqual((self.auth_dir / "privkey.pem").read_text(), old_key)
+        self.assertEqual((self.conf / "main.cf").read_text(),
+                         "myhostname = relay.example.org\n")
+        self.assertEqual(len(list(mod.BASE.glob("20*"))), 2)
+
+    def test_auth_recovery_rejects_downgraded_tls_and_rolls_back(self):
+        self.patch_runtime()
+        self.install_auth_fixture()
+        backup_id = mod.backup()
+        changed = "myhostname = changed-before-auth-restore.example.org\n"
+        (self.conf / "main.cf").write_text(changed)
+        expected, _ = mod.current_state()
+        for key, value in (
+            ("smtpd_tls_security_level", "may"),
+            ("smtpd_relay_restrictions", "permit_mynetworks, reject"),
+            ("smtpd_sasl_auth_enable", "no"),
+            ("smtpd_tls_auth_only", "no"),
+        ):
+            with self.subTest(weakened_setting=key):
+                original = self.auth_values[key]
+                self.auth_values[key] = value
+                try:
+                    with self.assertRaises(mod.Refused):
+                        mod.restore(backup_id, expected)
+                    self.assertEqual((self.conf / "main.cf").read_text(), changed)
+                finally:
+                    self.auth_values[key] = original
+
+    def test_auth_recovery_rejects_missing_credentials_or_service(self):
+        self.patch_runtime()
+        self.install_auth_fixture()
+        (self.auth_dir / "passwd").unlink()
+        bad_archive = mod.backup()
+        changed = "myhostname = changed-auth-test.example.org\n"
+        (self.conf / "main.cf").write_text(changed)
+        expected, _ = mod.current_state()
+        with self.assertRaises(mod.Refused):
+            mod.restore(bad_archive, expected)
+        self.assertEqual((self.conf / "main.cf").read_text(), changed)
+        # Missing systemd unit with AUTH files also must fail.
+        self.unit.unlink()
+        second_archive = mod.backup()
+        expected, _ = mod.current_state()
+        with self.assertRaises(mod.Refused):
+            mod.restore(second_archive, expected)
+
+    def test_auth_recovery_rejects_invalid_dovecot_config_without_starting(self):
+        self.patch_runtime()
+        self.install_auth_fixture()
+        archive = mod.backup()
+        changed = "myhostname = pre-restore-auth.example.org\n"
+        (self.conf / "main.cf").write_text(changed)
+        expected, _ = mod.current_state()
+        def invalid_config(argv, **kwargs):
+            if argv[0] == "doveconf":
+                return "unrelated_setting = ignored"
+            return self.fake_command(argv, **kwargs)
+        with patch.object(mod, "command", side_effect=invalid_config):
+            with self.assertRaises(mod.Refused):
+                mod.restore(archive, expected)
+        self.assertEqual((self.conf / "main.cf").read_text(), changed)
+
+    def test_missing_auth_tree_refuses_enabled_auth_policy(self):
+        self.patch_runtime()
+        archive = mod.backup()
+        changed = "myhostname = pre-restore-no-auth.example.org\n"
+        (self.conf / "main.cf").write_text(changed)
+        expected, _ = mod.current_state()
+        self.auth_values["smtpd_sasl_auth_enable"] = "yes"
+        with self.assertRaises(mod.Refused):
+            mod.restore(archive, expected)
+        self.assertEqual((self.conf / "main.cf").read_text(), changed)
 
     def test_invalid_paths_and_unauthorized_roots(self):
         for name in ("etc/postfix/main.cf", "../../etc/passwd",
