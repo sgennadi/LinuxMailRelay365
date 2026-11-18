@@ -10,6 +10,7 @@ import argparse
 import datetime
 import fcntl
 import hashlib
+import ipaddress
 import io
 import json
 import os
@@ -223,10 +224,34 @@ def active_public():
     return p.exists() or p.is_symlink()
 
 
-def empty_queue():
-    # postqueue -j includes active, deferred, hold and other listed mail
-    # queues; never test -p on the primary MTA by accident.
+def sidecar_config():
+    """Read-only Postfix sanity checks; no postfix check (it creates dirs)."""
     config = str(rooted(CONF + "/sidecar-postfix"))
+    queue = command(["postconf", "-c", config, "-h", "queue_directory"])
+    if queue != str(ROOT / QUEUE):
+        raise Refused("sidecar_queue_directory_must_be_isolated")
+    data = command(["postconf", "-c", config, "-h", "data_directory"])
+    if data != str(ROOT / "var/lib/linuxmailrelay365-sidecar"):
+        raise Refused("sidecar_data_directory_must_be_isolated")
+    interfaces = command(["postconf", "-c", config, "-h", "inet_interfaces"])
+    addresses = [v.strip() for v in interfaces.split(",")]
+    if not 1 <= len(addresses) <= 2 or addresses[0] != "127.0.0.1" or             len(set(addresses)) != len(addresses):
+        raise Refused("unsafe_or_unexpected_sidecar_interfaces")
+    private = tuple(ipaddress.ip_network(x) for x in
+                    ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+    for address in addresses[1:]:
+        try:
+            ipv4 = ipaddress.IPv4Address(address)
+        except ipaddress.AddressValueError:
+            raise Refused("unsafe_or_unexpected_sidecar_interfaces")
+        if not any(ipv4 in net for net in private):
+            raise Refused("public_or_untrusted_sidecar_listener")
+    return config
+
+
+def empty_queue():
+    # First guarantee postqueue -c cannot silently inspect the PRIMARY queue.
+    config = sidecar_config()
     output = command(["postqueue", "-c", config, "-j"], timeout=18)
     return not output.strip()
 
@@ -473,7 +498,8 @@ def check_queue():
     q = ROOT / QUEUE
     secure(q, directory=True, owner=False)
     # postqueue -j does not always include maildrop not yet picked up.
-    for name in ("maildrop", "incoming", "active", "deferred", "hold"):
+    for name in ("maildrop", "incoming", "active", "deferred", "hold",
+                 "bounce", "defer", "trace", "flush", "corrupt"):
         folder = q / name
         if folder.exists():
             if folder.is_symlink() or not folder.is_dir():
@@ -602,6 +628,32 @@ def offline_switch(staged, retired, deployed):
             deployed.add(rel)
 
 
+def verify_restored_postfix():
+    """Read-only validation, no queue creation, service start or MTA reload."""
+    config = sidecar_config()
+    port_path = rooted(CONF + "/sidecar-postfix/smtp-port")
+    info = secure(port_path, directory=False)
+    if info.st_size > 6:
+        raise Refused("invalid_restored_custom_smtp_port")
+    port = port_path.read_text(encoding="ascii").strip()
+    if not port.isdigit() or not 1024 <= int(port) <= 65535:
+        raise Refused("invalid_restored_custom_smtp_port")
+    main = command(["postconf", "-c", config, "-n"])
+    if not main or "queue_directory" not in main:
+        raise Refused("restored_main_cf_not_verified")
+    master = command(["postconf", "-c", config, "-M"])
+    if not master:
+        raise Refused("restored_master_cf_not_verified")
+    listeners = []
+    for line in master.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == "inet":
+            listeners.append(fields)
+    if len(listeners) != 1 or listeners[0][0] != port or \
+            "smtpd" not in listeners[0]:
+        raise Refused("restored_master_cf_has_unexpected_smtp_listener")
+
+
 def cleanup_workdirs(staged, retired, success):
     for temp in staged.values():
         if temp.exists():
@@ -634,9 +686,9 @@ def restore(snapshot_id, expected):
             if latest != expected:
                 raise Refused("sidecar_changed_during_staging")
             offline_switch(staged, retired, deployed)
-            # Postfix check does not start the isolated or primary service.
-            command(["postfix", "-c", str(rooted(CONF + "/sidecar-postfix")),
-                     "check"], timeout=40)
+            # postconf -n/-M/-h are read-only. postfix check is NOT:
+            # it may create mail queue directories and must not be used here.
+            verify_restored_postfix()
             command(["systemctl", "daemon-reload"])
             success = True
         except Exception:
