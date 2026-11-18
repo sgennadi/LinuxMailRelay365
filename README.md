@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.12 — source and GitHub Actions builds; not a verified production release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.13 — source and GitHub Actions builds; not a verified production release.**
 
 ## New functionality in development branch (not Stable)
 
@@ -673,3 +673,14 @@ The repository exists at [sgennadi/LinuxMailRelay365](https://github.com/sgennad
 - [Microsoft Conditional Access for workload identities](https://learn.microsoft.com/en-us/entra/identity/conditional-access/workload-identity)
 - [Microsoft Graph permission model for Exchange Application RBAC](https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac)
 - [SSH.NET documentation](https://sshnet.github.io/SSH.NET/examples.html)
+
+### Connector sender policy (Preview 13)
+
+In Advanced SMTP, the isolated existing XOAUTH2 sidecar route can be switched to an explicitly verified Microsoft 365 Inbound Connector. The sender policy is selected independently:
+
+- **Fixed mailbox:** rewrite to one approved sender (also mandatory for Direct Send).
+- **Preserve accepted domain:** permit the accepted-domain envelope sender unchanged; other envelope domains are rejected.
+- **Masquerade subdomain:** rewrite an approved subdomain envelope/header sender to the accepted domain using a scoped Postfix regexp map; unrelated domains are rejected.
+
+This is not an Exchange Online Send As grant, does not validate header ownership in Microsoft 365 and does not change an existing primary Postfix or queue. Automatic route changes require an empty isolated queue, reviewed SHA-256, explicit tenant attestation and an archived rollback. Public Internet SMTP and unverified RHEL SELinux Enforcing installation remain intentionally blocked.
+

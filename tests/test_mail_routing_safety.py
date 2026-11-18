@@ -26,9 +26,8 @@ class MailRoutingSafetyContracts(unittest.TestCase):
         self.assertNotIn("postconf -e 'masquerade_domains =",linux)
         self.assertNotIn("postconf -e 'sender_canonical_maps =",linux)
         ui=(ROOT/'src/LinuxMailRelay365/MainForm.cs').read_text(encoding='utf8')
-        # Connector now has a separate advanced sidecar-only Apply/Restore path;
-        # sender preservation/masquerade remain blocked.
-        self.assertIn('Sender preservation and masquerading remain blocked',ui)
+        # Sender rewriting is allowed only in an independent Connector sidecar.
+        self.assertIn('Connector sender handling is available under the isolated EOP route',ui)
         self.assertIn('chosenTransport != "oauth2" || chosenSender != 0',ui)
         self.assertIn('ApplyEopRouteAsync',ui)
         self.assertIn('RestoreEopRouteAsync',ui)

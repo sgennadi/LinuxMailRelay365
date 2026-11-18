@@ -136,8 +136,8 @@ internal sealed class MainForm : Form
         ]);
         senderPolicy.Items.AddRange([
             "Fixed Microsoft 365 sender mailbox (available)",
-            "Preserve verified domain sender (connector only, planned)",
-            "Masquerade subdomains (connector only, planned)"
+            "Preserve sender within verified domain (Connector only)",
+            "Masquerade subdomain sender into accepted domain (Connector only)"
         ]);
         smtpAccountOperation.Items.AddRange(["Add", "Rotate", "Revoke"]);
         smtpAccountOperation.SelectedIndex = 0;
@@ -496,7 +496,7 @@ internal sealed class MainForm : Form
                     {
                         AddLine(page, UiTheme.Text(T(
                             "Продвинутый маршрут применяется только к установленному отдельному Postfix. Direct Send блокирует внешних получателей. Используется один фиксированный отправитель; Connector в Tenant должен существовать до применения. Все изменения обратимы через отдельный Restore.",
-                            "Advanced outbound routing ONLY modifies installed isolated Postfix. Direct Send rejects external recipients locally. One fixed sender is enforced; Connector must already exist in your tenant. A separate Restore returns to XOAUTH2.",
+                            "Advanced outbound routing changes only isolated Postfix. Direct Send rejects external recipients and requires fixed sender. Connector can preserve verified-domain senders or rewrite approved subdomain sender identities. The Connector must already exist in the tenant.",
                             "ניתוב מתקדם למופע Postfix נפרד בלבד; Direct Send מוגבל לנמענים פנימיים.")));
                         if (mailTransport.SelectedIndex == 2)
                         {
@@ -1513,12 +1513,12 @@ internal sealed class MainForm : Form
     }
 
     private (int Port, string Mode, string Mx, string Sender, string Domain,
-             string PublicIp, string Cert, string Key) EopOptions()
+             string PublicIp, string Cert, string Key, string SenderPolicy) EopOptions()
     {
         if (mailTransport.SelectedIndex is not (1 or 2))
             throw new InvalidOperationException("Select Direct Send or Microsoft 365 Connector.");
-        if (senderPolicy.SelectedIndex != 0)
-            throw new NotSupportedException("Preserve individual senders and masquerading are not verified. Fixed sender is required.");
+        if (mailTransport.SelectedIndex == 2 && senderPolicy.SelectedIndex != 0)
+            throw new NotSupportedException("Direct Send requires a fixed sender. Original sender preservation and masquerading require a verified M365 Connector.");
         if (!preserveExistingMail.Checked)
             throw new InvalidOperationException("Private EOP transport changes require Preserve Existing Mail.");
         if (publicInternetRequested.Checked)
@@ -1529,7 +1529,8 @@ internal sealed class MainForm : Form
         return (port, mailTransport.SelectedIndex == 1 ? "connector" : "direct-send",
             outboundMxHost.Text.Trim(), outboundFixedSender.Text.Trim(),
             acceptedDomain.Text.Trim(), outboundPublicIp.Text.Trim(),
-            outboundCertPath.Text.Trim(), outboundCertKeyPath.Text.Trim());
+            outboundCertPath.Text.Trim(), outboundCertKeyPath.Text.Trim(),
+            senderPolicy.SelectedIndex switch { 1 => "preserve-domain", 2 => "masquerade", _ => "fixed-mailbox" });
     }
 
     private async Task<(SshEndpoint Endpoint, int Port)> EopInstalledEndpointAsync(int chosenPort)
@@ -1550,7 +1551,8 @@ internal sealed class MainForm : Form
         var (endpoint, port) = await EopInstalledEndpointAsync(opt.Port);
         var report = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildEopRouteBundle(port, opt.Mode, opt.Mx,
-                opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key),
+                opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key,
+                senderPolicy: opt.SenderPolicy),
             TimeSpan.FromSeconds(75));
         report.EnsureSuccess();
         WriteLine(report.StdOut);
@@ -1568,7 +1570,8 @@ internal sealed class MainForm : Form
         var (endpoint, port) = await EopInstalledEndpointAsync(opt.Port);
         var preview = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildEopRouteBundle(port, opt.Mode, opt.Mx,
-                opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key),
+                opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key,
+                senderPolicy: opt.SenderPolicy),
             TimeSpan.FromSeconds(75));
         preview.EnsureSuccess();
         var match = System.Text.RegularExpressions.Regex.Match(preview.StdOut,
@@ -1593,7 +1596,8 @@ internal sealed class MainForm : Form
             : "Connector: external recipients may be routed ONLY if your existing inbound Connector explicitly authorizes this server's public IP or certificate. Tenant-side identity cannot be verified by this Linux tool.";
         if (!ConfirmDestructive("LinuxMailRelay365 | Apply private EOP outbound route",
             warning + "\n\n" +
-            "Linux inbound custom TCP " + port + " is preserved. All outgoing sender identities are rewritten to one approved sender. " +
+            "Linux inbound custom TCP " + port + " is preserved. Sender policy: " + opt.SenderPolicy +
+            ". Confirm every sender identity is authorized in the accepted tenant domain. " +
             "Only the isolated Postfix config and its dedicated queue are affected, and a root-only recovery archive is created. " +
             "Drain the isolated queue and pause submitting clients first. The route manager refuses a nonempty sidecar queue. The primary Postfix is unchanged.",
             "DEPLOY PRIVATE EOP ROUTE")) return;
@@ -1601,7 +1605,8 @@ internal sealed class MainForm : Form
             EmbeddedAssets.BuildEopRouteBundle(port, opt.Mode, opt.Mx,
                 opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key,
                 expectedMainSha: match.Groups[1].Value, connectorApproved:
-                    opt.Mode == "connector" && connectorApproved.Checked),
+                    opt.Mode == "connector" && connectorApproved.Checked,
+                senderPolicy: opt.SenderPolicy),
             TimeSpan.FromMinutes(3));
         applied.EnsureSuccess();
         if (!applied.StdOut.Contains("EOP_ROUTE_APPLIED=yes", StringComparison.Ordinal))
@@ -2234,7 +2239,7 @@ internal sealed class MainForm : Form
         };
         var chosenSender = senderPolicy.SelectedIndex;
         if (chosenTransport != "oauth2" || chosenSender != 0)
-            throw new NotSupportedException("Main Install applies XOAUTH2 only. For Direct Send or Connector, install the isolated Postfix first and use Advanced SMTP → EOP route Preview / Apply. Sender preservation and masquerading remain blocked. No Postfix changes were applied.");
+            throw new NotSupportedException("Main Install applies XOAUTH2 only. For Direct Send or Connector, install the isolated Postfix first and use Advanced SMTP → EOP route Preview / Apply. Connector sender handling is available under the isolated EOP route. No Postfix changes were applied.");
         var endpoint = Endpoint();
         var observed = await SshRemote.ProbeSecurityAsync(endpoint,
             EmbeddedAssets.SecurityProbe, CancellationToken.None);

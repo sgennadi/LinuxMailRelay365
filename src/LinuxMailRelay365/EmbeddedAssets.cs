@@ -287,7 +287,8 @@ internal static class EmbeddedAssets
     internal static string BuildEopRouteBundle(int port, string mode, string mxHost,
         string fixedSender, string acceptedDomain, string publicIp, string certPath,
         string keyPath, string? expectedMainSha = null, bool restore = false,
-        bool status = false, bool connectorApproved = false)
+        bool status = false, bool connectorApproved = false,
+        string senderPolicy = "fixed-mailbox")
     {
         if (port is < 1024 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
@@ -311,7 +312,9 @@ internal static class EmbeddedAssets
         {
             const string dns = @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z";
             const string email = @"\A[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{4,253}\z";
-            if (mode is not ("direct-send" or "connector") ||
+            if (senderPolicy is not ("fixed-mailbox" or "preserve-domain" or "masquerade") ||
+                (mode == "direct-send" && senderPolicy != "fixed-mailbox") ||
+                mode is not ("direct-send" or "connector") ||
                 !Regex.IsMatch(mxHost, dns, RegexOptions.CultureInvariant) ||
                 !mxHost.EndsWith(".mail.protection.outlook.com", StringComparison.OrdinalIgnoreCase) ||
                 !Regex.IsMatch(acceptedDomain, dns, RegexOptions.CultureInvariant) ||
@@ -331,7 +334,8 @@ internal static class EmbeddedAssets
             args = (expectedMainSha is null ? "--check-only" : "--apply") +
                    " --smtp-port " + port + " --mode " + mode +
                    " --mx-host " + mxHost + " --sender " + fixedSender +
-                   " --recipient-domain " + acceptedDomain;
+                   " --recipient-domain " + acceptedDomain +
+                   " --sender-policy " + senderPolicy;
             if (!string.IsNullOrEmpty(publicIp)) args += " --public-ip " + publicIp;
             if (!string.IsNullOrEmpty(certPath)) args += " --tls-cert " + certPath;
             if (!string.IsNullOrEmpty(keyPath)) args += " --tls-key " + keyPath;
