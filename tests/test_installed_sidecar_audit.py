@@ -84,7 +84,7 @@ class InstalledSidecarAuditUnitTests(unittest.TestCase):
         self.assertIn("GetIsolatedSidecarPortAsync", gui)
 
     def test_selinux_file_labels_are_hints_not_authorization(self):
-        label = b"system_u:object_r:postfix_spool_t:s0\\x00"
+        label = b"system_u:object_r:postfix_spool_t:s0\x00"
         with patch.object(audit.os, "getxattr", return_value=label):
             self.assertEqual(
                 audit.selinux_file_label_hints(auth_enabled=True),
