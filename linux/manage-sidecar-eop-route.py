@@ -81,6 +81,8 @@ def validate(args):
     if args.sender_policy not in ("fixed-mailbox", "preserve-domain", "masquerade"):
         raise Refused("invalid_sender_policy")
     if args.restore or args.status:
+        if getattr(args, "expect_owner_sha256", ""):
+            raise Refused("unexpected_owner_fingerprint")
         if any((args.mode, args.mx_host, args.sender, args.recipient_domain,
                 args.public_ip, args.tls_cert, args.tls_key,
                 getattr(args, "sender_owner_file", ""))) or args.sender_policy != "fixed-mailbox":
@@ -102,7 +104,9 @@ def validate(args):
             owner_path = getattr(args, "sender_owner_file", "")
             if not owner_path or not SAFE.fullmatch(owner_path) or ".." in owner_path.split("/"):
                 raise Refused("connector_sender_ownership_file_required")
-        elif getattr(args, "sender_owner_file", ""):
+            if args.apply and not SHA.fullmatch(getattr(args, "expect_owner_sha256", "")):
+                raise Refused("reviewed_sender_owner_sha256_required")
+        elif getattr(args, "sender_owner_file", "") or getattr(args, "expect_owner_sha256", ""):
             raise Refused("sender_owners_only_for_connector_preserve_or_masquerade")
         if args.mode == "direct-send" and args.sender_policy != "fixed-mailbox":
             raise Refused("direct_send_requires_fixed_sender")
@@ -527,6 +531,9 @@ def deploy(args):
     require_empty_sidecar_queue()
     if any((CONF / m).exists() or (CONF / m).is_symlink() for m in MAPS):
         raise Refused("existing_eop_policy_map_conflict")
+    if args.sender_policy != "fixed-mailbox" and \
+            digest(Path(args.sender_owner_file).read_bytes()) != args.expect_owner_sha256:
+        raise Refused("sender_owners_changed_since_preview")
     ca = system_ca()
     auth_enabled = postconf("smtpd_sasl_auth_enable") == "yes"
     main = rewrite_main(before, policy_changes(args, ca, auth_enabled))
@@ -672,6 +679,7 @@ def main():
     p.add_argument("--sender-policy", choices=("fixed-mailbox", "preserve-domain", "masquerade"),
                    default="fixed-mailbox")
     p.add_argument("--sender-owner-file", default="")
+    p.add_argument("--expect-owner-sha256", default="")
     p.add_argument("--recipient-domain", action="append", default=[])
     p.add_argument("--public-ip", default="")
     p.add_argument("--tls-cert", default="")
@@ -703,6 +711,8 @@ def main():
             say("EOP_ROUTE_RECIPIENT_SCOPE", "internal_only" if a.mode == "direct-send" else "connector_candidate")
             say("EOP_ROUTE_SENDER_POLICY", a.sender_policy.replace("-", "_"))
             say("EOP_ROUTE_SENDER_OWNERSHIP", "auth_mail_from_login_map" if a.sender_policy != "fixed-mailbox" else "fixed_sender")
+            if a.sender_policy != "fixed-mailbox":
+                say("EOP_ROUTE_OWNER_FILE_SHA256", digest(Path(a.sender_owner_file).read_bytes()))
             say("EOP_ROUTE_HEADER_FROM_MATCH_VERIFIED", "no")
             say("EOP_ROUTE_FIXED_SENDER", "yes" if a.sender_policy == "fixed-mailbox" else "no")
             say("EXCHANGE_CONNECTOR_VERIFIED", "no")
