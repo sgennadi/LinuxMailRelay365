@@ -58,8 +58,8 @@ class ScopedRecoveryTests(unittest.TestCase):
         mod.OWNER_UID = self.original_uid
 
     def fake_command(self, argv, **kwargs):
-        if argv[0] == "postqueue" and "-j" in argv:
-            return ""
+        if argv[0] == "postqueue":
+            raise AssertionError("An offline queue scan must not invoke postqueue")
         if argv[0] == "ss" and "-ltn" in argv:
             return ""
         if argv[0] == "postconf" and "-h" in argv:
@@ -217,6 +217,22 @@ class ScopedRecoveryTests(unittest.TestCase):
                     with self.assertRaises(mod.Refused):
                         mod.restore(backup_id, expected)
                 self.assertEqual(len(list(mod.BASE.glob("20*"))), 1)
+
+    def test_offline_queue_is_checked_without_postqueue_master(self):
+        self.patch_runtime()
+        backup_id = mod.backup()
+        expected, _ = mod.current_state()
+        calls = []
+        def inspect(argv, **kwargs):
+            calls.append(tuple(argv))
+            if argv[0] == "postqueue":
+                raise AssertionError("postqueue cannot be used with stopped Postfix")
+            return self.fake_command(argv, **kwargs)
+        with patch.object(mod, "command", side_effect=inspect):
+            mod.restore(backup_id, expected)
+        self.assertFalse(any(command[0] == "postqueue" for command in calls))
+        self.assertTrue(any(command[0] == "ss" for command in calls))
+        self.assertTrue(any(command[0] == "postconf" for command in calls))
 
     def test_manually_running_smtp_listener_refuses_restore(self):
         self.patch_runtime()
