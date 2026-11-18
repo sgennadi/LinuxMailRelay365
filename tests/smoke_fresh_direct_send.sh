@@ -133,4 +133,6 @@ sudo systemctl start "$UNIT"
 sudo systemctl is-active --quiet "$UNIT"
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
 sudo postfix -c "$CONF" check
+echo '=== Run actual isolated config backup+offline restore on disposable Actions VM ==='
+bash tests/smoke_scoped_recovery.sh "$PORT"
 echo 'FRESH_DIRECT_SEND_NO_OAUTH_UBUNTU_SMOKE=PASS'
