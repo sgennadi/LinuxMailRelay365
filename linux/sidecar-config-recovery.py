@@ -36,9 +36,12 @@ TIMER = "linuxmailrelay365-health.timer"
 UNITS = (SIDECAR, AUTH, HEALTH, TIMER)
 OPTIONAL = (
     "etc/systemd/system/linuxmailrelay365-sidecar.service",
+    "etc/systemd/system/linuxmailrelay365-sidecar.service.d",
     "etc/systemd/system/linuxmailrelay365-smtp-auth.service",
+    "etc/systemd/system/linuxmailrelay365-smtp-auth.service.d",
     "etc/systemd/system/linuxmailrelay365-health.service",
     "etc/systemd/system/linuxmailrelay365-health.timer",
+    "etc/systemd/system/linuxmailrelay365-health.timer.d",
     "etc/systemd/system/linuxmailrelay365-health.service.d",
     "usr/local/libexec/linuxmailrelay365-sidecar-transport.py",
     "usr/local/libexec/linuxmailrelay365-relay-health.py",
@@ -505,7 +508,10 @@ def check_queue():
         if folder.exists():
             if folder.is_symlink() or not folder.is_dir():
                 raise Refused("unsafe_spool_subdirectory")
-            for parent, dirs, files in os.walk(str(folder), followlinks=False):
+            def scan_error(error):
+                raise Refused("isolated_queue_scan_unavailable")
+            for parent, dirs, files in os.walk(
+                    str(folder), followlinks=False, onerror=scan_error):
                 if files or any(Path(parent, d).is_symlink() for d in dirs):
                     raise Refused("isolated_mail_queue_not_empty")
 
