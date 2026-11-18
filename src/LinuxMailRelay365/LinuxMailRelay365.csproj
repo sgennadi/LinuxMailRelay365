@@ -39,6 +39,7 @@
     <EmbeddedResource Include="../../linux/restore-sidecar-auth-tls.sh" LogicalName="LinuxMailRelay365.linux.auth-tls-restore.sh" />
     <EmbeddedResource Include="../../linux/installed-sidecar-audit.py" LogicalName="LinuxMailRelay365.linux.installed-sidecar-audit.py" />
     <EmbeddedResource Include="../../linux/audit-sidecar-auth-archives.py" LogicalName="LinuxMailRelay365.linux.auth-archive-audit.py" />
+    <EmbeddedResource Include="../../linux/verify-sidecar-tls-identity.py" LogicalName="LinuxMailRelay365.linux.tls-identity-probe.py" />
     <EmbeddedResource Include="../../windows/Test-LinuxMailRelay365Security.ps1" LogicalName="LinuxMailRelay365.windows.cloud-security-probe.ps1" />
     <EmbeddedResource Include="../../windows/Initialize-LinuxMailRelay365.ps1" LogicalName="LinuxMailRelay365.windows.provision.ps1" />
     <EmbeddedResource Include="../../windows/Discover-LinuxMailRelay365Tenants.ps1" LogicalName="LinuxMailRelay365.windows.tenant-discovery.ps1" />
