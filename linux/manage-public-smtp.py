@@ -255,11 +255,28 @@ def ufw_matching_rules(text, ip, port):
             (ip in line or re.search(r"(?<![0-9]){}/tcp(?![0-9])".format(port), line))]
 
 
+def backend_running(argv, expected, not_running_exit=None):
+    if not shutil.which(argv[0]):
+        return False
+    try:
+        result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                universal_newlines=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Refused("firewall_backend_state_unavailable")
+    if result.returncode == not_running_exit and not_running_exit is not None:
+        return False
+    if result.returncode != 0:
+        raise Refused("firewall_backend_state_unreliable")
+    return expected in result.stdout
+
+
 def firewall(ip, port):
     iface = interface_for(ip)
-    ufw = shutil.which("ufw") and "Status: active" in cmd(["ufw", "status"])
-    firewalld = shutil.which("firewall-cmd") and \
-        cmd(["firewall-cmd", "--state"]) == "running"
+    ufw = backend_running(["ufw", "status"], "Status: active")
+    # firewalld returns exit 252 (NOT_RUNNING) when installed but inactive.
+    # This is normal alongside active UFW: do not mistake it for a command
+    # failure, and never enable firewalld automatically.
+    firewalld = backend_running(["firewall-cmd", "--state"], "running", 252)
     if bool(ufw) == bool(firewalld):
         raise Refused("single_active_firewall_backend_required")
     if firewalld:

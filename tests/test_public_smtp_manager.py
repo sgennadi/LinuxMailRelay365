@@ -85,6 +85,22 @@ class PublicSmtpContracts(unittest.TestCase):
         with self.assertRaisesRegex(module.Refused, "duplicate_postfix_parameter"):
             module.mutate_main(old + b"smtpd_client_restrictions = bad\n", module.CHANGES)
 
+    def test_installed_but_inactive_firewalld_does_not_block_ufw(self):
+        from types import SimpleNamespace
+        with patch.object(module.shutil, "which", return_value="/usr/bin/firewall-cmd"), \
+             patch.object(module.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=252, stdout="not running")):
+            self.assertFalse(module.backend_running(["firewall-cmd", "--state"], "running", 252))
+        with patch.object(module.shutil, "which", return_value="/usr/sbin/ufw"), \
+             patch.object(module.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=0, stdout="Status: active")):
+            self.assertTrue(module.backend_running(["ufw", "status"], "Status: active"))
+        with patch.object(module.shutil, "which", return_value="/usr/bin/firewall-cmd"), \
+             patch.object(module.subprocess, "run", return_value=SimpleNamespace(
+                 returncode=251, stdout="failed")):
+            with self.assertRaisesRegex(module.Refused, "unreliable"):
+                module.backend_running(["firewall-cmd", "--state"], "running", 252)
+
     def test_ufw_rule_scope_and_comment_ownership(self):
         matches = module.ufw_matching_rules(
             "To Action From\n192.168.30.3 46500/tcp ALLOW IN Anywhere # LinuxMailRelay365Public\n"
