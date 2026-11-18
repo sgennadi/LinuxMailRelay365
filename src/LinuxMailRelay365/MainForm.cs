@@ -122,8 +122,8 @@ internal sealed class MainForm : Form
         ]);
         mailTransport.SelectedIndex = 0;
         senderPolicy.SelectedIndex = 0;
-        mailTransport.SelectedIndexChanged += (_, _) => SaveRoutingChoices();
-        senderPolicy.SelectedIndexChanged += (_, _) => SaveRoutingChoices();
+        mailTransport.SelectedIndexChanged += (_, _) => { SaveRoutingChoices(); UpdatePreserveFlowPreview(); };
+        senderPolicy.SelectedIndexChanged += (_, _) => { SaveRoutingChoices(); UpdatePreserveFlowPreview(); };
         preserveExistingMail.CheckedChanged += (_, _) =>
         {
             SaveRoutingChoices();
@@ -134,7 +134,7 @@ internal sealed class MainForm : Form
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
         foreach (TextBox item in new[] { host, mailbox, tenant, smtpListenIp,
-                                         isolatedSmtpPort, smtpTrustedCidrs })
+                                         isolatedSmtpPort, smtpTrustedCidrs, acceptedDomain })
             item.TextChanged += (_, _) => UpdatePreserveFlowPreview();
         publicInternetRequested.CheckedChanged += (_, _) =>
         {
@@ -718,7 +718,10 @@ internal sealed class MainForm : Form
             selectedHost, smtpListenIp.Text.Trim(), isolatedSmtpPort.Text.Trim(),
             mailbox.Text.Trim(), tenant.Text.Trim(), smtpTrustedCidrs.Text.Trim(),
             inspectedServerIdentity == TryCurrentIdentity() ? inspectedMail?.Mta : null,
-            publicInternetRequested.Checked);
+            publicInternetRequested.Checked,
+            mailTransport.SelectedIndex == 1,
+            senderPolicy.SelectedIndex != 0,
+            acceptedDomain.Text.Trim());
     }
 
     private void UpdatePreserveFlowPreview()
