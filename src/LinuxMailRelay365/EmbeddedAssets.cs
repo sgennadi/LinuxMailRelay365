@@ -24,6 +24,7 @@ internal static class EmbeddedAssets
     internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
     internal static string AuthTlsRestore => Text("LinuxMailRelay365.linux.auth-tls-restore.sh");
     internal static string InstalledSidecarAudit => Text("LinuxMailRelay365.linux.installed-sidecar-audit.py");
+    internal static string AuthArchiveAudit => Text("LinuxMailRelay365.linux.auth-archive-audit.py");
     internal static string Provisioner => Text("LinuxMailRelay365.windows.provision.ps1");
     internal static string SecurityProbe => Text("LinuxMailRelay365.linux.security-probe.sh");
     internal static string CloudSecurityProbe => Text("LinuxMailRelay365.windows.cloud-security-probe.ps1");
@@ -97,6 +98,18 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/network-firewall.sh\" <<'LMR365_NETWORK'\n" +
                Encode(NetworkFirewall) + "\nLMR365_NETWORK\n" +
                "bash \"$work/network-firewall.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildAuthArchiveAuditBundle()
+    {
+        // Read-only root-owned archive metadata, never expose backup files,
+        // salted hashes, TLS keys or credential contents over SSH.
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-archive-audit.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/audit.py\" <<'LMR365_ARCHIVE_AUDIT'\n" +
+               Encode(AuthArchiveAudit) + "\nLMR365_ARCHIVE_AUDIT\n" +
+               "python3 \"$work/audit.py\"\n";
     }
 
     internal static string BuildInstalledSidecarAuditBundle(int selectedPort)
