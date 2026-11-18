@@ -21,6 +21,7 @@ internal static class EmbeddedAssets
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
+    internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
     internal static string Provisioner => Text("LinuxMailRelay365.windows.provision.ps1");
     internal static string SecurityProbe => Text("LinuxMailRelay365.linux.security-probe.sh");
     internal static string CloudSecurityProbe => Text("LinuxMailRelay365.windows.cloud-security-probe.ps1");
@@ -94,6 +95,25 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/network-firewall.sh\" <<'LMR365_NETWORK'\n" +
                Encode(NetworkFirewall) + "\nLMR365_NETWORK\n" +
                "bash \"$work/network-firewall.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildAuthTlsBundle(string[] args)
+    {
+        // The Linux SSH script receives Linux FILE PATHS only, never the actual
+        // SMTP password, salted hash or TLS private key content.
+        foreach (string item in args)
+        {
+            if (item.Length is < 1 or > 320 ||
+                item.Any(c => !(char.IsAsciiLetterOrDigit(c) ||
+                    c is '.' or '-' or '_' or '@' or ':' or '/')))
+                throw new ArgumentException("Invalid SMTP AUTH/TLS argument.");
+        }
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-auth-tls.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/enable-auth-tls.sh\" <<'LMR365_AUTH_TLS'\n" +
+               Encode(AuthTlsInstaller) + "\nLMR365_AUTH_TLS\n" +
+               "bash \"$work/enable-auth-tls.sh\" " + string.Join(" ", args) + "\n";
     }
 
     internal static string BuildPlatformCompatBundle(int smtpPort)
