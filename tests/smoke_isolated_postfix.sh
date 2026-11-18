@@ -140,6 +140,12 @@ with smtplib.SMTP('127.0.0.1', port, timeout=10) as smtp:
     smtp.starttls(context=ssl._create_unverified_context())
     smtp.ehlo('fixture.local')
     assert smtp.has_extn('AUTH'), 'AUTH missing after STARTTLS'
+    # Authenticated submission is mandatory even for trusted localhost.
+    code, _ = smtp.mail('mailer@example.test')
+    assert code == 250, 'Encrypted MAIL FROM not accepted before policy check'
+    code, _ = smtp.rcpt('receiver@example.test')
+    assert code != 250, 'Unauthenticated RCPT TO unexpectedly accepted'
+    smtp.rset()
     try:
         smtp.login('lmr365-ci','not-the-ci-fixture-password')
     except smtplib.SMTPAuthenticationError:
@@ -147,6 +153,15 @@ with smtplib.SMTP('127.0.0.1', port, timeout=10) as smtp:
     else:
         raise AssertionError('Wrong SMTP password was accepted')
     smtp.login('lmr365-ci','ci-fixture-password')
+    code, _ = smtp.mail('mailer@example.test')
+    assert code == 250, 'Authenticated sender not accepted'
+    code, _ = smtp.rcpt('receiver@example.test')
+    assert code == 250, 'Authenticated relay recipient was rejected'
+    smtp.rset() # No DATA: nothing is queued or sent.
+with smtplib.SMTP('127.0.0.1', port, timeout=10) as smtp:
+    smtp.ehlo('fixture.local')
+    smtp.starttls(context=ssl._create_unverified_context())
+    smtp.ehlo('fixture.local')
     smtp.login('lmr365-ci-b','ci-fixture-password-2')
 print('AUTH_TLS_REAL_SMTP_SMOKE=PASS')
 PY
