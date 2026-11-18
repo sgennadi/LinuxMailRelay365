@@ -30,8 +30,10 @@ class MultiMtaContracts(unittest.TestCase):
                              "postfix_not_preinstalled_package_mutation_blocked")
             r = audit(name, True)
             self.assertEqual(r["MULTI_MTA_READINESS"],
-                             "preinstalled_postfix_candidate_manual_isolation_required")
+                             "preinstalled_postfix_guarded_fixed_sender_candidate")
             self.assertEqual(r["MTA_PACKAGE_INSTALL_ALLOWED"], "no")
+            self.assertEqual(r["FOREIGN_MTA_FIXED_SENDER_GUARD"],
+                             "available_requires_root_live_verification")
             self.assertEqual(r["PRIMARY_MTA_STOP_OR_RESTART"], "no")
 
     def test_unknown_or_multiple_mta_fail_closed(self):
