@@ -44,6 +44,7 @@ OPTIONAL = (
     "usr/local/libexec/linuxmailrelay365-relay-health.py",
     "usr/local/libexec/linuxmailrelay365-health-alerts.py",
     "var/lib/linuxmailrelay365-sidecar-auth-recovery",
+    "var/lib/linuxmailrelay365-smtp-account-recovery",
     "var/lib/linuxmailrelay365-smtp-tls-recovery",
     "var/lib/linuxmailrelay365-eop-route-recovery",
     "var/lib/linuxmailrelay365-public-smtp",
@@ -52,7 +53,7 @@ OPTIONAL = (
 ROOTS = (CONF,) + OPTIONAL
 ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\Z")
 SHA = re.compile(r"[a-f0-9]{64}\Z")
-REL = re.compile(r"[A-Za-z0-9._/-]{1,320}\Z")
+REL = re.compile(r"[A-Za-z0-9._@+/-]{1,320}\Z")
 MAX_ITEMS = 4096
 MAX_SIZE = 96 * 1024 * 1024
 MAX_FILE = 16 * 1024 * 1024
