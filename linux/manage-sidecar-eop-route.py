@@ -138,6 +138,16 @@ def validate(args):
         raise Refused("operator_must_confirm_existing_tenant_connector")
 
 
+def escape_posix_ere(value):
+    """Escape a literal address consistently on Python 3.6 and later.
+
+    Python 3.6 re.escape also escaped non-special characters such as '@',
+    whose escaping can be undefined in POSIX ERE implementations.
+    """
+    special = r"\.^$*+?{}[]()|"
+    return "".join("\\" + char if char in special else char for char in value)
+
+
 def fixed_regex(domain):
     return domain.lower().replace(".", "[.]")
 
@@ -154,7 +164,7 @@ def policy_maps(args):
     if args.sender_policy == "fixed-mailbox":
         # Fixed mailbox: reject every other local-part in the same domain.
         # The colon delimiter cannot appear in the validated mailbox syntax.
-        sender = ":^{}$: OK\n".format(re.escape(args.sender.lower()))
+        sender = ":^{}$: OK\n".format(escape_posix_ere(args.sender.lower()))
         # Postfix regexp-table RHS uses $1/$2 for capture expansion; escape
         # literal dollar signs in a valid mailbox local-part as $$.
         canonical = "/^.+$/ {}\n".format(args.sender.lower().replace("$", "$$"))
