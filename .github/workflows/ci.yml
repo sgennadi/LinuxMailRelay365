@@ -13,6 +13,7 @@ jobs:
       - name: Shell and unit tests
         run: |
           bash -n linux/probe-linux.sh linux/install-postfix-m365-xoauth2.sh linux/mail-config-recovery.sh linux/install-preserve-postfix-sidecar.sh linux/network-firewall.sh
+          python3 -m py_compile linux/audit-existing-smtp.py
           python3 -m unittest discover -v -s tests
   windows-build:
     runs-on: windows-latest

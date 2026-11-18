@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.9 — source and GitHub Actions builds; not a verified production release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.10 — source and GitHub Actions builds; not a verified production release.**
 
 ## Intended workflow
 
@@ -51,6 +51,53 @@ mode; every authorized client in a trusted network can submit mail as the
 configured mailbox. Use narrow subnets and host firewall rules, and do not
 forward public SMTP traffic to this port. SMTP submission from a trusted LAN
 remains unencrypted until separate TLS listener support is implemented.
+
+## Live Preserve Existing Mail diagram and existing public SMTP audit (Preview 10)
+
+In step **4 — Configure Postfix**, choose **Preserve Existing Mail** (on by
+default). Before installation click **Inspect existing MTA and routing**. This
+performs a *read-only* Linux MTA scan **and** an audit of existing SMTP listener
+bindings, Postfix `postconf` relay/recipient restrictions, `mynetworks`,
+per-service master.cf overrides, SASL authentication and inbound TLS. The
+auditor produces only structured status codes, not raw configuration,
+credentials or messages. It does not send mail.
+
+**Public SMTP listener is NOT equivalent to open relay.** A listener on
+`0.0.0.0:25` may legitimately accept inbound mail while
+`reject_unauth_destination` blocks forwarding. The audit distinguishes
+*potentially public bind*, *restricted relay rules*, *suspected unsafe relay*,
+*unknown*, and *no matching active listener*. This is a configuration
+heuristic, **not** proof of an open relay or actual internet reachability:
+NAT, firewall, externally sourced SMTP and permitted recipient tests are not
+performed. Unknown or inconclusive findings require manual verification.
+
+When Preserve is selected, an in-Wizard **live route diagram** draws both
+independent flows from the *actual entered values*, with no invented host,
+mailbox, Tenant, subnet or port:
+
+- **Old applications → existing Postfix → existing routes and queue**.
+  Existing applications stay on their original SMTP port and destination.
+- **New applications → separate Linux SMTP listener at the selected port →
+  isolated Postfix queue → Microsoft 365 XOAUTH2 → original recipient**.
+  The sender `From` and SMTP envelope sender are rewritten to the
+  selected and Exchange-authorized Microsoft 365 mailbox.
+- The diagram updates as the user edits Linux host, selected listener IP,
+  port, sender mailbox, Tenant, verified domain, trusted CIDRs, transport and
+  public-Internet plan. Missing inputs are shown as *not selected*.
+  **Connector and sender-masquerade plans are marked NOT DEPLOYABLE**, not
+  depicted as completed working configurations.
+- A read-only, translated **client SMTP setup guide** (RU/EN/HE) below the
+  diagram can be copied with one button, without copying credentials or
+  private keys and without resetting the Wizard scroll position.
+
+**Client configuration after successful deployment**: point only the *new*
+programs to the configured private Linux IPv4 and custom port (default 2525).
+If the listener IP is omitted, use `127.0.0.1` **only from applications running
+on that same Linux host**. On remote programs, use the Linux private IPv4,
+an explicitly allowed trusted CIDR and a matching local firewall rule. The
+current sidecar does **not** provide incoming client SMTP AUTH or TLS; it is
+not safe for public Internet access. Before switching programs, send a test
+message and verify actual Microsoft 365 delivery.
 
 ## SMTP firewall and optional public internet exposure
 
