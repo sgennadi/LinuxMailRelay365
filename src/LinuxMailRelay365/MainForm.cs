@@ -424,6 +424,10 @@ internal sealed class MainForm : Form
                                   "Check Linux / SELinux for the selected SMTP port",
                                   "בדיקת לינוקס ו-SELinux עבור יציאת SMTP שנבחרה"),
                                   InspectPlatformAsync, false, "check", "platform");
+                AddAction(page, T("Диагностика SELinux Enforcing для RHEL (только чтение)",
+                                  "RHEL SELinux Enforcing acceptance report (read-only)",
+                                  "דוח SELinux Enforcing ל-RHEL ללא שינויים"),
+                                  InspectRhelSelinuxAsync, false, "shield", "selinux-doctor");
                 AddAction(page, T("Проверить установленный SMTP: AUTH/TLS, порт, SELinux (без изменений)",
                                   "Audit installed SMTP: AUTH/TLS, port, SELinux (read-only)",
                                   "בדיקת SMTP מותקן: AUTH/TLS, יציאה ו-SELinux"),
@@ -1055,6 +1059,27 @@ internal sealed class MainForm : Form
         await InspectAuthArchivesAsync(endpoint);
         if (await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None) == true)
             await VerifyInstalledTlsIdentityAsync(endpoint, checkPort);
+    }
+
+    private async Task InspectRhelSelinuxAsync()
+    {
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) ||
+            selectedPort is < 1024 or > 65535)
+            throw new InvalidDataException("Custom SMTP port must be 1024-65535.");
+        var endpoint = Endpoint();
+        int actualPort = await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None)
+            ? await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None)
+            : selectedPort;
+        if (actualPort != selectedPort)
+            WriteLine("Auditing installed custom TCP " + actualPort + " rather than unsaved " + selectedPort + ".");
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildRhelSelinuxDoctorBundle(actualPort), TimeSpan.FromSeconds(75));
+        result.EnsureSuccess();
+        WriteLine(result.StdOut);
+        WriteLine("SELinux labels and a known port type are only preflight hints. " +
+                  "A real SELinux Enforcing acceptance test must confirm mail-queue and SASL socket access, " +
+                  "audit AVC denials, power-cycle restart and Microsoft 365 delivery. " +
+                  "This inspection never installs policies or changes SELinux.");
     }
 
     private async Task InspectPlatformAsync()
