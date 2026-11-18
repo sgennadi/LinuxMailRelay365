@@ -60,13 +60,15 @@ settings are never modified by this route manager.**
   original isolated XOAUTH2 configuration.
 - The operator must re-acknowledge tenant accepted domain/Connector after
   changing inputs. These acknowledgements are never saved as authorization.
-- To prevent accidental alteration of a pre-existing mail server, the
-  current workflow requires **an already installed XOAUTH2 sidecar**; fresh
-  Direct Send without XOAUTH2 provisioning is **not yet a standalone
-  installer mode**. The route manager refuses if the isolated sidecar queue
-  is nonempty. Drain/resolve pending messages and pause client submissions
-  before applying or restoring; concurrent new submissions still require
-  a planned maintenance window.
+- A NEW private Direct Send sidecar can now be installed without an Entra
+  application, XOAUTH2 certificate or mailbox-scoped role. It requires an
+  existing primary Postfix, the chosen private custom SMTP port, one fixed
+  declared sender, an operator-verified tenant domain and an EOP TLS preflight.
+  Direct Send rejects non-tenant recipients before mail DATA; no actual tenant
+  delivery has yet been tested.
+- The separate Preview/Apply/Restore switch for an existing XOAUTH2 sidecar
+  refuses to change routes while its dedicated queue contains messages.
+  Pause applications and drain messages before switching.
 - Real Ubuntu CI tests the Direct Send local SMTP MAIL/RCPT allowlist and
   checked Restore **without sending MAIL DATA**. This does not prove an
   accepted M365 Connector, a verified tenant domain, sender entitlement or
