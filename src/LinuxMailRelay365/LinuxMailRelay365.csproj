@@ -35,6 +35,7 @@
     <EmbeddedResource Include="../../linux/network-firewall.sh" LogicalName="LinuxMailRelay365.linux.network-firewall.sh" />
     <EmbeddedResource Include="../../linux/audit-existing-smtp.py" LogicalName="LinuxMailRelay365.linux.existing-smtp-audit.py" />
     <EmbeddedResource Include="../../linux/platform-compat.py" LogicalName="LinuxMailRelay365.linux.platform-compat.py" />
+    <EmbeddedResource Include="../../linux/rhel-selinux-doctor.py" LogicalName="LinuxMailRelay365.linux.rhel-selinux-doctor.py" />
     <EmbeddedResource Include="../../linux/enable-sidecar-auth-tls.sh" LogicalName="LinuxMailRelay365.linux.auth-tls-installer.sh" />
     <EmbeddedResource Include="../../linux/restore-sidecar-auth-tls.sh" LogicalName="LinuxMailRelay365.linux.auth-tls-restore.sh" />
     <EmbeddedResource Include="../../linux/installed-sidecar-audit.py" LogicalName="LinuxMailRelay365.linux.installed-sidecar-audit.py" />
