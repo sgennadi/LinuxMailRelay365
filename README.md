@@ -860,6 +860,16 @@ of the original isolated files. **It never starts, stops or restarts a primary
 Postfix, Exim or Sendmail service**; the isolated services remain offline and
 must be started separately **only after live revalidation**.
 
+The archived scope **does include** private TLS certificates/keys, Dovecot
+`smtp-auth/dovecot.conf` and salted SMTP AUTH password hashes when those files
+are inside `/etc/linuxmailrelay365`. It does **not** include an external CA,
+trusted root store, secret file or key referenced from another path. The
+Ubuntu CI now also exercises a real private Dovecot AUTH/TLS snapshot after
+credential rotation, stops independent SMTP/Auth/monitoring units, restores
+verified files offline and manually checks a rotated account's real TLS login.
+This is not a production DR test, and must not be marked accepted until the
+**exact GitHub Actions commit** passes all jobs.
+
 This is **configuration recovery**, not whole-machine disaster recovery:
 neither primary MTA nor queued mail, external TLS keys/certificates,
 OS trust store, package versions, external systemd dependencies, tenant
