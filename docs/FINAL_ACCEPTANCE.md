@@ -15,7 +15,8 @@
 | Root-only real reboot baseline and verification | Implemented | Controlled actual Linux reboot |
 | RHEL 8/9/10, Oracle, Rocky, Alma SELinux port/file/process context audit | Read-only | Real Enforcing process AVC allow/deny integration |
 | Microsoft 365 XOAUTH2 sender transport | Preview | Live Entra tenant + Exchange scoped mailbox + delivered test |
-| Microsoft 365 Direct Send / Connector | Guarded EOP route on existing XOAUTH2 sidecar; standalone deployment incomplete | Real tenant Connector, accepted domains, actual recipient delivery |
+| Microsoft 365 Direct Send | Fresh isolated installation without Entra/OAuth, or guarded route switch of an existing XOAUTH2 sidecar | Approved accepted domain and real internal recipient receipt |
+| Microsoft 365 Connector | Existing isolated sidecar only; no tenant provisioning | Verified tenant Connector authorization and external recipient receipt |
 | Sender masquerade / preserve original From | BLOCKED | Verified sender permissions and routing |
 | Internet-wide SMTP listener | BLOCKED | Approved abuse controls / rate limits and security review |
 | Signed Stable Windows EXE | Not released | Signing provenance, GUI / x64 / ARM64 production QA |
@@ -81,7 +82,7 @@ maintenance window or a proper disaster-recovery plan.
 
 ## 5. Microsoft 365 delivery verification
 
-With explicit tenant administrator access on a TEST tenant, validate app-only OAuth2, Exchange scoped SMTP.SendAsApp grant, accepted domain and approved mailbox. For Connector verify the actual tenant inbound Connector, authorized unshared public IP or matching TLS identity, and outbound TCP 25. For Direct Send enforce INTERNAL recipient scope. The current Connector/Direct Send wizard options only inspect/plan; they DO NOT deploy a Connector, change MX/SPF/DKIM/DMARC or change Postfix.
+With explicit tenant administrator access on a TEST tenant, validate app-only OAuth2, Exchange scoped SMTP.SendAsApp grant, accepted domain and approved mailbox. For Connector verify the actual tenant inbound Connector, authorized unshared public IP or matching TLS identity, and outbound TCP 25. For Direct Send enforce INTERNAL recipient scope. The Wizard has an independent fresh Direct Send sidecar installer requiring no Entra/OAuth configuration and a separate SHA-guarded route switch for an existing XOAUTH2 sidecar. Neither creates an Exchange Connector or changes MX/SPF/DKIM/DMARC, nor do they alter the primary Postfix. Tenant domain ownership, actual Connector authorization and delivered messages must still be verified.
 
 Send from a real internal app to an approved internal mailbox, then, if the chosen transport supports it, an external test mailbox. Confirm queue disposition, Exchange acceptance and final receipt, including authorized sender identity. Collect no private keys, passwords, tokens or recipient mail contents. Do not claim delivery solely from localhost SMTP success.
 
