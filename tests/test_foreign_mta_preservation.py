@@ -102,6 +102,8 @@ class ForeignMtaPreservationTests(unittest.TestCase):
                 self.assertIn("foreign_primary_mta_changed_or_unverified", source)
                 self.assertIn("PRESERVE_EXISTING_", source)
                 self.assertIn("active_foreign_mta_requires_preservation_mode", source)
+                self.assertIn("unknown_foreign_mta_state", source)
+                self.assertIn("LoadState", source)
                 self.assertIn("PRIMARY_MTA_STOP_OR_RESTART=no", source)
                 self.assertIn("PRIMARY_MTA_QUEUE_MODIFIED=no", source)
 
