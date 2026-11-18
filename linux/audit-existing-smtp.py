@@ -23,7 +23,7 @@ def run(args):
     if not shutil.which(args[0]):
         return None
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=8)
+        p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=8)
         if p.returncode == 0 and len(p.stdout) <= 65536:
             return p.stdout
     except (OSError, subprocess.TimeoutExpired, UnicodeError):
