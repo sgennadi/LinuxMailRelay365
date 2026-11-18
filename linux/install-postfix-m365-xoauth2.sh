@@ -111,7 +111,7 @@ try:
     for cidr in sys.argv[2:]:
         network = ipaddress.ip_network(cidr, strict=True)
         if not isinstance(network, ipaddress.IPv4Network) or not any(
-            network.subnet_of(private) for private in allowed):
+            (network.network_address in private and network.broadcast_address in private) for private in allowed):
             raise ValueError("Trusted clients must belong to a specific RFC1918 subnet")
 except ValueError as exc:
     sys.stderr.write("SMTP ingress policy rejected: " + str(exc) + "\n")
