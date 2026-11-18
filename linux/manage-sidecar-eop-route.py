@@ -155,7 +155,9 @@ def policy_maps(args):
         # Fixed mailbox: reject every other local-part in the same domain.
         # The colon delimiter cannot appear in the validated mailbox syntax.
         sender = ":^{}$: OK\n".format(re.escape(args.sender.lower()))
-        canonical = "/^.+$/ {}\n".format(args.sender.lower())
+        # Postfix regexp-table RHS uses $1/$2 for capture expansion; escape
+        # literal dollar signs in a valid mailbox local-part as $$.
+        canonical = "/^.+$/ {}\n".format(args.sender.lower().replace("$", "$$"))
     elif args.sender_policy == "preserve-domain":
         sender = exact
         canonical = "# Preserve accepted-domain sender identity\n"
