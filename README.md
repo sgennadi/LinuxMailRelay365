@@ -51,7 +51,10 @@ settings are never modified by this route manager.**
   internal domains and rejects external recipients at the Linux sidecar
   before DATA. Fixed-mailbox MAIL FROM must match the exact approved sender
   address (not merely another address in the same domain); Postfix then
-  canonicalizes envelope and applicable sender headers to that address.
+  canonicalizes envelope and sender headers to that address, with
+  `local_header_rewrite_clients = static:all` for remote SMTP submissions.
+  This is not an RFC5322 parser or proof that duplicate/malformed header
+  variants and tenant Send As authorization are safely handled.
   Direct Send does not support external recipient relay.
 - **Connector**: supports an external-recipient route only after an operator
   has verified a tenant-approved pre-existing Inbound Connector with static
