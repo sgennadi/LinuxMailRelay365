@@ -23,6 +23,7 @@ internal static class EmbeddedAssets
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
     internal static string RhelSelinuxDoctor => Text("LinuxMailRelay365.linux.rhel-selinux-doctor.py");
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
+    internal static string RelayHealth => Text("LinuxMailRelay365.linux.relay-health.py");
     internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
     internal static string AuthTlsRestore => Text("LinuxMailRelay365.linux.auth-tls-restore.sh");
     internal static string InstalledSidecarAudit => Text("LinuxMailRelay365.linux.installed-sidecar-audit.py");
@@ -192,6 +193,18 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/enable-auth-tls.sh\" <<'LMR365_AUTH_TLS'\n" +
                Encode(AuthTlsInstaller) + "\nLMR365_AUTH_TLS\n" +
                "bash \"$work/enable-auth-tls.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildRelayHealthBundle(int selectedPort)
+    {
+        if (selectedPort is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(selectedPort));
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-health.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/health.py\" <<'LMR365_HEALTH'\n" +
+               Encode(RelayHealth) + "\nLMR365_HEALTH\n" +
+               "python3 \"$work/health.py\" --smtp-port " + selectedPort + "\n";
     }
 
     internal static string BuildSmtpAccountManagerBundle(
