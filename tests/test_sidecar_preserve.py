@@ -44,7 +44,7 @@ class IsolatedSidecarTests(unittest.TestCase):
         self.assertIn('SIDECAR_PORT=2525', s)
         self.assertIn('PRIMARY_POSTFIX_CONFIG_UNCHANGED=yes', s)
         for blocked in (
-            "postconf -e ", "postfix reload", "systemctl restart postfix",
+            "postconf -e ", "systemctl reload postfix", "systemctl restart postfix",
             "systemctl stop postfix.service", "systemctl start postfix.service",
             "postmulti -e init", "apt-get install", "dnf install"
         ):
