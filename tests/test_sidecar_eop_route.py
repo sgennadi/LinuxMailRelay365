@@ -61,6 +61,15 @@ class EopRouteContracts(unittest.TestCase):
                 self.assertEqual(sender, ":^alerts\\+ci@example\\.org$: OK\n")
                 self.assertNotIn("[^@[:space:]]+", sender)
 
+    def test_posix_ere_escaping_is_stable_on_rhel_python36(self):
+        self.assertEqual(eop.escape_posix_ere("alerts@example.org"),
+                         r"alerts@example\.org")
+        self.assertEqual(eop.escape_posix_ere("alerts+ci@example.org"),
+                         r"alerts\+ci@example\.org")
+        self.assertEqual(eop.escape_posix_ere("billing$1@example.org"),
+                         r"billing\$1@example\.org")
+        self.assertNotIn(r"\@", eop.escape_posix_ere("alerts@example.org"))
+
     def test_fixed_sender_canonical_map_escapes_postfix_dollar_macros(self):
         a = opts(sender="billing$1@example.org")
         sender, canonical, _ = eop.policy_maps(a)
