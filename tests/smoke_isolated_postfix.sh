@@ -181,6 +181,35 @@ if sudo python3 "$IDENTITY_SCRIPT" \
 fi
 echo 'TLS_VERIFIED_CA_DNS_CUSTOM_PORT_SMOKE=PASS'
 
+echo '=== Rotate private SMTP TLS certificate on custom port ==='
+TLS_ROTATE_SCRIPT=linux/rotate-sidecar-tls.sh
+sudo openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+  -keyout "$FIXTURE/next-key.pem" -out "$FIXTURE/next-cert.pem" \
+  -subj /CN=lmr365-ci.example.test \
+  -addext 'subjectAltName=DNS:lmr365-ci.example.test' -days 30 >/dev/null 2>&1
+sudo chmod 0600 "$FIXTURE/next-key.pem"
+sudo chmod 0644 "$FIXTURE/next-cert.pem"
+tls_preview="$(sudo bash "$TLS_ROTATE_SCRIPT" --check-only \
+  --smtp-port "$PORT" --server-name lmr365-ci.example.test \
+  --tls-cert "$FIXTURE/next-cert.pem" --tls-key "$FIXTURE/next-key.pem" \
+  --ca-file "$FIXTURE/next-cert.pem")"
+printf '%s\n' "$tls_preview" | grep -Fx 'TLS_ROTATE_PREFLIGHT=ready'
+tls_sha="$(printf '%s\n' "$tls_preview" | sed -n 's/^TLS_ROTATE_OLD_CERT_SHA256=//p')"
+[[ "$tls_sha" =~ ^[a-f0-9]{64}$ ]]
+sudo bash "$TLS_ROTATE_SCRIPT" --apply \
+  --smtp-port "$PORT" --server-name lmr365-ci.example.test \
+  --tls-cert "$FIXTURE/next-cert.pem" --tls-key "$FIXTURE/next-key.pem" \
+  --ca-file "$FIXTURE/next-cert.pem" \
+  --expect-cert-sha256 "$tls_sha" --confirm ROTATE_PRIVATE_SMTP_TLS |
+  tee /tmp/lmr365-tls-rotated.txt
+grep -Fx 'TLS_ROTATE_APPLIED=yes' /tmp/lmr365-tls-rotated.txt
+sudo test -d /var/lib/linuxmailrelay365-smtp-tls-recovery
+sudo python3 "$IDENTITY_SCRIPT" --smtp-port "$PORT" \
+  --server-name lmr365-ci.example.test --ca-file "$FIXTURE/next-cert.pem" |
+  grep -Fx 'SMTP_TLS_PROBE_RESULT=verified_local_chain_dns_and_starttls'
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+echo 'SMTP_TLS_CERT_ROTATION_REAL_SMOKE=PASS'
+
 echo '=== Exercise SMTP AUTH after STARTTLS, without MAIL FROM/RCPT/DATA ==='
 python3 - "$PORT" <<'PY'
 import smtplib, ssl, sys
