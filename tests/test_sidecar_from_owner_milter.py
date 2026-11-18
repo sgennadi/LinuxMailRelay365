@@ -91,6 +91,41 @@ class PolicyTests(unittest.TestCase):
                 self.assertIsNone(guard.safe_from(value))
 
 
+class IntegrationContracts(unittest.TestCase):
+    def test_service_staging_isolation_and_typed_approval(self):
+        source = (SCRIPT.parent / "install-sidecar-from-guard.sh").read_text(
+            encoding="utf-8")
+        self.assertIn("ACTIVATE_PRIVATE_FROM_OWNER_GUARD", source)
+        self.assertIn("linuxmailrelay365-fromguard", source)
+        self.assertIn("RuntimeDirectoryMode=0750", source)
+        self.assertIn("ProtectSystem=strict", source)
+        self.assertIn("NoNewPrivileges=yes", source)
+        self.assertIn("flock -n 9", source)
+        self.assertIn("selinux_policy_not_live_verified", source)
+        self.assertNotIn("systemctl restart postfix", source)
+        self.assertNotIn("postconf -e", source)
+        self.assertNotIn("ufw allow", source)
+
+    def test_wizard_embeds_separate_engine_and_preview_approval(self):
+        root = SCRIPT.parents[1]
+        project = (root / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(
+            encoding="utf-8")
+        assets = (root / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(
+            encoding="utf-8")
+        ui = (root / "src/LinuxMailRelay365/MainForm.cs").read_text(
+            encoding="utf-8")
+        self.assertIn("sidecar-from-owner-milter.py", project)
+        self.assertIn("install-sidecar-from-guard.sh", project)
+        self.assertIn("BuildFromOwnerGuardBundle", assets)
+        self.assertIn("FromOwnerGuardInstaller", assets)
+        self.assertIn("PreviewFromOwnerGuardAsync", ui)
+        self.assertIn("EnableFromOwnerGuardAsync", ui)
+        self.assertIn("ENABLE FROM GUARD", ui)
+        self.assertIn("FROM_GUARD_SERVICE=active", ui)
+        self.assertIn("Milter", ui)
+        self.assertNotIn("milter_default_action = accept", assets)
+
+
 class SessionTests(unittest.TestCase):
     def test_negotiation_and_bounded_frame_roundtrip(self):
         session = guard.Session(lambda: dict(OWNERS))
