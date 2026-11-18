@@ -137,18 +137,27 @@ def policy_maps(args):
     return sender, canonical, recipients
 
 
-def policy_changes(args, ca):
+def policy_changes(args, ca, auth_enabled):
     mx = args.mx_host.lower()
     return {
         "default_transport": "smtp:[{}]:25".format(mx),
         "relay_transport": "smtp:[{}]:25".format(mx),
         "relayhost": "[{}]:25".format(mx),
         "local_transport": "error:LocalDeliveryDisabled",
+        # SMTP relay policy MUST authorize only the existing authenticated
+        # or trusted-network client; RCPT allowlisting then controls targets.
+        # Original reject_unauth_destination would reject all Direct Send
+        # recipients because mydestination/relay_domains are empty.
+        "smtpd_relay_restrictions": (
+            "permit_sasl_authenticated, reject" if auth_enabled else
+            "permit_mynetworks, reject"),
         "smtpd_sender_restrictions": "check_sender_access regexp:{}, reject".format(CONF / MAPS[0]),
         "smtpd_recipient_restrictions": "check_recipient_access regexp:{}, reject".format(CONF / MAPS[2]),
         "sender_canonical_maps": "regexp:{}".format(CONF / MAPS[1]),
         "sender_canonical_classes": "envelope_sender, header_sender",
-        "smtp_tls_security_level": "verify",
+        # Fixed explicit EOP nexthop => DNS-spoof-resistant TLS identity.
+        "smtp_tls_security_level": "secure",
+        "smtp_tls_secure_cert_match": "nexthop",
         "smtp_tls_CAfile": ca,
         "smtp_tls_mandatory_protocols": "!SSLv2,!SSLv3,!TLSv1,!TLSv1.1",
         "smtp_tls_cert_file": args.tls_cert if args.mode == "connector" else "",
@@ -261,6 +270,17 @@ def runtime_checks():
             raise Refused("unexpected_trusted_network_policy")
     else:
         raise Refused("unknown_sasl_policy")
+    # Do not replace a manually modified sender / recipient policy or existing
+    # route tables with a different security interpretation.
+    original_rcpt = postconf("smtpd_recipient_restrictions")
+    if original_rcpt not in ("permit_mynetworks, reject_unauth_destination",
+                             "permit_sasl_authenticated, reject"):
+        raise Refused("unexpected_original_recipient_policy")
+    for key in ("sender_canonical_maps", "recipient_canonical_maps",
+                "transport_maps", "smtp_tls_policy_maps", "relayhost",
+                "smtpd_sender_restrictions"):
+        if postconf(key):
+            raise Refused("existing_routing_override_requires_manual_review")
     if "regexp" not in run(["postconf", "-m"]).stdout.splitlines():
         raise Refused("regexp_dictionary_not_available")
 
@@ -281,8 +301,11 @@ def check_connector_cert(args):
         meta = owned_file(Path(name))
         if not 0 < meta.st_size <= 16 * 1024 * 1024:
             raise Refused("connector_certificate_size_invalid")
-    if Path(args.tls_key).stat().st_mode & 0o007:
-        raise Refused("connector_key_permissions_not_private")
+    import grp
+    key = Path(args.tls_key).stat()
+    postfix_gid = grp.getgrnam("postfix").gr_gid
+    if key.st_mode & 0o007 or key.st_gid != postfix_gid or not key.st_mode & 0o040:
+        raise Refused("connector_private_key_not_readable_by_postfix_only")
     certificate = run(["openssl", "x509", "-in", args.tls_cert,
                        "-noout", "-checkend", "604800"])
     san = run(["openssl", "x509", "-in", args.tls_cert, "-noout",
@@ -319,11 +342,13 @@ def write_atomic(path, data, mode=0o644):
 
 
 def post_reload(main, master, rules=None):
-    write_atomic(CONF / "main.cf", main)
-    write_atomic(CONF / "master.cf", master)
+    # Prepare policy maps first. Main/master are installed only after
+    # rule files exist; each file update is atomic.
     if rules is not None:
         for name, data in zip(MAPS, rules):
             write_atomic(CONF / name, data.encode("ascii"))
+    write_atomic(CONF / "master.cf", master)
+    write_atomic(CONF / "main.cf", main)
     if run(["postfix", "-c", str(CONF), "check"]).returncode or \
             run(["postfix", "-c", str(CONF), "reload"]).returncode:
         raise Refused("isolated_postfix_check_or_reload_failed")
@@ -358,7 +383,8 @@ def deploy(args):
     if any((CONF / m).exists() or (CONF / m).is_symlink() for m in MAPS):
         raise Refused("existing_eop_policy_map_conflict")
     ca = system_ca()
-    main = rewrite_main(before, policy_changes(args, ca))
+    auth_enabled = postconf("smtpd_sasl_auth_enable") == "yes"
+    main = rewrite_main(before, policy_changes(args, ca, auth_enabled))
     newmaster = rewrite_master(master)
     archive = backup(before, master)
     previous_primary = primary_digest()
@@ -382,6 +408,10 @@ def deploy(args):
         if changed:
             try:
                 post_reload(before, master)
+                for item in MAPS:
+                    path = CONF / item
+                    if path.is_file() and not path.is_symlink():
+                        path.unlink()
                 say("EOP_ROUTE_ROLLBACK", "previous_config_restored")
             except (OSError, Refused):
                 say("EOP_ROUTE_ROLLBACK", "manual_recovery_required")
@@ -464,6 +494,26 @@ def main():
     try:
         validate(a)
         runtime_checks()
+        # Preflight is read-only; the apply/restore operations take the
+        # same exclusive lock used by private SMTP AUTH and certificate changes.
+        if a.check_only:
+            before, _ = local_policy(a.smtp_port)
+            if ACTIVE.exists() or ACTIVE.is_symlink():
+                raise Refused("eop_route_already_active")
+            if a.mode == "connector":
+                check_connector_cert(a)
+            system_ca()
+            say("EOP_ROUTE_PREFLIGHT", "ready")
+            say("EOP_ROUTE_MAIN_SHA256", digest(before))
+            say("EOP_ROUTE_MODE", a.mode.replace("-", "_"))
+            say("EOP_ROUTE_CUSTOM_PORT", a.smtp_port)
+            say("EOP_ROUTE_OUTBOUND_PORT", 25)
+            say("EOP_ROUTE_RECIPIENT_SCOPE", "internal_only" if a.mode == "direct-send" else "connector_candidate")
+            say("EOP_ROUTE_FIXED_SENDER", "yes")
+            say("EXCHANGE_CONNECTOR_VERIFIED", "no")
+            say("MICROSOFT365_DELIVERY_VERIFIED", "no")
+            say("CHANGES_APPLIED", "no")
+            return 0
         fd = os.open(str(LOCK), os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -475,18 +525,6 @@ def main():
             if a.mode == "connector":
                 check_connector_cert(a)
             system_ca()
-            if a.check_only:
-                say("EOP_ROUTE_PREFLIGHT", "ready")
-                say("EOP_ROUTE_MAIN_SHA256", digest(before))
-                say("EOP_ROUTE_MODE", a.mode.replace("-", "_"))
-                say("EOP_ROUTE_CUSTOM_PORT", a.smtp_port)
-                say("EOP_ROUTE_OUTBOUND_PORT", 25)
-                say("EOP_ROUTE_RECIPIENT_SCOPE", "internal_only" if a.mode == "direct-send" else "connector_candidate")
-                say("EOP_ROUTE_FIXED_SENDER", "yes")
-                say("EXCHANGE_CONNECTOR_VERIFIED", "no")
-                say("MICROSOFT365_DELIVERY_VERIFIED", "no")
-                say("CHANGES_APPLIED", "no")
-                return 0
             return deploy(a)
         finally:
             os.close(fd)
