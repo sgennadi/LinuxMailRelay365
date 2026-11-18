@@ -714,7 +714,12 @@ def restore(snapshot_id, expected):
             verify_restored_postfix()
             command(["systemctl", "daemon-reload"])
             success = True
-        except Exception:
+        except Exception as failure:
+            # Report ONLY sanitized internal reason codes, never paths/keys,
+            # to distinguish an invalid restored config from an I/O failure.
+            say("SIDECAR_RESTORE_FAILED_STAGE",
+                str(failure) if isinstance(failure, Refused)
+                else "unexpected_restore_validation_error")
             if deployed:
                 rollback_switch(retired, deployed)
                 command(["systemctl", "daemon-reload"])
