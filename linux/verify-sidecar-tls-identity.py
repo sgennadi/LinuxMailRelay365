@@ -120,10 +120,15 @@ def probe_tls(port, server_name, ca_file=None, timeout=8):
                 return d
             d["SMTP_TLS_PROBE_RESULT"] = "verified_local_chain_dns_and_starttls"
             return d
-    except ssl.SSLCertVerificationError:
-        d["SMTP_TLS_PROBE_RESULT"] = "certificate_untrusted_or_dns_mismatch"
-    except ssl.SSLError:
-        d["SMTP_TLS_PROBE_RESULT"] = "tls_handshake_failed"
+    except ssl.SSLError as error:
+        # SSLCertVerificationError was only added in later Python releases.
+        # Keep Oracle/RHEL 8 system Python 3.6 compatible and never echo the
+        # certificate's potentially sensitive subject or the network address.
+        if (getattr(error, "verify_code", None) is not None or
+                "CERTIFICATE_VERIFY_FAILED" in str(error)):
+            d["SMTP_TLS_PROBE_RESULT"] = "certificate_untrusted_or_dns_mismatch"
+        else:
+            d["SMTP_TLS_PROBE_RESULT"] = "tls_handshake_failed"
     except (OSError, smtplib.SMTPException, ValueError):
         d["SMTP_TLS_PROBE_RESULT"] = "smtp_connection_or_protocol_failed"
     return d
