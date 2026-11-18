@@ -534,9 +534,20 @@ internal sealed class MainForm : Form
                                              "Linux sender ownership file (root 0600): sender@domain smtp-login",
                                              "קובץ בעלי כתובות שולח בשרת Linux"), outboundSenderOwnerFile);
                             AddLine(page, UiTheme.Text(T(
-                                "Для каждого MAIL FROM укажите SMTP-логин владельца. RFC5322 From внутри письма отдельно не проверяется; не предоставляйте общим приложениям право произвольного From.",
-                                "One explicit SMTP login per MAIL FROM address. RFC5322 From header is NOT checked by this Postfix map; use dedicated sender identities or a reviewed Milter.",
-                                "הבעלות על MAIL FROM נבדקת; כותרת From דורשת בדיקה נפרדת.")));
+                                "Для каждого MAIL FROM укажите SMTP-логин владельца. Защита RFC5322 From требует отдельного Milter: сначала проверьте и включите From Guard; без него применение маршрута заблокировано.",
+                                "Map each MAIL FROM to its SMTP login. RFC5322 From requires a separately approved From Guard: Preview and activate it before applying the multi-sender Connector. Without a running guard the route is BLOCKED.",
+                                "יש להתקין ולאמת מסנן From נפרד לפני הפעלת Connector עם מספר שולחים.")));
+                            if (advancedSmtpTools.Checked && mailTransport.SelectedIndex == 1)
+                            {
+                                AddAction(page, T("Проверить From Guard (без изменений)",
+                                                  "Preview RFC5322 From Guard (read-only)",
+                                                  "בדיקת מסנן From ללא שינוי"),
+                                          PreviewFromOwnerGuardAsync, false, "check", "from-guard-preview");
+                                AddAction(page, T("Включить защиту From на отдельном Relay...",
+                                                  "Enable independent From Guard...",
+                                                  "הפעלת הגנת From בממסר נפרד"),
+                                          EnableFromOwnerGuardAsync, false, "shield", "from-guard-enable");
+                            }
                         }
                     }
                     AddAction(page, T("Проверить Direct Send / Connector, TCP 25 (только чтение)",
@@ -2068,6 +2079,64 @@ internal sealed class MainForm : Form
             throw new InvalidDataException("Installed sidecar TCP " + installedPort +
                 " differs from unsaved Wizard TCP " + chosenPort + ".");
         return (endpoint, installedPort);
+    }
+
+    private async Task PreviewFromOwnerGuardAsync()
+    {
+        var opt = EopOptions();
+        if (opt.Mode != "connector" || opt.SenderPolicy == "fixed-mailbox")
+            throw new InvalidOperationException(
+                "Private From Guard is only for Connector preserve-domain or masquerade.");
+        var (endpoint, port) = await EopInstalledEndpointAsync(opt.Port);
+        var report = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildFromOwnerGuardBundle(port, opt.SenderOwnerFile),
+            TimeSpan.FromMinutes(2));
+        report.EnsureSuccess();
+        if (!report.StdOut.Contains("FROM_GUARD_PREFLIGHT=ready", StringComparison.Ordinal) ||
+            !report.StdOut.Contains("CHANGES_APPLIED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Independent From Guard did not pass read-only preflight.");
+        WriteLine(report.StdOut);
+        WriteLine("The guard is not connected to SMTP routing by Preview. " +
+                  "The primary MTA, mail queues, messages and Microsoft 365 tenant are unchanged.");
+    }
+
+    private async Task EnableFromOwnerGuardAsync()
+    {
+        var opt = EopOptions();
+        if (opt.Mode != "connector" || opt.SenderPolicy == "fixed-mailbox")
+            throw new InvalidOperationException(
+                "Private From Guard applies only to a multi-sender Connector.");
+        var (endpoint, port) = await EopInstalledEndpointAsync(opt.Port);
+        var preview = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildFromOwnerGuardBundle(port, opt.SenderOwnerFile),
+            TimeSpan.FromMinutes(2));
+        preview.EnsureSuccess();
+        if (!preview.StdOut.Contains("FROM_GUARD_PREFLIGHT=ready", StringComparison.Ordinal))
+            throw new InvalidDataException("From Guard preview failed before any changes.");
+        var owner = System.Text.RegularExpressions.Regex.Match(preview.StdOut,
+            @"(?m)^FROM_GUARD_OWNER_SHA256=([a-f0-9]{64})\r?$");
+        var engine = System.Text.RegularExpressions.Regex.Match(preview.StdOut,
+            @"(?m)^FROM_GUARD_ENGINE_SHA256=([a-f0-9]{64})\r?$");
+        if (!owner.Success || !engine.Success)
+            throw new InvalidDataException("Missing reviewed From Guard policy or binary SHA-256.");
+        string warning = T(
+            "Будет создан отдельный непривилегированный сервис Linux для проверки заголовка RFC5322 From и его сокет. Источник владельцев отправителей должен быть root 0600. Основной MTA, очередь и маршрут Connector пока НЕ меняются. Для включения фильтра в маршрут нужен отдельный Preview и Apply Connector. RHEL SELinux Enforcing не проверен и заблокирован.",
+            "A separate unprivileged Linux service and socket will be installed to validate RFC5322 From against the approved root-only 0600 owner file. The primary MTA, queues and Connector route are NOT changed here. Connector Preview/Apply must be run separately to attach the filter. RHEL SELinux Enforcing is unverified and blocked.",
+            "יותקן שירות עצמאי לבדיקת From. לא ישתנו שרת הדואר הראשי, התור או נתיב Connector.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Independent RFC5322 From Guard",
+            warning, "ENABLE FROM GUARD")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildFromOwnerGuardBundle(port, opt.SenderOwnerFile,
+                owner.Groups[1].Value, engine.Groups[1].Value),
+            TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("FROM_GUARD_SERVICE=active", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("FROM_GUARD_POSTFIX_ROUTING_CHANGED=no",
+                StringComparison.Ordinal))
+            throw new InvalidDataException("From Guard staging did not confirm success.");
+        WriteLine(result.StdOut);
+        WriteLine("Guard staged. Next Preview/Apply the private Connector route separately. " +
+                  "A live mail header/tenant delivery acceptance test is still required.");
     }
 
     private async Task PreviewEopRouteAsync()
