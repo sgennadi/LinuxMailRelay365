@@ -1511,7 +1511,7 @@ internal sealed class MainForm : Form
             warning + "\n\n" +
             "Linux inbound custom TCP " + port + " is preserved. All outgoing sender identities are rewritten to one approved sender. " +
             "Only the isolated Postfix config and its dedicated queue are affected, and a root-only recovery archive is created. " +
-            "Existing queued sidecar messages might use the newly chosen route. The primary Postfix is not changed.",
+            "Drain the isolated queue and pause submitting clients first. The route manager refuses a nonempty sidecar queue. The primary Postfix is unchanged.",
             "DEPLOY PRIVATE EOP ROUTE")) return;
         var applied = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildEopRouteBundle(port, opt.Mode, opt.Mx,
@@ -1547,7 +1547,7 @@ internal sealed class MainForm : Form
             "Restore the original isolated Postfix XOAUTH2 outbound configuration on custom TCP " +
             port + ". The previously archived configuration must match exactly. " +
             "The primary Postfix and its mail queue will not be touched. " +
-            "An isolated sidecar queue may contain messages that will resume through XOAUTH2.",
+            "Pause applications and drain the isolated queue before restoring; queued messages block automatic route changes.",
             "RESTORE PRIVATE EOP ROUTE")) return;
         var restore = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildEopRouteBundle(port, "", "", "", "", "", "", "",
