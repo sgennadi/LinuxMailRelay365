@@ -508,9 +508,9 @@ def stage_snapshot(snapshot_id):
     staged = {}
     try:
         for rel in ROOTS:
-            path = validate_destination(rel)
             if rel not in records:
                 continue
+            path = validate_destination(rel)
             temp = Path(tempfile.mkdtemp(
                 prefix=".lmr365-stage-", dir=str(path.parent)))
             temp.chmod(0o700)
@@ -571,6 +571,9 @@ def rollback_switch(retired, deployed):
 def offline_switch(staged, retired, deployed):
     """Keep original paths for rollback until all validation has passed."""
     for rel in ROOTS:
+        path = rooted(rel)
+        if rel not in staged and not path.exists() and not path.is_symlink():
+            continue
         path = validate_destination(rel)
         if path.exists():
             holding = Path(tempfile.mkdtemp(
@@ -624,6 +627,8 @@ def restore(snapshot_id, expected):
             if deployed:
                 rollback_switch(retired, deployed)
                 command(["systemctl", "daemon-reload"])
+                # Old trees have been put back; remove empty holding folders.
+                cleanup_workdirs({}, retired, True)
             raise Refused("offline_restore_failed_original_configuration_retained")
         finally:
             cleanup_workdirs(staged, retired, success)
