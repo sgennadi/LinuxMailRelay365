@@ -29,8 +29,8 @@ class PreserveMailLiveDiagramContract(unittest.TestCase):
         self.assertIn('LinuxMailRelay365 | Preserve Existing Mail', flow)
         self.assertIn('not confirmed installed', flow)
         self.assertIn('127.0.0.1 on a different machine', flow)
-        self.assertIn('SMTP AUTH: not available', flow)
-        self.assertIn('SMTP TLS to Linux: not available', flow)
+        self.assertIn('SMTP AUTH: not enabled by default', flow)
+        self.assertIn('SMTP TLS to Linux: not enabled by default', flow)
 
     def test_secret_material_not_in_client_instructions(self):
         source = FLOW.read_text()
