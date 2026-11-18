@@ -61,6 +61,13 @@ def unit_status(unit):
         return "active"
     if res.returncode != 0 and value in ("inactive", "failed"):
         return "inactive"
+    if res.returncode != 0 and value == "unknown":
+        # RHEL/Ubuntu may not ship all three MTA units. Only a proven
+        # not-found unit may be treated as inactive.
+        load = command(["systemctl", "show", "--property=LoadState",
+                        "--value", unit])
+        if load.returncode == 0 and load.stdout.strip() == "not-found":
+            return "inactive"
     raise Refused("unverified_primary_mta_service_state")
 
 
@@ -101,6 +108,9 @@ def bounded_config_digest(roots=CONFIGS):
             if info.st_uid != 0 or info.st_mode & 0o022:
                 raise Refused("unsafe_primary_mta_configuration_permissions")
             if stat.S_ISDIR(info.st_mode):
+                # Include empty directories and their metadata as well.
+                digest.update(("D|{}|{}|{}|{}\n".format(
+                    path, info.st_mode, info.st_uid, info.st_gid)).encode("utf-8"))
                 try:
                     entries = sorted(path.iterdir(), key=lambda x: str(x))
                 except OSError:
@@ -150,9 +160,16 @@ def listen_port25_snapshot():
     res = command(["ss", "-H", "-ltn", "( sport = :25 )"])
     if res.returncode != 0:
         raise Refused("primary_mta_smtp_socket_unverified")
-    # Paths, PIDs and usernames are never emitted; only a hash of the
-    # listening socket records contributes to the private state digest.
-    return hashlib.sha256(res.stdout.encode("utf-8")).hexdigest()
+    # Receive queue and backlog sizes change during legitimate SMTP traffic:
+    # fingerprint local sockets only, never transient counters.
+    listeners = []
+    for line in res.stdout.splitlines():
+        cols = line.split()
+        if len(cols) < 4 or not cols[3].endswith(":25"):
+            raise Refused("primary_mta_smtp_socket_unverified")
+        listeners.append(cols[3])
+    payload = "\n".join(sorted(listeners)).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def guard(mta, hostname, expected=None):
