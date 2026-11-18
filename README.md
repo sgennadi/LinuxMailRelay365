@@ -34,7 +34,85 @@ change requiring backup, operator confirmation and rollback support; this
 branch does not automatically apply it. Custom port availability is not
 equivalent to internet reachability. The existing Preserve mode's client
 SMTP AUTH and TLS limitations, and its prohibition on internet exposure,
-remain in force.
+remain in force **for default, unhardened sidecar installations**. An
+optional private-sidecar AUTH/STARTTLS upgrade is available below.
+
+## Optional private SMTP AUTH + mandatory STARTTLS (development preview)
+
+This branch adds a separate **opt-in hardening step** for an **already installed**
+Preserve Existing Mail isolated Postfix. The initial isolated relay still
+defaults to trusted-network-only, unauthenticated SMTP, to avoid silently
+breaking existing clients. When explicitly activated, the upgrade:
+
+- Uses the actual installed **custom TCP port (1024–65535, default 2525)**,
+  not a fixed port, while preserving the same private IP listener and trusted
+  CIDR restrictions.
+- Starts an **independent, auth-only Dovecot 2.3** instance with a socket
+  inside the separate Postfix queue; does not modify a host Dovecot or the
+  primary Postfix service, configuration, port 25, or queue.
+- Makes STARTTLS mandatory before SMTP AUTH and message submission. Refuses
+  unencrypted mail submission and does not advertise AUTH before TLS.
+- Supports **1–64 distinct SMTP client usernames**, each with a separate
+  salted SHA512-CRYPT password hash. A single, root-owned, mode `0600`
+  plaintext file contains only `username:{SHA512-CRYPT}$6$...` hash lines,
+  not passwords; input is prepared **on Linux**, never copied to Windows.
+- Keeps the fixed Microsoft 365 XOAUTH2 sender mailbox and existing outbound
+  transport. **Different SMTP usernames do NOT grant different Microsoft
+  365 sender identities**; each authorized internal client is permitted to
+  submit through the same configured mailbox. Use separate Linux instances
+  and/or separate Entra applications for stronger sender isolation.
+- Performs a **read-only Check Only preflight** followed by an explicitly
+  typed confirmation before changes. On errors it attempts to restore only
+  the isolated Postfix main.cf and removes the newly created auth service.
+  If restoration fails it preserves the original snapshot for manual recovery.
+- Never opens a public port, changes firewall rules or disables SELinux.
+
+**Prepare securely on the Linux server** (example *file paths only*):
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/linuxmailrelay365/auth-source
+sudo install -o root -g root -m 0600 /dev/null /etc/linuxmailrelay365/auth-source/users
+sudo doveadm pw -s SHA512-CRYPT
+# Enter a strong password at the interactive prompt.
+# Copy ONLY the resulting {SHA512-CRYPT}... value into the file.
+sudoedit /etc/linuxmailrelay365/auth-source/users
+# Add one unique line per application:
+# app01:{SHA512-CRYPT}$6$...
+# app02:{SHA512-CRYPT}$6$...
+sudo chmod 0600 /etc/linuxmailrelay365/auth-source/users
+```
+
+Provision a TLS certificate and matching private key on the Linux server,
+using an exact DNS SAN matching the SMTP hostname used by applications,
+with a trusted issuer for the connecting clients. The Linux source private
+key must be root-owned mode `0600`. The certificate must have **at least
+7 days before expiry** at installation time. The installer copies the
+certificate and key to a separate root-controlled directory; **certificate
+renewal, account updates and rotation of an active configuration are not
+automated yet**. Keep recovery material secure.
+
+In Wizard step 4 enter the SMTP DNS name and **Linux file paths** to the
+certificate, private key and hash file; click **Check SMTP AUTH/STARTTLS
+prerequisites**, then **Enable SMTP AUTH + STARTTLS** and type the required
+confirmation. Only the path strings cross SSH; private key contents and
+hash contents remain on Linux. Afterwards configure each participating
+application with the selected SMTP DNS hostname, custom port, **STARTTLS
+required**, its unique SMTP username and password, and full server certificate
+chain / DNS verification. Existing clients using that port without SMTP AUTH
+will stop submitting until reconfigured. Apps on the original Postfix route
+continue using their existing settings.
+
+**SELinux Enforcing (RHEL family):** the hardening installer refuses to
+activate until a separately verified labeling design for the independent
+Postfix queue, TLS material and Dovecot SASL socket is implemented. Do not
+disable SELinux as a workaround. Platform discovery and custom-port SELinux
+inspection do run read-only on RHEL/Oracle/Rocky/AlmaLinux. Full RHEL/Oracle
+Postfix+Dovecot+SELinux Enforcing activation is **not yet integration-tested**.
+Dovecot 2.4 configuration is currently blocked, pending its dedicated
+configuration and live tests. The only real running service test for this
+upgrade so far is an isolated Ubuntu GitHub Actions VM: TLS handshake,
+wrong/correct SMTP AUTH credentials, no mail transfer and unchanged primary
+Postfix. No end-to-end Exchange Online delivery is claimed.
 
 ## Intended workflow
 
