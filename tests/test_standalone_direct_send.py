@@ -73,6 +73,12 @@ class StandaloneDirectSendTests(unittest.TestCase):
         result=self.cli(*args)
         self.assertIn("tenant_domain_confirmation_required",result.stderr)
 
+    def test_exact_fixed_sender_map_does_not_allow_other_local_parts(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("':^{}$: OK", source)
+        self.assertIn("re.escape(sender)", source)
+        self.assertNotIn("'/^[^@[:space:]]+@{}$/ OK", source)
+
     def test_direct_send_safety(self):
         src=SCRIPT.read_text(encoding="utf-8")
         for required in (
