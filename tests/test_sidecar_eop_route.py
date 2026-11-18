@@ -38,7 +38,8 @@ class EopRouteContracts(unittest.TestCase):
         args = opts()
         eop.validate(args)
         sender, canonical, rcpt = eop.policy_maps(args)
-        self.assertIn("example[.]org", sender)
+        self.assertIn("alerts@example", sender)
+        self.assertNotIn("[^@[:space:]]+", sender)
         self.assertIn("alerts@example.org", canonical)
         self.assertIn("example[.]org", rcpt)
         self.assertNotIn("gmail", rcpt)
@@ -49,6 +50,16 @@ class EopRouteContracts(unittest.TestCase):
         self.assertEqual(changes["smtp_tls_security_level"], "secure")
         self.assertEqual(changes["smtp_tls_secure_cert_match"], "nexthop")
         self.assertEqual(changes["relayhost"], "[example-org.mail.protection.outlook.com]:25")
+
+    def test_fixed_mailbox_requires_exact_envelope_address(self):
+        for mode in ("direct-send", "connector"):
+            with self.subTest(mode=mode):
+                a = opts(mode=mode, sender="alerts+ci@example.org",
+                         public_ip="8.8.8.8" if mode == "connector" else "")
+                eop.validate(a)
+                sender, _, _ = eop.policy_maps(a)
+                self.assertEqual(sender, ":^alerts\\+ci@example\\.org$: OK\n")
+                self.assertNotIn("[^@[:space:]]+", sender)
 
     def test_authenticated_clients_keep_auth_required(self):
         changes = eop.policy_changes(opts(), "/etc/ssl/certs/ca-certificates.crt", True)
