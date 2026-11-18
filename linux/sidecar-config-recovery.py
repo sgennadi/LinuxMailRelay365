@@ -216,7 +216,8 @@ def service_state():
         active = command(["systemctl", "is-active", unit], allowed=(0, 3, 4))
         enabled = command(["systemctl", "is-enabled", unit], allowed=(0, 1, 3, 4))
         if active not in ("active", "inactive", "failed", "unknown") or \
-                enabled not in ("enabled", "disabled", "static", "masked", "indirect", "not-found"):
+                enabled not in ("enabled", "disabled", "static", "masked", "indirect", "not-found") or \
+                (active == "unknown" and enabled != "not-found"):
             raise Refused("service_state_not_verifiable")
         result[unit] = {"active": active == "active",
                         "enabled": enabled == "enabled"}
@@ -251,13 +252,6 @@ def sidecar_config():
         if not any(ipv4 in net for net in private):
             raise Refused("public_or_untrusted_sidecar_listener")
     return config
-
-
-def empty_queue():
-    # First guarantee postqueue -c cannot silently inspect the PRIMARY queue.
-    config = sidecar_config()
-    output = command(["postqueue", "-c", config, "-j"], timeout=18)
-    return not output.strip()
 
 
 def current_state():
@@ -497,13 +491,17 @@ def ensure_restorable(snapshot_id, expected):
 
 
 def check_queue():
-    if not empty_queue():
-        raise Refused("isolated_mail_queue_not_empty")
+    # Offline Postfix may not have showq running: postqueue -j is NOT a
+    # reliable empty-queue test when its master is stopped. Inspect the
+    # explicitly isolated spool, without modifying files or starting daemons.
+    sidecar_config()
     q = ROOT / QUEUE
+    secure_parents(q)
     secure(q, directory=True, owner=False)
-    # postqueue -j does not always include maildrop not yet picked up.
+    # Include maildrop and hold, which online queue commands may miss.
     for name in ("maildrop", "incoming", "active", "deferred", "hold",
-                 "bounce", "defer", "trace", "flush", "corrupt"):
+                 "bounce", "defer", "trace", "flush", "corrupt",
+                 "saved", "discard"):
         folder = q / name
         if folder.exists() or folder.is_symlink():
             if folder.is_symlink() or not folder.is_dir():
