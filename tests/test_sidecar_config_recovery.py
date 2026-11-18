@@ -99,6 +99,11 @@ class ScopedRecoveryTests(unittest.TestCase):
                 "queue_directory": str(self.root / mod.QUEUE),
                 "data_directory": str(self.root / "var/lib/linuxmailrelay365-sidecar"),
                 "inet_interfaces": "127.0.0.1",
+                "smtpd_milters": "",
+                "milter_default_action": "tempfail",
+                "milter_protocol": "6",
+                "milter_mail_macros": "i {auth_authen} {auth_type}",
+                "authorized_submit_users": "static:anyone",
             }
             params.update(self.auth_values)
             return params[argv[-1]]
