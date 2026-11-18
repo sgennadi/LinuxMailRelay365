@@ -71,7 +71,7 @@ class ScopedRecoveryTests(unittest.TestCase):
         if argv[0] == "postconf" and "-n" in argv:
             return "queue_directory = " + str(self.root / mod.QUEUE)
         if argv[0] == "postconf" and "-M" in argv:
-            return "46500/inet=46500 inet n - n - - smtpd\npickup/unix=pickup unix n - n 60 1 pickup"
+            return "46500 inet n - n - - smtpd\npickup unix n - n 60 1 pickup"
         if argv[0] == "systemctl" and argv[1] == "daemon-reload":
             return ""
         raise AssertionError("Unexpected system command in synthetic test: " +
@@ -256,7 +256,7 @@ class ScopedRecoveryTests(unittest.TestCase):
         expected, _ = mod.current_state()
         def command(argv, **kwargs):
             if argv[0] == "postconf" and "-M" in argv:
-                return "46500/inet=46500 inet n - n - - smtpd\n25/inet=25 inet n - n - - smtpd"
+                return "46500 inet n - n - - smtpd\n25 inet n - n - - smtpd"
             return self.fake_command(argv, **kwargs)
         with patch.object(mod, "command", side_effect=command):
             with self.assertRaises(mod.Refused):
@@ -264,6 +264,21 @@ class ScopedRecoveryTests(unittest.TestCase):
         self.assertEqual((self.conf / "main.cf").read_text(),
                          "myhostname = modified.example.org\n")
         self.assertEqual(len(list(mod.BASE.glob("20*"))), 2)
+
+    def test_master_cf_normalized_edit_syntax_is_not_read_output(self):
+        self.patch_runtime()
+        backup_id = mod.backup()
+        (self.conf / "main.cf").write_text("myhostname = changed.example.org\n")
+        expected, _ = mod.current_state()
+        def malformed_postconf(argv, **kwargs):
+            if argv[0] == "postconf" and "-M" in argv:
+                return "46500/inet=46500 inet n - n - - smtpd"
+            return self.fake_command(argv, **kwargs)
+        with patch.object(mod, "command", side_effect=malformed_postconf):
+            with self.assertRaises(mod.Refused):
+                mod.restore(backup_id, expected)
+        self.assertEqual((self.conf / "main.cf").read_text(),
+                         "myhostname = changed.example.org\n")
 
     def test_invalid_paths_and_unauthorized_roots(self):
         for name in ("etc/postfix/main.cf", "../../etc/passwd",
