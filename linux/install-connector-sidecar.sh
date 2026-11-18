@@ -231,6 +231,9 @@ smtpd_sender_restrictions = check_sender_access regexp:$CONF/eop-fixed-sender.re
 smtpd_recipient_restrictions = check_recipient_access regexp:$CONF/eop-recipients.regexp, reject
 sender_canonical_maps = regexp:$CONF/eop-sender-canonical.regexp
 sender_canonical_classes = envelope_sender, header_sender
+# Apply sender canonical maps to remote SMTP headers too; default Postfix
+# does not necessarily rewrite message headers from remote clients.
+local_header_rewrite_clients = static:all
 smtp_tls_security_level = secure
 smtp_tls_secure_cert_match = nexthop
 smtp_tls_CAfile = $bundle
