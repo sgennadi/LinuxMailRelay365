@@ -72,6 +72,14 @@ for forbidden in different@example.org 'alerts+ci@example.org'     alerts@exampl
   }
 done
 echo 'FRESH_FIXED_SENDER_POSTMAP_EXACT_MATCH=PASS'
+echo '=== Read-only installed sidecar audit against real Postfix ==='
+sudo python3 linux/installed-sidecar-audit.py --smtp-port "$PORT" --no-live-probe |
+  tee /tmp/lmr365-eop-sidecar-audit.txt
+grep -Fx 'SMTP_RELAY_RESTRICTIONS=private_clients' /tmp/lmr365-eop-sidecar-audit.txt
+grep -Fx 'SMTP_FIXED_SENDER_MAP=referenced_not_runtime_verified' /tmp/lmr365-eop-sidecar-audit.txt
+grep -Fx 'SMTP_HEADER_SENDER_REWRITE=all_clients' /tmp/lmr365-eop-sidecar-audit.txt
+grep -Fx 'SMTP_SECURITY_RESULT=private_unauthenticated_not_public_safe' /tmp/lmr365-eop-sidecar-audit.txt
+grep -Fx 'PUBLIC_INTERNET_ACCESS_VERIFIED=no' /tmp/lmr365-eop-sidecar-audit.txt
 test "$(sudo postconf -c "$CONF" -h smtpd_relay_restrictions)" = \
   'permit_mynetworks, reject'
 sudo test ! -e /etc/linuxmailrelay365/sidecar-identity/app.json
