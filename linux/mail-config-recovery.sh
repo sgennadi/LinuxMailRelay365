@@ -6,7 +6,7 @@ umask 077
 BASE=/var/backups/linuxmailrelay365
 TRANSPORT=/usr/local/libexec/m365_xoauth2_transport.py
 
-usage() { echo 'Usage: recovery.sh --backup | --list | --verify ID | --restore ID | --self-test'; }
+usage() { echo 'Usage: recovery.sh --backup | --list | --verify ID | --restore ID --confirm RESTORE_POSTFIX_CONFIGURATION | --self-test'; echo 'Automatic rollback of failed installer uses --confirm AUTO_ROLLBACK_AFTER_FAILED_INSTALL.'; }
 valid_id() { [[ "$1" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ ]]; }
 need_root() {
   [ "$(id -u)" -eq 0 ] || { echo 'Root privileges required for recovery.' >&2; exit 1; }
@@ -175,7 +175,17 @@ case "$1" in
   --backup) [ "$#" -eq 1 ] || exit 2; backup ;;
   --list) [ "$#" -eq 1 ] || exit 2; list_backups ;;
   --verify) [ "$#" -eq 2 ] || exit 2; need_root; verify "$2" && echo 'BACKUP_STATUS=verified' ;;
-  --restore) [ "$#" -eq 2 ] || exit 2; restore "$2" ;;
+  --restore)
+    [ "$#" -eq 4 ] && [ "$3" = --confirm ] || {
+      echo 'RESTORE_ERROR=explicit_confirmation_required' >&2; exit 2;
+    }
+    case "$4" in
+      RESTORE_POSTFIX_CONFIGURATION|AUTO_ROLLBACK_AFTER_FAILED_INSTALL) ;;
+      *) echo 'RESTORE_ERROR=invalid_confirmation_phrase' >&2; exit 2 ;;
+    esac
+    valid_id "$2" || { echo 'RESTORE_ERROR=invalid_backup_id' >&2; exit 2; }
+    restore "$2" ;;
+
   --self-test)
     [ "$#" -eq 1 ] || exit 2
     valid_id '20261117T230101Z-abcdef012345' &&
