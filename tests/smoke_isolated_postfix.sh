@@ -230,7 +230,8 @@ test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary
 echo 'SMTP_TLS_CERT_ROTATION_REAL_SMOKE=PASS'
 
 echo '=== Verify approved SMTP client credentials over trusted TLS; no mail DATA ==='
-python3 - "$PORT" "$FIXTURE/next-cert.pem" <<'PY'
+# Fixture directory is root-only (0700); run this local check under sudo.
+sudo python3 - "$PORT" "$FIXTURE/next-cert.pem" <<'PY'
 import importlib.util,sys
 spec=importlib.util.spec_from_file_location(
     "lmr365_ci_auth_verify","linux/verify-sidecar-auth-client.py")
