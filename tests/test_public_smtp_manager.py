@@ -69,6 +69,9 @@ class PublicSmtpContracts(unittest.TestCase):
         self.assertIn("reload_postfix(original)", source)
         self.assertIn("atomic(STATE / archive, before, 0o600)", source)
         self.assertIn("invalid_recovery_archive_name", source)
+        self.assertIn('"phase": "preparing"', source)
+        self.assertIn('data["phase"] = "active"', source)
+        self.assertIn('"incomplete"', source)
 
     def test_config_patch_is_deduplicated_and_scoped(self):
         old = b"smtpd_client_restrictions = permit_mynetworks, reject\nmyhostname = example.org\n"

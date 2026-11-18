@@ -146,7 +146,7 @@ external clients (TLS CA trust, bad password, unauthorized RCPT before AUTH),
 a real Fail2ban ban drill, alerting, quota/queue limits and emergency
 rollbacks on a disposable test VM.
 
-The same manager provides guarded \`--status\` and \`--restore\`, closing its
+The same manager provides guarded \`--status\` and \`--restore\`, including\nan interrupted activation marked as incomplete in a durable recovery journal.\nRestore closes its
 firewall rule before restoring the original Postfix client restrictions. Each
 activation retains an independent root-only archive. Verify interrupted
 firewall changes and manual emergency rule removal. Only after a successful

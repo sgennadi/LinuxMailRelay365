@@ -356,6 +356,8 @@ def read_manifest(port, ip, hostname):
             data.get("ip") != ip or data.get("hostname") != hostname or \
             data.get("firewall", {}).get("backend") not in ("ufw", "firewalld"):
         raise Refused("invalid_public_exposure_manifest")
+    if data.get("phase", "active") not in ("active", "preparing"):
+        raise Refused("invalid_public_exposure_phase")
     archive = data.get("backup", "")
     if not isinstance(archive, str) or not re.fullmatch(r"main-[a-f0-9]{24}[.]before", archive):
         raise Refused("invalid_recovery_archive_name")
@@ -400,7 +402,7 @@ def deploy(args):
     state_dir()
     archive = "main-" + secrets.token_hex(12) + ".before"
     atomic(STATE / archive, before, 0o600)
-    edited, firewall_started = False, False
+    edited, firewall_started, marked = False, False, False
     try:
         edited = True
         reload_postfix(main)
@@ -408,28 +410,41 @@ def deploy(args):
             if postconf(key) != value:
                 raise Refused("new_postfix_policy_verification_failed")
         verify_starttls(args.smtp_port, args.server_name)
+        data = {
+            "version": 1, "phase": "preparing", "port": args.smtp_port,
+            "ip": args.listen_ip, "hostname": args.server_name,
+            "before": digest(before), "backup": archive, "active": digest(main),
+            "primary": original_primary, "firewall": net
+        }
+        # Durably record how to close public access BEFORE changing firewall.
+        # An interrupted apply can always be found by --status/--restore.
+        atomic(MANIFEST, (json.dumps(data, sort_keys=True) + "\n").encode("ascii"), 0o600)
+        marked = True
         firewall_started = True
         firewall_apply(net, args.listen_ip, args.smtp_port)
         if primary_sha() != original_primary:
             raise Refused("primary_postfix_changed")
-        data = {
-            "version": 1, "port": args.smtp_port, "ip": args.listen_ip,
-            "hostname": args.server_name, "before": digest(before),
-            "backup": archive, "active": digest(main), "primary": original_primary, "firewall": net
-        }
+        data["phase"] = "active"
         atomic(MANIFEST, (json.dumps(data, sort_keys=True) + "\n").encode("ascii"), 0o600)
     except (Refused, OSError, ValueError):
+        recovered = True
         if firewall_started:
             try:
                 firewall_remove(net, args.listen_ip, args.smtp_port)
             except Refused:
+                recovered = False
                 output("PUBLIC_SMTP_FIREWALL_ROLLBACK", "manual_attention_required")
         if edited:
             try:
                 reload_postfix(before)
                 output("PUBLIC_SMTP_POSTFIX_ROLLBACK", "previous_private_configuration_restored")
             except Refused:
+                recovered = False
                 output("PUBLIC_SMTP_POSTFIX_ROLLBACK", "manual_recovery_required")
+        # Keep the recovery journal if either rollback failed. An operator can
+        # then inspect --status and --restore the exact original snapshot.
+        if recovered and marked:
+            MANIFEST.unlink()
         raise
     output("PUBLIC_SMTP_APPLIED", "authenticated_starttls_only")
     output("PUBLIC_SMTP_CUSTOM_PORT", args.smtp_port)
@@ -445,9 +460,11 @@ def status(args):
     data = read_manifest(args.smtp_port, args.listen_ip, args.server_name)
     must_regular(CONF / "main.cf")
     current = digest((CONF / "main.cf").read_bytes())
-    if current != data["active"]:
+    if current not in (data["active"], data["before"]):
         raise Refused("public_exposure_config_changed")
-    output("PUBLIC_SMTP_STATUS", "active")
+    phase = data.get("phase", "active")
+    output("PUBLIC_SMTP_STATUS", "active" if phase == "active" and
+           current == data["active"] else "incomplete")
     output("PUBLIC_SMTP_CURRENT_MAIN_SHA256", current)
     output("PUBLIC_SMTP_CUSTOM_PORT", args.smtp_port)
     output("CHANGES_APPLIED", "no")
@@ -457,7 +474,9 @@ def status(args):
 def restore(args):
     data = read_manifest(args.smtp_port, args.listen_ip, args.server_name)
     current = (CONF / "main.cf").read_bytes()
-    if digest(current) != data["active"] or digest(current) != args.expect_main_sha256:
+    current_sha = digest(current)
+    if current_sha not in (data["active"], data["before"]) or \
+            current_sha != args.expect_main_sha256:
         raise Refused("public_postfix_config_modified")
     if primary_sha() != data["primary"]:
         raise Refused("primary_postfix_changed_manual_review_required")
@@ -465,7 +484,8 @@ def restore(args):
     # Firewall is closed before Postfix's client restrictions are restored.
     # Never re-open a public firewall rule to recover a failed restoration.
     firewall_remove(data["firewall"], args.listen_ip, args.smtp_port)
-    reload_postfix(original)
+    if current_sha != data["before"]:
+        reload_postfix(original)
     if digest((CONF / "main.cf").read_bytes()) != data["before"]:
         raise Refused("restored_postfix_hash_mismatch")
     MANIFEST.unlink()

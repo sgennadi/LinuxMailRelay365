@@ -1901,8 +1901,9 @@ internal sealed class MainForm : Form
         status.EnsureSuccess();
         var sha = System.Text.RegularExpressions.Regex.Match(status.StdOut,
             @"(?m)^PUBLIC_SMTP_CURRENT_MAIN_SHA256=([a-f0-9]{64})\r?$");
-        if (!sha.Success || !status.StdOut.Contains("PUBLIC_SMTP_STATUS=active", StringComparison.Ordinal))
-            throw new InvalidOperationException("No verified active public SMTP configuration exists to restore.");
+        if (!sha.Success || !(status.StdOut.Contains("PUBLIC_SMTP_STATUS=active", StringComparison.Ordinal) ||
+                              status.StdOut.Contains("PUBLIC_SMTP_STATUS=incomplete", StringComparison.Ordinal)))
+            throw new InvalidOperationException("No verified public SMTP configuration or interrupted activation exists to restore.");
         if (!ConfirmDestructive("LinuxMailRelay365 | Close public SMTP",
             "Close the ALL-SOURCES firewall rule for local " + options.Listener + " TCP " + port +
             " and restore the original isolated Postfix client restrictions. Applications submitting from " +
