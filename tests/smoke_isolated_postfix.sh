@@ -472,5 +472,7 @@ test "$(sudo systemctl is-active postfix)" = "$primary_status"
 test "$(sudo postconf -h queue_directory)" = "$primary_queue"
 sudo systemctl is-active --quiet "$UNIT"
 echo 'AUTH_TLS_RESTORE_REAL_SMOKE=PASS'
+echo '=== Local EOP Direct Send recipient and sender restrictions, reversible route ==='
+bash tests/smoke_eop_route.sh "$PORT"
 echo 'SIDECAR_REAL_LINUX_SMOKE=PASS'
 
