@@ -71,6 +71,16 @@ sudo python3 linux/relay-health.py --smtp-port "$PORT" |
   tee /tmp/lmr365-health-before.txt
 grep -Fx 'CUSTOM_SMTP_PORT=2529' /tmp/lmr365-health-before.txt
 grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-health-before.txt
+echo '=== Install journal-only 15-minute monitoring on the installed custom port ==='
+sudo bash linux/install-health-monitor.sh --check-only --smtp-port "$PORT" |
+  grep -Fx 'HEALTH_TIMER_PREFLIGHT=ready'
+sudo bash linux/install-health-monitor.sh --install --smtp-port "$PORT" \
+  --confirm ENABLE_PRIVATE_SMTP_MONITOR |
+  grep -Fx 'HEALTH_TIMER_INSTALLED=yes'
+sudo systemctl is-active --quiet linuxmailrelay365-health.timer
+sudo systemctl start linuxmailrelay365-health.service
+sudo systemctl is-active --quiet "$UNIT"
+echo 'HEALTH_TIMER_REAL_SYSTEMD_SMOKE=PASS'
 echo '=== Check installed isolated sidecar read-only audit before AUTH/TLS ==='
 sudo python3 linux/installed-sidecar-audit.py --smtp-port "$PORT" |
   tee /tmp/lmr365-audit-before.txt
