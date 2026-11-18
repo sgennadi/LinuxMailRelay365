@@ -61,6 +61,7 @@ internal sealed class MainForm : Form
         AccessibleName = "Preserve Existing Mail: client SMTP settings generated from entered values"
     };
     private readonly CheckBox publicInternetRequested = new() { AutoSize = true, Checked = false };
+    private readonly CheckBox advancedSmtpTools = new() { AutoSize = true, Checked = false };
     private MailRoutingPlan routingPlan = new();
     private string? routingIdentity;
     private bool routingLoading;
@@ -162,6 +163,14 @@ internal sealed class MainForm : Form
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
+        advancedSmtpTools.CheckedChanged += (_, _) =>
+        {
+            if (routingLoading || busy || step != 3) return;
+            SaveRoutingChoices();
+            int scroll = -pageHost.AutoScrollPosition.Y;
+            RenderPage();
+            pageHost.AutoScrollPosition = new Point(0, scroll);
+        };
         foreach (TextBox item in new[] { host, mailbox, tenant, smtpListenIp,
                                          isolatedSmtpPort, smtpTrustedCidrs, acceptedDomain })
             item.TextChanged += (_, _) => UpdatePreserveFlowPreview();
@@ -831,6 +840,7 @@ internal sealed class MainForm : Form
             smtpTrustedCidrs.Text = routingPlan.TrustedCidrs;
             isolatedSmtpPort.Text = routingPlan.SidecarPort.ToString();
             publicInternetRequested.Checked = routingPlan.PublicInternetRequested;
+            advancedSmtpTools.Checked = routingPlan.ShowAdvancedSmtpTools;
             allowExisting.Checked = false;
             inspectedMail = null;
             inspectedServerIdentity = null;
@@ -860,6 +870,7 @@ internal sealed class MainForm : Form
         if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int port))
             routingPlan.SidecarPort = port;
         routingPlan.PublicInternetRequested = publicInternetRequested.Checked;
+        routingPlan.ShowAdvancedSmtpTools = advancedSmtpTools.Checked;
         // Operators can edit domain while typing. Save only valid completed values.
         try { MailRoutingPlanStore.Save(dataDirectory, routingIdentity, routingPlan); }
         catch (InvalidDataException) { }
