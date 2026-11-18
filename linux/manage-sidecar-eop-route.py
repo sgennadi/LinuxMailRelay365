@@ -9,6 +9,8 @@ import argparse
 import fcntl
 import hashlib
 import ipaddress
+import grp
+import pwd
 import json
 import os
 import re
@@ -27,6 +29,12 @@ LOCK = Path("/run/linuxmailrelay365-sidecar-auth.lock")
 MAPS = ("eop-fixed-sender.regexp", "eop-sender-canonical.regexp", "eop-recipients.regexp",
         "eop-sender-owners.regexp")
 AUTH_USERS = Path("/etc/linuxmailrelay365/smtp-auth/passwd")
+FROM_GUARD_POLICY = CONF / "eop-from-owners.tsv"
+FROM_GUARD_ENGINE = Path("/usr/local/libexec/linuxmailrelay365-from-owner-milter.py")
+FROM_GUARD_UNIT = Path("/etc/systemd/system/linuxmailrelay365-from-guard.service")
+FROM_GUARD_SERVICE = "linuxmailrelay365-from-guard.service"
+FROM_GUARD_SOCKET = Path("/run/linuxmailrelay365-from-guard/from-guard.sock")
+FROM_GUARD_USER = "linuxmailrelay365-fromguard"
 OWNER = re.compile(r"([A-Za-z0-9._+-]+@[A-Za-z0-9.-]+)[ \t]+([A-Za-z0-9][A-Za-z0-9._@-]{2,63})\Z")
 DNS = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\Z")
 SENDER = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_{|}~-]+@([A-Za-z0-9.-]+)\Z")
@@ -187,7 +195,8 @@ def policy_maps(args):
 def policy_changes(args, ca, auth_enabled):
     mx = args.mx_host.lower()
     rewriting = args.sender_policy != "preserve-domain"
-    return {
+    guarded = args.mode == "connector" and args.sender_policy != "fixed-mailbox"
+    policy = {
         "default_transport": "smtp:[{}]:25".format(mx),
         "relay_transport": "smtp:[{}]:25".format(mx),
         "relayhost": "[{}]:25".format(mx),
@@ -215,6 +224,70 @@ def policy_changes(args, ca, auth_enabled):
         "smtp_tls_cert_file": args.tls_cert if args.mode == "connector" else "",
         "smtp_tls_key_file": args.tls_key if args.mode == "connector" else "",
     }
+    if guarded:
+        if not auth_enabled:
+            raise Refused("multi_sender_header_guard_requires_dovecot_smtp_auth")
+        # SMTP-only before-queue Milter. A dead/unreachable guard MUST
+        # tempfail. Disable local postdrop submissions that bypass SMTP AUTH.
+        # This changes only the isolated Postfix config, never /etc/postfix.
+        policy.update({
+            "smtpd_milters": "unix:{}".format(FROM_GUARD_SOCKET),
+            "milter_protocol": "6",
+            "milter_default_action": "tempfail",
+            "milter_mail_macros": "i {mail_addr} {auth_authen} {auth_type}",
+            "smtpd_milter_maps": "",
+            "non_smtpd_milters": "",
+            "authorized_submit_users": "",
+        })
+    return policy
+
+
+def verify_header_guard(args):
+    """Refuse multi-sender routing until separately staged filter is pinned.
+
+    This does not start or install anything; it validates existing independent
+    service, exact owner policy SHA and private socket metadata.
+    """
+    if args.mode != "connector" or args.sender_policy == "fixed-mailbox":
+        return
+    source = Path(args.sender_owner_file)
+    info = owned_file(source)
+    if info.st_mode & 0o077 or not 1 <= info.st_size <= 16384:
+        raise Refused("from_guard_reviewed_source_must_be_root_0600")
+    raw = source.read_bytes()
+    try:
+        staged = FROM_GUARD_POLICY.read_bytes()
+        policy_meta = FROM_GUARD_POLICY.lstat()
+        group = grp.getgrnam("postfix")
+        user = pwd.getpwnam(FROM_GUARD_USER)
+        directory = FROM_GUARD_SOCKET.parent.lstat()
+        sock = FROM_GUARD_SOCKET.lstat()
+    except (OSError, KeyError):
+        raise Refused("multi_sender_from_guard_not_installed")
+    if (digest(raw) != digest(staged) or
+            not stat.S_ISREG(policy_meta.st_mode) or policy_meta.st_nlink != 1 or
+            policy_meta.st_uid != 0 or policy_meta.st_gid != group.gr_gid or
+            stat.S_IMODE(policy_meta.st_mode) != 0o640 or
+            user.pw_uid == 0 or
+            not stat.S_ISDIR(directory.st_mode) or
+            directory.st_uid != user.pw_uid or
+            directory.st_gid != group.gr_gid or
+            stat.S_IMODE(directory.st_mode) != 0o750 or
+            not stat.S_ISSOCK(sock.st_mode) or
+            sock.st_uid != user.pw_uid or sock.st_gid != group.gr_gid or
+            stat.S_IMODE(sock.st_mode) != 0o660):
+        raise Refused("multi_sender_from_guard_policy_socket_untrusted")
+    owned_file(FROM_GUARD_ENGINE)
+    owned_file(FROM_GUARD_UNIT)
+    if run(["systemctl", "is-active", "--quiet", FROM_GUARD_SERVICE]).returncode:
+        raise Refused("multi_sender_from_guard_service_inactive")
+    launched = run(["systemctl", "show", "-p", "ExecStart", "--value",
+                    FROM_GUARD_SERVICE])
+    if (launched.returncode or
+            str(FROM_GUARD_ENGINE) not in launched.stdout or
+            "--expected-map-sha256 " + digest(staged) not in launched.stdout):
+        raise Refused("multi_sender_from_guard_policy_not_pinned")
+
 
 def sender_owner_map(args):
     """Require explicitly owned MAIL FROM addresses for each authenticated app.
