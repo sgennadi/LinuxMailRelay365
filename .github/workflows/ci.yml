@@ -60,11 +60,12 @@ jobs:
           bash -n linux/restore-sidecar-auth-tls.sh
           bash linux/restore-sidecar-auth-tls.sh --self-test
           python3 -m unittest discover -v -s tests -p test_sidecar_auth_restore.py
+          python3 -m unittest discover -v -s tests -p test_sidecar_auth_archives.py
           bash linux/enable-sidecar-auth-tls.sh --self-test
           python3 -m unittest discover -v -s tests -p test_private_auth_tls.py
           python3 -m unittest discover -v -s tests -p test_installed_sidecar_audit.py
           python3 linux/installed-sidecar-audit.py --smtp-port 46500 --no-live-probe | grep -Fx 'CHANGES_APPLIED=no'
-          python3 -m py_compile linux/platform-compat.py linux/m365_xoauth2_transport.py linux/audit-existing-smtp.py linux/installed-sidecar-audit.py
+          python3 -m py_compile linux/platform-compat.py linux/m365_xoauth2_transport.py linux/audit-existing-smtp.py linux/installed-sidecar-audit.py linux/audit-sidecar-auth-archives.py
           python3 linux/m365_xoauth2_transport.py --help >/dev/null
           bash linux/install-preserve-postfix-sidecar.sh --check-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
           bash linux/network-firewall.sh --validate-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
