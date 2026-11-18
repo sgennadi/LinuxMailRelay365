@@ -52,6 +52,11 @@ jobs:
           grep -Fx 'OS_FAMILY=rhel' /tmp/lmr365-platform.log
           grep -Fx 'SMTP_PORT=2526' /tmp/lmr365-platform.log
           grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-platform.log
+          python3 -m py_compile linux/platform-compat.py linux/m365_xoauth2_transport.py linux/audit-existing-smtp.py
+          python3 linux/m365_xoauth2_transport.py --help >/dev/null
+          bash linux/install-preserve-postfix-sidecar.sh --check-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
+          bash linux/network-firewall.sh --validate-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
+          bash linux/install-postfix-m365-xoauth2.sh --validate-network-only --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
           python3 -m unittest discover -v -s tests -p test_platform_compat.py
 
   windows-build:
