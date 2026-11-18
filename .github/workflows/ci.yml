@@ -24,6 +24,7 @@ jobs:
           python3 linux/recovery-scope-audit.py --self-test
           python3 linux/generate-smtp-client-credential.py --self-test
           python3 linux/rhel-enforcing-live-smoke.py --self-test
+          python3 linux/verify-sidecar-auth-client.py --self-test
   ubuntu-postfix-smoke:
     # Test both production LTS Dovecot 2.3 and updated Dovecot 2.4 grammar.
     strategy:
@@ -107,6 +108,8 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_rhel_selinux_doctor.py
           python3 -m unittest discover -v -s tests -p test_rhel_enforcing_live_smoke.py
           python3 linux/rhel-enforcing-live-smoke.py --self-test
+          python3 linux/verify-sidecar-auth-client.py --self-test
+          python3 -m unittest discover -v -s tests -p test_sidecar_auth_client.py
           python3 -m unittest discover -v -s tests -p test_rhel_selinux_port_manager.py
           python3 -m unittest discover -v -s tests -p test_public_smtp_manager.py
           python3 -m unittest discover -v -s tests -p test_health_alerts.py
