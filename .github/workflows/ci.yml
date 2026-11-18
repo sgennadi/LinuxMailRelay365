@@ -72,12 +72,14 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_rhel_selinux_doctor.py
           python3 -m unittest discover -v -s tests -p test_sidecar_smtp_accounts.py
           python3 -m unittest discover -v -s tests -p test_relay_health.py
+          python3 -m unittest discover -v -s tests -p test_m365_outbound_preflight.py
+          python3 linux/m365-outbound-mode-preflight.py --mode direct-send --smtp-port 46500 --mx-host demo-com.mail.protection.outlook.com --accepted-domain demo.com | grep -Fx 'CHANGES_APPLIED=no'
           python3 linux/relay-health.py --smtp-port 46500 | grep -Fx 'CHANGES_APPLIED=no'
           python3 linux/rhel-selinux-doctor.py --smtp-port 46500 | grep -Fx 'CHANGES_APPLIED=no'
           python3 -m unittest discover -v -s tests -p test_tls_identity.py
           python3 linux/verify-sidecar-tls-identity.py --validate-only --smtp-port 46500 --server-name smtp.example.org | grep -Fx 'CHANGES_APPLIED=no'
           python3 linux/installed-sidecar-audit.py --smtp-port 46500 --no-live-probe | grep -Fx 'CHANGES_APPLIED=no'
-          python3 -m py_compile linux/platform-compat.py linux/m365_xoauth2_transport.py linux/audit-existing-smtp.py linux/installed-sidecar-audit.py linux/audit-sidecar-auth-archives.py linux/rhel-selinux-doctor.py linux/manage-sidecar-smtp-accounts.py linux/relay-health.py linux/verify-sidecar-tls-identity.py
+          python3 -m py_compile linux/platform-compat.py linux/m365_xoauth2_transport.py linux/audit-existing-smtp.py linux/installed-sidecar-audit.py linux/audit-sidecar-auth-archives.py linux/rhel-selinux-doctor.py linux/manage-sidecar-smtp-accounts.py linux/relay-health.py linux/m365-outbound-mode-preflight.py linux/verify-sidecar-tls-identity.py
           python3 linux/m365_xoauth2_transport.py --help >/dev/null
           bash linux/install-preserve-postfix-sidecar.sh --check-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
           bash linux/network-firewall.sh --validate-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
