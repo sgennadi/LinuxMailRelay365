@@ -24,7 +24,7 @@ class PreserveMailLiveDiagramContract(unittest.TestCase):
         self.assertIn('UpdatePreserveFlowPreview()', gui)
         self.assertIn('preserveFlowPreview.UpdateData(snapshot, language.SelectedIndex)',
                       gui)
-        self.assertIn('CopyPreserveInstructionsAsync', gui)
+        self.assertIn('CopyPreserveInstructions()', gui)
         flow = FLOW.read_text()
         self.assertIn('LinuxMailRelay365 | Preserve Existing Mail', flow)
         self.assertIn('not confirmed installed', flow)
