@@ -53,6 +53,8 @@
     <EmbeddedResource Include="../../linux/verify-reboot-continuity.py" LogicalName="LinuxMailRelay365.linux.reboot-continuity.py" />
     <EmbeddedResource Include="../../linux/m365-outbound-mode-preflight.py" LogicalName="LinuxMailRelay365.linux.outbound-mode-preflight.py" />
     <EmbeddedResource Include="../../linux/manage-sidecar-eop-route.py" LogicalName="LinuxMailRelay365.linux.eop-route-manager.py" />
+    <EmbeddedResource Include="../../linux/sidecar-from-owner-milter.py" LogicalName="LinuxMailRelay365.linux.from-owner-milter.py" />
+    <EmbeddedResource Include="../../linux/install-sidecar-from-guard.sh" LogicalName="LinuxMailRelay365.linux.from-owner-guard-installer.sh" />
     <EmbeddedResource Include="../../linux/rotate-sidecar-tls.sh" LogicalName="LinuxMailRelay365.linux.sidecar-tls-rotator.sh" />
     <EmbeddedResource Include="../../linux/enable-sidecar-auth-tls.sh" LogicalName="LinuxMailRelay365.linux.auth-tls-installer.sh" />
     <EmbeddedResource Include="../../linux/restore-sidecar-auth-tls.sh" LogicalName="LinuxMailRelay365.linux.auth-tls-restore.sh" />
