@@ -768,8 +768,11 @@ server before using Force Replace.
 The Wizard supports **XOAUTH2 fixed mailbox** and a separate guarded
 **Advanced SMTP Direct Send/Connector outbound route** on an already installed
 isolated Postfix. It stores nonsecret per-host preferences, but tenant
-domain/Connector approval checkboxes are never persisted. Connector-only accepted-domain sender preservation and subdomain masquerade have a reviewed per-SMTP-login envelope MAIL FROM ownership map, SHA-verified Apply and separate Restore. RFC5322 From headers are NOT validated by this Postfix map; a reviewed Milter or fixed-header policy is required. The app never provisions tenant Connectors or changes MX,
-SPF, DKIM, DMARC or Exchange accepted domains automatically.
+domain/Connector approval checkboxes are never persisted. Connector-only accepted-domain sender preservation and subdomain masquerade have a reviewed per-SMTP-login envelope MAIL FROM ownership map, SHA-verified Apply and separate Restore. RFC5322 From headers are NOT validated by this Postfix map; a reviewed Milter or fixed-header policy is required. The EOP route action itself never provisions tenant Connectors. The separate
+Windows Wizard Connector provisioning action can Preview and Create a NEW
+tenant Connector only with exact-tenant checks and explicit administrator
+approval. Neither action changes MX, SPF, DKIM, DMARC or Exchange accepted
+domains automatically.
 
 **Safe default for existing Linux:** Preserve Existing Mail is ON. Before
 applying any Postfix changes, the wizard runs a read-only Linux MTA probe.
