@@ -25,6 +25,7 @@ internal static class EmbeddedAssets
     internal static string AuthTlsRestore => Text("LinuxMailRelay365.linux.auth-tls-restore.sh");
     internal static string InstalledSidecarAudit => Text("LinuxMailRelay365.linux.installed-sidecar-audit.py");
     internal static string AuthArchiveAudit => Text("LinuxMailRelay365.linux.auth-archive-audit.py");
+    internal static string TlsIdentityProbe => Text("LinuxMailRelay365.linux.tls-identity-probe.py");
     internal static string Provisioner => Text("LinuxMailRelay365.windows.provision.ps1");
     internal static string SecurityProbe => Text("LinuxMailRelay365.linux.security-probe.sh");
     internal static string CloudSecurityProbe => Text("LinuxMailRelay365.windows.cloud-security-probe.ps1");
@@ -98,6 +99,32 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/network-firewall.sh\" <<'LMR365_NETWORK'\n" +
                Encode(NetworkFirewall) + "\nLMR365_NETWORK\n" +
                "bash \"$work/network-firewall.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildTlsIdentityProbeBundle(int selectedPort, string serverName, string? linuxCaFile)
+    {
+        if (selectedPort is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(selectedPort));
+        if (serverName.Length is < 4 or > 253 ||
+            !Regex.IsMatch(serverName,
+                @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z"))
+            throw new ArgumentException("SMTP TLS verification requires an exact DNS name from the server certificate.");
+        if (!string.IsNullOrWhiteSpace(linuxCaFile) &&
+            (linuxCaFile.Length > 256 ||
+             !Regex.IsMatch(linuxCaFile, @"\A/[A-Za-z0-9_./-]+\z") ||
+             linuxCaFile.Split('/').Contains("..")))
+            throw new ArgumentException("The Linux CA file must be a safe absolute path.");
+        string caArg = string.IsNullOrWhiteSpace(linuxCaFile)
+            ? "" : " --ca-file " + linuxCaFile;
+        // The protocol test performs STARTTLS against 127.0.0.1 ONLY, but
+        // authenticates the certificate for serverName via DNS/SNI.
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-tls-identity.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/tls.py\" <<'LMR365_TLS_IDENTITY'\n" +
+               Encode(TlsIdentityProbe) + "\nLMR365_TLS_IDENTITY\n" +
+               "python3 \"$work/tls.py\" --smtp-port " + selectedPort +
+               " --server-name " + serverName + caArg + "\n";
     }
 
     internal static string BuildAuthArchiveAuditBundle()
