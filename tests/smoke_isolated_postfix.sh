@@ -335,6 +335,33 @@ with smtplib.SMTP('127.0.0.1', int(sys.argv[1]), timeout=10) as c:
     c.login('lmr365-ci-b','disposable-test-credential')
 print('SMTP_ACCOUNT_NEW_PASSWORD_ONLY=PASS')
 PY
+revoke_preview="$(sudo python3 "$ACCOUNT" --smtp-port "$PORT" --operation revoke --username lmr365-ci)"
+revoke_sha="$(printf '%s\n' "$revoke_preview" | sed -n 's/^SMTP_ACCOUNT_CURRENT_STATE_SHA256=//p')"
+[[ "$revoke_sha" =~ ^[a-f0-9]{64}$ ]]
+sudo python3 "$ACCOUNT" --smtp-port "$PORT" --operation revoke --username lmr365-ci \
+  --apply --expected-state-sha256 "$revoke_sha" \
+  --confirm CHANGE_PRIVATE_SMTP_ACCOUNT |
+  grep -Fx 'SMTP_ACCOUNT_COUNT_AFTER=1'
+if sudo python3 "$ACCOUNT" --smtp-port "$PORT" --operation revoke --username lmr365-ci-b; then
+  echo 'SECURITY ERROR: account manager allowed revocation of final SMTP account' >&2
+  exit 1
+fi
+python3 - "$PORT" <<'PY'
+import smtplib, ssl, sys
+with smtplib.SMTP('127.0.0.1', int(sys.argv[1]), timeout=10) as c:
+    c.ehlo('revoke-check.invalid')
+    c.starttls(context=ssl._create_unverified_context())
+    c.ehlo('revoke-check.invalid')
+    try:
+        c.login('lmr365-ci','ci-fixture-password')
+    except smtplib.SMTPAuthenticationError:
+        pass
+    else:
+        raise AssertionError('Revoked SMTP account still authenticated')
+    c.login('lmr365-ci-b','disposable-test-credential')
+print('SMTP_ACCOUNT_REVOKE_REAL_SMOKE=PASS')
+PY
+
 
 echo '=== Verify tamper-guarded private AUTH/TLS restore preflight ==='
 RESTORE_SCRIPT=linux/restore-sidecar-auth-tls.sh
