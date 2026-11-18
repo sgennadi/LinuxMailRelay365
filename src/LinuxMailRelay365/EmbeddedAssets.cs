@@ -18,6 +18,7 @@ internal static class EmbeddedAssets
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
+    internal static string DirectSendSidecarInstaller => Text("LinuxMailRelay365.linux.direct-send-sidecar.sh");
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
@@ -59,6 +60,51 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/mail-config-recovery.sh\" <<'LMR365_RECOVERY'\n" +
                Encode(Recovery) + "\nLMR365_RECOVERY\n" +
                "bash \"$work/install-postfix-m365-xoauth2.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildDirectSendSidecarBundle(int port, string mxHost,
+        string acceptedDomain, string sender, string listenIpv4,
+        string[] trustedNetworks, bool apply)
+    {
+        if (port is < 1024 or > 65535 || trustedNetworks.Length > 8)
+            throw new ArgumentException("Invalid private SMTP custom port or CIDR count.");
+        const string dns = @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z";
+        const string email = @"\A[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{4,253}\z";
+        if (!Regex.IsMatch(mxHost, dns, RegexOptions.CultureInvariant) ||
+            !mxHost.EndsWith(".mail.protection.outlook.com", StringComparison.OrdinalIgnoreCase) ||
+            !Regex.IsMatch(acceptedDomain, dns, RegexOptions.CultureInvariant) ||
+            !Regex.IsMatch(sender, email, RegexOptions.CultureInvariant) ||
+            !sender.EndsWith("@" + acceptedDomain, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Enter a valid EOP MX, accepted domain and fixed sender.");
+        var args = new List<string> { apply ? "--apply" : "--check-only",
+            "--smtp-port", port.ToString(), "--mx-host", mxHost,
+            "--accepted-domain", acceptedDomain, "--fixed-sender", sender };
+        if (!string.IsNullOrWhiteSpace(listenIpv4))
+        {
+            if (!System.Net.IPAddress.TryParse(listenIpv4, out var ip) ||
+                ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                throw new ArgumentException("Invalid RFC1918 listener IPv4.");
+            args.Add("--listen-ip");
+            args.Add(listenIpv4);
+        }
+        foreach (var cidr in trustedNetworks)
+        {
+            if (!Regex.IsMatch(cidr, @"\A[0-9./]{9,18}\z"))
+                throw new ArgumentException("Invalid client CIDR.");
+            args.Add("--trusted-network");
+            args.Add(cidr);
+        }
+        if (apply) args.AddRange(["--confirm-accepted-domain", "TENANT_DOMAIN_CHECKED"]);
+        foreach (string item in args)
+            if (item.Length > 256 || item.Any(c => !(char.IsAsciiLetterOrDigit(c) ||
+                c is '.' or '-' or '_' or '@' or ':' or '/')))
+                throw new ArgumentException("Invalid Direct Send installer argument.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-directsend.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/install.sh\" <<'LMR365_DIRECT_SEND'\n" +
+               Encode(DirectSendSidecarInstaller) + "\nLMR365_DIRECT_SEND\n" +
+               "bash \"$work/install.sh\" " + string.Join(" ", args) + "\n";
     }
 
     internal static string BuildSidecarBundle(string[] args)
