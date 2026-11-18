@@ -25,6 +25,9 @@ jobs:
           python3 -m py_compile linux/guard-foreign-mta.py
           python3 -m unittest discover -v -s tests -p test_foreign_mta_preservation.py
           python3 linux/recovery-scope-audit.py --self-test
+          python3 -m py_compile linux/sidecar-config-recovery.py
+          python3 linux/sidecar-config-recovery.py --self-test
+          python3 -m unittest discover -v -s tests -p test_sidecar_config_recovery.py
           python3 linux/generate-smtp-client-credential.py --self-test
           python3 linux/rhel-enforcing-live-smoke.py --self-test
           python3 linux/verify-sidecar-auth-client.py --self-test
@@ -160,6 +163,9 @@ jobs:
           python3 linux/guard-foreign-mta.py --self-test
           python3 linux/mta-coexistence-doctor.py --self-test
           python3 -m unittest discover -v -s tests -p test_recovery_scope_audit.py
+          python3 -m py_compile linux/sidecar-config-recovery.py
+          python3 linux/sidecar-config-recovery.py --self-test
+          python3 -m unittest discover -v -s tests -p test_sidecar_config_recovery.py
           python3 linux/recovery-scope-audit.py --self-test
           python3 linux/recovery-scope-audit.py --smtp-port 46500 | grep -Fx 'CHANGES_APPLIED=no'
           python3 -m unittest discover -v -s tests -p test_platform_compat.py
