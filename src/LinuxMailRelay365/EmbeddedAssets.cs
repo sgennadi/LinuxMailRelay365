@@ -19,6 +19,7 @@ internal static class EmbeddedAssets
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
     internal static string DirectSendSidecarInstaller => Text("LinuxMailRelay365.linux.direct-send-sidecar.sh");
+    internal static string ConnectorSidecarInstaller => Text("LinuxMailRelay365.linux.connector-sidecar.sh");
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
@@ -108,6 +109,64 @@ internal static class EmbeddedAssets
                "trap 'rm -rf -- \"$work\"' EXIT\n" +
                "base64 -d > \"$work/install.sh\" <<'LMR365_DIRECT_SEND'\n" +
                Encode(DirectSendSidecarInstaller) + "\nLMR365_DIRECT_SEND\n" +
+               "bash \"$work/install.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildFreshConnectorBundle(int port, string mxHost,
+        string acceptedDomain, string sender, string listenIpv4,
+        string[] trustedNetworks, string publicIp, string certPath, string keyPath, bool apply)
+    {
+        if (port is < 1024 or > 65535 || trustedNetworks.Length > 8)
+            throw new ArgumentException("Connector custom SMTP port must be 1024-65535.");
+        const string dns = @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z";
+        const string email = @"\A[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{4,253}\z";
+        if (!Regex.IsMatch(mxHost, dns, RegexOptions.CultureInvariant) ||
+            !mxHost.EndsWith(".mail.protection.outlook.com", StringComparison.OrdinalIgnoreCase) ||
+            !Regex.IsMatch(acceptedDomain, dns, RegexOptions.CultureInvariant) ||
+            !Regex.IsMatch(sender, email, RegexOptions.CultureInvariant) ||
+            !sender.EndsWith("@" + acceptedDomain, StringComparison.OrdinalIgnoreCase) ||
+            (string.IsNullOrEmpty(publicIp) && (string.IsNullOrEmpty(certPath) || string.IsNullOrEmpty(keyPath))) ||
+            (string.IsNullOrEmpty(certPath) != string.IsNullOrEmpty(keyPath)))
+            throw new ArgumentException("Exact accepted domain, fixed sender and verified Connector IP or certificate are required.");
+        var args = new List<string> { apply ? "--apply" : "--check-only",
+            "--smtp-port", port.ToString(), "--mx-host", mxHost,
+            "--accepted-domain", acceptedDomain, "--fixed-sender", sender };
+        if (listenIpv4.Length > 0)
+        {
+            args.Add("--listen-ip");
+            args.Add(listenIpv4);
+        }
+        foreach (var cidr in trustedNetworks)
+        {
+            args.Add("--trusted-network");
+            args.Add(cidr);
+        }
+        if (publicIp.Length > 0)
+        {
+            args.Add("--public-ip");
+            args.Add(publicIp);
+        }
+        if (certPath.Length > 0)
+        {
+            args.Add("--tls-cert");
+            args.Add(certPath);
+            args.Add("--tls-key");
+            args.Add(keyPath);
+        }
+        if (apply)
+            args.AddRange(["--confirm-accepted-domain", "TENANT_DOMAIN_CHECKED",
+                           "--confirm-connector", "TENANT_CONNECTOR_CHECKED"]);
+        foreach (var item in args)
+        {
+            if (item.Length > 256 || item.Any(c => !(char.IsAsciiLetterOrDigit(c) ||
+                c is '.' or '-' or '_' or '/' or ':' or '@')) || item.Contains(".."))
+                throw new ArgumentException("Untrusted Connector installation argument.");
+        }
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-connector.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/install.sh\" <<'LMR365_FRESH_CONNECTOR'\n" +
+               Encode(ConnectorSidecarInstaller) + "\nLMR365_FRESH_CONNECTOR\n" +
                "bash \"$work/install.sh\" " + string.Join(" ", args) + "\n";
     }
 
