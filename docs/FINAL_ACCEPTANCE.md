@@ -14,6 +14,7 @@
 | Opt-in 15-min local journald systemd timer | Preview | Verify after OS reboot; external alerting not installed |
 | Root-only real reboot baseline and verification | Implemented | Controlled actual Linux reboot |
 | RHEL 8/9/10, Oracle, Rocky, Alma SELinux port/file/process context audit | Read-only | Real Enforcing process AVC allow/deny integration |
+| RHEL SELinux custom smtp_port_t label preparation and rollback | Implemented with reviewed SHA and explicit confirmation | Verify `semanage port` change/rollback on a real disposable enforcing host; not a full service acceptance |
 | Microsoft 365 XOAUTH2 sender transport | Preview | Live Entra tenant + Exchange scoped mailbox + delivered test |
 | Microsoft 365 Direct Send | Fresh isolated installation without Entra/OAuth, or guarded route switch of an existing XOAUTH2 sidecar | Approved accepted domain and real internal recipient receipt |
 | Microsoft 365 Connector | Existing isolated sidecar only; no tenant provisioning | Verified tenant Connector authorization and external recipient receipt |
@@ -35,11 +36,22 @@ On a test machine with a copy of the project branch, run the following commands 
 
     sudo python3 linux/platform-compat.py --smtp-port 46500
     sudo python3 linux/rhel-selinux-doctor.py --smtp-port 46500
+    sudo python3 linux/manage-rhel-selinux-port.py --check-only --smtp-port 46500
     sudo python3 linux/installed-sidecar-audit.py --smtp-port 46500
     sudo python3 linux/relay-health.py --smtp-port 46500
     sudo python3 linux/audit-sidecar-auth-archives.py
 
 Inspect all non-success codes. A SELinux smtp_port_t mapping and present socket labels do NOT mean a policy actually authorizes access. On Enforcing machines, collect a redacted AVC report and verify permissions on a disposable test host with approved policy changes. Automatic SMTP AUTH installation remains blocked on unverified RHEL Enforcing/Permissive/unknown modes.
+
+
+The Wizard can optionally add a missing, unclaimed `smtp_port_t` TCP mapping on
+RHEL-family systems after SHA-verified preflight and typed approval. This
+changes only the SELinux port type; it does **not** change `setenforce`,
+firewall, queue files, domains, process types or Dovecot socket policy.
+A matching root-only rollback record supports removal only with the listener
+stopped and the SELinux policy unchanged. A port label alone never establishes
+functional SELinux Enforcing support or safe SMTP AUTH. Real host acceptance is
+still required before Enforcing deployment is unlocked.
 
 ## 3. Private SMTP acceptance
 

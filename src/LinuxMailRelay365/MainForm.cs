@@ -560,6 +560,14 @@ internal sealed class MainForm : Form
                                   "RHEL SELinux Enforcing acceptance report (read-only)",
                                   "דוח SELinux Enforcing ל-RHEL ללא שינויים"),
                                   InspectRhelSelinuxAsync, false, "shield", "selinux-doctor");
+                AddAction(page, T("Подготовить SELinux-метку выбранного SMTP-порта (с подтверждением)",
+                                  "Prepare RHEL SELinux custom SMTP port label (review + apply)",
+                                  "הכן תווית SELinux ליציאת SMTP"),
+                                  PrepareRhelSelinuxPortAsync, false, "shield", "selinux-port-apply");
+                AddAction(page, T("Восстановить ранее изменённую метку SELinux-порта",
+                                  "Restore managed RHEL SELinux SMTP port label",
+                                  "שחזר תווית יציאת SELinux"),
+                                  RestoreRhelSelinuxPortAsync, false, "rotate-ccw", "selinux-port-restore");
                 AddAction(page, T("Проверить установленный SMTP: AUTH/TLS, порт, SELinux (без изменений)",
                                   "Audit installed SMTP: AUTH/TLS, port, SELinux (read-only)",
                                   "בדיקת SMTP מותקן: AUTH/TLS, יציאה ו-SELinux"),
@@ -1709,6 +1717,74 @@ internal sealed class MainForm : Form
                   "A real SELinux Enforcing acceptance test must confirm mail-queue and SASL socket access, " +
                   "audit AVC denials, power-cycle restart and Microsoft 365 delivery. " +
                   "This inspection never installs policies or changes SELinux.");
+    }
+
+    private int RhelCustomPort()
+    {
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
+            port is < 1024 or > 65535)
+            throw new InvalidDataException("Choose a custom SMTP port 1024-65535.");
+        return port;
+    }
+
+    private async Task PrepareRhelSelinuxPortAsync()
+    {
+        int port = RhelCustomPort();
+        var endpoint = Endpoint();
+        var preview = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildRhelSelinuxPortBundle(port), TimeSpan.FromSeconds(90));
+        preview.EnsureSuccess();
+        WriteLine(preview.StdOut);
+        if (preview.StdOut.Contains("RHEL_PORT_PREFLIGHT=already_allowed", StringComparison.Ordinal))
+        {
+            WriteLine("SELinux already maps this port to smtp_port_t. No changes made.");
+            return;
+        }
+        var match = System.Text.RegularExpressions.Regex.Match(preview.StdOut,
+            @"(?m)^RHEL_PORT_POLICY_SHA256=([a-f0-9]{64})\r?$");
+        if (!preview.StdOut.Contains("RHEL_PORT_PREFLIGHT=ready", StringComparison.Ordinal) ||
+            !match.Success)
+            throw new InvalidOperationException("RHEL policy preflight did not authorize this change.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Review RHEL SELinux port label",
+            "Add an SELinux smtp_port_t mapping for TCP " + port +
+            " only after confirming it is unassigned. An explicit rollback record is created. " +
+            "NO SELinux mode, booleans, Dovecot socket labels, Postfix service or firewall rules will be changed. " +
+            "This is preparation only and does NOT prove an Enforcing mail relay works.",
+            "ADD RHEL SMTP PORT LABEL")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildRhelSelinuxPortBundle(port, "apply", match.Groups[1].Value),
+            TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("RHEL_PORT_APPLIED=smtp_port_t", StringComparison.Ordinal))
+            throw new InvalidOperationException("SELinux custom port mapping was not confirmed.");
+        WriteLine(result.StdOut);
+        WriteLine("SELinux port label prepared. Run the separate SELinux Enforcing diagnostics and live acceptance before production.");
+    }
+
+    private async Task RestoreRhelSelinuxPortAsync()
+    {
+        int port = RhelCustomPort();
+        var endpoint = Endpoint();
+        var status = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildRhelSelinuxPortBundle(port, "status"), TimeSpan.FromSeconds(85));
+        status.EnsureSuccess();
+        var match = System.Text.RegularExpressions.Regex.Match(status.StdOut,
+            @"(?m)^RHEL_PORT_CURRENT_POLICY_SHA256=([a-f0-9]{64})\r?$");
+        if (!status.StdOut.Contains("RHEL_PORT_STATUS=active", StringComparison.Ordinal) ||
+            !match.Success)
+            throw new InvalidOperationException("There is no verified managed SELinux port mapping to remove.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Restore SELinux port mapping",
+            "Remove only the LinuxMailRelay365-added smtp_port_t record for TCP " + port +
+            " after the SMTP listener has stopped and its port is free. The operation refuses policy changes " +
+            "after the baseline. Existing third-party SELinux labels are never removed.",
+            "RESTORE RHEL SMTP PORT LABEL")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildRhelSelinuxPortBundle(port, "restore", match.Groups[1].Value),
+            TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("RHEL_PORT_RESTORED=yes", StringComparison.Ordinal))
+            throw new InvalidOperationException("SELinux policy restore was not confirmed.");
+        WriteLine(result.StdOut);
     }
 
     private async Task InspectPlatformAsync()

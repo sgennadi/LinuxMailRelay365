@@ -684,3 +684,7 @@ In Advanced SMTP, the isolated existing XOAUTH2 sidecar route can be switched to
 
 This is not an Exchange Online Send As grant, does not validate header ownership in Microsoft 365 and does not change an existing primary Postfix or queue. Automatic route changes require an empty isolated queue, reviewed SHA-256, explicit tenant attestation and an archived rollback. Public Internet SMTP and unverified RHEL SELinux Enforcing installation remain intentionally blocked.
 
+
+### RHEL-family custom SMTP port label (Preview 13)
+
+The Wizard's Advanced SMTP section can check, explicitly add, and restore a missing `smtp_port_t` SELinux port assignment using `semanage port`. Operations require a reviewed policy SHA-256, an unclaimed port, typed confirmation, a root-only rollback record and an empty TCP listener for restoration. RHEL, Oracle Linux, Rocky, AlmaLinux 8/9/10 and CentOS Stream 9/10 are identified without disabling SELinux. SELinux Enforcing installation, file/queue/socket label policy and real SMTP verification are **not** automatically approved by this preparatory action.

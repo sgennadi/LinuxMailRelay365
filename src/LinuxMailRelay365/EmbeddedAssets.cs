@@ -23,6 +23,7 @@ internal static class EmbeddedAssets
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
     internal static string RhelSelinuxDoctor => Text("LinuxMailRelay365.linux.rhel-selinux-doctor.py");
+    internal static string RhelSelinuxPortManager => Text("LinuxMailRelay365.linux.rhel-selinux-port-manager.py");
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
     internal static string RelayHealth => Text("LinuxMailRelay365.linux.relay-health.py");
     internal static string HealthMonitorInstaller => Text("LinuxMailRelay365.linux.health-monitor-installer.sh");
@@ -472,6 +473,39 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/doctor.py\" <<'LMR365_RHEL_SELINUX'\n" +
                Encode(RhelSelinuxDoctor) + "\nLMR365_RHEL_SELINUX\n" +
                "python3 \"$work/doctor.py\" --smtp-port " + selectedPort + "\n";
+    }
+
+    internal static string BuildRhelSelinuxPortBundle(int selectedPort, string operation = "check",
+        string? expectedSha = null)
+    {
+        if (selectedPort is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(selectedPort));
+        if (operation is not ("check" or "apply" or "status" or "restore"))
+            throw new ArgumentException("Unsupported SELinux port action.");
+        if (operation is "apply" or "restore")
+        {
+            if (expectedSha is null || !Regex.IsMatch(expectedSha, @"\A[a-f0-9]{64}\z"))
+                throw new ArgumentException("Reviewed policy SHA-256 is required.");
+        }
+        else if (expectedSha is not null)
+            throw new ArgumentException("Unexpected SELinux policy fingerprint.");
+        string args = (operation switch
+        {
+            "apply" => "--apply",
+            "status" => "--status",
+            "restore" => "--restore",
+            _ => "--check-only"
+        }) + " --smtp-port " + selectedPort;
+        if (operation is "apply" or "restore")
+            args += " --expect-policy-sha256 " + expectedSha +
+                " --confirm " + (operation == "apply" ? "ADD_REVIEWED_RHEL_SMTP_PORT" :
+                    "REMOVE_MANAGED_RHEL_SMTP_PORT");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-selinux-port.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/selinux-port.py\" <<'LMR365_PORT_POLICY'\n" +
+               Encode(RhelSelinuxPortManager) + "\nLMR365_PORT_POLICY\n" +
+               "python3 \"$work/selinux-port.py\" " + args + "\n";
     }
 
     internal static string BuildPlatformCompatBundle(int smtpPort)
