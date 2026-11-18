@@ -853,9 +853,20 @@ internal sealed class MainForm : Form
     private async Task CheckAuthTlsAsync()
     {
         var endpoint = Endpoint();
-        var args = PrivateAuthTlsArguments(apply: false);
         if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
             throw new InvalidOperationException("Install an isolated Postfix with Preserve Existing Mail first.");
+        var existing = await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None);
+        if (existing == true)
+        {
+            WriteLine("Isolated Postfix already configures mandatory STARTTLS and SMTP AUTH. " +
+                      "Use installed custom port " +
+                      await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None) +
+                      ". A client trust/auth handshake and Microsoft 365 delivery remain separately verifiable.");
+            return;
+        }
+        if (existing is null)
+            throw new InvalidOperationException("Existing SMTP AUTH/TLS settings are partially configured or unrecognized. Review manually before running setup.");
+        var args = PrivateAuthTlsArguments(apply: false);
         WriteLine("SMTP AUTH/TLS read-only preflight on custom TCP port " + isolatedSmtpPort.Text.Trim() +
                   ". No passwords or private keys are transferred.");
         var result = await SshRemote.RunRootScriptAsync(endpoint,
@@ -871,6 +882,11 @@ internal sealed class MainForm : Form
         var args = PrivateAuthTlsArguments(apply: true);
         if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
             throw new InvalidOperationException("Preserve Existing Mail isolated Postfix must already be installed.");
+        var current = await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None);
+        if (current == true)
+            throw new InvalidOperationException("SMTP AUTH/STARTTLS is already configured; existing isolated configuration is never silently overwritten.");
+        if (current is null)
+            throw new InvalidOperationException("SMTP AUTH/STARTTLS settings are ambiguous. No changes made. Inspect the isolated Postfix configuration.");
         // Guard preflight is independent of operator confirmation.
         var preview = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildAuthTlsBundle(PrivateAuthTlsArguments(apply: false)),
@@ -1554,6 +1570,19 @@ internal sealed class MainForm : Form
         int installedPort = isolated
             ? await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None)
             : 0;
+        if (isolated)
+        {
+            var authState = await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None);
+            if (authState != false)
+            {
+                WriteLine(authState == true
+                    ? "SMTP AUTH/STARTTLS is enabled on isolated TCP " + installedPort +
+                      ". The wizard intentionally does not store client credentials and cannot submit an anonymous test. " +
+                      "Send a test from an authenticated application; use Diagnostics to check the OAuth token and queue."
+                    : "Isolated SMTP security settings are ambiguous. Test submission blocked pending manual inspection.");
+                return;
+            }
+        }
         var result = isolated
             ? await SshRemote.SendIsolatedSidecarTestAsync(endpoint, cloud.Mailbox, dest, installedPort, CancellationToken.None)
             : await SshRemote.SendTestAsync(endpoint, cloud.Mailbox, dest, CancellationToken.None);
