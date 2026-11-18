@@ -20,12 +20,13 @@ QUEUE = Path("/var/spool/linuxmailrelay365-sidecar")
 UNIT = Path("/etc/systemd/system/linuxmailrelay365-sidecar.service")
 BACKUPS = Path("/var/backups/linuxmailrelay365")
 EXIM = Path("/etc/exim4")
+EXIM_RHEL = Path("/etc/exim")
 SENDMAIL = Path("/etc/mail/sendmail.cf")
 BACKUP_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\Z")
-CONFIG_LINE = re.compile(r"(?m)^([a-z][a-z0-9_]*)\s*=\s*(.*?)\s*$")
+CONFIG_LINE = re.compile(r"(?m)^([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
 REF_PARAMS = (
-    "smtp_tls_cert_file", "smtp_tls_key_file", "smtp_tls_CAfile",
-    "smtpd_tls_cert_file", "smtpd_tls_key_file", "smtpd_tls_CAfile",
+    "smtp_tls_cert_file", "smtp_tls_key_file", "smtp_tls_cafile",
+    "smtpd_tls_cert_file", "smtpd_tls_key_file", "smtpd_tls_cafile",
     "smtp_tls_policy_maps", "smtp_sasl_password_maps",
     "sender_canonical_maps", "smtpd_sender_login_maps", "transport_maps",
 )
@@ -55,7 +56,7 @@ def external_refs(main_cf):
         content = main_cf.read_text(encoding="utf-8")
     except (OSError, UnicodeError, ValueError):
         return "unknown", "unknown"
-    vals = dict(CONFIG_LINE.findall(content))
+    vals = {key.lower(): value for key, value in CONFIG_LINE.findall(content)}
     external = set()
     unresolved = 0
     for key in REF_PARAMS:
@@ -102,7 +103,7 @@ def audit(port, roots=None):
     roots = roots or {
         "primary": PRIMARY, "sidecar": SIDECAR, "auth": AUTH,
         "queue": QUEUE, "unit": UNIT, "backups": BACKUPS,
-        "exim": EXIM, "sendmail": SENDMAIL
+        "exim": EXIM, "exim_rhel": EXIM_RHEL, "sendmail": SENDMAIL
     }
     primary = roots["primary"]
     sidecar = roots["sidecar"]
@@ -121,7 +122,8 @@ def audit(port, roots=None):
     external, unresolved = external_refs(sidecar / "main.cf")
     mta_configs = sum((
         has_primary,
-        status(roots["exim"], directory=True) == "present",
+        (status(roots["exim"], directory=True) == "present" or
+         status(roots["exim_rhel"], directory=True) == "present"),
         status(roots["sendmail"]) == "present",
     ))
     return {
