@@ -45,7 +45,7 @@ internal sealed record PreserveFlowSnapshot(
             return lang switch
             {
                 1 => "LinuxMailRelay365 | NOT READY TO DEPLOY\r\n" +
-                     "Selected: Microsoft 365 Connector or sender-policy option not yet implemented.\r\n" +
+                     "Selected: Microsoft 365 Connector, Direct Send or sender-policy plan NOT DEPLOYED.\r\n" +
                      "Linux: " + DisplayHost + " | SMTP port: " + DisplayPort +
                      " | Verified domain: " + domain + "\r\n" +
                      "Preserve Existing Mail means old clients stay on existing SMTP; do not switch clients to this planned route.\r\n",
