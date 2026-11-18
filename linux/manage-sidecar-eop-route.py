@@ -266,6 +266,9 @@ def require_empty_sidecar_queue():
 def runtime_checks(allow_active_route=False):
     if os.geteuid():
         raise Refused("root_required")
+    public_active = Path("/var/lib/linuxmailrelay365-public-smtp/active.json")
+    if public_active.exists() or public_active.is_symlink():
+        raise Refused("restore_public_smtp_before_eop_reroute")
     for tool in ("postfix", "postconf", "systemctl"):
         if not shutil.which(tool):
             raise Refused("missing_{}".format(tool))

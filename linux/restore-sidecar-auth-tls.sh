@@ -48,6 +48,11 @@ if [ "$MODE" = restore ] && [ "$CONFIRM" != RESTORE_TRUSTED_NETWORK_SMTP ]; then
   exit 2
 fi
 [ "$(id -u)" -eq 0 ] || { echo 'AUTH_TLS_RESTORE_ERROR=root_required' >&2; exit 1; }
+if [ -e /var/lib/linuxmailrelay365-public-smtp/active.json ] ||
+   [ -L /var/lib/linuxmailrelay365-public-smtp/active.json ]; then
+  echo 'AUTH_TLS_RESTORE_ERROR=close_public_firewall_and_restore_public_mode_first' >&2
+  exit 3
+fi
 for cmd in postfix postconf systemctl sha256sum python3 flock cp cmp mv mktemp; do
   command -v "$cmd" >/dev/null || {
     echo "AUTH_TLS_RESTORE_ERROR=missing_$cmd" >&2; exit 1;

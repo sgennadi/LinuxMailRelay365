@@ -19,14 +19,14 @@
 | Microsoft 365 Direct Send | Fresh isolated installation without Entra/OAuth, or guarded route switch of an existing XOAUTH2 sidecar | Approved accepted domain and real internal recipient receipt |
 | Microsoft 365 Connector | Existing isolated sidecar only; no tenant provisioning | Verified tenant Connector authorization and external recipient receipt |
 | Connector sender preserve accepted domain / masquerade subdomains | Implemented in isolated EOP route, not primary Postfix | Real Postfix envelope/header acceptance, sender authorization and delivery |
-| Internet-wide SMTP listener | BLOCKED | Approved abuse controls / rate limits and security review |
+| Internet-wide SMTP listener | Guarded opt-in manager, not production-approved | Real Fail2ban ban drill, external client TLS trust, firewall/NAT, abuse controls and rollback on disposable test host |
 | Signed Stable Windows EXE | Not released | Signing provenance, GUI / x64 / ARM64 production QA |
 
 The incoming Linux custom port is separate from Microsoft 365 outbound 587 (XOAUTH2) or 25 (Direct Send / Connector). Direct Send is restricted to recipients in the Microsoft 365 organization.
 
 ## 1. Prepare a disposable test server
 
-Take a recoverable VM snapshot; baseline primary Postfix service, port 25, queue, configuration and existing programs. Choose an available custom private inbound port, for example 46500. Allow only loopback or explicit trusted RFC1918 client CIDRs. Do NOT disable SELinux or expose the listener to the public Internet.
+Take a recoverable VM snapshot; baseline primary Postfix service, port 25, queue, configuration and existing programs. Choose an available custom private inbound port, for example 46500. Allow only loopback or explicit trusted RFC1918 client CIDRs by default. Do NOT disable SELinux or expose the listener to the public Internet without an explicitly approved, isolated public-submission acceptance test.
 
 Prepare an approved test Tenant, authorized mailbox and an exact DNS SAN TLS certificate. Keep passwords, TLS private keys and OAuth credentials only in approved protected local storage. Never attach them to bug reports.
 
@@ -117,6 +117,40 @@ Connector **candidate** status. A Connector candidate is NOT proof of
 authorization or delivery. Check the actual Connector restrictions, certificate
 identity/IP, TLS policy, tenant context, scope and an approved end-to-end
 recipient delivery separately.
+
+
+## 5b. Guarded public SMTP submission (expert opt-in; NOT production-approved)
+
+Public exposure remains **off by default**. Only the independent XOAUTH2
+sidecar on a selected private IPv4, with working Dovecot SMTP AUTH,
+mandatory STARTTLS (TLS 1.2+), trusted CA and exact DNS/SNI, an active local
+health timer and active, **operator-tested Fail2ban postfix and dovecot jails**
+is eligible. The script checks jail existence, not whether real attacks
+actually trigger a ban or whether the logs are collected from the sidecar.
+
+The separate public manager configures per-IP authentication, connection,
+message and recipient rate limits, removes rate-limit exceptions and
+preserves \`permit_sasl_authenticated, reject\` relay rules. It opens an
+all-source firewall rule **only to the chosen local private IPv4 and custom
+TCP port**, requiring exactly one already-active UFW/firewalld backend. It
+neither opens primary port 25 nor configures router/NAT forwarding. RHEL
+SELinux Enforcing remains blocked pending actual live OS verification.
+
+    sudo python3 linux/manage-public-smtp.py --check-only --smtp-port 46500 \
+      --listen-ip 192.168.40.2 --server-name relay.example.org
+
+A reviewed SHA-256, typed Wizard confirmation and declaration of actual
+anti-abuse testing are mandatory for Apply. Local preflight or Apply is not
+evidence of public reachability or Exchange Online mail delivery. Test with
+external clients (TLS CA trust, bad password, unauthorized RCPT before AUTH),
+a real Fail2ban ban drill, alerting, quota/queue limits and emergency
+rollbacks on a disposable test VM.
+
+The same manager provides guarded \`--status\` and \`--restore\`, closing its
+firewall rule before restoring the original Postfix client restrictions. Each
+activation retains an independent root-only archive. Verify interrupted
+firewall changes and manual emergency rule removal. Only after a successful
+restore may AUTH/TLS be downgraded or routing changed to Direct Send/Connector.
 
 ## 6. Windows release checks
 

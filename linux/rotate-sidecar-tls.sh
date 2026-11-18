@@ -50,6 +50,11 @@ if [ "$MODE" = apply ] && [ "$CONFIRM" != ROTATE_PRIVATE_SMTP_TLS ]; then
   echo 'TLS_ROTATE_ERROR=explicit_confirmation_required' >&2; exit 2
 fi
 [ "$(id -u)" -eq 0 ] || { echo 'TLS_ROTATE_ERROR=root_required' >&2; exit 1; }
+if [ -e /var/lib/linuxmailrelay365-public-smtp/active.json ] ||
+   [ -L /var/lib/linuxmailrelay365-public-smtp/active.json ]; then
+  echo 'TLS_ROTATE_ERROR=restore_private_submission_before_certificate_change' >&2
+  exit 3
+fi
 for cmd in python3 postfix postconf openssl sha256sum systemctl flock; do
   command -v "$cmd" >/dev/null || { echo "TLS_ROTATE_ERROR=missing_$cmd" >&2; exit 1; }
 done

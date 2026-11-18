@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.13 — source and GitHub Actions builds; not a verified production release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.14 — source and GitHub Actions builds; not a verified production release.**
 
 ## New functionality in development branch (not Stable)
 
@@ -466,25 +466,34 @@ the source CIDR **and destination private IPv4 and destination port**. This
 does **not** enable disabled firewalls or automatically forward router ports.
 Testing local TCP connectivity cannot verify remote client reachability.
 
-**Public internet SMTP is a selectable planning preference, disabled by
-default, saved per Linux server. Its activation is intentionally BLOCKED.**
-The default listener trusts network sources and has neither SMTP AUTH nor
-mandatory inbound TLS. The optional private hardening step adds both but
-does **not** certify a safe public SMTP ingress. Opening the default
-listener to all source networks would risk an open relay:
-unsolicited spam, sender spoofing, stolen server capacity, IP/domain blacklists,
-mailbox reputation damage, leakage of mail content, and loss of mail service.
-A public plan can be inspected but cannot be installed or applied to firewall
-by the Wizard or the Linux firewall script.
-Public access remains intentionally blocked even when private SMTP AUTH and
-STARTTLS are active: real abuse detection, per-account enforcement, alerting
-and security review are separate requirements.
+**Public Internet SMTP is off by default and requires a separate expert-only
+Preview / Apply / Restore operation (Preview 14).** Checking the host-scoped
+plan does not change Postfix, firewall or NAT. The ordinary
+\`network-firewall.sh\` continues to block every
+\`--public-internet --apply\` request. Only the dedicated
+\`linux/manage-public-smtp.py\` can expose the selected local RFC1918 IPv4
+and custom port to all IPv4 sources after prerequisites: mandatory STARTTLS
+and Dovecot SMTP AUTH, verified system CA and exact DNS/SNI, fixed XOAUTH2
+sender policy, Postfix rate limits, active systemd health timer, active
+Fail2ban jails, reviewed SHA-256 and typed risk confirmation. It does not
+enable a disabled firewall or modify the NAT/router.
 
-For future public access the app must first provide and validate SMTP AUTH,
-mandatory TLS with a valid server certificate, anti-abuse rate limits,
-per-account controls, monitoring, and revocation; a warning acknowledgment
-alone is **not a technical security control**. This preview does not
-implement or claim those capabilities.
+An Internet-facing listener is **not** an open relay if authenticated relay
+restrictions reject unauthorized RCPT, but public submission is inherently
+higher risk: compromised SMTP credentials, password guessing, spam,
+traffic exhaustion, reputation loss and Microsoft 365 blocks.
+Fail2ban jail existence alone does not prove it captures the isolated
+Postfix/Dovecot service's logs. Operators MUST run a real ban drill,
+check monitoring, external client CA trust and tenant mail delivery.
+Successful local preflight/apply does NOT establish public reachability or
+abuse resistance. RHEL SELinux Enforcing activation remains blocked until
+real server acceptance.
+
+Restore first removes the exact public firewall rule and then restores
+the SHA-guarded private Postfix configuration, retaining a root-only
+archive for each activation. AUTH/TLS downgrade, certificate rotation and
+EOP re-routing refuse to operate while public submission remains active.
+**No Stable release is implied.**
 
 ## Real Ubuntu/Postfix sidecar smoke test (Preview 11)
 

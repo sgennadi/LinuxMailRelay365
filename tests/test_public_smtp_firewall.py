@@ -65,7 +65,8 @@ class FirewallAndPublicSmtpTests(unittest.TestCase):
         gui = (ROOT / 'src/LinuxMailRelay365/MainForm.cs').read_text(encoding='utf-8')
         for needle in ('publicInternetRequested', 'BuildNetworkFirewallBundle',
                        'CheckNetworkFirewallAsync', 'OpenTrustedFirewallAsync',
-                       'Public Internet SMTP is planning-only and blocked.',
+                       'BuildPublicSmtpBundle', 'PreviewPublicSmtpAsync',
+                       'ApplyPublicSmtpAsync', 'RestorePublicSmtpAsync',
                        'OPEN TRUSTED SMTP'):
             self.assertIn(needle, gui)
         routing = (ROOT / 'src/LinuxMailRelay365/MailRoutingPlan.cs').read_text(encoding='utf-8')
