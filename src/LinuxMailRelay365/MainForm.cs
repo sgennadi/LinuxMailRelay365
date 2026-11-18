@@ -469,6 +469,13 @@ internal sealed class MainForm : Form
                                   "Check ports 443/587, SMTP and firewall (read-only)",
                                   "בדיקת יציאות וחומת אש (קריאה בלבד)"),
                                   CheckNetworkFirewallAsync, false, "check", "network");
+                advancedSmtpTools.Text = T(
+                    "Показать расширенные инструменты SMTP и диагностику",
+                    "Show advanced SMTP operations and diagnostics",
+                    "הצגת כלי SMTP מתקדמים ובדיקות");
+                AddLine(page, advancedSmtpTools);
+                if (advancedSmtpTools.Checked)
+                {
                 AddAction(page, T("Проверить Linux / SELinux для выбранного SMTP-порта",
                                   "Check Linux / SELinux for the selected SMTP port",
                                   "בדיקת לינוקס ו-SELinux עבור יציאת SMTP שנבחרה"),
@@ -493,6 +500,7 @@ internal sealed class MainForm : Form
                                   "Open SMTP port for trusted networks only...",
                                   "פתיחת יציאה לרשתות מהימנות בלבד"),
                                   OpenTrustedFirewallAsync, false, "shield", "firewall");
+                }
                 AddLine(page, UiTheme.Text(T(
                     "По умолчанию только 127.0.0.1. Сетевые клиенты допускаются только с указанной локальной IPv4 и из доверенных подсетей. Существующий Postfix не изменяется без отдельного разрешения.",
                     "Default: 127.0.0.1 only. Remote SMTP requires an explicit private listener IP and trusted client subnets. Existing Postfix is never changed without approval.",
