@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import importlib.util
 import subprocess
@@ -96,7 +95,8 @@ class PlatformCompatibilityTests(unittest.TestCase):
                     proc = subprocess.run(
                         [sys.executable, str(SCRIPT), "--os-release-file",
                          str(mock_release), "--smtp-port", str(port)],
-                        capture_output=True, text=True, timeout=8)
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        universal_newlines=True, timeout=8)
                     self.assertEqual(proc.returncode, 0, proc.stderr)
                     self.assertIn(f"SMTP_PORT={port}\n", proc.stdout)
                     self.assertIn("OS_FAMILY=rhel\n", proc.stdout)
@@ -109,7 +109,8 @@ class PlatformCompatibilityTests(unittest.TestCase):
                     proc = subprocess.run(
                         [sys.executable, str(SCRIPT), "--os-release-file",
                          str(mock_release), "--smtp-port", port],
-                        capture_output=True, text=True, timeout=8)
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        universal_newlines=True, timeout=8)
                     self.assertNotEqual(proc.returncode, 0)
 
 
