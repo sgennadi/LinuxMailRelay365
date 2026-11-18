@@ -64,6 +64,12 @@ test "$(sudo systemctl is-active postfix)" = "$primary_status"
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
 test "$(sudo postconf -h queue_directory)" = "$primary_queue"
 
+echo '=== Check installed isolated sidecar read-only audit before AUTH/TLS ==='
+sudo python3 linux/installed-sidecar-audit.py --smtp-port "$PORT" |
+  tee /tmp/lmr365-audit-before.txt
+grep -Fx 'SMTP_SECURITY_RESULT=private_unauthenticated_not_public_safe' /tmp/lmr365-audit-before.txt
+grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-audit-before.txt
+
 echo '=== Verify local SMTP greeting; DO NOT submit or send test mail ==='
 python3 - "$PORT" <<'PY'
 import smtplib, sys
@@ -127,6 +133,14 @@ test "$(sudo postconf -c "$CONF" -h smtpd_relay_restrictions)" = 'permit_sasl_au
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
 test "$(sudo systemctl is-active postfix)" = "$primary_status"
 test "$(sudo postconf -h queue_directory)" = "$primary_queue"
+echo '=== Read-only installed AUTH/TLS audit on exact custom port ==='
+sudo python3 linux/installed-sidecar-audit.py --smtp-port "$PORT" |
+  tee /tmp/lmr365-audit-after.txt
+grep -Fx 'SMTP_POLICY=mandatory_tls_and_auth' /tmp/lmr365-audit-after.txt
+grep -Fx 'SMTP_SECURITY_RESULT=local_auth_tls_verified_external_unverified' /tmp/lmr365-audit-after.txt
+grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-audit-after.txt
+grep -Fx 'MICROSOFT365_DELIVERY_VERIFIED=no' /tmp/lmr365-audit-after.txt
+
 echo '=== Exercise SMTP AUTH after STARTTLS, without MAIL FROM/RCPT/DATA ==='
 python3 - "$PORT" <<'PY'
 import smtplib, ssl, sys
