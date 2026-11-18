@@ -8,7 +8,7 @@ FILE=ROOT/"linux"/"install-health-monitor.sh"
 
 
 class HealthTimerTests(unittest.TestCase):
-    def run(self,*args):
+    def run_command(self,*args):
         return subprocess.run(["bash",str(FILE)]+list(args),
                               stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                               universal_newlines=True,timeout=8)
@@ -17,18 +17,18 @@ class HealthTimerTests(unittest.TestCase):
         p=subprocess.run(["bash","-n",str(FILE)],stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE,universal_newlines=True,timeout=8)
         self.assertEqual(p.returncode,0,p.stderr)
-        self.assertEqual(self.run("--self-test").returncode,0)
+        self.assertEqual(self.run_command("--self-test").returncode,0)
 
     def test_only_custom_port_1024_to_65535(self):
         for port in ("25","587","1023","65536","bad"):
-            r=self.run("--check-only","--smtp-port",port)
+            r=self.run_command("--check-only","--smtp-port",port)
             self.assertIn("HEALTH_TIMER_ERROR=invalid_custom_port",r.stderr)
         for port in ("1024","2525","2529","46500","65535"):
-            r=self.run("--check-only","--smtp-port",port)
+            r=self.run_command("--check-only","--smtp-port",port)
             self.assertNotIn("invalid_custom_port",r.stderr)
 
     def test_apply_requires_confirmation(self):
-        result=self.run("--install","--smtp-port","46500")
+        result=self.run_command("--install","--smtp-port","46500")
         self.assertIn("HEALTH_TIMER_ERROR=confirmation_required",result.stderr)
 
     def test_15min_timer_and_no_public_smtp(self):
