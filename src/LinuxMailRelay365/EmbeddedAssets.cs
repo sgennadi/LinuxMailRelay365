@@ -24,6 +24,7 @@ internal static class EmbeddedAssets
     internal static string RhelSelinuxDoctor => Text("LinuxMailRelay365.linux.rhel-selinux-doctor.py");
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
     internal static string RelayHealth => Text("LinuxMailRelay365.linux.relay-health.py");
+    internal static string HealthMonitorInstaller => Text("LinuxMailRelay365.linux.health-monitor-installer.sh");
     internal static string OutboundModePreflight => Text("LinuxMailRelay365.linux.outbound-mode-preflight.py");
     internal static string SidecarTlsRotator => Text("LinuxMailRelay365.linux.sidecar-tls-rotator.sh");
     internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
@@ -264,6 +265,23 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/plan.py\" <<'LMR365_OUTBOUND'\n" +
                Encode(OutboundModePreflight) + "\nLMR365_OUTBOUND\n" +
                "python3 \"$work/plan.py\" " + args + "\n";
+    }
+
+    internal static string BuildHealthMonitorBundle(int selectedPort, bool install)
+    {
+        if (selectedPort is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(selectedPort));
+        string args = install
+            ? "--install --smtp-port " + selectedPort + " --confirm ENABLE_PRIVATE_SMTP_MONITOR"
+            : "--check-only --smtp-port " + selectedPort;
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-health-monitor.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/install.sh\" <<'LMR365_HEALTH_TIMER'\n" +
+               Encode(HealthMonitorInstaller) + "\nLMR365_HEALTH_TIMER\n" +
+               "base64 -d > \"$work/relay-health.py\" <<'LMR365_HEALTH_PROBE'\n" +
+               Encode(RelayHealth) + "\nLMR365_HEALTH_PROBE\n" +
+               "bash \"$work/install.sh\" " + args + "\n";
     }
 
     internal static string BuildRelayHealthBundle(int selectedPort)
