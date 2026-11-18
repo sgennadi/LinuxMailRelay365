@@ -58,12 +58,12 @@ def private_listener(value):
         return "unsafe"
     if any(not isinstance(x, ipaddress.IPv4Address) for x in addresses):
         return "unsafe"
-    if not any(x == ipaddress.IPv4Address("127.0.0.1") for x in addresses):
-        return "unknown"
     for address in addresses:
         if address != ipaddress.IPv4Address("127.0.0.1") and not any(
                 address in p for p in PRIVATE):
             return "unsafe"
+    if not any(x == ipaddress.IPv4Address("127.0.0.1") for x in addresses):
+        return "unknown"
     return "loopback_only" if all(x.is_loopback for x in addresses) else "private_ipv4"
 
 
