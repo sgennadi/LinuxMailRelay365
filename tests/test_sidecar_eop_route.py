@@ -23,7 +23,7 @@ def opts(mode="direct-send", port=46500, sender="alerts@example.org",
     return SimpleNamespace(
         check_only=not apply and not restore, apply=apply, restore=restore,
         smtp_port=port, mode=mode, mx_host="example-org.mail.protection.outlook.com",
-        sender=sender, recipient_domain=recipients or ["example.org"],
+        sender=sender, recipient_domain=recipients if recipients is not None else ["example.org"],
         public_ip=public_ip, tls_cert=cert, tls_key=key,
         expect_main_sha256=expected, confirm=confirm,
         connector_attestation=attestation)
