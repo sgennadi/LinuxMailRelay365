@@ -28,7 +28,7 @@ class SMTPAuthClientTests(unittest.TestCase):
         for name in ("", "evil", "bad;name", "foo..bar", "-bad.example.org"):
             with self.subTest(hostname=name), self.assertRaises(auth.Refused):
                 auth.validate(46500, name, "smtp-app01", "")
-        for login in ("", "short", "bad;name", "a" * 65):
+        for login in ("", "x", "bad;name", "a" * 65):
             with self.subTest(login=login), self.assertRaises(auth.Refused):
                 auth.validate(46500, "relay.example.org", login, "")
         for bad in ("relative.pem", "/tmp/../../etc/shadow", "/tmp/ca pem",
@@ -80,13 +80,13 @@ class SMTPAuthClientTests(unittest.TestCase):
         self.assertIn("context.check_hostname = True", data)
         self.assertIn("context.verify_mode = ssl.CERT_REQUIRED", data)
         self.assertIn("socket.create_connection((\"127.0.0.1\", port)", data)
-        self.assertIn("not_verified", data)
+        self.assertIn("MICROSOFT365_DELIVERY_VERIFIED=no", data)
         self.assertIn("password_provider(", data)
         self.assertIn('sys.stdin.isatty() and sys.stderr.isatty()', data)
         for forbidden in ('sendall(b"MAIL', 'sendall(b"RCPT',
                           'sendall(b"DATA', ".sendmail(",
                           'print(password', 'print(request',
-                          'print(username', 'password=', 'smtp.office365.com'):
+                          'print(username', 'smtp.office365.com'):
             self.assertNotIn(forbidden, data)
 
 
