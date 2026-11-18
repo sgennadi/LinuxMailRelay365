@@ -32,6 +32,7 @@
     <EmbeddedResource Include="../../linux/probe-linux.sh" LogicalName="LinuxMailRelay365.linux.security-probe.sh" />
     <EmbeddedResource Include="../../linux/mail-config-recovery.sh" LogicalName="LinuxMailRelay365.linux.recovery.sh" />
     <EmbeddedResource Include="../../linux/install-preserve-postfix-sidecar.sh" LogicalName="LinuxMailRelay365.linux.sidecar.sh" />
+    <EmbeddedResource Include="../../linux/install-direct-send-sidecar.sh" LogicalName="LinuxMailRelay365.linux.direct-send-sidecar.sh" />
     <EmbeddedResource Include="../../linux/network-firewall.sh" LogicalName="LinuxMailRelay365.linux.network-firewall.sh" />
     <EmbeddedResource Include="../../linux/audit-existing-smtp.py" LogicalName="LinuxMailRelay365.linux.existing-smtp-audit.py" />
     <EmbeddedResource Include="../../linux/platform-compat.py" LogicalName="LinuxMailRelay365.linux.platform-compat.py" />
