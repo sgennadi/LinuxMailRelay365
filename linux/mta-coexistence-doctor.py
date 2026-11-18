@@ -104,7 +104,9 @@ def audit(port, runner=run, services=None, binaries=None, paths=None):
         readiness = "active_mta_unknown_manual_review"
     elif primary in ("exim", "sendmail"):
         if installed:
-            readiness = "preinstalled_postfix_candidate_manual_isolation_required"
+            readiness = "preinstalled_postfix_guarded_fixed_sender_candidate"
+        elif available.get("postfix", False):
+            readiness = "postfix_binaries_guarded_candidate_config_unverified"
         else:
             readiness = "postfix_not_preinstalled_package_mutation_blocked"
     elif primary == "postfix" and installed:
@@ -122,6 +124,7 @@ def audit(port, runner=run, services=None, binaries=None, paths=None):
         "INDEPENDENT_POSTFIX_INSTALLED": sidecar,
         "CUSTOM_PORT_IN_USE": port_busy(port, runner),
         "MULTI_MTA_READINESS": readiness,
+        "FOREIGN_MTA_FIXED_SENDER_GUARD": "available_requires_root_live_verification",
         "MTA_PACKAGE_INSTALL_ALLOWED": "no",
         "PRIMARY_MTA_STOP_OR_RESTART": "no",
         "PRIMARY_MTA_QUEUE_MODIFIED": "no",
