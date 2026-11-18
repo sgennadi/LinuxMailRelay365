@@ -38,6 +38,9 @@ internal sealed class MainForm : Form
     private readonly TextBox acceptedDomain = Field("");
     private readonly TextBox outboundMxHost = Field("");
     private readonly TextBox outboundPublicIp = Field("");
+    private readonly TextBox outboundConnectorName = Field("LinuxMailRelay365 SMTP Relay");
+    private string? previewedTenantConnectorSha;
+    private string? previewedTenantConnectorContext;
     private readonly TextBox outboundCertPath = Field("");
     private readonly TextBox outboundCertKeyPath = Field("");
     private readonly TextBox outboundFixedSender = Field("");
@@ -193,6 +196,7 @@ internal sealed class MainForm : Form
         outboundMxHost.Leave += (_, _) => SaveRoutingChoices();
         outboundFixedSender.Leave += (_, _) => SaveRoutingChoices();
         outboundPublicIp.Leave += (_, _) => SaveRoutingChoices();
+        outboundConnectorName.Leave += (_, _) => SaveRoutingChoices();
         outboundCertPath.Leave += (_, _) => SaveRoutingChoices();
         outboundCertKeyPath.Leave += (_, _) => SaveRoutingChoices();
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
@@ -504,6 +508,20 @@ internal sealed class MainForm : Form
                             "I have personally verified the EXISTING Microsoft 365 Inbound Connector",
                             "אישרתי שה-Connector כבר קיים ב-Microsoft 365");
                         AddLine(page, connectorApproved);
+                        if (advancedSmtpTools.Checked)
+                        {
+                            AddField(page, T("Имя нового Exchange Online Connector",
+                                             "New Exchange Online Connector display name",
+                                             "שם מחבר Exchange Online חדש"), outboundConnectorName);
+                            AddAction(page, T("Проверить создание нового Connector (без изменений)",
+                                              "Preview NEW tenant Connector (read-only)",
+                                              "בדיקת יצירת Connector ללא שינוי"),
+                                              PreviewTenantConnectorAsync, false, "check", "m365-connector-preview");
+                            AddAction(page, T("Создать Connector в подтверждённом tenant...",
+                                              "Create NEW reviewed tenant Connector...",
+                                              "יצירת Connector מאומת בענן"),
+                                              CreateTenantConnectorAsync, false, "shield", "m365-connector-create");
+                        }
                         if (senderPolicy.SelectedIndex != 0)
                         {
                             AddField(page, T("Linux-файл владельцев отправителей (root 0600): адрес логин",
@@ -1002,6 +1020,9 @@ internal sealed class MainForm : Form
             outboundFixedSender.Text = routingPlan.EopFixedSender;
             outboundSenderOwnerFile.Text = routingPlan.EopSenderOwnerFile;
             outboundPublicIp.Text = routingPlan.EopPublicIp;
+            outboundConnectorName.Text = routingPlan.EopConnectorName;
+            previewedTenantConnectorSha = null;
+            previewedTenantConnectorContext = null;
             outboundCertPath.Text = routingPlan.EopCertificatePath;
             outboundCertKeyPath.Text = routingPlan.EopKeyPath;
             connectorApproved.Checked = false;
@@ -1040,6 +1061,7 @@ internal sealed class MainForm : Form
         routingPlan.EopFixedSender = outboundFixedSender.Text.Trim().ToLowerInvariant();
         routingPlan.EopSenderOwnerFile = outboundSenderOwnerFile.Text.Trim();
         routingPlan.EopPublicIp = outboundPublicIp.Text.Trim();
+        routingPlan.EopConnectorName = outboundConnectorName.Text.Trim();
         routingPlan.EopCertificatePath = outboundCertPath.Text.Trim();
         routingPlan.EopKeyPath = outboundCertKeyPath.Text.Trim();
         routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
@@ -1570,6 +1592,137 @@ internal sealed class MainForm : Form
         if (!result.StdOut.Contains("HEALTH_WEBHOOK_DISABLED=yes", StringComparison.Ordinal))
             throw new InvalidOperationException("External alerts disable could not be verified.");
         WriteLine(result.StdOut);
+    }
+
+    private (Guid Tenant, string Domain, string Name, string Ip, string Certificate) TenantConnectorOptions()
+    {
+        if (!Guid.TryParse(tenant.Text.Trim(), out Guid id) || id == Guid.Empty)
+            throw new InvalidDataException("Choose exact Entra tenant ID before managing an Exchange Connector.");
+        if (discoveredTenants.Count > 1 && tenantSelector.SelectedItem is not TenantOption)
+            throw new InvalidDataException("Choose the intended Entra tenant from discovery first.");
+        if (discoveredTenants.Count > 0 && tenantSelector.SelectedItem is TenantOption selected &&
+            selected.Id != id)
+            throw new InvalidDataException("Exchange Connector tenant differs from selected Entra tenant.");
+        if (mailTransport.SelectedIndex != 1)
+            throw new InvalidOperationException("Choose Microsoft 365 Connector transport first.");
+        string domain = acceptedDomain.Text.Trim().ToLowerInvariant();
+        string name = outboundConnectorName.Text.Trim();
+        string ip = outboundPublicIp.Text.Trim();
+        string cert = outboundCertPath.Text.Trim();
+        if (string.IsNullOrEmpty(ip) == string.IsNullOrEmpty(cert))
+            throw new InvalidOperationException("For Connector creation choose EXACTLY ONE identity: static public IPv4 OR client certificate. Clear the unused value.");
+        return (id, domain, name, ip, ip.Length > 0 ? "" : domain);
+    }
+
+    private async Task<string> RunTenantConnectorManagerAsync(
+        (Guid Tenant, string Domain, string Name, string Ip, string Certificate) options,
+        string action, string? sha = null)
+    {
+        if (action is not ("Preview" or "Apply"))
+            throw new ArgumentException("Unsupported tenant Connector action.");
+        var scriptPath = Path.Combine(dataDirectory, "Manage-LinuxMailRelay365Connector.ps1");
+        var reportPath = Path.Combine(dataDirectory, "connector-result-" +
+            Guid.NewGuid().ToString("N") + ".txt");
+        File.WriteAllText(scriptPath, EmbeddedAssets.TenantConnectorManager, new UTF8Encoding(false));
+        var psi = new ProcessStartInfo("pwsh.exe")
+        {
+            UseShellExecute = true,
+            WorkingDirectory = dataDirectory
+        };
+        foreach (var arg in new[]
+        {
+            "-NoLogo", "-NoProfile", "-File", scriptPath,
+            "-Action", action, "-TenantId", options.Tenant.ToString("D"),
+            "-AcceptedDomain", options.Domain, "-ConnectorName", options.Name,
+            "-ResultPath", reportPath
+        })
+            psi.ArgumentList.Add(arg);
+        if (options.Ip.Length > 0)
+        {
+            psi.ArgumentList.Add("-PublicIpv4");
+            psi.ArgumentList.Add(options.Ip);
+        }
+        else
+        {
+            psi.ArgumentList.Add("-CertificateName");
+            psi.ArgumentList.Add(options.Certificate);
+        }
+        if (action == "Apply")
+        {
+            if (sha is null)
+                throw new InvalidOperationException("A reviewed tenant Connector SHA-256 is required.");
+            psi.ArgumentList.Add("-ExpectedSha256");
+            psi.ArgumentList.Add(sha);
+            psi.ArgumentList.Add("-TypedConfirmation");
+            psi.ArgumentList.Add("CREATE_REVIEWED_M365_CONNECTOR");
+        }
+        try
+        {
+            using var process = Process.Start(psi) ??
+                throw new InvalidOperationException("PowerShell 7 did not start.");
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException("Exchange Online Connector command failed. Review the PowerShell 7 console; no success claimed.");
+            string status = await File.ReadAllTextAsync(reportPath);
+            if (status.Length > 4096 || status.Contains('\0') || !status.Contains(
+                "EXO_CONNECTOR_TENANT=exact_match", StringComparison.Ordinal))
+                throw new InvalidDataException("Tenant Connector status is incomplete.");
+            return status;
+        }
+        finally
+        {
+            if (File.Exists(reportPath))
+                File.Delete(reportPath);
+        }
+    }
+
+    private async Task PreviewTenantConnectorAsync()
+    {
+        var options = TenantConnectorOptions();
+        string report = await RunTenantConnectorManagerAsync(options, "Preview");
+        var sha = System.Text.RegularExpressions.Regex.Match(report,
+            @"(?m)^EXO_CONNECTOR_REVIEW_SHA256=([a-f0-9]{64})\r?$");
+        if (!sha.Success || !report.Contains("EXO_CONNECTOR_PLAN=ready", StringComparison.Ordinal) ||
+            !report.Contains("CHANGES_APPLIED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Tenant Connector Preview did not return a verified read-only plan.");
+        previewedTenantConnectorSha = sha.Groups[1].Value;
+        previewedTenantConnectorContext = string.Join("|", options.Tenant, options.Domain,
+            options.Name, options.Ip, options.Certificate);
+        WriteLine("Read-only Exchange Online Connector creation preview completed. No tenant changes.");
+        WriteLine(report);
+        WriteLine("The preview does not prove ownership of the public egress IP/certificate, sender DNS or final recipient delivery.");
+    }
+
+    private async Task CreateTenantConnectorAsync()
+    {
+        var options = TenantConnectorOptions();
+        string context = string.Join("|", options.Tenant, options.Domain,
+            options.Name, options.Ip, options.Certificate);
+        if (previewedTenantConnectorSha is null || previewedTenantConnectorContext != context)
+            throw new InvalidOperationException("Run NEW tenant Connector Preview with exactly these inputs first.");
+        if (!acceptedDomainApproved.Checked)
+            throw new InvalidOperationException("Confirm the accepted domain in the intended tenant before creating a Connector.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Create Microsoft 365 Inbound Connector",
+            "CLOUD TENANT CHANGE: Create a new ENABLED OnPremises Inbound Connector named " +
+            options.Name + " in the explicitly selected Microsoft 365 tenant. The sending server MUST own " +
+            (options.Ip.Length > 0 ? "the selected exclusive public IPv4." :
+                "a CA-validated TLS client certificate whose DNS name matches the accepted domain.") +
+            " A duplicate or changed tenant inventory is refused. The action does NOT alter existing " +
+            "Connectors, DNS records, mailboxes, primary Postfix or Security Defaults. " +
+            "It may grant Internet relay privileges to the specified sending source; review service and anti-abuse controls. " +
+            "Actual recipient delivery, Exchange protection and emergency revoke still need separate tests.",
+            "CREATE M365 CONNECTOR")) return;
+        string sha = previewedTenantConnectorSha;
+        previewedTenantConnectorSha = null;
+        previewedTenantConnectorContext = null;
+        string result = await RunTenantConnectorManagerAsync(options, "Apply", sha);
+        if (!result.Contains("EXO_CONNECTOR_CREATED=yes", StringComparison.Ordinal) ||
+            !result.Contains("CHANGES_APPLIED=tenant_new_connector_only", StringComparison.Ordinal))
+            throw new InvalidOperationException("Tenant Connector creation could not be verified.");
+        WriteLine(result);
+        WriteLine("Microsoft 365 Inbound Connector created and observed in the selected tenant. " +
+                  "Actual server identity, certificate, test message and recipient delivery remain unverified.");
+        connectorApproved.Checked = false;
     }
 
     private async Task PreviewFreshConnectorAsync()

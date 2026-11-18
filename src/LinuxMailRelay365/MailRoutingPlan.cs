@@ -19,6 +19,8 @@ internal sealed class MailRoutingPlan
     // Linux-only root:root 0600 mapping path, never the owner file content.
     public string EopSenderOwnerFile { get; set; } = "";
     public string EopPublicIp { get; set; } = "";
+    // Nonsecret, host-scoped Exchange Online Connector display name.
+    public string EopConnectorName { get; set; } = "LinuxMailRelay365 SMTP Relay";
     public string EopCertificatePath { get; set; } = "";
     public string EopKeyPath { get; set; } = "";
     public string ListenIpv4 { get; set; } = "";
@@ -94,6 +96,9 @@ internal static class MailRoutingPlanStore
             throw new InvalidDataException("Unsupported routing policy.");
         // Only operator configuration hints are stored; no passwords,
         // private key bytes, hash values, signed tokens or tenant attestations.
+        if (state.EopConnectorName.Length is < 3 or > 70 ||
+            !Regex.IsMatch(state.EopConnectorName, @"\A[A-Za-z0-9][A-Za-z0-9._ -]{2,69}\z"))
+            throw new InvalidDataException("Connector name may contain English letters, digits, space, dot, hyphen and underscore.");
         if (new[] { state.EopMxHost, state.EopFixedSender, state.EopPublicIp,
                      state.EopCertificatePath, state.EopKeyPath, state.EopSenderOwnerFile }
             .Any(value => value.Length > 256 || value.Contains('\n') || value.Contains('\r')))
