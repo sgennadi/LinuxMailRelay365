@@ -31,6 +31,7 @@
     <EmbeddedResource Include="../../linux/m365_xoauth2_transport.py" LogicalName="LinuxMailRelay365.linux.transport.py" />
     <EmbeddedResource Include="../../linux/probe-linux.sh" LogicalName="LinuxMailRelay365.linux.security-probe.sh" />
     <EmbeddedResource Include="../../linux/mail-config-recovery.sh" LogicalName="LinuxMailRelay365.linux.recovery.sh" />
+    <EmbeddedResource Include="../../linux/sidecar-config-recovery.py" LogicalName="LinuxMailRelay365.linux.sidecar-config-recovery.py" />
     <EmbeddedResource Include="../../linux/install-preserve-postfix-sidecar.sh" LogicalName="LinuxMailRelay365.linux.sidecar.sh" />
     <EmbeddedResource Include="../../linux/install-direct-send-sidecar.sh" LogicalName="LinuxMailRelay365.linux.direct-send-sidecar.sh" />
     <EmbeddedResource Include="../../linux/install-connector-sidecar.sh" LogicalName="LinuxMailRelay365.linux.connector-sidecar.sh" />
