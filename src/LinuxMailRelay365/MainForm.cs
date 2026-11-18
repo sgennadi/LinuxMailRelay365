@@ -210,9 +210,9 @@ internal sealed class MainForm : Form
             if (publicInternetRequested.Checked)
             {
                 var response = MessageBox.Show(this, T(
-                    "ПУБЛИЧНЫЙ SMTP — ВЫСОКИЙ РИСК.\n\nДаже при SMTP AUTH и обязательном TLS публичный доступ без защиты от злоупотреблений позволит злоумышленникам отправлять спам, подделывать адреса, перегружать очередь и привести к блокировке сервера/IP или репутации Microsoft 365.\n\nТекущий LinuxMailRelay365 НЕ умеет безопасно открывать SMTP всему интернету. Отметка сохраняет только план — firewall и Postfix не изменяются. Сохранить запрос?",
-                    "PUBLIC SMTP — HIGH RISK.\n\nEven with SMTP AUTH and mandatory TLS, unrestricted internet users could send spam, spoof senders, exhaust the queue and cause IP/domain/Microsoft 365 reputation blocking.\n\nThis preview DOES NOT enable public SMTP. The checkbox saves a plan only; no firewall or Postfix changes. Save the request?",
-                    "SMTP ציבורי מסוכן ללא אימות והצפנת TLS. אפשרות זו שומרת תוכנית בלבד, ללא פתיחת חומת אש."),
+                    "ПУБЛИЧНЫЙ SMTP — ВЫСОКИЙ РИСК.\n\nДаже при SMTP AUTH и обязательном TLS публичный доступ без защиты от злоупотреблений позволит злоумышленникам отправлять спам, подделывать адреса, перегружать очередь и привести к блокировке сервера/IP или репутации Microsoft 365.\n\nЭта отметка сохраняет ТОЛЬКО ПЛАН. Публичный SMTP требует отдельной проверки AUTH, CA/DNS, лимитов, Fail2ban, мониторинга и явного подтверждения. Без дополнительного действия firewall и Postfix не изменяются. Сохранить запрос?",
+                    "PUBLIC SMTP — HIGH RISK.\n\nEven with SMTP AUTH and mandatory TLS, unrestricted internet users could send spam, spoof senders, exhaust the queue and cause IP/domain/Microsoft 365 reputation blocking.\n\nThis checkbox saves a PLAN only. Public SMTP requires a separate AUTH/TLS, CA/DNS, rate-limit, Fail2ban and monitoring review plus explicit approval. No firewall or Postfix changes occur by checking this box. Save the plan?",
+                    "SMTP ציבורי מחייב אימות, TLS, ניטור והגנה מפני ניצול לרעה. התיבה שומרת תוכנית בלבד."),
                     "LinuxMailRelay365 | Internet SMTP risk",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
                 if (response != DialogResult.Yes)
@@ -223,6 +223,12 @@ internal sealed class MainForm : Form
             }
             SaveRoutingChoices();
             UpdatePreserveFlowPreview();
+            if (step == 3 && !busy)
+            {
+                int scroll = -pageHost.AutoScrollPosition.Y;
+                RenderPage();
+                pageHost.AutoScrollPosition = new Point(0, scroll);
+            }
         };
         tenantSelector.AccessibleName = "Choose Microsoft Entra tenant";
         tenantSelector.SelectedIndexChanged += (_, _) =>
@@ -533,13 +539,13 @@ internal sealed class MainForm : Form
                                  "Trusted RFC1918 client CIDRs, comma separated (optional)",
                                  "רשתות מקומיות מורשות, CIDR"), smtpTrustedCidrs);
                 publicInternetRequested.Text = T(
-                    "Открыть SMTP для всего интернета (экспертный запрос; пока ЗАБЛОКИРОВАНО)",
-                    "Public Internet SMTP (advanced request only; activation BLOCKED)",
-                    "SMTP לכל האינטרנט (תכנון בלבד, חסום להפעלה)");
+                    "Публичный SMTP (экспертный план, применение только после проверки)",
+                    "Public Internet SMTP (expert opt-in; separately reviewed apply)",
+                    "SMTP ציבורי (תכנון מתקדם; הפעלה לאחר בדיקה)");
                 AddLine(page, publicInternetRequested);
                 AddLine(page, UiTheme.Text(T(
-                    "Риски публичного SMTP: спам, подмена отправителей и блокировка Microsoft 365. Приватные SMTP AUTH/STARTTLS уже поддерживаются, но открытие в интернет остаётся заблокированным до проверки лимитов, мониторинга и контроля злоупотреблений.",
-                    "Public SMTP risks: spam, spoofing and Microsoft 365 reputation loss. Private SMTP AUTH/STARTTLS exist, but public exposure remains blocked pending anti-abuse controls, monitoring and security review.",
+                    "Публичный SMTP опасен: злоупотребления, утечка учётных данных и блокировки IP/M365. Отметка ничего не открывает; отдельная операция доступна только при проверенном XOAUTH2, AUTH/STARTTLS, Fail2ban, лимитах и мониторинге.",
+                    "Public SMTP can attract spam attacks, credential theft and IP/M365 blocking. This checkbox does not open the port; the separate guarded flow requires XOAUTH2, AUTH/STARTTLS, Fail2ban, limits and monitoring.",
                     "פתיחת SMTP לאינטרנט ללא אימות עלולה לאפשר ספאם ולגרום לחסימת שרת הדואר.")));
                 AddAction(page, T("Проверить порты 443/587, SMTP и firewall (без изменений)",
                                   "Check ports 443/587, SMTP and firewall (read-only)",
@@ -619,7 +625,7 @@ internal sealed class MainForm : Form
                     {
                     AddLine(page, UiTheme.Text(T(
                         "Режим без аутентификации требует доверенной подсети. Дополнительное включение STARTTLS и SMTP AUTH ниже доступно только для уже установленного отдельного Postfix; публичный SMTP остаётся заблокирован.",
-                        "Initial private-only SMTP uses trusted networks. Optional STARTTLS + SMTP AUTH below can harden an existing separate Postfix. Public SMTP remains blocked.",
+                        "Initial private SMTP uses trusted networks. Enable STARTTLS + SMTP AUTH first. Public SMTP has a separate expert-only preflight, apply and restore flow; a checked plan never opens firewall automatically.",
                         "שרת SMTP מקומי מהימן בלבד. אפשר להפעיל STARTTLS ו-SMTP AUTH במופע מבודד קיים; גישה ציבורית חסומה.")));
                     AddLine(page, UiTheme.Text(T(
                         "SMTP AUTH + STARTTLS (отдельный Postfix, дополнительная защита)",
@@ -685,6 +691,23 @@ internal sealed class MainForm : Form
                                       "Apply SMTP client account change...",
                                       "ביצוע שינוי חשבון SMTP"),
                                       ApplySmtpAccountChangeAsync, false, "shield", "account-apply");
+                    AddLine(page, UiTheme.Text(T(
+                        "Публичный SMTP: отдельное включение после проверки защиты (не рекомендуется без необходимости)",
+                        "Public SMTP: separately reviewed exposure (avoid unless necessary)",
+                        "SMTP ציבורי: פתיחה לאחר בדיקת אבטחה")));
+                    AddAction(page, T("Аудит публичного SMTP без изменений",
+                                      "Preview public SMTP safety (read-only)",
+                                      "בדיקה בלבד: SMTP ציבורי"),
+                                      PreviewPublicSmtpAsync, false, "check", "public-smtp-preview");
+                    if (publicInternetRequested.Checked)
+                        AddAction(page, T("Открыть SMTP для интернета после подтверждения...",
+                                          "Enable reviewed public AUTH + TLS SMTP...",
+                                          "אפשר SMTP מאובטח לציבור לאחר אישור"),
+                                          ApplyPublicSmtpAsync, false, "shield", "public-smtp-apply");
+                    AddAction(page, T("Закрыть публичный доступ и восстановить конфигурацию...",
+                                      "Close public SMTP and restore private configuration...",
+                                      "סגור SMTP ציבורי ושחזר הגדרות"),
+                                      RestorePublicSmtpAsync, false, "rotate-ccw", "public-smtp-restore");
                     }
                 }
                 if (inspectedMail is not null && inspectedServerIdentity == TryCurrentIdentity())
@@ -728,7 +751,7 @@ internal sealed class MainForm : Form
                     "עבור Postfix קיים נוצר מופע נפרד ביציאת SMTP שנבחרה ללא שינוי בתצורה הקיימת.")));
                 AddLine(page, UiTheme.Text(T(
                     "Маскарад и Connector пока доступны только как план. Никакие изменения домена, MX, SPF, DKIM, DMARC или маршрутов существующего MTA не выполняются автоматически. Если MTA уже установлен, режим сохранения блокирует его изменение.",
-                    "Masquerade and Connector are planning-only in this preview. No domain, MX, SPF, DKIM, DMARC, or existing MTA routes change automatically. Preserve mode blocks modifications of an existing MTA.",
+                    "Verified Connector and sender policies can be activated only on an isolated sidecar through explicit Advanced SMTP actions. Domain, MX, SPF, DKIM, DMARC and primary MTA are not automatically altered.",
                     "Connector והסוואת כתובות הם לתכנון בלבד. הגדרות שרת הדואר הקיים לא משתנות.")));
                 if (existingSmtpAudit is not null && existingSmtpAuditIdentity == TryCurrentIdentity())
                     AddLine(page, UiTheme.Text(existingSmtpAudit.Summary(language.SelectedIndex)));
@@ -1058,8 +1081,6 @@ internal sealed class MainForm : Form
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort)
             || selectedPort is < 1024 or > 65535)
             throw new InvalidDataException("Custom isolated SMTP port must be 1024-65535.");
-        if (publicInternetRequested.Checked)
-            throw new NotSupportedException("Public SMTP is blocked. Clear the public Internet plan before enabling private SMTP AUTH/TLS.");
         var settings = new[]
         {
             "--smtp-port", selectedPort.ToString(),
@@ -1268,8 +1289,6 @@ internal sealed class MainForm : Form
 
     private (int Port, string Operation, string Username, string HashPath) GetSmtpAccountChange()
     {
-        if (publicInternetRequested.Checked)
-            throw new InvalidOperationException("Public SMTP access cannot be combined with private account management.");
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || port is < 1024 or > 65535)
             throw new InvalidDataException("Choose a custom SMTP port from 1024 to 65535.");
         string operation = smtpAccountOperation.SelectedIndex switch
@@ -1806,6 +1825,99 @@ internal sealed class MainForm : Form
         WriteLine("Platform inspection is informational only. Queue labels, OAuth delivery and firewall reachability remain unverified.");
     }
 
+    private (int Port, string Listener, string Dns) PublicSmtpOptions()
+    {
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
+            port is < 1024 or > 65535)
+            throw new InvalidDataException("Choose the installed SMTP port 1024-65535.");
+        string listen = smtpListenIp.Text.Trim();
+        string dns = privateAuthDns.Text.Trim();
+        if (string.IsNullOrEmpty(listen) || string.IsNullOrEmpty(dns))
+            throw new InvalidDataException("Enter the private local listener IPv4 and exact SMTP TLS DNS name.");
+        return (port, listen, dns);
+    }
+
+    private async Task PreviewPublicSmtpAsync()
+    {
+        var options = PublicSmtpOptions();
+        var (endpoint, port) = await EopInstalledEndpointAsync(options.Port);
+        var report = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildPublicSmtpBundle(port, options.Listener, options.Dns),
+            TimeSpan.FromSeconds(110));
+        report.EnsureSuccess();
+        WriteLine(report.StdOut);
+        WriteLine("Read-only public SMTP review: Dovecot AUTH, TLS 1.2+, system CA/DNS, local health timer, " +
+                  "Fail2ban jails and single active firewall are checked. Jail effectiveness, real Internet NAT, " +
+                  "hosted clients, Microsoft 365 delivery and abuse resistance STILL REQUIRE live independent tests.");
+    }
+
+    private async Task ApplyPublicSmtpAsync()
+    {
+        if (!publicInternetRequested.Checked)
+            throw new InvalidOperationException("Select the optional public SMTP plan first.");
+        if (!preserveExistingMail.Checked || mailTransport.SelectedIndex != 0 ||
+            senderPolicy.SelectedIndex != 0)
+            throw new InvalidOperationException("Public SMTP requires Preserve Existing Mail, fixed XOAUTH2 sender and a separate authenticated Postfix.");
+        var options = PublicSmtpOptions();
+        var (endpoint, port) = await EopInstalledEndpointAsync(options.Port);
+        var check = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildPublicSmtpBundle(port, options.Listener, options.Dns),
+            TimeSpan.FromSeconds(110));
+        check.EnsureSuccess();
+        var sha = System.Text.RegularExpressions.Regex.Match(check.StdOut,
+            @"(?m)^PUBLIC_SMTP_CURRENT_MAIN_SHA256=([a-f0-9]{64})\r?$");
+        if (!sha.Success || !check.StdOut.Contains(
+                "PUBLIC_SMTP_PREFLIGHT=ready_with_operator_acceptance_required", StringComparison.Ordinal))
+            throw new InvalidOperationException("Public SMTP prerequisites failed. Firewall was not opened.");
+        WriteLine(check.StdOut);
+        if (!ConfirmDestructive("LinuxMailRelay365 | PUBLIC INTERNET SMTP",
+            "HIGH RISK: permits SMTP connections from ANY Internet IPv4 source to local " +
+            options.Listener + " TCP " + port + ", potentially through existing NAT. This is NOT port 25 and " +
+            "does NOT enable anonymous relaying. YOU MUST have actually tested: 1) certificate trust and SNI, " +
+            "2) required STARTTLS and account authentication, 3) external unauthorized RCPT refusal, " +
+            "4) Fail2ban postfix/dovecot bans against this dedicated instance, 5) monitoring and abuse alerts, " +
+            "6) host firewall/NAT exposure, and 7) tenant-approved sender/mailbox.\n\n" +
+            "Do not proceed on production without a test VM and reviewed rollback. The existing primary Postfix " +
+            "is not changed; a root-only SHA-checked backup is created. The separate firewall change is logged. " +
+            "Postfix and firewall rollback is attempted if deployment fails.",
+            "ENABLE PUBLIC AUTH SMTP")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildPublicSmtpBundle(port, options.Listener, options.Dns,
+                "apply", sha.Groups[1].Value, approved: true), TimeSpan.FromMinutes(4));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("PUBLIC_SMTP_APPLIED=authenticated_starttls_only", StringComparison.Ordinal))
+            throw new InvalidOperationException("Public SMTP activation was not verified; inspect firewall and recovery.");
+        WriteLine(result.StdOut);
+        WriteLine("Only local Postfix and firewall activation was verified. NAT reachability, a real Fail2ban ban drill and Microsoft 365 delivery are NOT verified by this operation.");
+    }
+
+    private async Task RestorePublicSmtpAsync()
+    {
+        var options = PublicSmtpOptions();
+        var (endpoint, port) = await EopInstalledEndpointAsync(options.Port);
+        var status = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildPublicSmtpBundle(port, options.Listener, options.Dns, "status"),
+            TimeSpan.FromSeconds(85));
+        status.EnsureSuccess();
+        var sha = System.Text.RegularExpressions.Regex.Match(status.StdOut,
+            @"(?m)^PUBLIC_SMTP_CURRENT_MAIN_SHA256=([a-f0-9]{64})\r?$");
+        if (!sha.Success || !status.StdOut.Contains("PUBLIC_SMTP_STATUS=active", StringComparison.Ordinal))
+            throw new InvalidOperationException("No verified active public SMTP configuration exists to restore.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Close public SMTP",
+            "Close the ALL-SOURCES firewall rule for local " + options.Listener + " TCP " + port +
+            " and restore the original isolated Postfix client restrictions. Applications submitting from " +
+            "the Internet will lose access. The primary Postfix, custom port and independent backup archive remain intact.",
+            "CLOSE PUBLIC SMTP")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildPublicSmtpBundle(port, options.Listener, options.Dns,
+                "restore", sha.Groups[1].Value), TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("PUBLIC_SMTP_RESTORED=private_client_restrictions", StringComparison.Ordinal))
+            throw new InvalidOperationException("Public firewall/config restore not fully verified. Inspect active firewall rules manually.");
+        WriteLine(result.StdOut);
+        WriteLine("Public firewall rule closed and isolated Postfix private client restrictions restored.");
+    }
+
     private async Task CheckNetworkFirewallAsync()
     {
         var args = NetworkFirewallArguments("--check", includePublic: true);
@@ -1815,7 +1927,7 @@ internal sealed class MainForm : Form
         report.EnsureSuccess();
         WriteLine(report.StdOut);
         if (publicInternetRequested.Checked)
-            WriteLine("SECURITY: PUBLIC INTERNET SMTP IS NOT ENABLED. SMTP AUTH/TLS and abuse protections are not implemented.");
+            WriteLine("SECURITY: Public Internet SMTP planning is NOT an activation. Use Advanced SMTP > Preview / Apply / Restore only after AUTH/TLS, monitoring and Fail2ban acceptance.");
         WriteLine("Local checks cannot prove reachability from another network or guarantee mail delivery.");
     }
 
