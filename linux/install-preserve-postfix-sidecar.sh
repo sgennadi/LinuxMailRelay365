@@ -126,6 +126,7 @@ rollback() {
 }
 trap rollback EXIT
 install -d -o root -g root -m 0755 /etc/linuxmailrelay365
+install -d -o root -g root -m 0755 /usr/local/libexec
 install -d -o root -g root -m 0755 "$QUEUE"
 install -d -o postfix -g postfix -m 0700 "$DATA"
 install -d -o root -g root -m 0755 "$CONF"
