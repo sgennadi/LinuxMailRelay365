@@ -46,7 +46,7 @@ for path in "$OWNERS" "$ENGINE"; do
     *'..'*|*'//'*) echo 'FROM_GUARD_ERROR=unsafe_path' >&2; exit 2 ;;
   esac
 done
-for tool in systemctl postconf python3 sha256sum stat install getent; do
+for tool in systemctl postconf python3 sha256sum stat install getent flock; do
   command -v "$tool" >/dev/null || {
     echo 'FROM_GUARD_ERROR=missing_required_utility' >&2; exit 2;
   }
@@ -73,7 +73,9 @@ systemctl is-active --quiet linuxmailrelay365-smtp-auth.service || {
   echo 'FROM_GUARD_ERROR=existing_milter_config_requires_review' >&2; exit 2;
 }
 [ ! -e /var/lib/linuxmailrelay365-public-smtp/active.json ] &&
-[ ! -e /var/lib/linuxmailrelay365-eop-route-recovery/active.json ] || {
+[ ! -L /var/lib/linuxmailrelay365-public-smtp/active.json ] &&
+[ ! -e /var/lib/linuxmailrelay365-eop-route-recovery/active.json ] &&
+[ ! -L /var/lib/linuxmailrelay365-eop-route-recovery/active.json ] || {
   echo 'FROM_GUARD_ERROR=disable_active_public_eop_first' >&2; exit 2;
 }
 [ ! -e "$UNIT" ] && [ ! -L "$UNIT" ] &&
@@ -110,7 +112,7 @@ for raw in auth.read_text(encoding='ascii').splitlines():
 if not record or set(record.values()) - logins:
     raise SystemExit('FROM_GUARD_ERROR=unknown_smtp_auth_owner')
 print('FROM_GUARD_ACCOUNT_MAPPING_COUNT='+str(len(record)))
-print('CHANGES_APPLIED=no')
+print('FROM_GUARD_SOURCE_VALIDATED=yes')
 PY
 if [ "$ACTION" = check ]; then
   [ -z "$EXPECT_OWNER" ] && [ -z "$EXPECT_ENGINE" ] &&
@@ -120,6 +122,7 @@ if [ "$ACTION" = check ]; then
   echo "FROM_GUARD_OWNER_SHA256=$OWNER_SHA"
   echo "FROM_GUARD_ENGINE_SHA256=$ENGINE_SHA"
   echo 'FROM_GUARD_PREFLIGHT=ready'
+  echo 'CHANGES_APPLIED=no'
   echo 'FROM_GUARD_POSTFIX_ROUTING_CHANGED=no'
   exit 0
 fi
@@ -130,8 +133,26 @@ fi
 [ "$CONFIRM" = ACTIVATE_PRIVATE_FROM_OWNER_GUARD ] || {
   echo 'FROM_GUARD_ERROR=reviewed_hash_and_confirmation_required' >&2; exit 2;
 }
+# Do not silently make a production-ready claim on untested SELinux labels.
+if command -v getenforce >/dev/null; then
+  selinux="$(getenforce 2>/dev/null || echo Unknown)"
+  if [ "$selinux" != Disabled ]; then
+    echo 'FROM_GUARD_ERROR=selinux_policy_not_live_verified' >&2; exit 2
+  fi
+fi
+exec 9>/run/linuxmailrelay365-sidecar-auth.lock
+flock -n 9 || {
+  echo 'FROM_GUARD_ERROR=concurrent_sidecar_operation_blocked' >&2; exit 2
+}
+[ ! -e "$UNIT" ] && [ ! -e "$POLICY" ] && [ ! -e "$GUARD" ] || {
+  echo 'FROM_GUARD_ERROR=guard_installed_during_preflight' >&2; exit 2
+}
+[ "$OWNER_SHA" = "$(sha256sum "$OWNERS" | cut -d ' ' -f 1)" ] &&
+[ "$ENGINE_SHA" = "$(sha256sum "$ENGINE" | cut -d ' ' -f 1)" ] || {
+  echo 'FROM_GUARD_ERROR=source_changed_after_preview' >&2; exit 2
+}
 command -v useradd >/dev/null || {
-  echo 'FROM_GUARD_ERROR=useradd_missing' >&2; exit 2;
+  echo 'FROM_GUARD_ERROR=useradd_missing' >&2; exit 2
 }
 [ -n "$(getent group postfix)" ] || {
   echo 'FROM_GUARD_ERROR=postfix_group_missing' >&2; exit 2;
