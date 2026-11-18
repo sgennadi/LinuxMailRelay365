@@ -2150,7 +2150,7 @@ internal sealed class MainForm : Form
         };
         var chosenSender = senderPolicy.SelectedIndex;
         if (chosenTransport != "oauth2" || chosenSender != 0)
-            throw new NotSupportedException("Main Install applies XOAUTH2 only. For Direct Send or Connector, install the isolated Postfix first and use Advanced SMTP → EOP route Preview / Apply. Sender preservation and masquerading remain blocked.");
+            throw new NotSupportedException("Main Install applies XOAUTH2 only. For Direct Send or Connector, install the isolated Postfix first and use Advanced SMTP → EOP route Preview / Apply. Sender preservation and masquerading remain blocked. No Postfix changes were applied.");
         var endpoint = Endpoint();
         var observed = await SshRemote.ProbeSecurityAsync(endpoint,
             EmbeddedAssets.SecurityProbe, CancellationToken.None);
