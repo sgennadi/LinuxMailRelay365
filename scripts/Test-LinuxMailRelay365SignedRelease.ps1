@@ -116,8 +116,8 @@ $target = [System.IO.Path]::GetFullPath($ManifestPath)
 if (Test-Path -LiteralPath $target) {
     throw 'Release manifest already exists, refuse overwrite.'
 }
-if (-not (Test-Path -LiteralPath ([System.IO.Path]::GetDirectoryName($target))
-        -PathType Container)) {
+$manifestDirectory = [System.IO.Path]::GetDirectoryName($target)
+if (-not (Test-Path -LiteralPath $manifestDirectory -PathType Container)) {
     throw 'Release manifest parent directory must already exist.'
 }
 $payload = [ordered]@{
