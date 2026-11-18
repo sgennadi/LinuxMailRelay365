@@ -135,6 +135,7 @@ class InstalledSidecarAuditUnitTests(unittest.TestCase):
             with patch.object(audit, "postconf", side_effect=lambda k: config.get(k)), \
                  patch.object(audit, "run", return_value="active"), \
                  patch.object(audit, "port_configuration", return_value="matched"), \
+                 patch.object(audit, "service_status", return_value="active"), \
                  patch.object(audit, "fixed_sender_map_status", return_value="exact_postmap_verified"), \
                  patch.object(Path, "is_file", return_value=True), \
                  patch.object(Path, "exists", return_value=False), \
