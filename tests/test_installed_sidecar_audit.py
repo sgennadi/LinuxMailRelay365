@@ -83,6 +83,21 @@ class InstalledSidecarAuditUnitTests(unittest.TestCase):
         self.assertIn("AuditInstalledPrivateSmtpAsync", gui)
         self.assertIn("GetIsolatedSidecarPortAsync", gui)
 
+    def test_selinux_file_labels_are_hints_not_authorization(self):
+        label = b"system_u:object_r:postfix_spool_t:s0\\x00"
+        with patch.object(audit.os, "getxattr", return_value=label):
+            self.assertEqual(
+                audit.selinux_file_label_hints(auth_enabled=True),
+                "labels_present_requires_policy_review")
+        with patch.object(audit.os, "getxattr",
+                          return_value=b"system_u:object_r:default_t:s0"):
+            self.assertEqual(
+                audit.selinux_file_label_hints(auth_enabled=False),
+                "unlabeled_or_default_type")
+        with patch.object(audit.os, "getxattr", side_effect=FileNotFoundError):
+            self.assertEqual(
+                audit.selinux_file_label_hints(auth_enabled=True), "missing_files")
+
     def test_unauthorized_relay_policy_never_gets_green(self):
         values = {
             "inet_interfaces": "127.0.0.1, 192.168.10.7",
