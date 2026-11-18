@@ -304,6 +304,22 @@ if sudo bash "$AUTH_SCRIPT" --apply "${AUTH_ARGS[@]}" --confirm ENABLE_PRIVATE_A
   echo 'AUTH TLS unexpectedly allowed silent overwrite' >&2; exit 1
 fi
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+echo '=== Rotate one isolated SMTP account using only a salted hash file ==='
+sudo openssl passwd -6 -salt CIsalt2026 disposable-test-credential > /tmp/lmr365-hash-sha512.tmp
+sudo sh -c 'printf "{SHA512-CRYPT}%s\n" "$(cat /tmp/lmr365-hash-sha512.tmp)" > /etc/linuxmailrelay365-ci-smtp/rotated.hash'
+sudo chmod 0600 /etc/linuxmailrelay365-ci-smtp/rotated.hash
+ACCOUNT=linux/manage-sidecar-smtp-accounts.py
+account_preview="$(sudo python3 "$ACCOUNT" --smtp-port "$PORT" --operation rotate --username lmr365-ci-b --hash-file /etc/linuxmailrelay365-ci-smtp/rotated.hash)"
+printf '%s\n' "$account_preview" | grep -Fx 'SMTP_ACCOUNT_RESULT=preview_ready'
+account_sha="$(printf '%s\n' "$account_preview" | sed -n 's/^SMTP_ACCOUNT_CURRENT_STATE_SHA256=//p')"
+[[ "$account_sha" =~ ^[a-f0-9]{64}$ ]]
+sudo python3 "$ACCOUNT" --smtp-port "$PORT" --operation rotate --username lmr365-ci-b \
+  --hash-file /etc/linuxmailrelay365-ci-smtp/rotated.hash --apply \
+  --expected-state-sha256 "$account_sha" --confirm CHANGE_PRIVATE_SMTP_ACCOUNT |
+  grep -Fx 'SMTP_ACCOUNT_RESULT=applied'
+sudo test -d /var/lib/linuxmailrelay365-smtp-account-recovery
+sudo rm -f /tmp/lmr365-hash-sha512.tmp
+echo 'SMTP_ACCOUNT_REAL_ROTATION=PASS'
 echo '=== Verify tamper-guarded private AUTH/TLS restore preflight ==='
 RESTORE_SCRIPT=linux/restore-sidecar-auth-tls.sh
 restore_preview="$(sudo bash "$RESTORE_SCRIPT" --check-only --smtp-port "$PORT")"
