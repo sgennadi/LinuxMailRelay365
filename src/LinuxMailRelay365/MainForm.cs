@@ -423,6 +423,10 @@ internal sealed class MainForm : Form
                                   "Check Linux / SELinux for the selected SMTP port",
                                   "בדיקת לינוקס ו-SELinux עבור יציאת SMTP שנבחרה"),
                                   InspectPlatformAsync, false, "check", "platform");
+                AddAction(page, T("Проверить установленный SMTP: AUTH/TLS, порт, SELinux (без изменений)",
+                                  "Audit installed SMTP: AUTH/TLS, port, SELinux (read-only)",
+                                  "בדיקת SMTP מותקן: AUTH/TLS, יציאה ו-SELinux"),
+                                  AuditInstalledPrivateSmtpAsync, false, "shield", "smtp-live-audit");
                 AddAction(page, T("Открыть порт только доверенным сетям...",
                                   "Open SMTP port for trusted networks only...",
                                   "פתיחת יציאה לרשתות מהימנות בלבד"),
@@ -911,6 +915,37 @@ internal sealed class MainForm : Form
         WriteLine("Update clients: configured DNS name " + privateAuthDns.Text.Trim() +
                   ", custom port " + isolatedSmtpPort.Text.Trim() +
                   ", STARTTLS REQUIRED, SMTP AUTH REQUIRED, verify server DNS and CA trust. Authentication details are not stored by this wizard.");
+    }
+
+    private async Task AuditInstalledPrivateSmtpAsync()
+    {
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) ||
+            selectedPort is < 1024 or > 65535)
+            throw new InvalidDataException("Choose a custom isolated SMTP port from 1024 to 65535.");
+        var endpoint = Endpoint();
+        int checkPort = selectedPort;
+        if (await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+        {
+            checkPort = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+            if (checkPort != selectedPort)
+                WriteLine("Installed sidecar actually listens on TCP " + checkPort +
+                          ", not the unsaved Wizard selection " + selectedPort +
+                          ". Auditing the installed port.");
+        }
+        WriteLine("Read-only installed SMTP security audit (selected TCP " + checkPort +
+                  "): isolated listener, Postfix relay policy, Dovecot AUTH, STARTTLS and SELinux. " +
+                  "No mail sent, no credentials read, no settings changed.");
+        var report = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildInstalledSidecarAuditBundle(checkPort),
+            TimeSpan.FromSeconds(90));
+        report.EnsureSuccess();
+        WriteLine(report.StdOut);
+        if (report.StdOut.Contains("SMTP_SECURITY_RESULT=needs_manual_review", StringComparison.Ordinal))
+            WriteLine("ATTENTION: installed SMTP security requires manual review. Do not open the custom port to the Internet.");
+        else if (report.StdOut.Contains("SMTP_SECURITY_RESULT=local_auth_tls_verified_external_unverified", StringComparison.Ordinal))
+            WriteLine("Local SMTP AUTH/STARTTLS handshake passes. Certificate trust on actual clients, firewall reachability and Microsoft 365 delivery remain unverified.");
+        else if (report.StdOut.Contains("SMTP_SECURITY_RESULT=private_unauthenticated_not_public_safe", StringComparison.Ordinal))
+            WriteLine("Private trusted-network relay without per-client SMTP AUTH. Do not expose it to the Internet.");
     }
 
     private async Task InspectPlatformAsync()
