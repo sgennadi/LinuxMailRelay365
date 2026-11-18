@@ -136,9 +136,10 @@ internal static class MailRoutingPlanStore
             var defaults = Load(folder, a);
             if (defaults.Transport != "oauth2" || defaults.SenderPolicy != "fixed-mailbox" ||
                 !defaults.PreserveExistingMail || defaults.SidecarPort != 2525 ||
-                defaults.PublicInternetRequested) return false;
-            Save(folder, b, new MailRoutingPlan { PublicInternetRequested = true });
-            if (!Load(folder, b).PublicInternetRequested || Load(folder, a).PublicInternetRequested)
+                defaults.PublicInternetRequested || defaults.ShowAdvancedSmtpTools) return false;
+            Save(folder, b, new MailRoutingPlan { PublicInternetRequested = true, ShowAdvancedSmtpTools = true });
+            if (!Load(folder, b).PublicInternetRequested || !Load(folder, b).ShowAdvancedSmtpTools ||
+                Load(folder, a).PublicInternetRequested || Load(folder, a).ShowAdvancedSmtpTools)
                 return false;
             Validate(new MailRoutingPlan { SidecarPort = 2526 });
             try { Validate(new MailRoutingPlan { SidecarPort = 25 }); return false; }
