@@ -77,18 +77,26 @@ def service_snapshot(expected):
         for unit in units:
             if unit_status(unit) == "active":
                 active.append((name, unit))
-    # Reject any overlapping/extraneous MTA; no attempt to stop one.
-    if len(active) != 1 or active[0][0] != expected:
+    # Exim may ship exim4.service and exim.service as aliases.
+    # Aliases are accepted ONLY if systemd proves the identical MainPID;
+    # multiple *different* MTA instances or processes are refused.
+    if not active or any(name != expected for name, unit in active):
         raise Refused("active_mta_not_exclusively_declared_foreign_service")
+    pids = []
+    for name, unit in active:
+        result = command(["systemctl", "show", "--property=MainPID",
+                          "--value", unit])
+        pid = result.stdout.strip()
+        if result.returncode != 0 or not pid.isdigit() or int(pid) < 2:
+            raise Refused("primary_mta_main_pid_not_verified")
+        pids.append(pid)
+    if len(set(pids)) != 1:
+        raise Refused("multiple_foreign_mta_processes_detected")
+    # Stable unit naming is important for the pre/post baseline.
     unit = active[0][1]
-    result = command(["systemctl", "show", "--property=MainPID",
-                      "--value", unit])
-    pid = result.stdout.strip()
-    if result.returncode != 0 or not pid.isdigit() or int(pid) < 2:
-        raise Refused("primary_mta_main_pid_not_verified")
     # A restart / replacement between preflight and completion changes the
     # PID, even when the service has returned to "active".
-    return unit, pid
+    return unit, pids[0]
 
 
 def bounded_config_digest(roots=CONFIGS):
