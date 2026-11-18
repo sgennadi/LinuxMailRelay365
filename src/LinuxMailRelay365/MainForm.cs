@@ -662,6 +662,14 @@ internal sealed class MainForm : Form
             case 4:
                 AddField(page, T("Кому отправить тестовое письмо", "Test recipient", "נמען בדיקה"), testRecipient);
                 AddAction(page, T("Проверить токен и очередь", "Check OAuth token and mail queue", "בדיקת אסימון ותור"), DiagnosticsAsync, true, "check", "token");
+                AddAction(page, T("Сохранить проверочное состояние перед перезагрузкой Linux",
+                                  "Record server continuity baseline before Linux reboot",
+                                  "שמירת מצב לפני הפעלה מחדש של Linux"),
+                                  RecordRebootBaselineAsync, false, "shield", "reboot-baseline");
+                AddAction(page, T("Проверить Postfix после ПОЛНОЙ перезагрузки Linux",
+                                  "Verify services and config after a real Linux reboot",
+                                  "בדיקת Postfix אחרי אתחול Linux"),
+                                  VerifyRebootContinuityAsync, false, "check", "reboot-verify");
                 AddAction(page, T("Отправить тестовое письмо", "Send test email", "שלח הודעת בדיקה"), SendTestAsync, false, "send", "smtp-test");
                 AddAction(page, T("Резервные копии и Restore", "Backup & Restore", "גיבוי ושחזור"),
                     OpenBackupStepAsync, false, "shield", "backup");
@@ -1248,6 +1256,46 @@ internal sealed class MainForm : Form
             throw new InvalidDataException("SMTP account update did not confirm success; inspect private service logs.");
         WriteLine(applied.StdOut);
         WriteLine("Update/revoke the affected application's SMTP credentials. No Microsoft 365 mailbox or primary Postfix changes were requested.");
+    }
+
+    private async Task RecordRebootBaselineAsync()
+    {
+        var endpoint = Endpoint();
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("The isolated SMTP gateway is not installed.");
+        int port = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+        if (!ConfirmDestructive("LinuxMailRelay365 | Pre-reboot baseline",
+            T("Записать закрытый контрольный снимок для TCP ",
+              "Store a root-only continuity baseline for TCP ",
+              "שמירת מצב לפורט ") + port +
+            "\n" + T("Сервер не будет перезагружен. Повторная запись поверх существующего состояния запрещена. После самостоятельной перезагрузки запустите вторую проверку.",
+                       "The server will NOT reboot automatically. Existing baseline is never overwritten. After manually rebooting the server, run Verify after reboot.",
+                       "השרת לא יופעל מחדש באופן אוטומטי."),
+            "RECORD REBOOT BASELINE")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildRebootContinuityBundle(port, true),
+            TimeSpan.FromSeconds(75));
+        result.EnsureSuccess();
+        WriteLine(result.StdOut);
+        WriteLine("Root-only reboot baseline recorded. Perform a controlled reboot manually when ready; then reconnect and verify.");
+    }
+
+    private async Task VerifyRebootContinuityAsync()
+    {
+        var endpoint = Endpoint();
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("No isolated SMTP detected after reboot.");
+        int port = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildRebootContinuityBundle(port, false),
+            TimeSpan.FromSeconds(75));
+        WriteLine(result.StdOut);
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("REBOOT_CONTINUITY_RESULT=local_services_continuity_verified",
+                StringComparison.Ordinal))
+            throw new InvalidOperationException("A full-reboot continuity test is not verified.");
+        WriteLine("Local service continuity passed after a different kernel boot ID. " +
+                  "Validate actual client CA trust, Microsoft 365 token and recipient delivery separately.");
     }
 
     private async Task InstallHealthMonitorAsync()
