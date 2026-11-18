@@ -4,8 +4,9 @@
 Preview / opt-in service foundation only. No package installation, primary MTA
 changes, tenant access or mail sending. Python 3.6+ standard library.
 Expected policy: root:postfix 0640, one 'address@domain login' per line.
-The service must run as the unprivileged 'postfix' account and use a private
-Unix socket; a reviewed deployer must explicitly configure smtpd_milters.
+The service must run under a dedicated unprivileged local account with the
+postfix group and a private Unix socket. A reviewed deployer must explicitly
+configure smtpd_milters; this file alone DOES NOT enable header filtering.
 """
 import argparse
 import email.policy
@@ -24,6 +25,7 @@ import sys
 
 POLICY = Path("/etc/linuxmailrelay365/sidecar-postfix/eop-from-owners.tsv")
 SOCKET = Path("/run/linuxmailrelay365-from-guard/from-guard.sock")
+SERVICE_USER = "linuxmailrelay365-fromguard"
 ADDRESS = re.compile(r"[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\Z")
 LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{2,63}\Z")
 HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -222,6 +224,8 @@ class Session(object):
                 value = chunks[1].decode("utf-8")
             except UnicodeError:
                 return b"r"
+            if len(name) > 128 or not re.fullmatch(r"[a-z0-9-]+", name):
+                return b"r"
             if name == "from":
                 if self.from_header is not None:
                     return b"r"
@@ -276,10 +280,12 @@ def send_frame(stream, payload):
 
 
 def serve(expected_sha):
-    """Run as an unprivileged postfix user in a dedicated private systemd unit."""
-    identity = pwd.getpwnam("postfix")
-    if os.geteuid() != identity.pw_uid:
-        raise PolicyError("milter_must_run_unprivileged_postfix")
+    """Run under a dedicated non-privileged account in a private systemd unit."""
+    identity = pwd.getpwnam(SERVICE_USER)
+    postfix_group = grp.getgrnam("postfix")
+    if (identity.pw_uid == 0 or os.geteuid() != identity.pw_uid or
+            os.getegid() != postfix_group.gr_gid):
+        raise PolicyError("milter_must_run_dedicated_unprivileged_user")
     def load():
         raw = protected_owner_file(POLICY)
         if hashlib.sha256(raw).hexdigest() != expected_sha:
@@ -289,7 +295,7 @@ def serve(expected_sha):
     directory = SOCKET.parent
     meta = directory.lstat()
     if not stat.S_ISDIR(meta.st_mode) or meta.st_uid != identity.pw_uid or \
-            meta.st_mode & 0o027:
+            meta.st_gid != postfix_group.gr_gid or meta.st_mode & 0o027:
         raise PolicyError("unsafe_private_socket_directory")
     if SOCKET.exists() or SOCKET.is_symlink():
         raise PolicyError("milter_socket_already_exists")
