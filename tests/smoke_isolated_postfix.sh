@@ -181,6 +181,39 @@ with smtplib.SMTP('127.0.0.1', port, timeout=10) as smtp:
     smtp.login('lmr365-ci-b','ci-fixture-password-2')
 print('AUTH_TLS_REAL_SMTP_SMOKE=PASS')
 PY
+echo '=== Simulated systemd cold-start (NOT an actual host reboot) ==='
+# Stop only the isolated Postfix and its independent Dovecot service. The
+# Requires=/After= relationship must bring both back with the same custom port.
+sudo systemctl stop linuxmailrelay365-smtp-auth.service
+sudo systemctl stop "$UNIT"
+sudo systemctl start linuxmailrelay365-smtp-auth.service
+sudo systemctl is-active --quiet "$UNIT"
+sudo systemctl is-active --quiet linuxmailrelay365-smtp-auth.service
+python3 - "$PORT" <<'PY'
+import smtplib, ssl, sys, time
+port = int(sys.argv[1])
+last = None
+for attempt in range(24):
+    try:
+        with smtplib.SMTP('127.0.0.1', port, timeout=4) as smtp:
+            code, _ = smtp.ehlo('lmr365-cold-start.invalid')
+            assert code == 250 and smtp.has_extn('STARTTLS')
+            assert not smtp.has_extn('AUTH')
+            smtp.starttls(context=ssl._create_unverified_context())
+            smtp.ehlo('lmr365-cold-start.invalid')
+            assert smtp.has_extn('AUTH')
+            smtp.login('lmr365-ci-b', 'ci-fixture-password-2')
+        break
+    except (OSError, smtplib.SMTPException, AssertionError) as error:
+        last = str(type(error).__name__)
+        time.sleep(0.25)
+else:
+    raise AssertionError('Cold-start SMTP AUTH/TLS not ready: ' + str(last))
+print('AUTH_TLS_ISOLATED_SYSTEMD_COLD_START=PASS')
+PY
+test "$(sudo postconf -c "$CONF" -h smtpd_sasl_auth_enable)" = yes
+test "$(sudo cat "$CONF/smtp-port")" = "$PORT"
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
 if sudo bash "$AUTH_SCRIPT" --apply "${AUTH_ARGS[@]}" --confirm ENABLE_PRIVATE_AUTH_TLS; then
   echo 'AUTH TLS unexpectedly allowed silent overwrite' >&2; exit 1
 fi
@@ -254,6 +287,26 @@ fi
 sudo test ! -e /etc/linuxmailrelay365/smtp-auth
 sudo test ! -e /etc/systemd/system/linuxmailrelay365-smtp-auth.service
 sudo test -d /var/lib/linuxmailrelay365-sidecar-auth-recovery
+echo '=== Verify root-only recovery archives are protected after restore ==='
+sudo test "$(sudo stat -c '%u:%g:%a' /var/lib/linuxmailrelay365-sidecar-auth-recovery)" = '0:0:700'
+sudo python3 - <<'PY'
+import os
+from pathlib import Path
+base = Path('/var/lib/linuxmailrelay365-sidecar-auth-recovery')
+archives = [p for p in base.iterdir() if p.is_dir() and p.name.startswith('recovery.')]
+assert len(archives) >= 1, 'Missing root-only recovery archive'
+for archive in archives:
+    stat = archive.lstat()
+    assert stat.st_uid == 0 and (stat.st_mode & 0o077) == 0, 'Archive must be root-only'
+    for name in ('main.cf.auth', 'master.cf.auth',
+                 'linuxmailrelay365-smtp-auth.service', 'smtp-auth'):
+        assert (archive / name).exists(), 'Incomplete recovery archive'
+    for name in ('smtp-auth/passwd', 'smtp-auth/privkey.pem',
+                 'smtp-auth/main.cf.before-auth'):
+        p = archive / name
+        assert p.is_file() and p.stat().st_uid == 0, 'Missing or untrusted secret snapshot'
+print('AUTH_TLS_RESTORE_ROOT_ONLY_ARCHIVE=PASS')
+PY
 sudo python3 linux/installed-sidecar-audit.py --smtp-port "$PORT" |
   tee /tmp/lmr365-restored-audit.txt
 grep -Fx 'SMTP_SECURITY_RESULT=private_unauthenticated_not_public_safe' /tmp/lmr365-restored-audit.txt
