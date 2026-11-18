@@ -88,8 +88,9 @@ the baseline of the PRIMARY MTA remains unchanged. Only then execute:
     sudo python3 linux/sidecar-config-recovery.py --restore BACKUP_ID --expect-current-sha256 REVIEWED_SHA256 --confirm RESTORE_ISOLATED_RELAY_CONFIGURATION
 
 Verify the emergency safety snapshot ID, restored configuration, service
-units, certificate references and Postfix `-c` check **before** manually
-starting isolated services. Do not claim queue recovery, external TLS private
+units, certificate references and read-only Postfix `postconf -c ... -n/-M/-h`
+checks **before** manually starting isolated services. The restore deliberately
+avoids `postfix check`, which could create missing spool directories. Do not claim queue recovery, external TLS private
 key restore, package rollback or M365 tenant message delivery. Separate
 public SMTP exposure must be reverted before restoring any old configuration.
 Run induced corrupt-archive and failed-Postfix-check rollback tests. The
