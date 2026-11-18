@@ -134,6 +134,51 @@ class EopRouteContracts(unittest.TestCase):
         with self.assertRaisesRegex(eop.Refused, "invalid_sender_policy"):
             eop.validate(a)
 
+    def test_multi_sender_connector_wires_only_pinned_milter_and_fail_closed(self):
+        for sender_policy in ("preserve-domain", "masquerade"):
+            with self.subTest(sender_policy=sender_policy):
+                a = opts(mode="connector", public_ip="8.8.8.8")
+                a.sender_policy = sender_policy
+                changes = eop.policy_changes(a, "/etc/ssl/testca.pem", True)
+                self.assertEqual(changes["smtpd_milters"],
+                                 "unix:/run/linuxmailrelay365-from-guard/from-guard.sock")
+                self.assertEqual(changes["milter_default_action"], "tempfail")
+                self.assertEqual(changes["milter_protocol"], "6")
+                self.assertIn("{auth_authen}", changes["milter_mail_macros"])
+                self.assertIn("{auth_type}", changes["milter_mail_macros"])
+                self.assertEqual(changes["authorized_submit_users"], "")
+                self.assertEqual(changes["smtpd_milter_maps"], "")
+                self.assertEqual(changes["non_smtpd_milters"], "")
+                self.assertIn("reject_authenticated_sender_login_mismatch",
+                              changes["smtpd_sender_restrictions"])
+                with self.assertRaisesRegex(eop.Refused,
+                                            "requires_dovecot_smtp_auth"):
+                    eop.policy_changes(a, "/etc/ssl/testca.pem", False)
+
+    def test_fixed_sender_modes_keep_their_original_milter_free_settings(self):
+        for mode in ("direct-send", "connector"):
+            a = opts(mode=mode, public_ip="8.8.8.8" if mode == "connector" else "")
+            settings = eop.policy_changes(a, "/etc/ssl/testca.pem", False)
+            self.assertNotIn("smtpd_milters", settings)
+            self.assertNotIn("authorized_submit_users", settings)
+            self.assertNotIn("milter_mail_macros", settings)
+
+    def test_multi_sender_route_cannot_apply_without_owner_guard(self):
+        a = opts(mode="connector", public_ip="8.8.8.8")
+        a.sender_policy = "preserve-domain"
+        a.sender_owner_file = "/root/guarded-senders.txt"
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            owner = Path(tmp) / "owners.txt"
+            owner.write_text("alice@example.org smtp-app01\n", encoding="ascii")
+            a.sender_owner_file = str(owner)
+            from types import SimpleNamespace
+            with patch.object(eop, "owned_file", return_value=SimpleNamespace(
+                    st_uid=0, st_mode=0o100600, st_size=33)), \
+                 patch.object(eop, "FROM_GUARD_POLICY", Path(tmp) / "not-installed"):
+                with self.assertRaisesRegex(eop.Refused, "not_installed"):
+                    eop.verify_header_guard(a)
+
     def test_sender_owner_map_validates_active_login_and_domain(self):
         import tempfile
         from types import SimpleNamespace
