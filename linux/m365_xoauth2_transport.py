@@ -46,7 +46,7 @@ def base64url(value):
 
 def run_openssl(*args, data=None):
     result = subprocess.run(
-        ['/usr/bin/openssl', *args], input=data, capture_output=True,
+        ['/usr/bin/openssl', *args], input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         timeout=20, check=False,
     )
     if result.returncode:
