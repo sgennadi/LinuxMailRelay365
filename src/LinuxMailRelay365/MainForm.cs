@@ -37,6 +37,14 @@ internal sealed class MainForm : Form
     private readonly TextBox smtpListenIp = Field("");
     private readonly TextBox smtpTrustedCidrs = Field("");
     private readonly TextBox isolatedSmtpPort = Field("2525");
+    private readonly PreserveMailFlowPreview preserveFlowPreview = new();
+    private readonly TextBox preserveMailInstructions = new()
+    {
+        Width = 890, Height = 210, Multiline = true, ReadOnly = true,
+        ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.FixedSingle,
+        BackColor = Color.White, Font = new Font("Segoe UI", 9.5f),
+        AccessibleName = "Preserve Existing Mail: client SMTP settings generated from entered values"
+    };
     private readonly CheckBox publicInternetRequested = new() { AutoSize = true, Checked = false };
     private MailRoutingPlan routingPlan = new();
     private string? routingIdentity;
@@ -114,11 +122,18 @@ internal sealed class MainForm : Form
         senderPolicy.SelectedIndex = 0;
         mailTransport.SelectedIndexChanged += (_, _) => SaveRoutingChoices();
         senderPolicy.SelectedIndexChanged += (_, _) => SaveRoutingChoices();
-        preserveExistingMail.CheckedChanged += (_, _) => SaveRoutingChoices();
+        preserveExistingMail.CheckedChanged += (_, _) =>
+        {
+            SaveRoutingChoices();
+            if (step == 3 && !routingLoading && !busy) RenderPage();
+        };
         acceptedDomain.Leave += (_, _) => SaveRoutingChoices();
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
+        foreach (TextBox item in new[] { host, mailbox, tenant, smtpListenIp,
+                                         isolatedSmtpPort, smtpTrustedCidrs })
+            item.TextChanged += (_, _) => UpdatePreserveFlowPreview();
         publicInternetRequested.CheckedChanged += (_, _) =>
         {
             if (routingLoading) return;
@@ -137,6 +152,7 @@ internal sealed class MainForm : Form
                 }
             }
             SaveRoutingChoices();
+            UpdatePreserveFlowPreview();
         };
         tenantSelector.AccessibleName = "Choose Microsoft Entra tenant";
         tenantSelector.SelectedIndexChanged += (_, _) =>
@@ -401,6 +417,28 @@ internal sealed class MainForm : Form
                     "Preserve existing MTA and routes (safe default)",
                     "שמירה על שרת דואר קיים והניתוב שלו");
                 AddLine(page, preserveExistingMail);
+                if (preserveExistingMail.Checked)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "Как это работает: старые приложения остаются на текущем SMTP. Для новых указывайте отдельный адрес и порт из схемы. Письма уйдут через Microsoft 365 от выбранного mailbox; адреса получателей не меняются.",
+                        "How it works: existing apps keep their current SMTP. Configure NEW apps with the separate server/port shown below. Microsoft 365 sends using the chosen mailbox; recipients are unchanged.",
+                        "יישומים קיימים נשארים בשרת הקודם. ליישומים חדשים מגדירים שרת ויציאת SMTP נפרדים.")));
+                    UpdatePreserveFlowPreview();
+                    AddLine(page, preserveFlowPreview);
+                    AddLine(page, UiTheme.Text(T(
+                        "Готовые настройки для конечного пользователя (из заполненных полей)",
+                        "Ready-to-copy client setup (actual entered field values)",
+                        "הגדרות ליישומי לקוח לפי הערכים שהוזנו")));
+                    AddLine(page, preserveMailInstructions);
+                    AddAction(page, T("Копировать инструкции для приложений",
+                                      "Copy SMTP client setup instructions",
+                                      "העתקת הוראות הגדרת SMTP"),
+                        CopyPreserveInstructionsAsync, false, "copy", "client-setup");
+                    AddLine(page, UiTheme.Text(T(
+                        "Схема — план, а не подтверждение установки. Если адрес слушателя пуст, 127.0.0.1 подходит только программам на самом Linux. В Preview нет SMTP AUTH/TLS для клиентских подключений: не выставляйте этот порт в интернет.",
+                        "Preview is a PLAN, not proof of installation. With no listener IPv4, 127.0.0.1 works only for apps on the Linux itself. This preview has no inbound SMTP AUTH/TLS: never expose it to the internet.",
+                        "התרשים מציג תוכנית בלבד. 127.0.0.1 מיועד ליישומים על אותו Linux; אין לפתוח שירות זה לאינטרנט.")));
+                }
                 if (inspectedMail is not null && inspectedServerIdentity == TryCurrentIdentity())
                 {
                     AddLine(page, UiTheme.Text("Detected MTA: " + inspectedMail.Mta +
@@ -656,6 +694,35 @@ internal sealed class MainForm : Form
         catch (InvalidDataException) { }
     }
 
+    private PreserveFlowSnapshot CurrentPreserveFlowSnapshot()
+    {
+        string selectedHost = host.Text.Trim();
+        if (string.Equals(selectedHost, "linux.example.net", StringComparison.OrdinalIgnoreCase))
+            selectedHost = "";
+        return new PreserveFlowSnapshot(
+            selectedHost, smtpListenIp.Text.Trim(), isolatedSmtpPort.Text.Trim(),
+            mailbox.Text.Trim(), tenant.Text.Trim(), smtpTrustedCidrs.Text.Trim(),
+            inspectedServerIdentity == TryCurrentIdentity() ? inspectedMail?.Mta : null,
+            publicInternetRequested.Checked);
+    }
+
+    private void UpdatePreserveFlowPreview()
+    {
+        if (IsDisposed) return;
+        var snapshot = CurrentPreserveFlowSnapshot();
+        preserveFlowPreview.UpdateData(snapshot, language.SelectedIndex);
+        preserveMailInstructions.Text = snapshot.ClientInstructions(language.SelectedIndex);
+    }
+
+    private Task CopyPreserveInstructionsAsync()
+    {
+        // Copies ONLY explicitly visible, non-secret connection/routing fields.
+        UpdatePreserveFlowPreview();
+        Clipboard.SetText(preserveMailInstructions.Text);
+        WriteLine("Copied Preserve Existing Mail client setup instructions.");
+        return Task.CompletedTask;
+    }
+
     private string[] NetworkFirewallArguments(string action, bool includePublic)
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int smtpPort))
@@ -732,6 +799,7 @@ internal sealed class MainForm : Form
         WriteLine("Postfix configuration fingerprint: " + inventory.ConfigSha256);
         if (inventory.Mta != "none")
             WriteLine("Existing mail flows detected. Preserve mode will NOT change them.");
+        UpdatePreserveFlowPreview();
     }
 
 
