@@ -814,6 +814,60 @@ prove Microsoft 365 Connector authorization, permission, queue I/O or mail
 delivery. Ubuntu CI uses disposable credentials against real local Postfix
 and Dovecot; never automate this manual command with live credentials.
 
+### Verified isolated SMTP Relay configuration backup and offline recovery (Preview)
+
+**This is not the primary Postfix backup**. New
+\`linux/sidecar-config-recovery.py\` provides a separate root-only, SHA-verified
+snapshot of the LinuxMailRelay365 configuration, isolated systemd service/timer
+units, local transport and monitoring scripts, and owned recovery-state
+directories (if present). It also includes local SMTP AUTH credential hashes and
+sidecar-specific keys **under \`/etc/linuxmailrelay365\`**. Backups never leave
+Linux via the Wizard. They are sensitive and are stored under
+\`/var/backups/linuxmailrelay365-sidecar\` (0700), with archive files mode 0600.
+Backup reads fail closed on symlinks, untrusted ownership/permissions,
+oversized trees or concurrent writes. Verification checks the manifest,
+the archive checksum and **every** member SHA-256/type/path/ownership.
+
+\`\`\`bash
+sudo python3 linux/sidecar-config-recovery.py --backup
+sudo python3 linux/sidecar-config-recovery.py --list
+sudo python3 linux/sidecar-config-recovery.py --verify BACKUP_ID
+sudo python3 linux/sidecar-config-recovery.py --preview-restore BACKUP_ID
+\`\`\`
+
+The Wizard exposes the same actions separately from primary MTA Restore under
+**Advanced SMTP / Preserve Existing Mail**. Preview prints a hash of the
+*current* isolated configuration. A deliberate restore requires the exact
+selected archive, the reviewed current SHA and both Windows and Linux typed
+confirmation:
+
+\`\`\`bash
+# Only on an approved disposable test server with its own VM snapshot:
+# Manually STOP the isolated sidecar, SMTP AUTH, health service and timer.
+# Verify the independent queue is empty. Never purge a live mail queue.
+sudo python3 linux/sidecar-config-recovery.py --restore BACKUP_ID \
+  --expect-current-sha256 REVIEWED_CURRENT_SHA256 \
+  --confirm RESTORE_ISOLATED_RELAY_CONFIGURATION
+\`\`\`
+
+Restore verifies a **stopped isolated stack**, an empty sidecar queue and
+matching configured SMTP port; it creates a new emergency backup of the current
+configuration before any file replacement. It stages only allowlisted
+application-owned paths, validates the restored Postfix config and reloads
+systemd's unit cache. If validation fails, it attempts a filesystem rollback
+of the original isolated files. **It never starts, stops or restarts a primary
+Postfix, Exim or Sendmail service**; the isolated services remain offline and
+must be started separately **only after live revalidation**.
+
+This is **configuration recovery**, not whole-machine disaster recovery:
+neither primary MTA nor queued mail, external TLS keys/certificates,
+OS trust store, package versions, external systemd dependencies, tenant
+Connectors, Entra identities, firewall/NAT, DNS nor Microsoft 365 messages are
+backed up or re-created. If a public SMTP exposure is active, the restore is
+refused until the public mode/firewall is safely reverted separately. Only
+unit tests and synthetic file-system rollback have been performed; actual
+power-loss recovery and RHEL SELinux enforcing labels remain unverified.
+
 ### Read-only recovery scope inventory (Preview 15)
 
 Run `sudo python3 linux/recovery-scope-audit.py --smtp-port 46500`
