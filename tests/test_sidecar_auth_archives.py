@@ -56,11 +56,22 @@ class SidecarArchiveIntegrityTests(unittest.TestCase):
         self.assertEqual(result["AUTH_TLS_ARCHIVE_COUNT"], "1")
         self.assertEqual(result["CHANGES_APPLIED"], "no")
 
+    def test_public_config_and_certificate_can_remain_0644(self):
+        archive = self.make_archive()
+        for name in ("main.cf.auth", "master.cf.auth",
+                     "linuxmailrelay365-smtp-auth.service",
+                     "smtp-auth/fullchain.pem", "smtp-auth/dovecot.conf"):
+            (archive / name).chmod(0o644)
+        self.assertEqual(module.archive_integrity(archive, self.user), "verified")
+        self.assertEqual(module.audit(root=self.root, uid=self.user)
+                         ["AUTH_TLS_ARCHIVE_STATUS"], "verified_root_only")
+
     def test_corruption_or_bad_fingerprint_is_not_accepted(self):
         archive = self.make_archive()
         (archive / "main.cf.auth").write_bytes(b"tampered without changing manifest")
         report = module.audit(root=self.root, uid=self.user)
         self.assertEqual(report["AUTH_TLS_ARCHIVE_STATUS"], "incomplete_or_tampered")
+        self.assertEqual(report["AUTH_TLS_ARCHIVE_FAILURE_REASON"], "fingerprint_mismatch")
 
     def test_symlink_and_missing_private_files_fail_closed(self):
         archive = self.make_archive()
