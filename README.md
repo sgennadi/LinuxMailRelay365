@@ -29,10 +29,46 @@ Microsoft 365 tenant**. The application remains an unsigned Draft preview.
 - Read-only RHEL-family SELinux Enforcing acceptance report: TCP port type,
   queue/auth socket and file/process labels. This **does NOT automatically
   install SELinux policy or remove existing Enforcing safety blocks**.
-- Read-only Microsoft 365 Direct Send and inbound Connector readiness planning
-  for accepted domain, Exchange MX, declared connector identity and optional
-  outbound TCP25 TLS probe. **Both route deployments remain BLOCKED**, and
-  Direct Send is INTERNAL recipients only. Internet-wide SMTP remains BLOCKED.
+- Microsoft 365 Direct Send/Connector preflight and **guarded outbound route
+  switching on an already installed isolated Postfix**; no tenant-side
+  Connector provisioning or verified real delivery. Direct Send is
+  internal-recipient-only; Internet-wide SMTP remains BLOCKED.
+
+## Direct Send / Connector — guarded sidecar outbound route (Preview)
+
+The new **Advanced SMTP → Preview / Apply / Restore EOP route** workflow
+configures an **already installed private isolated Postfix** sidecar, using its
+existing custom input TCP port (1024–65535). The EOP destination is always
+outbound port 25 with mandatory TLS and certificate hostname validation.
+**The primary Postfix (port 25), original queue, and existing application
+settings are never modified by this route manager.**
+
+- **Direct Send**: permits SMTP RCPT TO only for explicitly declared accepted
+  internal domains and rejects external recipients at the Linux sidecar
+  before DATA. Source MAIL FROM must be within the approved domain and
+  Postfix rewrites the envelope and From header to the single fixed sender.
+  Direct Send does not support external recipient relay.
+- **Connector**: supports an external-recipient route only after an operator
+  has verified a tenant-approved pre-existing Inbound Connector with static
+  unshared public egress IP or the declared client TLS certificate. This
+  application **does not create or modify Exchange Online connectors**.
+  It also fixes the sender to one permitted address, not arbitrary From.
+- Both modes require the installed port match, exact reviewed
+  SHA-256, validated SMTP allowlists, root-only recovery archive, a separate
+  typed confirmation and verified outbound EOP STARTTLS. The **Restore**
+  action requires the unchanged applied-route fingerprint and restores the
+  original isolated XOAUTH2 configuration.
+- The operator must re-acknowledge tenant accepted domain/Connector after
+  changing inputs. These acknowledgements are never saved as authorization.
+- To prevent accidental alteration of a pre-existing mail server, the
+  current workflow requires **an already installed XOAUTH2 sidecar**; fresh
+  Direct Send without XOAUTH2 provisioning is **not yet a standalone
+  installer mode**. Existing sidecar-queued messages may use the new
+  transport, so inspect and drain the isolated queue before switching.
+- Real Ubuntu CI tests the Direct Send local SMTP MAIL/RCPT allowlist and
+  checked Restore **without sending MAIL DATA**. This does not prove an
+  accepted M365 Connector, a verified tenant domain, sender entitlement or
+  real recipient delivery. Keep production use blocked until those checks.
 
 ## Development branch: cross-distro custom SMTP port and SELinux checks (not released)
 
