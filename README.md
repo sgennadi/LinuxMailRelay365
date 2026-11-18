@@ -850,7 +850,8 @@ sudo python3 linux/sidecar-config-recovery.py --restore BACKUP_ID \
   --confirm RESTORE_ISOLATED_RELAY_CONFIGURATION
 \`\`\`
 
-Restore verifies a **stopped isolated stack**, an empty sidecar queue and
+Restore verifies a **stopped isolated stack**, an empty sidecar queue, an
+**unbound custom SMTP listener** (including manually started daemons) and
 matching configured SMTP port; it creates a new emergency backup of the current
 configuration before any file replacement. It stages only allowlisted
 application-owned paths, validates the restored Postfix config and reloads
