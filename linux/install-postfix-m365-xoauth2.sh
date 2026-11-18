@@ -236,7 +236,7 @@ if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ]; then
       echo "Postfix setup failed. Pre-change backup ID: $SNAPSHOT_ID" >&2
       if [ "$FORCE_REPLACE" -eq 1 ]; then
         echo 'Attempting automatic Postfix configuration rollback...' >&2
-        if bash "$SCRIPT_DIR/mail-config-recovery.sh" --restore "$SNAPSHOT_ID"; then
+        if bash "$SCRIPT_DIR/mail-config-recovery.sh" --restore "$SNAPSHOT_ID" --confirm AUTO_ROLLBACK_AFTER_FAILED_INSTALL; then
           echo 'Automatic configuration rollback succeeded.' >&2
         else
           echo 'CRITICAL: automatic rollback failed. Manual restore is needed.' >&2
