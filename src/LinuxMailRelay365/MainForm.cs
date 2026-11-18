@@ -41,6 +41,7 @@ internal sealed class MainForm : Form
     private readonly TextBox outboundCertPath = Field("");
     private readonly TextBox outboundCertKeyPath = Field("");
     private readonly TextBox outboundFixedSender = Field("");
+    private readonly TextBox outboundSenderOwnerFile = Field("");
     private readonly CheckBox connectorApproved = new() { AutoSize = true, Checked = false };
     private readonly CheckBox acceptedDomainApproved = new() { AutoSize = true, Checked = false };
     private readonly TextBox smtpListenIp = Field("");
@@ -156,7 +157,11 @@ internal sealed class MainForm : Form
                 pageHost.AutoScrollPosition = new Point(0, previousScroll);
             }
         };
-        senderPolicy.SelectedIndexChanged += (_, _) => { SaveRoutingChoices(); UpdatePreserveFlowPreview(); };
+        senderPolicy.SelectedIndexChanged += (_, _) =>
+        {
+            SaveRoutingChoices(); UpdatePreserveFlowPreview();
+            if (step == 3 && !busy && !routingLoading) RenderPage();
+        };
         preserveExistingMail.CheckedChanged += (_, _) =>
         {
             SaveRoutingChoices();
@@ -499,6 +504,16 @@ internal sealed class MainForm : Form
                             "I have personally verified the EXISTING Microsoft 365 Inbound Connector",
                             "אישרתי שה-Connector כבר קיים ב-Microsoft 365");
                         AddLine(page, connectorApproved);
+                        if (senderPolicy.SelectedIndex != 0)
+                        {
+                            AddField(page, T("Linux-файл владельцев отправителей (root 0600): адрес логин",
+                                             "Linux sender ownership file (root 0600): sender@domain smtp-login",
+                                             "קובץ בעלי כתובות שולח בשרת Linux"), outboundSenderOwnerFile);
+                            AddLine(page, UiTheme.Text(T(
+                                "Для каждого MAIL FROM укажите SMTP-логин владельца. RFC5322 From внутри письма отдельно не проверяется; не предоставляйте общим приложениям право произвольного From.",
+                                "One explicit SMTP login per MAIL FROM address. RFC5322 From header is NOT checked by this Postfix map; use dedicated sender identities or a reviewed Milter.",
+                                "הבעלות על MAIL FROM נבדקת; כותרת From דורשת בדיקה נפרדת.")));
+                        }
                     }
                     AddAction(page, T("Проверить Direct Send / Connector, TCP 25 (только чтение)",
                                       "Check Direct Send / Connector, outbound TCP 25 (read-only)",
@@ -974,6 +989,7 @@ internal sealed class MainForm : Form
             acceptedDomain.Text = routingPlan.VerifiedDomain;
             outboundMxHost.Text = routingPlan.EopMxHost;
             outboundFixedSender.Text = routingPlan.EopFixedSender;
+            outboundSenderOwnerFile.Text = routingPlan.EopSenderOwnerFile;
             outboundPublicIp.Text = routingPlan.EopPublicIp;
             outboundCertPath.Text = routingPlan.EopCertificatePath;
             outboundCertKeyPath.Text = routingPlan.EopKeyPath;
@@ -1011,6 +1027,7 @@ internal sealed class MainForm : Form
         routingPlan.VerifiedDomain = acceptedDomain.Text.Trim().ToLowerInvariant();
         routingPlan.EopMxHost = outboundMxHost.Text.Trim().ToLowerInvariant();
         routingPlan.EopFixedSender = outboundFixedSender.Text.Trim().ToLowerInvariant();
+        routingPlan.EopSenderOwnerFile = outboundSenderOwnerFile.Text.Trim();
         routingPlan.EopPublicIp = outboundPublicIp.Text.Trim();
         routingPlan.EopCertificatePath = outboundCertPath.Text.Trim();
         routingPlan.EopKeyPath = outboundCertKeyPath.Text.Trim();
@@ -1618,7 +1635,7 @@ internal sealed class MainForm : Form
     }
 
     private (int Port, string Mode, string Mx, string Sender, string Domain,
-             string PublicIp, string Cert, string Key, string SenderPolicy) EopOptions()
+             string PublicIp, string Cert, string Key, string SenderPolicy, string SenderOwnerFile) EopOptions()
     {
         if (mailTransport.SelectedIndex is not (1 or 2))
             throw new InvalidOperationException("Select Direct Send or Microsoft 365 Connector.");
@@ -1635,7 +1652,8 @@ internal sealed class MainForm : Form
             outboundMxHost.Text.Trim(), outboundFixedSender.Text.Trim(),
             acceptedDomain.Text.Trim(), outboundPublicIp.Text.Trim(),
             outboundCertPath.Text.Trim(), outboundCertKeyPath.Text.Trim(),
-            senderPolicy.SelectedIndex switch { 1 => "preserve-domain", 2 => "masquerade", _ => "fixed-mailbox" });
+            senderPolicy.SelectedIndex switch { 1 => "preserve-domain", 2 => "masquerade", _ => "fixed-mailbox" },
+            senderPolicy.SelectedIndex == 0 ? "" : outboundSenderOwnerFile.Text.Trim());
     }
 
     private async Task<(SshEndpoint Endpoint, int Port)> EopInstalledEndpointAsync(int chosenPort)
@@ -1657,7 +1675,7 @@ internal sealed class MainForm : Form
         var report = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildEopRouteBundle(port, opt.Mode, opt.Mx,
                 opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key,
-                senderPolicy: opt.SenderPolicy),
+                senderPolicy: opt.SenderPolicy, senderOwnerFile: opt.SenderOwnerFile),
             TimeSpan.FromSeconds(75));
         report.EnsureSuccess();
         WriteLine(report.StdOut);
@@ -1676,7 +1694,7 @@ internal sealed class MainForm : Form
         var preview = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildEopRouteBundle(port, opt.Mode, opt.Mx,
                 opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key,
-                senderPolicy: opt.SenderPolicy),
+                senderPolicy: opt.SenderPolicy, senderOwnerFile: opt.SenderOwnerFile),
             TimeSpan.FromSeconds(75));
         preview.EnsureSuccess();
         var match = System.Text.RegularExpressions.Regex.Match(preview.StdOut,
@@ -1702,7 +1720,8 @@ internal sealed class MainForm : Form
         if (!ConfirmDestructive("LinuxMailRelay365 | Apply private EOP outbound route",
             warning + "\n\n" +
             "Linux inbound custom TCP " + port + " is preserved. Sender policy: " + opt.SenderPolicy +
-            ". Confirm every sender identity is authorized in the accepted tenant domain. " +
+            ". The Linux sender owner file limits envelope MAIL FROM to authenticated logins when preserving senders. " +
+            "It does not prove RFC5322 From header ownership or Exchange Send As permission. " +
             "Only the isolated Postfix config and its dedicated queue are affected, and a root-only recovery archive is created. " +
             "Drain the isolated queue and pause submitting clients first. The route manager refuses a nonempty sidecar queue. The primary Postfix is unchanged.",
             "DEPLOY PRIVATE EOP ROUTE")) return;
@@ -1711,7 +1730,7 @@ internal sealed class MainForm : Form
                 opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key,
                 expectedMainSha: match.Groups[1].Value, connectorApproved:
                     opt.Mode == "connector" && connectorApproved.Checked,
-                senderPolicy: opt.SenderPolicy),
+                senderPolicy: opt.SenderPolicy, senderOwnerFile: opt.SenderOwnerFile),
             TimeSpan.FromMinutes(3));
         applied.EnsureSuccess();
         if (!applied.StdOut.Contains("EOP_ROUTE_APPLIED=yes", StringComparison.Ordinal))

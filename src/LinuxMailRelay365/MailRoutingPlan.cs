@@ -16,6 +16,8 @@ internal sealed class MailRoutingPlan
     // Per-Linux-host preflight choices. Paths only, never TLS key contents.
     public string EopMxHost { get; set; } = "";
     public string EopFixedSender { get; set; } = "";
+    // Linux-only root:root 0600 mapping path, never the owner file content.
+    public string EopSenderOwnerFile { get; set; } = "";
     public string EopPublicIp { get; set; } = "";
     public string EopCertificatePath { get; set; } = "";
     public string EopKeyPath { get; set; } = "";
@@ -93,7 +95,7 @@ internal static class MailRoutingPlanStore
         // Only operator configuration hints are stored; no passwords,
         // private key bytes, hash values, signed tokens or tenant attestations.
         if (new[] { state.EopMxHost, state.EopFixedSender, state.EopPublicIp,
-                     state.EopCertificatePath, state.EopKeyPath }
+                     state.EopCertificatePath, state.EopKeyPath, state.EopSenderOwnerFile }
             .Any(value => value.Length > 256 || value.Contains('\n') || value.Contains('\r')))
             throw new InvalidDataException("EOP routing option exceeds safe length.");
         if (state.PrivateSmtpServerName.Length > 253 ||

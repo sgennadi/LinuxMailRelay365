@@ -331,7 +331,7 @@ internal static class EmbeddedAssets
         string fixedSender, string acceptedDomain, string publicIp, string certPath,
         string keyPath, string? expectedMainSha = null, bool restore = false,
         bool status = false, bool connectorApproved = false,
-        string senderPolicy = "fixed-mailbox")
+        string senderPolicy = "fixed-mailbox", string senderOwnerFile = "")
     {
         if (port is < 1024 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(port));
@@ -372,6 +372,15 @@ internal static class EmbeddedAssets
                     (!Regex.IsMatch(path, @"\A/[A-Za-z0-9_./-]{1,255}\z") ||
                      path.Split('/').Contains("..")))
                     throw new ArgumentException("Invalid absolute Linux certificate path.");
+            if (senderPolicy != "fixed-mailbox" && mode == "connector")
+            {
+                if (string.IsNullOrEmpty(senderOwnerFile) || senderOwnerFile.Length > 255 ||
+                    !Regex.IsMatch(senderOwnerFile, @"\A/[A-Za-z0-9_./-]{1,255}\z") ||
+                    senderOwnerFile.Split('/').Contains(".."))
+                    throw new ArgumentException("Connector sender preservation needs Linux root-owned sender-login map path.");
+            }
+            else if (!string.IsNullOrEmpty(senderOwnerFile))
+                throw new ArgumentException("Sender login map is for Connector preserve/masquerade only.");
             if (mode == "connector" && expectedMainSha is not null && !connectorApproved)
                 throw new InvalidOperationException("Confirm the existing tenant Connector first.");
             args = (expectedMainSha is null ? "--check-only" : "--apply") +
@@ -379,6 +388,7 @@ internal static class EmbeddedAssets
                    " --mx-host " + mxHost + " --sender " + fixedSender +
                    " --recipient-domain " + acceptedDomain +
                    " --sender-policy " + senderPolicy;
+            if (!string.IsNullOrEmpty(senderOwnerFile)) args += " --sender-owner-file " + senderOwnerFile;
             if (!string.IsNullOrEmpty(publicIp)) args += " --public-ip " + publicIp;
             if (!string.IsNullOrEmpty(certPath)) args += " --tls-cert " + certPath;
             if (!string.IsNullOrEmpty(keyPath)) args += " --tls-key " + keyPath;
