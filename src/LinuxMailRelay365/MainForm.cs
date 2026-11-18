@@ -1407,6 +1407,138 @@ internal sealed class MainForm : Form
                   "integrate your monitoring platform separately for external alerts.");
     }
 
+    private (int Port, string Mode, string Mx, string Sender, string Domain,
+             string PublicIp, string Cert, string Key) EopOptions()
+    {
+        if (mailTransport.SelectedIndex is not (1 or 2))
+            throw new InvalidOperationException("Select Direct Send or Microsoft 365 Connector.");
+        if (senderPolicy.SelectedIndex != 0)
+            throw new NotSupportedException("Preserve individual senders and masquerading are not verified. Fixed sender is required.");
+        if (!preserveExistingMail.Checked)
+            throw new InvalidOperationException("Private EOP transport changes require Preserve Existing Mail.");
+        if (publicInternetRequested.Checked)
+            throw new InvalidOperationException("Public SMTP ingress is blocked.");
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
+            port is < 1024 or > 65535)
+            throw new InvalidDataException("Select an inbound custom SMTP port 1024–65535.");
+        return (port, mailTransport.SelectedIndex == 1 ? "connector" : "direct-send",
+            outboundMxHost.Text.Trim(), outboundFixedSender.Text.Trim(),
+            acceptedDomain.Text.Trim(), outboundPublicIp.Text.Trim(),
+            outboundCertPath.Text.Trim(), outboundCertKeyPath.Text.Trim());
+    }
+
+    private async Task<(SshEndpoint Endpoint, int Port)> EopInstalledEndpointAsync(int chosenPort)
+    {
+        var endpoint = Endpoint();
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("Install a private, isolated Postfix before changing its outbound route.");
+        int installedPort = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+        if (installedPort != chosenPort)
+            throw new InvalidDataException("Installed sidecar TCP " + installedPort +
+                " differs from unsaved Wizard TCP " + chosenPort + ".");
+        return (endpoint, installedPort);
+    }
+
+    private async Task PreviewEopRouteAsync()
+    {
+        var opt = EopOptions();
+        var (endpoint, port) = await EopInstalledEndpointAsync(opt.Port);
+        var report = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildEopRouteBundle(port, opt.Mode, opt.Mx,
+                opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key),
+            TimeSpan.FromSeconds(75));
+        report.EnsureSuccess();
+        WriteLine(report.StdOut);
+        WriteLine("EOP route preview only. No tenant Connector, mailbox, primary Postfix or sender policy was changed. " +
+                  "Direct Send allows only declared internal recipient domains; the tenant must be verified independently.");
+    }
+
+    private async Task ApplyEopRouteAsync()
+    {
+        var opt = EopOptions();
+        if (!acceptedDomainApproved.Checked)
+            throw new InvalidOperationException("Confirm the accepted domain in the intended Microsoft 365 tenant.");
+        if (opt.Mode == "connector" && !connectorApproved.Checked)
+            throw new InvalidOperationException("Verify the existing Inbound Connector in the intended tenant first.");
+        var (endpoint, port) = await EopInstalledEndpointAsync(opt.Port);
+        var preview = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildEopRouteBundle(port, opt.Mode, opt.Mx,
+                opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key),
+            TimeSpan.FromSeconds(75));
+        preview.EnsureSuccess();
+        var match = System.Text.RegularExpressions.Regex.Match(preview.StdOut,
+            @"(?m)^EOP_ROUTE_MAIN_SHA256=([a-f0-9]{64})\r?$");
+        if (!preview.StdOut.Contains("EOP_ROUTE_PREFLIGHT=ready", StringComparison.Ordinal) ||
+            !match.Success)
+            throw new InvalidOperationException("EOP route preflight not ready. No changes were made.");
+        // Verify real EOP MX TLS before any route is switched. The preflight
+        // neither authenticates nor sends a message.
+        var network = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildOutboundModePreflightBundle(
+                opt.Mode, port, opt.Mx, opt.Domain, opt.PublicIp, opt.Cert, true),
+            TimeSpan.FromSeconds(85));
+        network.EnsureSuccess();
+        if (!network.StdOut.Contains("EOP_TLS_CONNECTIVITY=tls_12_plus_hostname_verified",
+            StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "External EOP MX port 25 STARTTLS, certificate trust or DNS verification failed. Route was not changed.");
+        WriteLine("EOP MX STARTTLS and Linux CA trust passed; tenant Connector and real delivery are NOT verified.");
+        string warning = opt.Mode == "direct-send"
+            ? "Direct Send: ONLY the declared tenant-internal recipient domain is allowed at RCPT TO. External recipients are rejected locally."
+            : "Connector: external recipients may be routed ONLY if your existing inbound Connector explicitly authorizes this server's public IP or certificate. Tenant-side identity cannot be verified by this Linux tool.";
+        if (!ConfirmDestructive("LinuxMailRelay365 | Apply private EOP outbound route",
+            warning + "\n\n" +
+            "Linux inbound custom TCP " + port + " is preserved. All outgoing sender identities are rewritten to one approved sender. " +
+            "Only the isolated Postfix config and its dedicated queue are affected, and a root-only recovery archive is created. " +
+            "Existing queued sidecar messages might use the newly chosen route. The primary Postfix is not changed.",
+            "DEPLOY PRIVATE EOP ROUTE")) return;
+        var applied = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildEopRouteBundle(port, opt.Mode, opt.Mx,
+                opt.Sender, opt.Domain, opt.PublicIp, opt.Cert, opt.Key,
+                expectedMainSha: match.Groups[1].Value, connectorApproved:
+                    opt.Mode == "connector" && connectorApproved.Checked),
+            TimeSpan.FromMinutes(3));
+        applied.EnsureSuccess();
+        if (!applied.StdOut.Contains("EOP_ROUTE_APPLIED=yes", StringComparison.Ordinal))
+            throw new InvalidOperationException("Private EOP transport change did not confirm success.");
+        WriteLine(applied.StdOut);
+        WriteLine("Local EOP route applied. Tenant delivery, accepted domains and client applications require independent tests.");
+        acceptedDomainApproved.Checked = false;
+        connectorApproved.Checked = false;
+    }
+
+    private async Task RestoreEopRouteAsync()
+    {
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selected) ||
+            selected is < 1024 or > 65535)
+            throw new InvalidDataException("Choose the installed private SMTP port.");
+        var (endpoint, port) = await EopInstalledEndpointAsync(selected);
+        var status = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildEopRouteBundle(port, "", "", "", "", "", "", "",
+                status: true), TimeSpan.FromSeconds(60));
+        status.EnsureSuccess();
+        var match = System.Text.RegularExpressions.Regex.Match(status.StdOut,
+            @"(?m)^EOP_ROUTE_CURRENT_MAIN_SHA256=([a-f0-9]{64})\r?$");
+        if (!status.StdOut.Contains("EOP_ROUTE_STATUS=active", StringComparison.Ordinal) ||
+            !match.Success)
+            throw new InvalidOperationException("No verified active EOP route exists to restore.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Restore original private XOAUTH2 route",
+            "Restore the original isolated Postfix XOAUTH2 outbound configuration on custom TCP " +
+            port + ". The previously archived configuration must match exactly. " +
+            "The primary Postfix and its mail queue will not be touched. " +
+            "An isolated sidecar queue may contain messages that will resume through XOAUTH2.",
+            "RESTORE PRIVATE EOP ROUTE")) return;
+        var restore = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildEopRouteBundle(port, "", "", "", "", "", "", "",
+                expectedMainSha: match.Groups[1].Value, restore: true),
+            TimeSpan.FromMinutes(3));
+        restore.EnsureSuccess();
+        if (!restore.StdOut.Contains("EOP_ROUTE_RESTORED=yes", StringComparison.Ordinal))
+            throw new InvalidOperationException("EOP restore did not verify success; inspect root-only archive.");
+        WriteLine(restore.StdOut);
+        WriteLine("Original isolated XOAUTH2 transport restored, with root-only route recovery retained.");
+    }
+
     private async Task CheckOutboundModeAsync()
     {
         if (mailTransport.SelectedIndex is not (1 or 2))
