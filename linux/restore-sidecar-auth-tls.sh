@@ -48,7 +48,7 @@ if [ "$MODE" = restore ] && [ "$CONFIRM" != RESTORE_TRUSTED_NETWORK_SMTP ]; then
   exit 2
 fi
 [ "$(id -u)" -eq 0 ] || { echo 'AUTH_TLS_RESTORE_ERROR=root_required' >&2; exit 1; }
-for cmd in postfix postconf systemctl sha256sum python3 flock cp mv mktemp; do
+for cmd in postfix postconf systemctl sha256sum python3 flock cp cmp mv mktemp; do
   command -v "$cmd" >/dev/null || {
     echo "AUTH_TLS_RESTORE_ERROR=missing_$cmd" >&2; exit 1;
   }
@@ -210,6 +210,18 @@ cp -p "$CONF/master.cf" "$ARCHIVE/master.cf.auth" &&
 cp -p "$UNIT" "$ARCHIVE/linuxmailrelay365-smtp-auth.service" &&
 cp -a "$AUTH" "$ARCHIVE/smtp-auth" || {
   echo 'AUTH_TLS_RESTORE_ERROR=backup_not_complete' >&2; exit 1;
+}
+# Verify every critical copy BEFORE changing main.cf. The archive stays root-
+# only even when this pre-apply verification fails. No sensitive contents
+# are echoed or copied to the Windows client.
+[ "$(sha256sum "$ARCHIVE/main.cf.auth" | awk '{print $1}')" = "$saved_main" ] &&
+[ "$(sha256sum "$ARCHIVE/master.cf.auth" | awk '{print $1}')" = "$saved_master" ] &&
+cmp -s "$AUTH/passwd" "$ARCHIVE/smtp-auth/passwd" &&
+cmp -s "$AUTH/privkey.pem" "$ARCHIVE/smtp-auth/privkey.pem" &&
+cmp -s "$AUTH/main.cf.before-auth" "$ARCHIVE/smtp-auth/main.cf.before-auth" ||
+{
+  echo 'AUTH_TLS_RESTORE_ERROR=backup_copy_verification_failed_no_settings_changed' >&2
+  exit 1
 }
 primary_before="$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf | sha256sum | awk '{print $1}')"
 CHANGED=0
