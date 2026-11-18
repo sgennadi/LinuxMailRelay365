@@ -218,6 +218,34 @@ def postconf(key):
     return result.stdout.strip()
 
 
+def require_empty_sidecar_queue():
+    # No message addresses, queue IDs or content are printed. Read only the
+    # first JSON line; refuse changing transport while messages are queued.
+    import select
+    if not shutil.which("postqueue"):
+        raise Refused("postqueue_missing")
+    try:
+        proc = subprocess.Popen(["postqueue", "-c", str(CONF), "-j"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                universal_newlines=True)
+    except OSError:
+        raise Refused("isolated_queue_probe_unavailable")
+    try:
+        readable, _, _ = select.select([proc.stdout], [], [], 12)
+        if not readable:
+            raise Refused("isolated_queue_probe_timeout")
+        if proc.stdout.readline().strip():
+            raise Refused("sidecar_queue_not_empty_drain_before_reroute")
+        if proc.wait(timeout=8):
+            raise Refused("isolated_queue_probe_failed")
+    except subprocess.TimeoutExpired:
+        raise Refused("isolated_queue_probe_timeout")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
 def runtime_checks(allow_active_route=False):
     if os.geteuid():
         raise Refused("root_required")
@@ -291,6 +319,7 @@ def runtime_checks(allow_active_route=False):
             raise Refused("active_eop_recipient_policy_modified")
     if "regexp" not in run(["postconf", "-m"]).stdout.splitlines():
         raise Refused("regexp_dictionary_not_available")
+    require_empty_sidecar_queue()
 
 
 def system_ca():
@@ -402,6 +431,7 @@ def deploy(args):
     before, master = local_policy(args.smtp_port)
     if digest(before) != args.expect_main_sha256:
         raise Refused("main_configuration_changed_since_preview")
+    require_empty_sidecar_queue()
     if any((CONF / m).exists() or (CONF / m).is_symlink() for m in MAPS):
         raise Refused("existing_eop_policy_map_conflict")
     ca = system_ca()
@@ -505,6 +535,7 @@ def rollback_route(args):
             digest(current) != meta.get("active_main") or \
             digest(master) != meta.get("active_master"):
         raise Refused("active_route_configuration_modified_since_deploy")
+    require_empty_sidecar_queue()
     before_primary = primary_digest()
     try:
         post_reload(before, original_master)
