@@ -83,7 +83,7 @@ echo '=== Read-only installed sidecar audit against real Postfix ==='
 sudo python3 linux/installed-sidecar-audit.py --smtp-port "$PORT" --no-live-probe |
   tee /tmp/lmr365-eop-sidecar-audit.txt
 grep -Fx 'SMTP_RELAY_RESTRICTIONS=private_clients' /tmp/lmr365-eop-sidecar-audit.txt
-grep -Fx 'SMTP_FIXED_SENDER_MAP=referenced_not_runtime_verified' /tmp/lmr365-eop-sidecar-audit.txt
+grep -Fx 'SMTP_FIXED_SENDER_MAP=exact_postmap_verified' /tmp/lmr365-eop-sidecar-audit.txt
 grep -Fx 'SMTP_HEADER_SENDER_REWRITE=all_clients' /tmp/lmr365-eop-sidecar-audit.txt
 grep -Fx 'SMTP_SECURITY_RESULT=private_unauthenticated_not_public_safe' /tmp/lmr365-eop-sidecar-audit.txt
 grep -Fx 'PUBLIC_INTERNET_ACCESS_VERIFIED=no' /tmp/lmr365-eop-sidecar-audit.txt
