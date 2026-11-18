@@ -25,6 +25,7 @@ internal static class EmbeddedAssets
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
     internal static string RelayHealth => Text("LinuxMailRelay365.linux.relay-health.py");
     internal static string HealthMonitorInstaller => Text("LinuxMailRelay365.linux.health-monitor-installer.sh");
+    internal static string RebootContinuity => Text("LinuxMailRelay365.linux.reboot-continuity.py");
     internal static string OutboundModePreflight => Text("LinuxMailRelay365.linux.outbound-mode-preflight.py");
     internal static string SidecarTlsRotator => Text("LinuxMailRelay365.linux.sidecar-tls-rotator.sh");
     internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
@@ -265,6 +266,20 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/plan.py\" <<'LMR365_OUTBOUND'\n" +
                Encode(OutboundModePreflight) + "\nLMR365_OUTBOUND\n" +
                "python3 \"$work/plan.py\" " + args + "\n";
+    }
+
+    internal static string BuildRebootContinuityBundle(int selectedPort, bool prepare)
+    {
+        if (selectedPort is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(selectedPort));
+        string mode = prepare ? "--record-baseline" : "--verify-after-reboot";
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-reboot-continuity.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/check.py\" <<'LMR365_REBOOT_CHECK'\n" +
+               Encode(RebootContinuity) + "\nLMR365_REBOOT_CHECK\n" +
+               "python3 \"$work/check.py\" " + mode +
+               " --smtp-port " + selectedPort + "\n";
     }
 
     internal static string BuildHealthMonitorBundle(int selectedPort, bool install)
