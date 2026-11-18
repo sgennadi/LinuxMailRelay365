@@ -71,6 +71,29 @@ test -z "$(sudo postconf -c "$CONF" -h authorized_submit_users)"
 sudo systemctl is-active --quiet linuxmailrelay365-from-guard.service
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$PRIMARY"
 
+echo '=== Verify independent root-only DR archive includes service, script, owner policy ==='
+backup="$(sudo python3 linux/sidecar-config-recovery.py --backup)"
+printf '%s\n' "$backup" | grep -Fx 'SIDECAR_BACKUP_STATUS=verified_config_only_no_queue'
+backup_id="$(printf '%s\n' "$backup" | sed -n 's/^SIDECAR_BACKUP_ID=//p')"
+[[ "$backup_id" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ ]]
+sudo python3 linux/sidecar-config-recovery.py --verify "$backup_id" |
+  grep -Fx 'SIDECAR_BACKUP_STATUS=verified_config_only_no_queue'
+sudo python3 - "$backup_id" <<'PY'
+import json, pathlib, sys
+folder=pathlib.Path("/var/backups/linuxmailrelay365-sidecar") / sys.argv[1]
+doc=json.loads((folder/"manifest.json").read_text(encoding="utf-8"))
+paths={row["path"] for row in doc["entries"]}
+required={
+    "etc/linuxmailrelay365/sidecar-postfix/eop-from-owners.tsv",
+    "etc/systemd/system/linuxmailrelay365-from-guard.service",
+    "usr/local/libexec/linuxmailrelay365-from-owner-milter.py",
+}
+assert required.issubset(paths)
+assert not any(s.startswith("etc/postfix/") for s in paths)
+assert not any(s.startswith("var/spool/") for s in paths)
+print("FROM_GUARD_SCOPED_DR_ARCHIVE=PASS")
+PY
+
 echo '=== Real Unix Milter callbacks; reject cross-account RFC5322 From ==='
 sudo python3 - "$SOCKET" <<'PY'
 import socket,struct,sys
