@@ -21,6 +21,17 @@ class ConnectorProvisionContracts(unittest.TestCase):
                      "New-MgApplication", "Set-AcceptedDomain", "Invoke-Expression"):
             self.assertNotIn(item, s)
 
+    def test_wizard_embeds_script_and_requires_preview_confirmation(self):
+        ui = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
+        project = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+        assets = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
+        for item in ("PreviewTenantConnectorAsync", "CreateTenantConnectorAsync",
+                     "EXO_CONNECTOR_REVIEW_SHA256", "CREATE M365 CONNECTOR",
+                     "RunTenantConnectorManagerAsync", "EXO_CONNECTOR_CREATED=yes"):
+            self.assertIn(item, ui)
+        self.assertIn("Manage-LinuxMailRelay365Connector.ps1", project)
+        self.assertIn("TenantConnectorManager", assets)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -499,6 +499,29 @@ archive for each activation. AUTH/TLS downgrade, certificate rotation and
 EOP re-routing refuse to operate while public submission remains active.
 **No Stable release is implied.**
 
+## Optional Microsoft 365 tenant Connector creation (Preview 15)
+
+Advanced SMTP includes Preview NEW tenant Connector and Create NEW reviewed
+tenant Connector actions. PowerShell 7 and ExchangeOnlineManagement prompt
+for an administrator Device Code and verify that the Exchange Online
+session belongs to the selected tenant GUID. The accepted mail domain must
+already exist in that tenant. Preview only reads the Connector inventory,
+checks duplicates and returns an SHA-256 that is rechecked before Apply.
+Sensitive object IDs, account addresses, IPs, client secrets and raw cloud
+metadata are not printed in the status report.
+
+Creation requires explicit typed approval and EXACTLY ONE declared identity:
+a static exclusive public egress IPv4 or a certificate DNS name matching the
+sending Linux host's accepted-domain certificate. Only a NEW enabled
+OnPremises inbound Connector is created. No existing Connector, tenant
+permissions, mailbox, DNS record, Security Defaults or local Postfix
+configuration is modified. The new object is queried after creation, but
+the actual Connector authorization, source IP ownership, TLS identity and
+recipient delivery still require real test-tenant acceptance. Reuse an
+existing properly verified Connector rather than creating a duplicate.
+Emergency cloud revocation requires manually disabling that NEW Connector
+in Exchange Admin Center under approved change control.
+
 ## Fresh independent Connector without OAuth (Preview 15)
 
 The Advanced SMTP Wizard now provides a separate Preview/Install for a NEW,

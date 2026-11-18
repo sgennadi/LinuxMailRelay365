@@ -18,7 +18,8 @@
 | RHEL SELinux custom smtp_port_t label preparation and rollback | Implemented with reviewed SHA and explicit confirmation | Verify `semanage port` change/rollback on a real disposable enforcing host; not a full service acceptance |
 | Microsoft 365 XOAUTH2 sender transport | Preview | Live Entra tenant + Exchange scoped mailbox + delivered test |
 | Microsoft 365 Direct Send | Fresh isolated installation without Entra/OAuth, or guarded route switch of an existing XOAUTH2 sidecar | Approved accepted domain and real internal recipient receipt |
-| Microsoft 365 Connector | New isolated fixed-sender sidecar or guarded switch of existing XOAUTH2 route; no tenant provisioning | Verified tenant Connector authorization, real host install, external recipient receipt |
+| Microsoft 365 Connector | New isolated fixed-sender sidecar or guarded switch of existing XOAUTH2 route | Verified tenant Connector authorization, real host install, external recipient receipt |
+| New Exchange Online tenant Inbound Connector | Guarded PowerShell 7 read-only Preview and separate Create with exact tenant, accepted domain and inventory SHA | Real authorized creation, exclusive IP/certificate, anti-abuse and message delivery on a test tenant |
 | Public-domain DNS MX/SPF/DMARC/DKIM report | Read-only evidence | Verify records against actual Exchange/tenant configuration, DKIM enabled state and recipients |
 | Connector sender preserve accepted domain / masquerade subdomains | Authenticated MAIL FROM account owner map required, reviewed SHA, isolated EOP route | Real Postfix account ownership/negative tests, RFC5322 From header protection and tenant delivery |
 | Internet-wide SMTP listener | Guarded opt-in manager, not production-approved | Real Fail2ban ban drill, external client TLS trust, firewall/NAT, abuse controls and rollback on disposable test host |
@@ -120,6 +121,18 @@ authorization or delivery. Check the actual Connector restrictions, certificate
 identity/IP, TLS policy, tenant context, scope and an approved end-to-end
 recipient delivery separately.
 
+
+The Windows Wizard can optionally create a NEW OnPremises Inbound Connector
+in Exchange Online, separately from any Linux installation. Preview first
+checks the exact Exchange session tenant ID, existing accepted domain,
+duplicate names/IP/certificate and current inventory SHA. Create requires
+a separate administrative Device Code sign-in, reviewed SHA and explicit
+typed confirmation; it does not edit or delete existing Connectors.
+The tenant's real sending IP, certificate identity, threat-protection
+settings, mail flow and external recipient acceptance must be inspected
+independently. If a new Connector must be revoked, disable it manually
+under approved Exchange Admin Center change control. Production rollback
+of tenant-side permissions has not been tested.
 
 ## 5b. Guarded public SMTP submission (expert opt-in; NOT production-approved)
 
