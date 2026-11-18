@@ -28,6 +28,7 @@
 | Connector sender preserve accepted domain / masquerade subdomains | Authenticated MAIL FROM account owner map required, reviewed SHA, isolated EOP route | Real Postfix account ownership/negative tests, RFC5322 From header protection and tenant delivery |
 | Internet-wide SMTP listener | Guarded opt-in manager, not production-approved | Real Fail2ban ban drill, external client TLS trust, firewall/NAT, abuse controls and rollback on disposable test host |
 | Primary Postfix backup restore confirmation | Linux `--restore ID` requires explicit confirmation; installer rollback has distinct marker | Restore/rollback after fault injection on disposable VM, validate external dependencies and queue durability |
+| Independent Relay config backup and offline restore | Root-only allowlisted application configuration, archive SHA+per-member hashes, pre-restore emergency snapshot, stopped isolated units + empty queue required, reviewed current SHA and explicit confirmation; no auto service start | Live disposable-VM recovery, actual systemd/SMTP AUTH/TLS, external cert/key dependencies, queue durability and RHEL SELinux labels |
 | Signed Stable Windows EXE | Not released | Signing provenance, GUI / x64 / ARM64 production QA |
 
 The incoming Linux custom port is separate from Microsoft 365 outbound 587 (XOAUTH2) or 25 (Direct Send / Connector). Direct Send is restricted to recipients in the Microsoft 365 organization.
@@ -50,6 +51,7 @@ On a test machine with a copy of the project branch, run the following commands 
     sudo python3 linux/manage-rhel-selinux-port.py --check-only --smtp-port 46500
     sudo python3 linux/installed-sidecar-audit.py --smtp-port 46500
     sudo python3 linux/recovery-scope-audit.py --smtp-port 46500
+    sudo python3 linux/sidecar-config-recovery.py --self-test
 
 For a **disposable VM whose active primary MTA is Exim or Sendmail**,
 review the root-only inventory output and separate sidecar FQDN. Only if Postfix
@@ -70,6 +72,29 @@ unchanged; send a real pre/post test through the existing MTA and a separate
 client test through the new private port. Unknown or mixed active MTA state
 must block the operation. This has **not** been verified on a real
 Exim/Sendmail server, and enforcing SELinux is still blocked.
+
+For an already installed independent Relay, verify separate root-only
+configuration backup and offline restore on a **disposable VM** only:
+
+    sudo python3 linux/sidecar-config-recovery.py --backup
+    sudo python3 linux/sidecar-config-recovery.py --list
+    sudo python3 linux/sidecar-config-recovery.py --verify BACKUP_ID
+    sudo python3 linux/sidecar-config-recovery.py --preview-restore BACKUP_ID
+
+Save the reviewed current SHA from Preview. Stop ONLY the isolated Relay,
+SMTP AUTH and health services/timer, verify its queue is empty, and confirm
+the baseline of the PRIMARY MTA remains unchanged. Only then execute:
+
+    sudo python3 linux/sidecar-config-recovery.py --restore BACKUP_ID --expect-current-sha256 REVIEWED_SHA256 --confirm RESTORE_ISOLATED_RELAY_CONFIGURATION
+
+Verify the emergency safety snapshot ID, restored configuration, service
+units, certificate references and Postfix `-c` check **before** manually
+starting isolated services. Do not claim queue recovery, external TLS private
+key restore, package rollback or M365 tenant message delivery. Separate
+public SMTP exposure must be reverted before restoring any old configuration.
+Run induced corrupt-archive and failed-Postfix-check rollback tests. The
+new CLI does **not** stop or start services and does not touch primary
+Postfix, Exim or Sendmail; do not use live production mail for this exercise.
 
 The optional real SMTP client-authentication acceptance test must run at a
 trusted interactive terminal on an authorized TEST host (never in automation
