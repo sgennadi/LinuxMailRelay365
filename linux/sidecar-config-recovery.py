@@ -505,7 +505,7 @@ def check_queue():
     for name in ("maildrop", "incoming", "active", "deferred", "hold",
                  "bounce", "defer", "trace", "flush", "corrupt"):
         folder = q / name
-        if folder.exists():
+        if folder.exists() or folder.is_symlink():
             if folder.is_symlink() or not folder.is_dir():
                 raise Refused("unsafe_spool_subdirectory")
             def scan_error(error):
