@@ -39,6 +39,12 @@ internal sealed class MainForm : Form
     private readonly TextBox smtpListenIp = Field("");
     private readonly TextBox smtpTrustedCidrs = Field("");
     private readonly TextBox isolatedSmtpPort = Field("2525");
+    // Paths refer to files already prepared on the Linux host. No passwords,
+    // private key contents, or hashes are entered into or persisted by the GUI.
+    private readonly TextBox privateAuthDns = Field("");
+    private readonly TextBox privateAuthCertPath = Field("");
+    private readonly TextBox privateAuthKeyPath = Field("");
+    private readonly TextBox privateAuthHashPath = Field("");
     private readonly PreserveMailFlowPreview preserveFlowPreview = new();
     private readonly TextBox preserveMailInstructions = new()
     {
@@ -452,9 +458,37 @@ internal sealed class MainForm : Form
                     copyInstructions.Click += (_, _) => CopyPreserveInstructions();
                     AddLine(page, copyInstructions);
                     AddLine(page, UiTheme.Text(T(
-                        "Схема — план, а не подтверждение установки. Если адрес слушателя пуст, 127.0.0.1 подходит только программам на самом Linux. В Preview нет SMTP AUTH/TLS для клиентских подключений: не выставляйте этот порт в интернет.",
-                        "Preview is a PLAN, not proof of installation. With no listener IPv4, 127.0.0.1 works only for apps on the Linux itself. This preview has no inbound SMTP AUTH/TLS: never expose it to the internet.",
-                        "התרשים מציג תוכנית בלבד. 127.0.0.1 מיועד ליישומים על אותו Linux; אין לפתוח שירות זה לאינטרנט.")));
+                        "Режим без аутентификации требует доверенной подсети. Дополнительное включение STARTTLS и SMTP AUTH ниже доступно только для уже установленного отдельного Postfix; публичный SMTP остаётся заблокирован.",
+                        "Initial private-only SMTP uses trusted networks. Optional STARTTLS + SMTP AUTH below can harden an existing separate Postfix. Public SMTP remains blocked.",
+                        "שרת SMTP מקומי מהימן בלבד. אפשר להפעיל STARTTLS ו-SMTP AUTH במופע מבודד קיים; גישה ציבורית חסומה.")));
+                    AddLine(page, UiTheme.Text(T(
+                        "SMTP AUTH + STARTTLS (отдельный Postfix, дополнительная защита)",
+                        "SMTP AUTH + STARTTLS (optional private sidecar hardening)",
+                        "SMTP AUTH + STARTTLS לשרת הנפרד")));
+                    AddField(page, T("DNS-имя SMTP-сервера (точное имя в сертификате)",
+                                     "SMTP server DNS name (must match certificate SAN)",
+                                     "שם DNS של שרת SMTP"), privateAuthDns);
+                    AddField(page, T("Путь к TLS-сертификату на Linux (.pem)",
+                                     "Linux path to TLS certificate / full chain (.pem)",
+                                     "נתיב אישור TLS בלינוקס"), privateAuthCertPath);
+                    AddField(page, T("Путь к закрытому TLS-ключу на Linux (0600)",
+                                     "Linux path to TLS private key (0600)",
+                                     "נתיב המפתח הפרטי בלינוקס"), privateAuthKeyPath);
+                    AddField(page, T("Путь к файлу Linux с ОДНИМ хешированным пользователем (0600)",
+                                     "Linux path to ONE hashed SMTP account (0600)",
+                                     "נתיב לחשבון SMTP עם hash"), privateAuthHashPath);
+                    AddLine(page, UiTheme.Text(T(
+                        "Создайте хеш на сервере интерактивно: doveadm pw -s SHA512-CRYPT. Сохраните строку user:{SHA512-CRYPT}$6$... в закрытый файл root:root 0600. Пароль и хеш не вводятся в мастер. Для TLS нужен действительный сертификат с SAN и проверкой доверия на клиентах. На SELinux Enforcing применение блокируется до проверенной настройки меток.",
+                        "On Linux create the hash interactively: doveadm pw -s SHA512-CRYPT. Save one user:{SHA512-CRYPT}$6$... entry as root:root 0600. Never enter passwords or hashes in the Wizard. TLS requires a valid DNS SAN certificate trusted by client machines. SELinux Enforcing is blocked pending verified socket labels.",
+                        "יש ליצור hash ב-Linux ולשמור בקובץ מוגן; אין להזין סיסמה באשף.")));
+                    AddAction(page, T("Проверить SMTP AUTH/STARTTLS (без изменений)",
+                                      "Check SMTP AUTH/STARTTLS prerequisites (read-only)",
+                                      "בדיקת SMTP AUTH/STARTTLS ללא שינויים"),
+                                      CheckAuthTlsAsync, false, "check", "auth-tls-check");
+                    AddAction(page, T("Включить SMTP AUTH + STARTTLS на отдельном Postfix...",
+                                      "Enable SMTP AUTH + STARTTLS on isolated Postfix...",
+                                      "הפעלת SMTP AUTH + STARTTLS בשרת נפרד"),
+                                      EnableAuthTlsAsync, false, "shield", "auth-tls-apply");
                 }
                 if (inspectedMail is not null && inspectedServerIdentity == TryCurrentIdentity())
                 {
@@ -792,6 +826,75 @@ internal sealed class MainForm : Form
         }
         if (includePublic && publicInternetRequested.Checked) args.Add("--public-internet");
         return [.. args];
+    }
+
+    private string[] PrivateAuthTlsArguments(bool apply)
+    {
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort)
+            || selectedPort is < 1024 or > 65535)
+            throw new InvalidDataException("Custom isolated SMTP port must be 1024-65535.");
+        if (publicInternetRequested.Checked)
+            throw new NotSupportedException("Public SMTP is blocked. Clear the public Internet plan before enabling private SMTP AUTH/TLS.");
+        var settings = new[]
+        {
+            "--smtp-port", selectedPort.ToString(),
+            "--server-name", privateAuthDns.Text.Trim(),
+            "--tls-cert", privateAuthCertPath.Text.Trim(),
+            "--tls-key", privateAuthKeyPath.Text.Trim(),
+            "--password-file", privateAuthHashPath.Text.Trim()
+        };
+        if (settings.Any(x => string.IsNullOrWhiteSpace(x)))
+            throw new InvalidDataException("Enter the SMTP DNS name and three Linux file paths before checking.");
+        return apply
+            ? ["--apply", .. settings, "--confirm", "ENABLE_PRIVATE_AUTH_TLS"]
+            : ["--check-only", .. settings];
+    }
+
+    private async Task CheckAuthTlsAsync()
+    {
+        var endpoint = Endpoint();
+        var args = PrivateAuthTlsArguments(apply: false);
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("Install an isolated Postfix with Preserve Existing Mail first.");
+        WriteLine("SMTP AUTH/TLS read-only preflight on custom TCP port " + isolatedSmtpPort.Text.Trim() +
+                  ". No passwords or private keys are transferred.");
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildAuthTlsBundle(args), TimeSpan.FromSeconds(90));
+        result.EnsureSuccess();
+        WriteLine(result.StdOut);
+        WriteLine("This only verifies prerequisites. Actual TLS certificate trust, client AUTH and Microsoft 365 delivery still require independent verification.");
+    }
+
+    private async Task EnableAuthTlsAsync()
+    {
+        var endpoint = Endpoint();
+        var args = PrivateAuthTlsArguments(apply: true);
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("Preserve Existing Mail isolated Postfix must already be installed.");
+        // Guard preflight is independent of operator confirmation.
+        var preview = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildAuthTlsBundle(PrivateAuthTlsArguments(apply: false)),
+            TimeSpan.FromSeconds(90));
+        preview.EnsureSuccess();
+        if (!preview.StdOut.Contains("AUTH_TLS_PREFLIGHT=ready", StringComparison.Ordinal))
+            throw new InvalidOperationException("SMTP AUTH/TLS preflight did not establish readiness.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Enable Private SMTP AUTH + STARTTLS",
+            T("Это изменит ТОЛЬКО конфигурацию отдельного Postfix на TCP ",
+              "This will change ONLY the isolated Postfix on TCP ",
+              "הפעולה תשנה רק את שרת Postfix הנפרד ביציאה ") + isolatedSmtpPort.Text.Trim() +
+            "\n" + T("После включения ВСЕ клиенты на этом порту обязаны использовать STARTTLS, имя пользователя и пароль. Старые приложения на этом порту перестанут работать без новых настроек. Сервер Postfix на порту 25 не изменяется. Доступ из интернета запрещён.",
+                "ALL clients on this port must switch to STARTTLS and SMTP username/password. Existing unauthenticated applications on this port will stop working until updated. Primary port 25 remains unchanged. Public Internet access remains blocked.",
+                "כל הלקוחות ביציאה זו יחויבו ב-STARTTLS ובאימות. SMTP ראשי לא ישתנה."),
+            "ENABLE PRIVATE SMTP AUTH")) return;
+        WriteLine("Enabling isolated Postfix SMTP AUTH and mandatory STARTTLS on TCP " + isolatedSmtpPort.Text.Trim() +
+                  "; no public firewall opening.");
+        var installed = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildAuthTlsBundle(args), TimeSpan.FromMinutes(3));
+        installed.EnsureSuccess();
+        WriteLine(installed.StdOut);
+        WriteLine("Update clients: configured DNS name " + privateAuthDns.Text.Trim() +
+                  ", custom port " + isolatedSmtpPort.Text.Trim() +
+                  ", STARTTLS REQUIRED, SMTP AUTH REQUIRED, verify server DNS and CA trust. Authentication details are not stored by this wizard.");
     }
 
     private async Task InspectPlatformAsync()
