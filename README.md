@@ -435,8 +435,9 @@ mailbox, Tenant, subnet or port:
 - The diagram updates as the user edits Linux host, selected listener IP,
   port, sender mailbox, Tenant, verified domain, trusted CIDRs, transport and
   public-Internet plan. Missing inputs are shown as *not selected*.
-  **Connector and sender-masquerade plans are marked NOT DEPLOYABLE**, not
-  depicted as completed working configurations.
+  **Advanced Connector/Direct Send routes are not assumed deployed** until
+  the operator performs the separate guarded Apply action and verification;
+  sender preservation and masquerade remain blocked.
 - A read-only, translated **client SMTP setup guide** (RU/EN/HE) below the
   diagram can be copied with one button, without copying credentials or
   private keys and without resetting the Wizard scroll position.
@@ -445,9 +446,9 @@ mailbox, Tenant, subnet or port:
 programs to the configured private Linux IPv4 and custom port (default 2525).
 If the listener IP is omitted, use `127.0.0.1` **only from applications running
 on that same Linux host**. On remote programs, use the Linux private IPv4,
-an explicitly allowed trusted CIDR and a matching local firewall rule. The
-current sidecar does **not** provide incoming client SMTP AUTH or TLS; it is
-not safe for public Internet access. Before switching programs, send a test
+an explicitly allowed trusted CIDR and a matching local firewall rule. The base sidecar uses a trusted private network; optional Dovecot
+SMTP AUTH with mandatory STARTTLS can be enabled in Advanced SMTP. Neither
+mode is certified for public Internet exposure. Before switching programs, send a test
 message and verify actual Microsoft 365 delivery.
 
 ## SMTP firewall and optional public internet exposure
@@ -570,30 +571,32 @@ server before using Force Replace.
 
 ## Domain, sender rewriting and existing mail safety
 
-The wizard now exposes **XOAUTH2 fixed mailbox** (implemented), plus a
-**Microsoft 365 SMTP Connector** and **sender masquerade/preserve original
-sender** as explicitly **planning-only** options. It remembers these routing
-preferences separately per Linux host. The wizard **refuses to deploy**
-Connector, masquerade, or sender-preservation routing until a corresponding
-tested transport exists. It never changes MX, SPF, DKIM, DMARC or Exchange
-accepted domains automatically.
+The Wizard supports **XOAUTH2 fixed mailbox** and a separate guarded
+**Advanced SMTP Direct Send/Connector outbound route** on an already installed
+isolated Postfix. It stores nonsecret per-host preferences, but tenant
+domain/Connector approval checkboxes are never persisted. Multiple
+independent sender identities, sender preservation and masquerade remain
+blocked. The app never provisions tenant Connectors or changes MX,
+SPF, DKIM, DMARC or Exchange accepted domains automatically.
 
 **Safe default for existing Linux:** Preserve Existing Mail is ON. Before
 applying any Postfix changes, the wizard runs a read-only Linux MTA probe.
 Existing Postfix is left untouched in Preserve mode. Sendmail and Exim are
-always left untouched. An intentional override for existing Postfix requires
-turning off Preserve and ticking the advanced override, followed by the
-existing confirmation dialog. Existing routes cannot yet be transparently
-preserved while adding a separate M365 listener; that mode is not implemented.
+always left untouched. The recommended separate-sidecar mode **preserves the primary Postfix
+configuration, port and original queue**; intentional Force Replace is
+different and requires its own explicit high-risk warning and backup.
+Changing existing primary Postfix routes is not a hidden prerequisite for
+Direct Send or Connector on the isolated sidecar.
 
 **XOAUTH2** uses one Exchange-authorized sender mailbox per server; the
 transport rewrites the message From and envelope sender to the authorized
-mailbox. No extra Postfix domain masquerading is required. **Connector
-routing** is a future implementation for using any sender in a verified
-accepted domain; it must check TCP/25, trusted public IP or matching TLS
-certificate, sender domain, and anti-open-relay rules before activation.
-An optional masquerade rule must never apply to existing messages without
-specific user approval and a verified sender mapping.
+mailbox. No extra Postfix domain masquerading is required. The guarded private
+**Connector route** now configures EOP TCP25 and one fixed sender with
+source/recipient restrictions. It requires an existing tenant Connector
+and explicit operator attestation, **not** automated Exchange validation.
+Using different arbitrary senders or preserving original From is still
+blocked until per-client sender authorization and verified mappings exist.
+Masquerading must never be applied to existing messages without approval.
 
 ## Security Center: precisely what works today
 
