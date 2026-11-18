@@ -19,6 +19,7 @@ internal static class EmbeddedAssets
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
+    internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string Provisioner => Text("LinuxMailRelay365.windows.provision.ps1");
     internal static string SecurityProbe => Text("LinuxMailRelay365.linux.security-probe.sh");
     internal static string CloudSecurityProbe => Text("LinuxMailRelay365.windows.cloud-security-probe.ps1");
@@ -64,6 +65,18 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/m365_xoauth2_transport.py\" <<'LMR365_TRANSPORT'\n" +
                Encode(Transport) + "\nLMR365_TRANSPORT\n" +
                "bash \"$work/install-sidecar.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildExistingSmtpAuditBundle()
+    {
+        // No input options or network traffic. Existing Postfix files are only
+        // queried for status; NO raw configuration is returned to the GUI.
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-audit.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/audit-smtp.py\" <<'LMR365_SMTP_AUDIT'\n" +
+               Encode(ExistingSmtpAuditScript) + "\nLMR365_SMTP_AUDIT\n" +
+               "python3 \"$work/audit-smtp.py\"\n";
     }
 
     internal static string BuildNetworkFirewallBundle(string[] args)

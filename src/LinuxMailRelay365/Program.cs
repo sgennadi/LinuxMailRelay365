@@ -35,6 +35,13 @@ internal static class Program
                 return bundle.Contains("LMR365_SIDECAR", StringComparison.Ordinal)
                     && bundle.Contains("LMR365_TRANSPORT", StringComparison.Ordinal);
             }),
+            ("Preserve mail diagram", PreserveFlowSnapshot.SelfTest),
+            ("Existing public SMTP audit", () =>
+            {
+                var bundle = EmbeddedAssets.BuildExistingSmtpAuditBundle();
+                return bundle.Contains("LMR365_SMTP_AUDIT", StringComparison.Ordinal)
+                    && ExistingSmtpAudit.SelfTest();
+            }),
             ("Network/firewall bundle", () =>
             {
                 var script = EmbeddedAssets.BuildNetworkFirewallBundle(
