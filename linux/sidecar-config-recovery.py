@@ -99,7 +99,20 @@ def secure(path, directory=None, owner=True):
         raise Refused("expected_regular_file_not_present")
     if directory is None and not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
         raise Refused("link_or_special_file_not_permitted")
+    if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+        raise Refused("hardlinked_scoped_file_not_permitted")
     return info
+
+
+def secure_parents(path):
+    """Check every parent inode down to the chosen filesystem root."""
+    parent = path.parent
+    while parent != ROOT:
+        if parent == parent.parent:
+            raise Refused("scoped_path_escaped_filesystem_root")
+        secure(parent, directory=True)
+        parent = parent.parent
+    secure(ROOT, directory=True)
 
 
 def walk_inventory():
@@ -113,6 +126,7 @@ def walk_inventory():
         stack = [rel]
         while stack:
             item = stack.pop()
+            secure_parents(rooted(item))
             meta = secure(rooted(item))
             kind = "dir" if stat.S_ISDIR(meta.st_mode) else "file"
             if len(paths) >= MAX_ITEMS or item in paths:
@@ -143,6 +157,7 @@ def walk_inventory():
 
 def read_source(rel, expected):
     path = rooted(rel)
+    secure_parents(path)
     info = secure(path, directory=False)
     if info.st_size != expected["size"] or info.st_uid != expected["uid"] or \
             info.st_gid != expected["gid"] or \
@@ -238,10 +253,15 @@ def lock():
 
 
 def ensure_base():
-    for parent in (BASE.parent,):
-        if parent.is_symlink():
-            raise Refused("backup_parent_is_symlink")
-    BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    secure_parents(BASE.parent)
+    if BASE.parent.is_symlink():
+        raise Refused("backup_parent_is_symlink")
+    if not BASE.parent.exists():
+        BASE.parent.mkdir(mode=0o700)
+    secure(BASE.parent, directory=True)
+    if BASE.is_symlink():
+        raise Refused("backup_root_is_symlink")
+    BASE.mkdir(mode=0o700, exist_ok=True)
     meta = secure(BASE, directory=True)
     if stat.S_IMODE(meta.st_mode) & 0o077:
         raise Refused("backup_root_not_private")
@@ -269,9 +289,11 @@ def verify_snapshot(backup_id):
     if not ID.fullmatch(backup_id or ""):
         raise Refused("invalid_backup_identifier")
     folder = BASE / backup_id
+    secure_parents(folder)
     secure(BASE, directory=True)
     secure(folder, directory=True)
     for name in ("config.tar.gz", "manifest.json", "SHA256SUMS"):
+        secure_parents(folder / name)
         info = secure(folder / name, directory=False)
         if info.st_mode & 0o077:
             raise Refused("snapshot_file_permissions_not_private")
@@ -486,16 +508,9 @@ def check_offline_readiness():
 
 
 def validate_destination(rel):
-    """Refuse symlinked ancestors and targets before swapping any configuration."""
+    """Refuse all untrusted ancestor/target inodes before changing files."""
     path = rooted(rel)
-    parent = path.parent
-    if parent.is_symlink() or not parent.is_dir():
-        raise Refused("unsafe_restore_parent")
-    for ancestor in parent.parents:
-        if ancestor == Path("/"):
-            break
-        if ancestor.is_symlink():
-            raise Refused("symlinked_restore_ancestor")
+    secure_parents(path)
     if path.exists() or path.is_symlink():
         secure(path)
     return path
@@ -600,7 +615,8 @@ def cleanup_workdirs(staged, retired, success):
 def restore(snapshot_id, expected):
     if os.geteuid() != 0:
         raise Refused("root_required")
-    ensure_base()
+    secure_parents(BASE)
+    secure(BASE, directory=True)
     fd = lock()
     try:
         manifest = ensure_restorable(snapshot_id, expected)
@@ -678,6 +694,11 @@ def main(argv=None):
             say("SIDECAR_BACKUP_ID", result)
             say("SIDECAR_BACKUP_STATUS", "verified_config_only_no_queue")
         elif args.list:
+            if not BASE.exists() and not BASE.is_symlink():
+                say("SIDECAR_BACKUP_COUNT", "0")
+                say("CHANGES_APPLIED", "no")
+                return 0
+            secure_parents(BASE)
             secure(BASE, directory=True)
             candidates = []
             for path in sorted(BASE.iterdir()):
