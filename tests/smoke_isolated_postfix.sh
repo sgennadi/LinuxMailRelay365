@@ -307,6 +307,11 @@ for archive in archives:
         assert p.is_file() and p.stat().st_uid == 0, 'Missing or untrusted secret snapshot'
 print('AUTH_TLS_RESTORE_ROOT_ONLY_ARCHIVE=PASS')
 PY
+sudo python3 linux/audit-sidecar-auth-archives.py |
+  tee /tmp/lmr365-auth-archive-audit.txt
+grep -Fx 'AUTH_TLS_ARCHIVE_STATUS=verified_root_only' /tmp/lmr365-auth-archive-audit.txt
+grep -Fx 'AUTH_TLS_ARCHIVE_POLICY=manual_retention_required' /tmp/lmr365-auth-archive-audit.txt
+grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-auth-archive-audit.txt
 sudo python3 linux/installed-sidecar-audit.py --smtp-port "$PORT" |
   tee /tmp/lmr365-restored-audit.txt
 grep -Fx 'SMTP_SECURITY_RESULT=private_unauthenticated_not_public_safe' /tmp/lmr365-restored-audit.txt
