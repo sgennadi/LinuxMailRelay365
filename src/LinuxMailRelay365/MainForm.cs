@@ -531,6 +531,8 @@ internal sealed class MainForm : Form
                     copyInstructions.Enabled = !busy;
                     copyInstructions.Click += (_, _) => CopyPreserveInstructions();
                     AddLine(page, copyInstructions);
+                    if (advancedSmtpTools.Checked)
+                    {
                     AddLine(page, UiTheme.Text(T(
                         "Режим без аутентификации требует доверенной подсети. Дополнительное включение STARTTLS и SMTP AUTH ниже доступно только для уже установленного отдельного Postfix; публичный SMTP остаётся заблокирован.",
                         "Initial private-only SMTP uses trusted networks. Optional STARTTLS + SMTP AUTH below can harden an existing separate Postfix. Public SMTP remains blocked.",
@@ -599,6 +601,7 @@ internal sealed class MainForm : Form
                                       "Apply SMTP client account change...",
                                       "ביצוע שינוי חשבון SMTP"),
                                       ApplySmtpAccountChangeAsync, false, "shield", "account-apply");
+                    }
                 }
                 if (inspectedMail is not null && inspectedServerIdentity == TryCurrentIdentity())
                 {
