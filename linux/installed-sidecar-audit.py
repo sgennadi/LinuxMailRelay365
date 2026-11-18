@@ -235,7 +235,7 @@ def audit(port, live=True):
             os_data = Path("/etc/os-release").read_text(encoding="utf-8")
         except OSError:
             os_data = ""
-        if re.search(r"(?m)^ID=(?:\"|')?(?:ubuntu|debian)(?:\"|')?\\s*$", os_data):
+        if re.search(r"(?m)^ID=(?:\"|')?(?:ubuntu|debian)(?:\"|')?\s*$", os_data):
             d["SELINUX_MODE"] = "not_installed"
     if d["SELINUX_MODE"] in ("enforcing", "permissive"):
         d["SELINUX_SMTP_PORT"] = selinux_port_type(
