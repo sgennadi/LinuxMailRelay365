@@ -2,6 +2,40 @@
 
 Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.11 — source and GitHub Actions builds; not a verified production release.**
 
+## Development branch: cross-distro custom SMTP port and SELinux checks (not released)
+
+This branch adds a **read-only** Windows Wizard action in step 4:
+**Check Linux / SELinux for the selected SMTP port**. It uses the port entered in
+the **Isolated SMTP port** field, **not a hard-coded TCP 2525**. TCP 2525 remains
+the default; supported custom isolated ports are **1024 through 65535**.
+Ports 25 and 587 remain intentionally excluded for the isolated instance to
+avoid collision with standard mail services. Port availability and active
+firewall rules are checked separately via **Check ports 443/587, SMTP and
+firewall**.
+
+The Python platform probe reads `/etc/os-release` as data (not as a shell
+script) and identifies **RHEL 8/9/10, Oracle Linux 8/9/10, Rocky Linux
+8/9/10, AlmaLinux 8/9/10, CentOS Stream 9/10**, plus Ubuntu 20/22/24/26
+and Debian 11/12/13 as *candidate platforms*. Detection does **not** mean
+an isolated SMTP gateway has been integration-tested on that release.
+The probe checks whether Postfix and Dovecot exist, identifies Dovecot
+2.3 versus unsupported/unverified syntax versions such as 2.4, detects
+Postfix's Dovecot SASL capability, queries SELinux status and evaluates
+the **actual selected port's** SELinux TCP type when `semanage` is installed.
+It never installs packages, invokes `semanage port -a/-m`, runs `restorecon`,
+disables SELinux, opens a firewall, or edits the existing mail server.
+
+If an enforcing RHEL-compatible host reports `SELINUX_SMTP_PORT=unmapped`,
+`conflict` or `unknown_no_semanage`, **do not assume SMTP will work**.
+Review `semanage port -l`, `ss -ltn`, journald/AVC denials, the actual
+Postfix instance and queue/socket file labels, and any existing service
+using the selected port. Relabeling a port or a queue is a separate privileged
+change requiring backup, operator confirmation and rollback support; this
+branch does not automatically apply it. Custom port availability is not
+equivalent to internet reachability. The existing Preserve mode's client
+SMTP AUTH and TLS limitations, and its prohibition on internet exposure,
+remain in force.
+
 ## Intended workflow
 
 1. Connect to an Ubuntu/Debian or RHEL/Oracle Linux server using SSH private key/agent or user password; verify SSH host key. A separate `sudo` password is optional. Passwords exist in the live wizard session only, are not persisted, and are never passed as process command-line arguments.
