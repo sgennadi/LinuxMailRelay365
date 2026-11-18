@@ -143,6 +143,39 @@ grep -Fx 'SMTP_SECURITY_RESULT=local_auth_tls_verified_external_unverified' /tmp
 grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-audit-after.txt
 grep -Fx 'MICROSOFT365_DELIVERY_VERIFIED=no' /tmp/lmr365-audit-after.txt
 
+echo '=== Verify local STARTTLS DNS identity and CA trust (NO SMTP mail) ==='
+IDENTITY_SCRIPT=linux/verify-sidecar-tls-identity.py
+sudo python3 "$IDENTITY_SCRIPT" \
+  --smtp-port "$PORT" --server-name lmr365-ci.example.test \
+  --ca-file "$FIXTURE/fullchain.pem" |
+  tee /tmp/lmr365-verified-tls.txt
+grep -Fx 'SMTP_TLS_PROBE_RESULT=verified_local_chain_dns_and_starttls' /tmp/lmr365-verified-tls.txt
+grep -Fx 'SMTP_TLS_CERT_CHAIN_AND_DNS=verified' /tmp/lmr365-verified-tls.txt
+grep -Fx 'SMTP_TLS_NETWORK=loopback_only' /tmp/lmr365-verified-tls.txt
+grep -Fx 'SMTP_TLS_EXTERNAL_CLIENT_TRUST=not_verified' /tmp/lmr365-verified-tls.txt
+grep -Fx 'MICROSOFT365_DELIVERY_VERIFIED=no' /tmp/lmr365-verified-tls.txt
+echo '=== A valid CA with the wrong DNS name must FAIL ==='
+if sudo python3 "$IDENTITY_SCRIPT" \
+  --smtp-port "$PORT" --server-name wrong-host.example.test \
+  --ca-file "$FIXTURE/fullchain.pem"; then
+  echo 'SECURITY ERROR: TLS verifier incorrectly accepted a mismatched DNS identity' >&2
+  exit 1
+fi
+echo '=== The same server is NOT verified by default OS CA trust ==='
+if sudo python3 "$IDENTITY_SCRIPT" \
+  --smtp-port "$PORT" --server-name lmr365-ci.example.test; then
+  echo 'SECURITY ERROR: Self-signed test cert was incorrectly trusted without explicit CA' >&2
+  exit 1
+fi
+echo '=== Wrong custom port must not fall back to another listener ==='
+if sudo python3 "$IDENTITY_SCRIPT" \
+  --smtp-port 2530 --server-name lmr365-ci.example.test \
+  --ca-file "$FIXTURE/fullchain.pem"; then
+  echo 'SECURITY ERROR: TLS verifier incorrectly connected to another port' >&2
+  exit 1
+fi
+echo 'TLS_VERIFIED_CA_DNS_CUSTOM_PORT_SMOKE=PASS'
+
 echo '=== Exercise SMTP AUTH after STARTTLS, without MAIL FROM/RCPT/DATA ==='
 python3 - "$PORT" <<'PY'
 import smtplib, ssl, sys
