@@ -531,6 +531,17 @@ def check_offline_readiness():
     if any(record["active"] for record in states.values()):
         raise Refused("stop_sidecar_auth_health_and_timer_before_offline_restore")
     check_queue()
+    port_path = rooted(CONF + "/sidecar-postfix/smtp-port")
+    meta = secure(port_path, directory=False)
+    if meta.st_size > 6:
+        raise Refused("invalid_installed_smtp_port")
+    port = port_path.read_text(encoding="ascii").strip()
+    if not port.isdigit() or not 1024 <= int(port) <= 65535:
+        raise Refused("invalid_installed_smtp_port")
+    # systemd may be stopped while Postfix was manually started with -c.
+    # A bound TCP listener is an independent hard-stop before changing config.
+    if command(["ss", "-H", "-ltn", "( sport = :{} )".format(port)]):
+        raise Refused("isolated_smtp_port_still_listening")
     return states
 
 
