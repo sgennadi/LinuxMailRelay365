@@ -92,6 +92,7 @@ class StandaloneDirectSendTests(unittest.TestCase):
             "smtpd_relay_restrictions = permit_mynetworks, reject",
             "smtpd_sender_restrictions = check_sender_access",
             "sender_canonical_classes = envelope_sender, header_sender",
+            "local_header_rewrite_clients = static:all",
             "smtp_tls_security_level = secure",
             "smtp_tls_secure_cert_match = nexthop",
             "default_transport = smtp:",
