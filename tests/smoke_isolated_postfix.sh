@@ -213,8 +213,9 @@ test "$(sudo sha256sum "$CONF/main.cf" | awk '{print $1}')" = "$active_auth_sha"
 sudo systemctl is-active --quiet linuxmailrelay365-smtp-auth.service
 
 echo '=== Simulate restore failure AFTER Postfix reload: AUTH must be rolled back ==='
-sudo install -d -m 0700 /tmp/lmr365-restore-fixture
-cat > /tmp/lmr365-restore-fixture/systemctl <<'SH'
+sudo install -d -o root -g root -m 0700 /tmp/lmr365-restore-fixture
+# Write the fixture as runner, then place it inside the root-only directory.
+cat > /tmp/lmr365-systemctl-fixture.sh <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = disable ] && [ "${2:-}" = --now ] &&
    [ "${3:-}" = linuxmailrelay365-smtp-auth.service ]; then
@@ -223,7 +224,8 @@ if [ "$1" = disable ] && [ "${2:-}" = --now ] &&
 fi
 exec /usr/bin/systemctl "$@"
 SH
-sudo chmod 0755 /tmp/lmr365-restore-fixture/systemctl
+sudo install -o root -g root -m 0755 /tmp/lmr365-systemctl-fixture.sh /tmp/lmr365-restore-fixture/systemctl
+rm -f /tmp/lmr365-systemctl-fixture.sh
 if sudo env PATH="/tmp/lmr365-restore-fixture:/usr/sbin:/usr/bin:/sbin:/bin" \
   bash "$RESTORE_SCRIPT" --restore --smtp-port "$PORT" \
   --expect-main-sha256 "$active_auth_sha" \
