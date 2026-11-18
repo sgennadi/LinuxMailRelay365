@@ -180,8 +180,8 @@ internal sealed class MainForm : Form
             if (publicInternetRequested.Checked)
             {
                 var response = MessageBox.Show(this, T(
-                    "ПУБЛИЧНЫЙ SMTP — ВЫСОКИЙ РИСК.\n\nБез SMTP AUTH и обязательного TLS доступ из интернета позволит злоумышленникам отправлять спам, подделывать адреса, перегружать очередь и привести к блокировке сервера/IP или репутации Microsoft 365.\n\nТекущий LinuxMailRelay365 НЕ умеет безопасно открывать SMTP всему интернету. Отметка сохраняет только план — firewall и Postfix не изменяются. Сохранить запрос?",
-                    "PUBLIC SMTP — HIGH RISK.\n\nWithout SMTP AUTH and mandatory TLS, internet users could send spam, spoof senders, exhaust the queue and cause IP/domain/Microsoft 365 reputation blocking.\n\nThis preview DOES NOT enable public SMTP. The checkbox saves a plan only; no firewall or Postfix changes. Save the request?",
+                    "ПУБЛИЧНЫЙ SMTP — ВЫСОКИЙ РИСК.\n\nДаже при SMTP AUTH и обязательном TLS публичный доступ без защиты от злоупотреблений позволит злоумышленникам отправлять спам, подделывать адреса, перегружать очередь и привести к блокировке сервера/IP или репутации Microsoft 365.\n\nТекущий LinuxMailRelay365 НЕ умеет безопасно открывать SMTP всему интернету. Отметка сохраняет только план — firewall и Postfix не изменяются. Сохранить запрос?",
+                    "PUBLIC SMTP — HIGH RISK.\n\nEven with SMTP AUTH and mandatory TLS, unrestricted internet users could send spam, spoof senders, exhaust the queue and cause IP/domain/Microsoft 365 reputation blocking.\n\nThis preview DOES NOT enable public SMTP. The checkbox saves a plan only; no firewall or Postfix changes. Save the request?",
                     "SMTP ציבורי מסוכן ללא אימות והצפנת TLS. אפשרות זו שומרת תוכנית בלבד, ללא פתיחת חומת אש."),
                     "LinuxMailRelay365 | Internet SMTP risk",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
@@ -462,8 +462,8 @@ internal sealed class MainForm : Form
                     "SMTP לכל האינטרנט (תכנון בלבד, חסום להפעלה)");
                 AddLine(page, publicInternetRequested);
                 AddLine(page, UiTheme.Text(T(
-                    "Риски публичного SMTP: спам, подмена отправителей, злоупотребление очередью, блокировка IP/домена и Microsoft 365. Для активации необходимы SMTP AUTH, обязательный TLS, лимиты скорости, мониторинг и контроль злоупотреблений. Здесь они ещё не реализованы.",
-                    "Public SMTP risks: spam, sender spoofing, queue abuse, IP/domain/365 blocking. Safe activation requires SMTP AUTH, mandatory TLS, rate limits, abuse monitoring and verified policy. Not implemented in this preview.",
+                    "Риски публичного SMTP: спам, подмена отправителей и блокировка Microsoft 365. Приватные SMTP AUTH/STARTTLS уже поддерживаются, но открытие в интернет остаётся заблокированным до проверки лимитов, мониторинга и контроля злоупотреблений.",
+                    "Public SMTP risks: spam, spoofing and Microsoft 365 reputation loss. Private SMTP AUTH/STARTTLS exist, but public exposure remains blocked pending anti-abuse controls, monitoring and security review.",
                     "פתיחת SMTP לאינטרנט ללא אימות עלולה לאפשר ספאם ולגרום לחסימת שרת הדואר.")));
                 AddAction(page, T("Проверить порты 443/587, SMTP и firewall (без изменений)",
                                   "Check ports 443/587, SMTP and firewall (read-only)",
@@ -641,7 +641,7 @@ internal sealed class MainForm : Form
                 AddLine(page, UiTheme.Text(T(
                     "Для существующего Postfix режим Preserve Existing Mail создаёт отдельный экземпляр Postfix на выбранном SMTP-порту с отдельной очередью. Основные порты 25, main.cf, master.cf и текущая очередь не изменяются. Sendmail/Exim пока не поддерживаются.",
                     "For an existing Postfix server, Preserve Existing Mail installs a separate Postfix instance on your selected TCP port with a separate queue. Primary port 25, main.cf, master.cf and queue are untouched. Sendmail/Exim sidecars are not yet supported.",
-                    "עבור Postfix קיים נוצר מופע נפרד בפורט 2525 ללא שינוי בתצורה הקיימת.")));
+                    "עבור Postfix קיים נוצר מופע נפרד ביציאת SMTP שנבחרה ללא שינוי בתצורה הקיימת.")));
                 AddLine(page, UiTheme.Text(T(
                     "Маскарад и Connector пока доступны только как план. Никакие изменения домена, MX, SPF, DKIM, DMARC или маршрутов существующего MTA не выполняются автоматически. Если MTA уже установлен, режим сохранения блокирует его изменение.",
                     "Masquerade and Connector are planning-only in this preview. No domain, MX, SPF, DKIM, DMARC, or existing MTA routes change automatically. Preserve mode blocks modifications of an existing MTA.",
