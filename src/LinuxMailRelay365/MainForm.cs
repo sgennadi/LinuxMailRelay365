@@ -461,6 +461,11 @@ internal sealed class MainForm : Form
                 AddField(page, T("Подтверждённый домен (необязательно для XOAUTH2)",
                                  "Verified accepted domain (not needed for XOAUTH2)",
                                  "דומיין מאומת (לא נדרש ל-XOAUTH2)"), acceptedDomain);
+                if (advancedSmtpTools.Checked)
+                    AddAction(page, T("Проверить DNS: MX, SPF, DKIM, DMARC (без изменений)",
+                                      "Audit DNS: MX, SPF, DKIM, DMARC (read-only)",
+                                      "בדיקת DNS: MX, SPF, DKIM, DMARC"),
+                                      InspectM365DnsAsync, false, "check", "dns-audit");
                 if (mailTransport.SelectedIndex is 1 or 2)
                 {
                     AddLine(page, UiTheme.Text(T(
@@ -1747,6 +1752,23 @@ internal sealed class MainForm : Form
             throw new InvalidOperationException("EOP restore did not verify success; inspect root-only archive.");
         WriteLine(restore.StdOut);
         WriteLine("Original isolated XOAUTH2 transport restored, with root-only route recovery retained.");
+    }
+
+    private async Task InspectM365DnsAsync()
+    {
+        string domain = acceptedDomain.Text.Trim().ToLowerInvariant();
+        if (domain.Length == 0 && mailbox.Text.Contains('@'))
+            domain = mailbox.Text.Trim().Split('@').Last().ToLowerInvariant();
+        if (domain.Length == 0)
+            throw new InvalidDataException("Enter an accepted mail domain before requesting the DNS audit.");
+        string mx = mailTransport.SelectedIndex is 1 or 2
+            ? outboundMxHost.Text.Trim().ToLowerInvariant() : "";
+        var report = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildM365DnsAuditBundle(domain, mx), TimeSpan.FromSeconds(90));
+        report.EnsureSuccess();
+        WriteLine("Read-only public DNS hints: no DNS modifications, raw TXT records, message addresses or secrets.");
+        WriteLine(report.StdOut);
+        WriteLine("Public DNS does not verify tenant accepted-domain ownership, Connector authorization, DKIM signing or final recipient delivery.");
     }
 
     private async Task CheckOutboundModeAsync()

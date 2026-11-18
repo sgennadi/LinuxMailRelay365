@@ -28,6 +28,7 @@ internal static class EmbeddedAssets
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
     internal static string RelayHealth => Text("LinuxMailRelay365.linux.relay-health.py");
     internal static string HealthAlerts => Text("LinuxMailRelay365.linux.health-alerts.py");
+    internal static string M365DnsAudit => Text("LinuxMailRelay365.linux.m365-dns-audit.py");
     internal static string HealthMonitorInstaller => Text("LinuxMailRelay365.linux.health-monitor-installer.sh");
     internal static string RebootContinuity => Text("LinuxMailRelay365.linux.reboot-continuity.py");
     internal static string OutboundModePreflight => Text("LinuxMailRelay365.linux.outbound-mode-preflight.py");
@@ -457,6 +458,28 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/relay-health.py\" <<'LMR365_HEALTH_PROBE'\n" +
                Encode(RelayHealth) + "\nLMR365_HEALTH_PROBE\n" +
                "bash \"$work/install.sh\" " + args + "\n";
+    }
+
+    internal static string BuildM365DnsAuditBundle(string domain, string mxHost = "")
+    {
+        if (domain.Length is < 4 or > 253 ||
+            !Regex.IsMatch(domain,
+                @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z"))
+            throw new ArgumentException("Exact accepted-domain DNS name required.");
+        if (!string.IsNullOrEmpty(mxHost) &&
+            (mxHost.Length > 253 || !Regex.IsMatch(mxHost,
+                @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\.mail\.protection\.outlook\.com\z",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)))
+            throw new ArgumentException("Invalid EOP MX hostname.");
+        string args = "--domain " + domain.ToLowerInvariant();
+        if (mxHost.Length > 0)
+            args += " --mx-host " + mxHost.ToLowerInvariant();
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-dns-audit.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/dns.py\" <<'LMR365_DNS_AUDIT'\n" +
+               Encode(M365DnsAudit) + "\nLMR365_DNS_AUDIT\n" +
+               "python3 \"$work/dns.py\" " + args + "\n";
     }
 
     internal static string BuildHealthAlertsBundle(int port, string action, string? configSha = null)
