@@ -146,6 +146,7 @@ jobs:
           bash linux/install-preserve-postfix-sidecar.sh --check-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
           bash linux/network-firewall.sh --validate-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
           bash linux/install-postfix-m365-xoauth2.sh --validate-network-only --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
+          python3 -m unittest discover -v -s tests -p test_existing_mta_audit.py
           python3 -m unittest discover -v -s tests -p test_mta_coexistence_doctor.py
           python3 linux/mta-coexistence-doctor.py --self-test
           python3 -m unittest discover -v -s tests -p test_recovery_scope_audit.py
