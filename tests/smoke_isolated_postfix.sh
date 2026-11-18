@@ -60,6 +60,8 @@ test "$(sudo postconf -c "$CONF" -h queue_directory)" = /var/spool/linuxmailrela
 test "$(sudo postconf -c "$CONF" -h data_directory)" = /var/lib/linuxmailrelay365-sidecar
 test "$(sudo postconf -c "$CONF" -h inet_interfaces)" = 127.0.0.1
 test "$(sudo postconf -c "$CONF" -h syslog_name)" = postfix-lmr365
+baseline_sidecar_main="$(sudo sha256sum "$CONF/main.cf" | awk '{print $1}')"
+baseline_sidecar_master="$(sudo sha256sum "$CONF/master.cf" | awk '{print $1}')"
 test "$(sudo systemctl is-active postfix)" = "$primary_status"
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
 test "$(sudo postconf -h queue_directory)" = "$primary_queue"
@@ -183,5 +185,87 @@ if sudo bash "$AUTH_SCRIPT" --apply "${AUTH_ARGS[@]}" --confirm ENABLE_PRIVATE_A
   echo 'AUTH TLS unexpectedly allowed silent overwrite' >&2; exit 1
 fi
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+echo '=== Verify tamper-guarded private AUTH/TLS restore preflight ==='
+RESTORE_SCRIPT=linux/restore-sidecar-auth-tls.sh
+restore_preview="$(sudo bash "$RESTORE_SCRIPT" --check-only --smtp-port "$PORT")"
+printf '%s\n' "$restore_preview"
+printf '%s\n' "$restore_preview" | grep -Fx 'AUTH_TLS_RESTORE_PREFLIGHT=ready'
+printf '%s\n' "$restore_preview" | grep -Fx 'AUTH_TLS_RESTORE_SECURITY_DOWNGRADE=yes'
+printf '%s\n' "$restore_preview" | grep -Fx 'CHANGES_APPLIED=no'
+active_auth_sha="$(printf '%s\n' "$restore_preview" |
+  sed -n 's/^AUTH_TLS_RESTORE_CURRENT_MAIN_SHA256=//p')"
+[[ "$active_auth_sha" =~ ^[a-f0-9]{64}$ ]]
+
+echo '=== Wrong port, hash, or missing confirmation MUST NOT change SMTP ==='
+if sudo bash "$RESTORE_SCRIPT" --check-only --smtp-port 2530; then
+  echo 'SECURITY ERROR: wrong installed custom port accepted' >&2; exit 1
+fi
+if sudo bash "$RESTORE_SCRIPT" --restore --smtp-port "$PORT" \
+  --expect-main-sha256 "$(printf '%064d' 0)" \
+  --confirm RESTORE_TRUSTED_NETWORK_SMTP; then
+  echo 'SECURITY ERROR: mismatching SHA accepted' >&2; exit 1
+fi
+if sudo bash "$RESTORE_SCRIPT" --restore --smtp-port "$PORT" \
+  --expect-main-sha256 "$active_auth_sha"; then
+  echo 'SECURITY ERROR: missing downgrade confirmation accepted' >&2; exit 1
+fi
+test "$(sudo sha256sum "$CONF/main.cf" | awk '{print $1}')" = "$active_auth_sha"
+sudo systemctl is-active --quiet linuxmailrelay365-smtp-auth.service
+
+echo '=== Simulate restore failure AFTER Postfix reload: AUTH must be rolled back ==='
+sudo install -d -m 0700 /tmp/lmr365-restore-fixture
+cat > /tmp/lmr365-restore-fixture/systemctl <<'SH'
+#!/usr/bin/env bash
+if [ "$1" = disable ] && [ "${2:-}" = --now ] &&
+   [ "${3:-}" = linuxmailrelay365-smtp-auth.service ]; then
+  echo 'CI simulated systemctl failure before service disable' >&2
+  exit 77
+fi
+exec /usr/bin/systemctl "$@"
+SH
+sudo chmod 0755 /tmp/lmr365-restore-fixture/systemctl
+if sudo env PATH="/tmp/lmr365-restore-fixture:/usr/sbin:/usr/bin:/sbin:/bin" \
+  bash "$RESTORE_SCRIPT" --restore --smtp-port "$PORT" \
+  --expect-main-sha256 "$active_auth_sha" \
+  --confirm RESTORE_TRUSTED_NETWORK_SMTP; then
+  echo 'SECURITY ERROR: CI induced restore failure was ignored' >&2; exit 1
+fi
+test "$(sudo sha256sum "$CONF/main.cf" | awk '{print $1}')" = "$active_auth_sha"
+test "$(sudo postconf -c "$CONF" -h smtpd_sasl_auth_enable)" = yes
+test "$(sudo postconf -c "$CONF" -h smtpd_tls_security_level)" = encrypt
+sudo systemctl is-active --quiet linuxmailrelay365-smtp-auth.service
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+echo 'AUTH_TLS_RESTORE_FAULT_INJECTION_ROLLBACK=PASS'
+
+echo '=== Restore original private/unauthenticated isolated SMTP ==='
+sudo bash "$RESTORE_SCRIPT" --restore --smtp-port "$PORT" \
+  --expect-main-sha256 "$active_auth_sha" \
+  --confirm RESTORE_TRUSTED_NETWORK_SMTP
+test "$(sudo sha256sum "$CONF/main.cf" | awk '{print $1}')" = "$baseline_sidecar_main"
+test "$(sudo sha256sum "$CONF/master.cf" | awk '{print $1}')" = "$baseline_sidecar_master"
+test "$(sudo postconf -c "$CONF" -h smtpd_sasl_auth_enable)" != yes
+test "$(sudo postconf -c "$CONF" -h smtpd_tls_security_level)" != encrypt
+if sudo systemctl is-active --quiet linuxmailrelay365-smtp-auth.service; then
+  echo 'SECURITY ERROR: auth service still active after verified restore' >&2
+  exit 1
+fi
+sudo test ! -e /etc/linuxmailrelay365/smtp-auth
+sudo test ! -e /etc/systemd/system/linuxmailrelay365-smtp-auth.service
+sudo test -d /var/lib/linuxmailrelay365-sidecar-auth-recovery
+sudo python3 linux/installed-sidecar-audit.py --smtp-port "$PORT" |
+  tee /tmp/lmr365-restored-audit.txt
+grep -Fx 'SMTP_SECURITY_RESULT=private_unauthenticated_not_public_safe' /tmp/lmr365-restored-audit.txt
+python3 - "$PORT" <<'PY'
+import smtplib, sys
+with smtplib.SMTP('127.0.0.1', int(sys.argv[1]), timeout=10) as smtp:
+    code, _ = smtp.ehlo('lmr365-restored.invalid')
+    assert code == 250 and not smtp.has_extn('AUTH')
+print('AUTH_TLS_RESTORE_LOCAL_SMTP_SMOKE=PASS')
+PY
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+test "$(sudo systemctl is-active postfix)" = "$primary_status"
+test "$(sudo postconf -h queue_directory)" = "$primary_queue"
+sudo systemctl is-active --quiet "$UNIT"
+echo 'AUTH_TLS_RESTORE_REAL_SMOKE=PASS'
 echo 'SIDECAR_REAL_LINUX_SMOKE=PASS'
 
