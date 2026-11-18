@@ -425,7 +425,12 @@ performs a *read-only* Linux MTA scan **and** an audit of existing SMTP listener
 bindings, Postfix `postconf` relay/recipient restrictions, `mynetworks`,
 per-service master.cf overrides, SASL authentication and inbound TLS. The
 auditor produces only structured status codes, not raw configuration,
-credentials or messages. It does not send mail.
+credentials or messages. It does not send mail. Detection now prioritizes the
+**active MTA service**, not merely a `postconf` binary: Exim or Sendmail may
+be active even when Postfix is installed. Mixed, unverified and inactive
+service states trigger manual review instead of a false Postfix security
+assessment. `SMTP_STANDARD_PORT_SOCKETS` reports observed 25/465/587
+listener binds separately, without claiming the process owning those ports.
 
 **Public SMTP listener is NOT equivalent to open relay.** A listener on
 `0.0.0.0:25` may legitimately accept inbound mail while
