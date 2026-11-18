@@ -156,15 +156,27 @@ rollback() {
   trap - EXIT
   if [ "$rc" -ne 0 ] && [ "$STARTED" -eq 1 ]; then
     echo 'AUTH_TLS_ROLLBACK=attempted' >&2
-    cp -p "$BACKUP" "$CONF/main.cf" || echo 'AUTH_TLS_ROLLBACK=manual_restore_required' >&2
-    postfix -c "$CONF" reload >/dev/null 2>&1 || echo 'AUTH_TLS_ROLLBACK=manual_reload_required' >&2
+    restored=0
+    if cp -p "$BACKUP" "$CONF/main.cf"; then
+      if postfix -c "$CONF" reload >/dev/null 2>&1; then restored=1; fi
+    fi
     systemctl stop linuxmailrelay365-smtp-auth.service >/dev/null 2>&1 || true
     systemctl disable linuxmailrelay365-smtp-auth.service >/dev/null 2>&1 || true
-    rm -f "$UNIT"
-    rm -rf "$AUTH"
-    systemctl daemon-reload >/dev/null 2>&1 || true
+    if [ "$restored" -eq 1 ]; then
+      rm -f "$UNIT"
+      rm -rf "$AUTH"
+      systemctl daemon-reload >/dev/null 2>&1 || true
+      rm -f "$BACKUP"
+      echo 'AUTH_TLS_ROLLBACK=verified' >&2
+    else
+      # Preserve both the original configuration and credential directory for
+      # manual recovery; do not discard the only known-good snapshot.
+      echo "AUTH_TLS_ROLLBACK=manual_restore_required backup=$BACKUP" >&2
+      exit "$rc"
+    fi
+  else
+    rm -f "$BACKUP"
   fi
-  rm -f "$BACKUP"
   exit "$rc"
 }
 trap rollback EXIT
@@ -226,9 +238,21 @@ doveconf -c "$AUTH/dovecot.conf" -n >/dev/null
 systemctl daemon-reload
 systemctl enable --now linuxmailrelay365-smtp-auth.service
 systemctl is-active --quiet linuxmailrelay365-smtp-auth.service
-[ -S "$QUEUE/private/auth" ] || {
-  echo 'AUTH_TLS_ERROR=auth_socket_missing' >&2; exit 1;
-}
+# Type=simple may report active before Dovecot finishes creating its socket.
+# Bound the wait; never proceed to Postfix until the UNIX socket exists.
+socket_ready=0
+for attempt in $(seq 1 40); do
+  if [ -S "$QUEUE/private/auth" ]; then
+    socket_ready=1
+    break
+  fi
+  systemctl is-active --quiet linuxmailrelay365-smtp-auth.service || break
+  sleep 0.25
+done
+if [ "$socket_ready" -ne 1 ]; then
+  echo 'AUTH_TLS_ERROR=auth_socket_missing_after_10_seconds' >&2
+  exit 1
+fi
 # Keep the existing client-IP allowlist; require AUTH even for loopback.
 # Compatible with Postfix <3.6: mandatory TLS1.2+ via protocol exclusions.
 postconf -c "$CONF" -e \
