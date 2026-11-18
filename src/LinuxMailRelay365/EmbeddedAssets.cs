@@ -22,6 +22,7 @@ internal static class EmbeddedAssets
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
     internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
+    internal static string AuthTlsRestore => Text("LinuxMailRelay365.linux.auth-tls-restore.sh");
     internal static string InstalledSidecarAudit => Text("LinuxMailRelay365.linux.installed-sidecar-audit.py");
     internal static string Provisioner => Text("LinuxMailRelay365.windows.provision.ps1");
     internal static string SecurityProbe => Text("LinuxMailRelay365.linux.security-probe.sh");
@@ -110,6 +111,26 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/audit.py\" <<'LMR365_INSTALLED_AUDIT'\n" +
                Encode(InstalledSidecarAudit) + "\nLMR365_INSTALLED_AUDIT\n" +
                "python3 \"$work/audit.py\" --smtp-port " + selectedPort + "\n";
+    }
+
+    internal static string BuildAuthTlsRestoreBundle(int selectedPort, string? expectedMainSha = null)
+    {
+        if (selectedPort is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(selectedPort));
+        if (expectedMainSha is not null &&
+            !Regex.IsMatch(expectedMainSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("Invalid expected isolated Postfix SHA-256.");
+        string args = expectedMainSha is null
+            ? "--check-only --smtp-port " + selectedPort
+            : "--restore --smtp-port " + selectedPort +
+              " --expect-main-sha256 " + expectedMainSha +
+              " --confirm RESTORE_TRUSTED_NETWORK_SMTP";
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-auth-restore.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/restore-auth.sh\" <<'LMR365_AUTH_RESTORE'\n" +
+               Encode(AuthTlsRestore) + "\nLMR365_AUTH_RESTORE\n" +
+               "bash \"$work/restore-auth.sh\" " + args + "\n";
     }
 
     internal static string BuildAuthTlsBundle(string[] args)
