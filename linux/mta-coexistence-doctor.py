@@ -132,7 +132,7 @@ def audit(port, runner=run, services=None, binaries=None, paths=None):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--smtp-port", type=int, required=True)
+    p.add_argument("--smtp-port", type=int, default=2525)
     p.add_argument("--self-test", action="store_true")
     a = p.parse_args()
     if a.self_test:
