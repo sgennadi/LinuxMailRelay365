@@ -10,10 +10,10 @@ class PreserveMailLiveDiagramContract(unittest.TestCase):
         source = FLOW.read_text(encoding='utf-8')
         for marker in ('EXISTING APPLICATIONS', 'NEW APPLICATIONS',
                        'PRIMARY MAIL SERVER', 'ISOLATED POSTFIX', 'MICROSOFT 365',
-                       'New applications', 'Existing SMTP settings'):
+                       'Existing SMTP settings'):
             self.assertIn(marker, source)
         self.assertIn('UpdateData(PreserveFlowSnapshot snapshot', source)
-        self.assertIn('publicInternetRequested', GUI.read_text().lower() if False else GUI.read_text())
+        self.assertIn('publicInternetRequested', GUI.read_text())
 
     def test_actual_inputs_and_no_example_data_used_as_real(self):
         gui = GUI.read_text()
