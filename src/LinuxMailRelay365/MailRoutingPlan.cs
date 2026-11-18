@@ -16,6 +16,9 @@ internal sealed class MailRoutingPlan
     public string ListenIpv4 { get; set; } = "";
     public string TrustedCidrs { get; set; } = "";
     public int SidecarPort { get; set; } = 2525;
+    // A saved REQUEST, not permission to bind to the public internet.
+    // Installing or opening a public SMTP listener is not implemented.
+    public bool PublicInternetRequested { get; set; } = false;
 }
 
 internal sealed record MailRoutingInventory(string Mta, string CurrentRelay, string CurrentTransport, string ConfigSha256)
@@ -130,7 +133,11 @@ internal static class MailRoutingPlanStore
             if (a == b || a != Identity("linux-a.example", "0022", "admin")) return false;
             var defaults = Load(folder, a);
             if (defaults.Transport != "oauth2" || defaults.SenderPolicy != "fixed-mailbox" ||
-                !defaults.PreserveExistingMail || defaults.SidecarPort != 2525) return false;
+                !defaults.PreserveExistingMail || defaults.SidecarPort != 2525 ||
+                defaults.PublicInternetRequested) return false;
+            Save(folder, b, new MailRoutingPlan { PublicInternetRequested = true });
+            if (!Load(folder, b).PublicInternetRequested || Load(folder, a).PublicInternetRequested)
+                return false;
             Validate(new MailRoutingPlan { SidecarPort = 2526 });
             try { Validate(new MailRoutingPlan { SidecarPort = 25 }); return false; }
             catch (InvalidDataException) { }

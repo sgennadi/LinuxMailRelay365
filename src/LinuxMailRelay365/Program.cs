@@ -35,6 +35,18 @@ internal static class Program
                 return bundle.Contains("LMR365_SIDECAR", StringComparison.Ordinal)
                     && bundle.Contains("LMR365_TRANSPORT", StringComparison.Ordinal);
             }),
+            ("Network/firewall bundle", () =>
+            {
+                var script = EmbeddedAssets.BuildNetworkFirewallBundle(
+                    ["--check", "--smtp-port", "2525", "--public-internet"]);
+                if (!script.Contains("LMR365_NETWORK", StringComparison.Ordinal)) return false;
+                try
+                {
+                    EmbeddedAssets.BuildNetworkFirewallBundle(["--check", "2525;rm"]);
+                    return false;
+                }
+                catch (ArgumentException) { return true; }
+            }),
             ("Tenant discovery", TenantDiscovery.SelfTest),
             ("Diagnostic privacy", DiagnosticJournal.SelfTest)
         };

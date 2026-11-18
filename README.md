@@ -52,6 +52,32 @@ configured mailbox. Use narrow subnets and host firewall rules, and do not
 forward public SMTP traffic to this port. SMTP submission from a trusted LAN
 remains unencrypted until separate TLS listener support is implemented.
 
+## SMTP firewall and optional public internet exposure
+
+Preview 9 adds a read-only wizard network preflight for outbound Entra HTTPS
+**TCP 443**, Exchange Online client submission **TCP 587**, the custom
+SMTP port, and firewall identification (UFW, firewalld, other/ambiguous).
+Only active UFW/firewalld instances can receive firewall rules, after the
+operator enters `OPEN TRUSTED SMTP` in a confirmation dialog. Rules restrict
+the source CIDR **and destination private IPv4 and destination port**. This
+does **not** enable disabled firewalls or automatically forward router ports.
+Testing local TCP connectivity cannot verify remote client reachability.
+
+**Public internet SMTP is a selectable planning preference, disabled by
+default, saved per Linux server. Its activation is intentionally BLOCKED.**
+The current listener trusts network sources and has neither SMTP AUTH nor
+mandatory inbound TLS. Opening it to `0.0.0.0/0` would risk an open relay:
+unsolicited spam, sender spoofing, stolen server capacity, IP/domain blacklists,
+mailbox reputation damage, leakage of mail content, and loss of mail service.
+A public plan can be inspected but cannot be installed or applied to firewall
+by the Wizard or the Linux firewall script.
+
+For future public access the app must first provide and validate SMTP AUTH,
+mandatory TLS with a valid server certificate, anti-abuse rate limits,
+per-account controls, monitoring, and revocation; a warning acknowledgment
+alone is **not a technical security control**. This preview does not
+implement or claim those capabilities.
+
 ## Preserve Existing Mail: isolated Postfix channel (Preview 8)
 
 When the read-only Linux inspection finds **existing Postfix**, the default

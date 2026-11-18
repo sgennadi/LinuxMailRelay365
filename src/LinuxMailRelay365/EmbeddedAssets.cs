@@ -18,6 +18,7 @@ internal static class EmbeddedAssets
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
+    internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string Provisioner => Text("LinuxMailRelay365.windows.provision.ps1");
     internal static string SecurityProbe => Text("LinuxMailRelay365.linux.security-probe.sh");
     internal static string CloudSecurityProbe => Text("LinuxMailRelay365.windows.cloud-security-probe.ps1");
@@ -63,6 +64,22 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/m365_xoauth2_transport.py\" <<'LMR365_TRANSPORT'\n" +
                Encode(Transport) + "\nLMR365_TRANSPORT\n" +
                "bash \"$work/install-sidecar.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildNetworkFirewallBundle(string[] args)
+    {
+        foreach (string item in args)
+        {
+            if (item.Length > 320 || item.Any(c => !(char.IsAsciiLetterOrDigit(c) ||
+                c is '.' or '-' or '_' or '/' or ':' or '@')))
+                throw new ArgumentException("Invalid network/firewall argument.");
+        }
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-network.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/network-firewall.sh\" <<'LMR365_NETWORK'\n" +
+               Encode(NetworkFirewall) + "\nLMR365_NETWORK\n" +
+               "bash \"$work/network-firewall.sh\" " + string.Join(" ", args) + "\n";
     }
 
     internal static string BuildRecoveryBundle(string command, string? backupId = null)

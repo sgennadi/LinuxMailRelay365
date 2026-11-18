@@ -37,6 +37,7 @@ internal sealed class MainForm : Form
     private readonly TextBox smtpListenIp = Field("");
     private readonly TextBox smtpTrustedCidrs = Field("");
     private readonly TextBox isolatedSmtpPort = Field("2525");
+    private readonly CheckBox publicInternetRequested = new() { AutoSize = true, Checked = false };
     private MailRoutingPlan routingPlan = new();
     private string? routingIdentity;
     private bool routingLoading;
@@ -118,6 +119,25 @@ internal sealed class MainForm : Form
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
+        publicInternetRequested.CheckedChanged += (_, _) =>
+        {
+            if (routingLoading) return;
+            if (publicInternetRequested.Checked)
+            {
+                var response = MessageBox.Show(this, T(
+                    "ПУБЛИЧНЫЙ SMTP — ВЫСОКИЙ РИСК.\n\nБез SMTP AUTH и обязательного TLS доступ из интернета позволит злоумышленникам отправлять спам, подделывать адреса, перегружать очередь и привести к блокировке сервера/IP или репутации Microsoft 365.\n\nТекущий LinuxMailRelay365 НЕ умеет безопасно открывать SMTP всему интернету. Отметка сохраняет только план — firewall и Postfix не изменяются. Сохранить запрос?",
+                    "PUBLIC SMTP — HIGH RISK.\n\nWithout SMTP AUTH and mandatory TLS, internet users could send spam, spoof senders, exhaust the queue and cause IP/domain/Microsoft 365 reputation blocking.\n\nThis preview DOES NOT enable public SMTP. The checkbox saves a plan only; no firewall or Postfix changes. Save the request?",
+                    "SMTP ציבורי מסוכן ללא אימות והצפנת TLS. אפשרות זו שומרת תוכנית בלבד, ללא פתיחת חומת אש."),
+                    "LinuxMailRelay365 | Internet SMTP risk",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (response != DialogResult.Yes)
+                {
+                    publicInternetRequested.Checked = false;
+                    return;
+                }
+            }
+            SaveRoutingChoices();
+        };
         tenantSelector.AccessibleName = "Choose Microsoft Entra tenant";
         tenantSelector.SelectedIndexChanged += (_, _) =>
         {
@@ -355,6 +375,23 @@ internal sealed class MainForm : Form
                 AddField(page, T("Доверенные сети RFC1918, CIDR через запятую (необязательно)",
                                  "Trusted RFC1918 client CIDRs, comma separated (optional)",
                                  "רשתות מקומיות מורשות, CIDR"), smtpTrustedCidrs);
+                publicInternetRequested.Text = T(
+                    "Открыть SMTP для всего интернета (экспертный запрос; пока ЗАБЛОКИРОВАНО)",
+                    "Public Internet SMTP (advanced request only; activation BLOCKED)",
+                    "SMTP לכל האינטרנט (תכנון בלבד, חסום להפעלה)");
+                AddLine(page, publicInternetRequested);
+                AddLine(page, UiTheme.Text(T(
+                    "Риски публичного SMTP: спам, подмена отправителей, злоупотребление очередью, блокировка IP/домена и Microsoft 365. Для активации необходимы SMTP AUTH, обязательный TLS, лимиты скорости, мониторинг и контроль злоупотреблений. Здесь они ещё не реализованы.",
+                    "Public SMTP risks: spam, sender spoofing, queue abuse, IP/domain/365 blocking. Safe activation requires SMTP AUTH, mandatory TLS, rate limits, abuse monitoring and verified policy. Not implemented in this preview.",
+                    "פתיחת SMTP לאינטרנט ללא אימות עלולה לאפשר ספאם ולגרום לחסימת שרת הדואר.")));
+                AddAction(page, T("Проверить порты 443/587, SMTP и firewall (без изменений)",
+                                  "Check ports 443/587, SMTP and firewall (read-only)",
+                                  "בדיקת יציאות וחומת אש (קריאה בלבד)"),
+                                  CheckNetworkFirewallAsync, false, "check", "network");
+                AddAction(page, T("Открыть порт только доверенным сетям...",
+                                  "Open SMTP port for trusted networks only...",
+                                  "פתיחת יציאה לרשתות מהימנות בלבד"),
+                                  OpenTrustedFirewallAsync, false, "shield", "firewall");
                 AddLine(page, UiTheme.Text(T(
                     "По умолчанию только 127.0.0.1. Сетевые клиенты допускаются только с указанной локальной IPv4 и из доверенных подсетей. Существующий Postfix не изменяется без отдельного разрешения.",
                     "Default: 127.0.0.1 only. Remote SMTP requires an explicit private listener IP and trusted client subnets. Existing Postfix is never changed without approval.",
@@ -589,6 +626,7 @@ internal sealed class MainForm : Form
             smtpListenIp.Text = routingPlan.ListenIpv4;
             smtpTrustedCidrs.Text = routingPlan.TrustedCidrs;
             isolatedSmtpPort.Text = routingPlan.SidecarPort.ToString();
+            publicInternetRequested.Checked = routingPlan.PublicInternetRequested;
             allowExisting.Checked = false;
             inspectedMail = null;
             inspectedServerIdentity = null;
@@ -612,9 +650,71 @@ internal sealed class MainForm : Form
         routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
         if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int port))
             routingPlan.SidecarPort = port;
+        routingPlan.PublicInternetRequested = publicInternetRequested.Checked;
         // Operators can edit domain while typing. Save only valid completed values.
         try { MailRoutingPlanStore.Save(dataDirectory, routingIdentity, routingPlan); }
         catch (InvalidDataException) { }
+    }
+
+    private string[] NetworkFirewallArguments(string action, bool includePublic)
+    {
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int smtpPort))
+            throw new InvalidDataException("Isolated SMTP port must be a number from 1024 to 65535.");
+        routingPlan.SidecarPort = smtpPort;
+        routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
+        routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
+        MailRoutingPlanStore.Validate(routingPlan);
+        var args = new List<string> { action, "--smtp-port", smtpPort.ToString() };
+        if (routingPlan.ListenIpv4.Length > 0)
+        {
+            args.Add("--listen-ip");
+            args.Add(routingPlan.ListenIpv4);
+            foreach (string cidr in routingPlan.TrustedCidrs.Split(',',
+                         StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            {
+                args.Add("--trusted-network");
+                args.Add(cidr);
+            }
+        }
+        if (includePublic && publicInternetRequested.Checked) args.Add("--public-internet");
+        return [.. args];
+    }
+
+    private async Task CheckNetworkFirewallAsync()
+    {
+        var args = NetworkFirewallArguments("--check", includePublic: true);
+        WriteLine("Read-only Linux network and firewall checks: Entra HTTPS 443, Exchange SMTP 587, selected SMTP listener and active firewall.");
+        var report = await SshRemote.ExecuteAsync(Endpoint(), "bash -s",
+            EmbeddedAssets.BuildNetworkFirewallBundle(args), timeout: TimeSpan.FromSeconds(55));
+        report.EnsureSuccess();
+        WriteLine(report.StdOut);
+        if (publicInternetRequested.Checked)
+            WriteLine("SECURITY: PUBLIC INTERNET SMTP IS NOT ENABLED. SMTP AUTH/TLS and abuse protections are not implemented.");
+        WriteLine("Local checks cannot prove reachability from another network or guarantee mail delivery.");
+    }
+
+    private async Task OpenTrustedFirewallAsync()
+    {
+        if (publicInternetRequested.Checked)
+            throw new NotSupportedException("Public SMTP requested: no firewall changes allowed. Uncheck the public option; authenticated TLS public submission is not yet supported.");
+        var args = NetworkFirewallArguments("--apply", includePublic: false);
+        if (routingPlan.ListenIpv4.Length == 0 || routingPlan.TrustedCidrs.Length == 0)
+            throw new InvalidOperationException("A specific local private IPv4 and trusted client CIDRs are required; never open a wildcard SMTP rule.");
+        // Display the exact scope before changing an already-active UFW/firewalld.
+        string preview = "TCP " + routingPlan.SidecarPort + " -> " + routingPlan.ListenIpv4 +
+            " from [" + routingPlan.TrustedCidrs + "]";
+        if (!ConfirmDestructive("LinuxMailRelay365 | Trusted SMTP firewall",
+            T("Открыть доступ ТОЛЬКО из доверенных подсетей: ",
+              "Allow ONLY the following trusted SMTP network sources: ",
+              "פתיחה לרשתות מהימנות בלבד: ") + preview +
+            "\nExisting UFW/firewalld must be active. The app will NOT enable a disabled firewall. No internet-wide port opening.",
+            "OPEN TRUSTED SMTP")) return;
+        args = [.. args, "--confirm", "OPEN_TRUSTED_SMTP_PORT"];
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildNetworkFirewallBundle(args), TimeSpan.FromSeconds(90));
+        result.EnsureSuccess();
+        WriteLine(result.StdOut);
+        WriteLine("Firewall rules applied for explicitly trusted source networks. Check reachability from an actual client.");
     }
 
     private async Task InspectMailRoutingAsync()
@@ -1051,6 +1151,8 @@ internal sealed class MainForm : Form
             throw new InvalidDataException("Enter an isolated SMTP port from 1024 to 65535.");
         routingPlan.SidecarPort = selectedPort;
         MailRoutingPlanStore.Validate(routingPlan);
+        if (publicInternetRequested.Checked)
+            throw new NotSupportedException("Public Internet SMTP is planning-only and blocked. Without mandatory TLS, SMTP AUTH and abuse controls it would risk an open relay. Clear the option to install local/trusted-only SMTP.");
         var chosenTransport = mailTransport.SelectedIndex == 1 ? "connector" : "oauth2";
         var chosenSender = senderPolicy.SelectedIndex;
         if (chosenTransport != "oauth2" || chosenSender != 0)
