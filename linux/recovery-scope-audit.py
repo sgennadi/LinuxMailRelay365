@@ -23,7 +23,7 @@ EXIM = Path("/etc/exim4")
 EXIM_RHEL = Path("/etc/exim")
 SENDMAIL = Path("/etc/mail/sendmail.cf")
 BACKUP_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\Z")
-CONFIG_LINE = re.compile(r"(?m)^([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+CONFIG_LINE = re.compile(r"(?m)^([A-Za-z][A-Za-z0-9_]*)[ \t]*=[ \t]*(.*?)[ \t]*$")
 REF_PARAMS = (
     "smtp_tls_cert_file", "smtp_tls_key_file", "smtp_tls_cafile",
     "smtpd_tls_cert_file", "smtpd_tls_key_file", "smtpd_tls_cafile",
@@ -120,6 +120,7 @@ def audit(port, roots=None):
         except (OSError, UnicodeError):
             installed = "incomplete"
     external, unresolved = external_refs(sidecar / "main.cf")
+    primary_external, primary_unresolved = external_refs(primary / "main.cf")
     mta_configs = sum((
         has_primary,
         (status(roots["exim"], directory=True) == "present" or
@@ -137,8 +138,10 @@ def audit(port, roots=None):
         "MTA_CONFIG_FAMILIES": "multiple" if mta_configs > 1
             else "one" if mta_configs == 1 else "none_or_unknown",
         "PRIMARY_BACKUP_CANDIDATES_UNVERIFIED": backup_candidates(roots["backups"]),
-        "EXTERNAL_REFS_OUTSIDE_PRIMARY_POSTFIX": external,
-        "DYNAMIC_REFERENCES_REQUIRE_REVIEW": unresolved,
+        "SIDECAR_EXTERNAL_REFERENCES": external,
+        "SIDECAR_DYNAMIC_REFERENCES_REQUIRE_REVIEW": unresolved,
+        "PRIMARY_EXTERNAL_REFERENCES": primary_external,
+        "PRIMARY_DYNAMIC_REFERENCES_REQUIRE_REVIEW": primary_unresolved,
         "BACKUP_SCOPE": "primary_postfix_config_only",
         "SIDECAR_FULL_RESTORE_VERIFIED": "no",
         "QUEUE_RECOVERY_VERIFIED": "no",
