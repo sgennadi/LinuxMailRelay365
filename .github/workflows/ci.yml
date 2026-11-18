@@ -5,6 +5,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  # Do not waste runners on superseded commits or duplicate push/PR checks.
+  group: linuxmailrelay365-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   linux-tests:
     runs-on: ubuntu-latest
