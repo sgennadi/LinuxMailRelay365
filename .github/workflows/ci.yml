@@ -20,7 +20,12 @@ jobs:
           python3 -m py_compile linux/audit-existing-smtp.py
           python3 -m unittest discover -v -s tests
   ubuntu-postfix-smoke:
-    runs-on: ubuntu-latest
+    # Test both production LTS Dovecot 2.3 and updated Dovecot 2.4 grammar.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v5
