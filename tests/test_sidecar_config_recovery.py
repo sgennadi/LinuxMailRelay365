@@ -71,7 +71,7 @@ class ScopedRecoveryTests(unittest.TestCase):
         if argv[0] == "postconf" and "-n" in argv:
             return "queue_directory = " + str(self.root / mod.QUEUE)
         if argv[0] == "postconf" and "-M" in argv:
-            return "46500 inet n - n - - smtpd\npickup unix n - n 60 1 pickup"
+            return "46500/inet=46500 inet n - n - - smtpd\npickup/unix=pickup unix n - n 60 1 pickup"
         if argv[0] == "systemctl" and argv[1] == "daemon-reload":
             return ""
         raise AssertionError("Unexpected system command in synthetic test: " +
@@ -240,7 +240,7 @@ class ScopedRecoveryTests(unittest.TestCase):
         expected, _ = mod.current_state()
         def command(argv, **kwargs):
             if argv[0] == "postconf" and "-M" in argv:
-                return "46500 inet n - n - - smtpd\n25 inet n - n - - smtpd"
+                return "46500/inet=46500 inet n - n - - smtpd\n25/inet=25 inet n - n - - smtpd"
             return self.fake_command(argv, **kwargs)
         with patch.object(mod, "command", side_effect=command):
             with self.assertRaises(mod.Refused):
