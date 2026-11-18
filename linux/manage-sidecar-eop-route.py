@@ -24,7 +24,10 @@ PRIMARY = Path("/etc/postfix")
 RECOVERY = Path("/var/lib/linuxmailrelay365-eop-route-recovery")
 ACTIVE = RECOVERY / "active.json"
 LOCK = Path("/run/linuxmailrelay365-sidecar-auth.lock")
-MAPS = ("eop-fixed-sender.regexp", "eop-sender-canonical.regexp", "eop-recipients.regexp")
+MAPS = ("eop-fixed-sender.regexp", "eop-sender-canonical.regexp", "eop-recipients.regexp",
+        "eop-sender-owners.regexp")
+AUTH_USERS = Path("/etc/linuxmailrelay365/smtp-auth/passwd")
+OWNER = re.compile(r"([A-Za-z0-9._+-]+@[A-Za-z0-9.-]+)[ \t]+([A-Za-z0-9][A-Za-z0-9._@-]{2,63})\Z")
 DNS = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\Z")
 SENDER = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_{|}~-]+@([A-Za-z0-9.-]+)\Z")
 SHA = re.compile(r"[a-f0-9]{64}\Z")
@@ -79,7 +82,8 @@ def validate(args):
         raise Refused("invalid_sender_policy")
     if args.restore or args.status:
         if any((args.mode, args.mx_host, args.sender, args.recipient_domain,
-                args.public_ip, args.tls_cert, args.tls_key)) or args.sender_policy != "fixed-mailbox":
+                args.public_ip, args.tls_cert, args.tls_key,
+                getattr(args, "sender_owner_file", ""))) or args.sender_policy != "fixed-mailbox":
             raise Refused("restore_accepts_only_port_and_expected_sha")
     else:
         if args.mode not in ("direct-send", "connector") or \
@@ -94,6 +98,12 @@ def validate(args):
             raise Refused("invalid_accepted_domain_allowlist")
         if args.sender.rsplit("@", 1)[1].lower() not in [d.lower() for d in args.recipient_domain]:
             raise Refused("sender_not_in_accepted_domain")
+        if args.mode == "connector" and args.sender_policy != "fixed-mailbox":
+            owner_path = getattr(args, "sender_owner_file", "")
+            if not owner_path or not SAFE.fullmatch(owner_path) or ".." in owner_path.split("/"):
+                raise Refused("connector_sender_ownership_file_required")
+        elif getattr(args, "sender_owner_file", ""):
+            raise Refused("sender_owners_only_for_connector_preserve_or_masquerade")
         if args.mode == "direct-send" and args.sender_policy != "fixed-mailbox":
             raise Refused("direct_send_requires_fixed_sender")
         if args.mode == "direct-send" and (args.public_ip or args.tls_cert or args.tls_key):
@@ -167,7 +177,13 @@ def policy_changes(args, ca, auth_enabled):
         "smtpd_relay_restrictions": (
             "permit_sasl_authenticated, reject" if auth_enabled else
             "permit_mynetworks, reject"),
-        "smtpd_sender_restrictions": "check_sender_access regexp:{}, reject".format(CONF / MAPS[0]),
+        "smtpd_sender_restrictions": (
+            "reject_authenticated_sender_login_mismatch, check_sender_access regexp:{}, reject".format(CONF / MAPS[0])
+            if args.mode == "connector" and args.sender_policy != "fixed-mailbox" else
+            "check_sender_access regexp:{}, reject".format(CONF / MAPS[0])),
+        "smtpd_sender_login_maps": (
+            "regexp:{}".format(CONF / MAPS[3])
+            if args.mode == "connector" and args.sender_policy != "fixed-mailbox" else ""),
         "smtpd_recipient_restrictions": "check_recipient_access regexp:{}, reject".format(CONF / MAPS[2]),
         "sender_canonical_maps": "regexp:{}".format(CONF / MAPS[1]) if rewriting else "",
         "sender_canonical_classes": "envelope_sender, header_sender" if rewriting else "",
@@ -181,6 +197,62 @@ def policy_changes(args, ca, auth_enabled):
         "smtp_tls_cert_file": args.tls_cert if args.mode == "connector" else "",
         "smtp_tls_key_file": args.tls_key if args.mode == "connector" else "",
     }
+
+def sender_owner_map(args):
+    """Require explicitly owned MAIL FROM addresses for each authenticated app.
+
+    Source is a root:root 0600 Linux-only file: one 'sender@domain login'
+    per line, 1..64 entries. This does not claim to validate RFC5322 From:
+    header ownership; a separate reviewed Milter would be required.
+    """
+    if args.mode != "connector" or args.sender_policy == "fixed-mailbox":
+        return "# Fixed approved sender; sender-login ownership map not enabled\n"
+    if (postconf("smtpd_sasl_auth_enable") != "yes" or
+            postconf("smtpd_tls_security_level") != "encrypt" or
+            postconf("smtpd_tls_auth_only") != "yes"):
+        raise Refused("connector_sender_ownership_requires_auth_tls")
+    if run(["systemctl", "is-active", "--quiet",
+            "linuxmailrelay365-smtp-auth.service"]).returncode:
+        raise Refused("dedicated_smtp_auth_service_inactive")
+    source = Path(args.sender_owner_file)
+    st = owned_file(source)
+    if st.st_mode & 0o077 or not 1 <= st.st_size <= 16384:
+        raise Refused("sender_owner_source_requires_root_only_0600")
+    auth_meta = owned_file(AUTH_USERS)
+    if auth_meta.st_mode & 0o022 or not 1 <= auth_meta.st_size <= 32768:
+        raise Refused("dedicated_smtp_auth_users_unverified")
+    try:
+        logins = {row.split(":", 1)[0].lower() for row in
+                  AUTH_USERS.read_text(encoding="ascii").splitlines()}
+        rows = source.read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeError):
+        raise Refused("sender_owner_source_unreadable")
+    if not 1 <= len(rows) <= 64 or len(logins) > 64:
+        raise Refused("sender_owner_record_count_invalid")
+    domain = args.sender.rsplit("@", 1)[1].lower()
+    seen, rules = set(), []
+    for row in rows:
+        match = OWNER.fullmatch(row)
+        if not match:
+            raise Refused("invalid_sender_owner_record")
+        sender, login = match.group(1).lower(), match.group(2)
+        owner_domain = sender.rsplit("@", 1)[1]
+        if not DNS.fullmatch(owner_domain) or not (
+            owner_domain == domain or
+            (args.sender_policy == "masquerade" and owner_domain.endswith("." + domain))
+        ):
+            raise Refused("sender_owner_outside_accepted_domain")
+        if login.lower() not in logins:
+            raise Refused("sender_owner_not_active_smtp_account")
+        if sender in seen:
+            raise Refused("duplicate_sender_owner")
+        seen.add(sender)
+        # Explicitly literal, case-insensitive Postfix regexp maps. The owner
+        # login is emitted as data and never interpreted as a command.
+        escaped = sender.replace(".", "[.]").replace("+", "[+]")
+        rules.append("/^{}$/ {}\n".format(escaped, login))
+    return "".join(rules)
+
 
 def rewrite_main(data, changes):
     text = data.decode("utf-8")
@@ -330,6 +402,7 @@ def runtime_checks(allow_active_route=False):
             raise Refused("unexpected_original_recipient_policy")
         for key in ("sender_canonical_maps", "recipient_canonical_maps",
                     "transport_maps", "smtp_tls_policy_maps", "relayhost",
+                    "smtpd_sender_login_maps",
                     "smtpd_sender_restrictions"):
             if postconf(key):
                 raise Refused("existing_routing_override_requires_manual_review")
@@ -463,7 +536,7 @@ def deploy(args):
     changed = False
     try:
         changed = True
-        post_reload(main, newmaster, policy_maps(args))
+        post_reload(main, newmaster, policy_maps(args) + (sender_owner_map(args),))
         if digest((CONF / "main.cf").read_bytes()) != digest(main) or \
                 digest((CONF / "master.cf").read_bytes()) != digest(newmaster):
             raise Refused("post_reload_fingerprint_mismatch")
@@ -492,6 +565,8 @@ def deploy(args):
     say("EOP_ROUTE_APPLIED", "yes")
     say("EOP_ROUTE_MODE", args.mode.replace("-", "_"))
     say("EOP_ROUTE_SENDER_POLICY", args.sender_policy.replace("-", "_"))
+    say("EOP_ROUTE_SENDER_OWNERSHIP", "auth_mail_from_login_map" if args.sender_policy != "fixed-mailbox" else "fixed_sender")
+    say("EOP_ROUTE_HEADER_FROM_MATCH_VERIFIED", "no")
     say("EOP_ROUTE_CUSTOM_PORT", args.smtp_port)
     say("EOP_ROUTE_OUTBOUND_PORT", 25)
     say("EOP_ROUTE_RECIPIENT_SCOPE", "internal_only" if args.mode == "direct-send" else "connector_authorized")
@@ -596,6 +671,7 @@ def main():
     p.add_argument("--sender", default="")
     p.add_argument("--sender-policy", choices=("fixed-mailbox", "preserve-domain", "masquerade"),
                    default="fixed-mailbox")
+    p.add_argument("--sender-owner-file", default="")
     p.add_argument("--recipient-domain", action="append", default=[])
     p.add_argument("--public-ip", default="")
     p.add_argument("--tls-cert", default="")
@@ -617,6 +693,7 @@ def main():
                 raise Refused("eop_route_already_active")
             if a.mode == "connector":
                 check_connector_cert(a)
+            sender_owner_map(a)
             system_ca()
             say("EOP_ROUTE_PREFLIGHT", "ready")
             say("EOP_ROUTE_MAIN_SHA256", digest(before))
@@ -625,6 +702,8 @@ def main():
             say("EOP_ROUTE_OUTBOUND_PORT", 25)
             say("EOP_ROUTE_RECIPIENT_SCOPE", "internal_only" if a.mode == "direct-send" else "connector_candidate")
             say("EOP_ROUTE_SENDER_POLICY", a.sender_policy.replace("-", "_"))
+            say("EOP_ROUTE_SENDER_OWNERSHIP", "auth_mail_from_login_map" if a.sender_policy != "fixed-mailbox" else "fixed_sender")
+            say("EOP_ROUTE_HEADER_FROM_MATCH_VERIFIED", "no")
             say("EOP_ROUTE_FIXED_SENDER", "yes" if a.sender_policy == "fixed-mailbox" else "no")
             say("EXCHANGE_CONNECTOR_VERIFIED", "no")
             say("MICROSOFT365_DELIVERY_VERIFIED", "no")
@@ -640,6 +719,7 @@ def main():
                 raise Refused("eop_route_already_active")
             if a.mode == "connector":
                 check_connector_cert(a)
+            sender_owner_map(a)
             system_ca()
             return deploy(a)
         finally:
