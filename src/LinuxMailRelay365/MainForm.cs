@@ -1899,7 +1899,8 @@ internal sealed class MainForm : Form
             "Existing primary " + inventory.Mta + " service, config, queue and port 25 must stay unchanged. " +
             (foreign.Mta.Length > 0 ? "This uses already-installed Postfix binaries and an explicit guard against foreign MTA changes; package installation is forbidden. " : "") +
             "This action does not create or change Entra/Exchange Connectors or DNS records.",
-            "INSTALL PRIVATE CONNECTOR")) return;
+            foreign.Mta.Length == 0 ? "INSTALL PRIVATE CONNECTOR" :
+                "PRESERVE EXISTING " + foreign.Mta.ToUpperInvariant() + " + INSTALL CONNECTOR")) return;
         var result = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildFreshConnectorBundle(cfg.Port, cfg.Mx, cfg.Domain,
                 cfg.Sender, smtpListenIp.Text.Trim(), trusted, cfg.PublicIp,
@@ -1980,7 +1981,8 @@ internal sealed class MainForm : Form
             "is eligible for RCPT TO, and the sender is rewritten to one declared address. " +
             "Public inbound SMTP uses a separate opt-in manager and is never opened by outbound routing. The Microsoft 365 domain must really be accepted in " +
             "the chosen tenant. Client devices must be changed only AFTER testing.",
-            "INSTALL PRIVATE DIRECT SEND")) return;
+            foreign.Mta.Length == 0 ? "INSTALL PRIVATE DIRECT SEND" :
+                "PRESERVE EXISTING " + foreign.Mta.ToUpperInvariant() + " + INSTALL DIRECT SEND")) return;
         var applied = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildDirectSendSidecarBundle(cfg.Port, cfg.Mx, cfg.Domain,
                 cfg.Sender, smtpListenIp.Text.Trim(), trusted, true, foreign.Mta, foreign.Hostname), TimeSpan.FromMinutes(4));
