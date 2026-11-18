@@ -108,9 +108,11 @@ def main():
                     target.flush()
                     os.fsync(target.fileno())
                 os.chmod(name,0o600)
-                if BASE.exists():
+                # Hard-link creation fails atomically if the destination
+                # exists, so concurrent checkers cannot overwrite baseline.
+                if BASE.exists() or BASE.is_symlink():
                     raise ValueError("baseline_exists")
-                os.rename(name,str(BASE))
+                os.link(name,str(BASE))
             finally:
                 if os.path.exists(name):
                     os.unlink(name)
