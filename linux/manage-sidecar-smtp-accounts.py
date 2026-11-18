@@ -118,6 +118,22 @@ def root_service_state(port):
         raise ValueError("sidecar_not_installed")
     if (SIDECAR / "smtp-port").read_text(encoding="ascii").strip() != str(port):
         raise ValueError("installed_custom_port_mismatch")
+    # CLI callers get the same fail-closed posture as the Windows Wizard.
+    if shutil.which("postconf") is None:
+        raise ValueError("postfix_cli_missing")
+    required = (
+        ("smtpd_sasl_auth_enable", "yes"),
+        ("smtpd_tls_security_level", "encrypt"),
+        ("smtpd_tls_auth_only", "yes"),
+        ("smtpd_sasl_type", "dovecot"),
+        ("smtpd_sasl_path", "private/auth"),
+    )
+    for key, expected in required:
+        q = subprocess.run(["postconf", "-c", str(SIDECAR), "-h", key],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=8, check=False)
+        if q.returncode != 0 or q.stdout.strip() != expected:
+            raise ValueError("isolated_smtp_auth_tls_policy_unverified")
     for unit in (UNIT, "linuxmailrelay365-sidecar.service"):
         p = subprocess.run(["systemctl", "is-active", "--quiet", unit],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -176,8 +192,16 @@ def restart_and_verify():
     for _ in range(40):
         q = subprocess.run(["systemctl", "is-active", "--quiet", UNIT],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=6)
-        if q.returncode == 0 and sock.exists():
-            return
+        if q.returncode == 0 and sock.is_socket():
+            # An existing filesystem socket node is not enough: verify that
+            # the restarted isolated Dovecot process is accepting connections.
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                    conn.settimeout(1.0)
+                    conn.connect(str(sock))
+                return
+            except (OSError, socket.timeout):
+                pass
         time.sleep(0.2)
     raise ValueError("isolated_sasl_socket_not_ready")
 
