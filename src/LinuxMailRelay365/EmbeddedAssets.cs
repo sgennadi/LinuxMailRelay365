@@ -39,6 +39,8 @@ internal static class EmbeddedAssets
     internal static string RebootContinuity => Text("LinuxMailRelay365.linux.reboot-continuity.py");
     internal static string OutboundModePreflight => Text("LinuxMailRelay365.linux.outbound-mode-preflight.py");
     internal static string EopRouteManager => Text("LinuxMailRelay365.linux.eop-route-manager.py");
+    internal static string FromOwnerMilter => Text("LinuxMailRelay365.linux.from-owner-milter.py");
+    internal static string FromOwnerGuardInstaller => Text("LinuxMailRelay365.linux.from-owner-guard-installer.sh");
     internal static string SidecarTlsRotator => Text("LinuxMailRelay365.linux.sidecar-tls-rotator.sh");
     internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
     internal static string AuthTlsRestore => Text("LinuxMailRelay365.linux.auth-tls-restore.sh");
@@ -423,6 +425,41 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/verify-sidecar-tls-identity.py\" <<'LMR365_TLS_VERIFY'\n" +
                Encode(TlsIdentityProbe) + "\nLMR365_TLS_VERIFY\n" +
                "bash \"$work/rotate.sh\" " + args + "\n";
+    }
+
+    internal static string BuildFromOwnerGuardBundle(int port, string senderOwnerFile,
+        string? expectedOwnerSha = null, string? expectedEngineSha = null)
+    {
+        if (port is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(port));
+        if (string.IsNullOrWhiteSpace(senderOwnerFile) || senderOwnerFile.Length > 255 ||
+            !Regex.IsMatch(senderOwnerFile, @"\A/[A-Za-z0-9_./-]{1,255}\z",
+                RegexOptions.CultureInvariant) ||
+            senderOwnerFile.Split('/').Contains(".."))
+            throw new ArgumentException("Use a root-owned 0600 sender-owner map on Linux.");
+        bool apply = expectedOwnerSha is not null || expectedEngineSha is not null;
+        if (apply && (expectedOwnerSha is null || expectedEngineSha is null ||
+            !Regex.IsMatch(expectedOwnerSha, @"\A[a-f0-9]{64}\z",
+                RegexOptions.CultureInvariant) ||
+            !Regex.IsMatch(expectedEngineSha, @"\A[a-f0-9]{64}\z",
+                RegexOptions.CultureInvariant)))
+            throw new ArgumentException("Both reviewed policy and filter SHA-256 are required.");
+        string args = (apply ? "--apply" : "--check-only") +
+            " --smtp-port " + port +
+            " --owner-file " + senderOwnerFile +
+            " --engine-file \"$work/engine.py\"";
+        if (apply)
+            args += " --expect-owner-sha256 " + expectedOwnerSha +
+                    " --expect-engine-sha256 " + expectedEngineSha +
+                    " --confirm ACTIVATE_PRIVATE_FROM_OWNER_GUARD";
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-from-owner.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/engine.py\" <<'LMR365_FROM_OWNER_ENGINE'\n" +
+               Encode(FromOwnerMilter) + "\nLMR365_FROM_OWNER_ENGINE\n" +
+               "base64 -d > \"$work/install.sh\" <<'LMR365_FROM_OWNER_INSTALL'\n" +
+               Encode(FromOwnerGuardInstaller) + "\nLMR365_FROM_OWNER_INSTALL\n" +
+               "bash \"$work/install.sh\" " + args + "\n";
     }
 
     internal static string BuildEopRouteBundle(int port, string mode, string mxHost,
