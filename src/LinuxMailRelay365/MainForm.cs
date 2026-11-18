@@ -45,6 +45,7 @@ internal sealed class MainForm : Form
     private readonly TextBox privateAuthCertPath = Field("");
     private readonly TextBox privateAuthKeyPath = Field("");
     private readonly TextBox privateAuthHashPath = Field("");
+    private readonly TextBox privateTlsCaPath = Field("");
     private readonly PreserveMailFlowPreview preserveFlowPreview = new();
     private readonly TextBox preserveMailInstructions = new()
     {
@@ -481,6 +482,13 @@ internal sealed class MainForm : Form
                     AddField(page, T("Путь к файлу Linux с 1–64 хешированными SMTP-пользователями (0600)",
                                      "Linux path to 1–64 hashed SMTP accounts (0600)",
                                      "נתיב לחשבון SMTP עם hash"), privateAuthHashPath);
+                    AddField(page, T("Файл доверенного CA на Linux (необязательно; пусто = системное хранилище)",
+                                     "Trusted CA file on Linux (optional; blank = system trust store)",
+                                     "קובץ רשות אישורים מהימנה בלינוקס (אופציונלי)"), privateTlsCaPath);
+                    AddLine(page, UiTheme.Text(T(
+                        "После установки проверка установленного SMTP проверяет STARTTLS, цепочку CA и DNS-имя сертификата через loopback. Доверие на клиентском компьютере проверяется отдельно.",
+                        "Installed SMTP audit can verify STARTTLS, trusted CA chain and certificate DNS name via loopback. Each real client's trust store must still be checked separately.",
+                        "בדיקת TLS ברשת המקומית אינה מחליפה בדיקת אמון במחשבי הלקוחות.")));
                     AddLine(page, UiTheme.Text(T(
                         "Создайте хеш на сервере интерактивно: doveadm pw -s SHA512-CRYPT. Сохраните 1–64 строки user:{SHA512-CRYPT}$6$... в закрытый файл root:root 0600, по одной на приложение. Пароль и хеш не вводятся в мастер. Для TLS нужен действительный сертификат с SAN и проверкой доверия на клиентах. На SELinux Enforcing применение блокируется до проверенной настройки меток.",
                         "On Linux create the hash interactively: doveadm pw -s SHA512-CRYPT. Save 1–64 unique user:{SHA512-CRYPT}$6$... entries, one per app, as root:root 0600. Never enter passwords or hashes in the Wizard. TLS requires a valid DNS SAN certificate trusted by client machines. SELinux Enforcing is blocked pending verified socket labels.",
@@ -866,10 +874,9 @@ internal sealed class MainForm : Form
         var existing = await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None);
         if (existing == true)
         {
-            WriteLine("Isolated Postfix already configures mandatory STARTTLS and SMTP AUTH. " +
-                      "Use installed custom port " +
-                      await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None) +
-                      ". A client trust/auth handshake and Microsoft 365 delivery remain separately verifiable.");
+            int port = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+            WriteLine("Isolated Postfix already requires STARTTLS and SMTP AUTH on TCP " + port + ".");
+            await VerifyInstalledTlsIdentityAsync(endpoint, port);
             return;
         }
         if (existing is null)
@@ -919,6 +926,34 @@ internal sealed class MainForm : Form
         WriteLine("Update clients: configured DNS name " + privateAuthDns.Text.Trim() +
                   ", custom port " + isolatedSmtpPort.Text.Trim() +
                   ", STARTTLS REQUIRED, SMTP AUTH REQUIRED, verify server DNS and CA trust. Authentication details are not stored by this wizard.");
+    }
+
+    private async Task VerifyInstalledTlsIdentityAsync(SshEndpoint endpoint, int installedPort)
+    {
+        string dns = privateAuthDns.Text.Trim();
+        if (string.IsNullOrEmpty(dns))
+        {
+            WriteLine("TLS chain and DNS verification skipped: enter the SMTP DNS name from the certificate SAN to verify it.");
+            return;
+        }
+        var script = EmbeddedAssets.BuildTlsIdentityProbeBundle(installedPort, dns,
+            privateTlsCaPath.Text.Trim());
+        WriteLine("Checking SMTP certificate chain and DNS/SNI against the installed custom TCP port " +
+                  installedPort + " on Linux loopback. No SMTP credentials or mail data are transmitted.");
+        var report = await SshRemote.RunRootScriptAsync(endpoint, script, TimeSpan.FromSeconds(60));
+        WriteLine(report.StdOut);
+        if (report.ExitCode != 0 ||
+            !report.StdOut.Contains("SMTP_TLS_PROBE_RESULT=verified_local_chain_dns_and_starttls",
+                StringComparison.Ordinal))
+        {
+            WriteLine("TLS identity NOT VERIFIED. Review certificate SAN, expiry, trust chain and Linux CA trust. " +
+                      "Do not configure clients to bypass certificate verification.");
+        }
+        else
+        {
+            WriteLine("Linux loopback validated the SMTP certificate chain and DNS name. " +
+                      "This does NOT prove trust on actual client devices, external reachability or Microsoft 365 delivery.");
+        }
     }
 
     private async Task RestoreAuthTlsAsync()
@@ -1018,6 +1053,8 @@ internal sealed class MainForm : Form
         // A backup check belongs with the existing security audit; no extra
         // wizard action or separate popup is required.
         await InspectAuthArchivesAsync(endpoint);
+        if (await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None) == true)
+            await VerifyInstalledTlsIdentityAsync(endpoint, checkPort);
     }
 
     private async Task InspectPlatformAsync()
