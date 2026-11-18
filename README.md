@@ -529,7 +529,7 @@ requires the organization's actual trusted code-signing certificate and
 independent verification of its thumbprint. Never turn off certificate
 validation to force a Stable release.
 
-## Existing Sendmail / Exim / Postfix coexistence (Preview 15)
+## Existing Sendmail / Exim / Postfix coexistence (guarded preview)
 
 The Advanced SMTP Wizard now includes an entirely read-only MTA coexistence
 audit. It detects which native mail services are currently active (including
@@ -539,12 +539,35 @@ port is currently occupied. It deliberately refuses to claim a safe
 installation if two native MTA services are active or systemd cannot establish
 service state.
 
-For a Sendmail/Exim host, only an already installed independent Postfix
-binary/configuration is a manual coexistence candidate. The Wizard will NOT
-remove, replace, restart or package-install Postfix over the operating MTA.
-Full automatic Sendmail/Exim-hosted relay activation is still blocked pending
-real mixed-MTA/package-manager and port isolation smoke tests. No "supported"
-claim is made from a container-only probe.
+On a host with active Exim or Sendmail, the **fresh fixed-sender Direct Send and
+Connector sidecar installers** also accept an explicitly opted-in foreign-MTA
+preservation mode. The only SMTP listener added is on the selected private custom
+port. The guard refuses installation if native MTA service identity, running
+PID, current TCP 25 listener set, or a bounded root-owned configuration inventory
+cannot be verified. It records an SHA-256 baseline before installing the sidecar
+and checks it again after startup; on failure the new independent service and
+configuration are rolled back. Exim/Sendmail, their queues and packages are
+NEVER stopped, restarted, replaced, removed or silently modified.
+
+The foreign-MTA path requires Postfix binaries to be **preinstalled** (no package
+manager operation), a manually entered sidecar **FQDN** and explicit
+`PRESERVE_EXISTING_EXIM` or `PRESERVE_EXISTING_SENDMAIL` confirmation. The
+Windows Wizard sends the guard as a bundled resource when this mode is selected
+after inspecting the primary MTA. For direct CLI use, keep
+`guard-foreign-mta.py` in the same directory as the install script. Example:
+
+```bash
+# Input validation only: this never inspects production MTA services.
+bash linux/install-direct-send-sidecar.sh --check-only   --smtp-port 46500 --mx-host example-com.mail.protection.outlook.com   --accepted-domain example.com --fixed-sender alerts@example.com   --preserve-primary-mta exim --sidecar-hostname relay.example.com
+
+# Only after an operator-approved disposable-VM review and tenant acceptance:
+sudo bash linux/install-direct-send-sidecar.sh --apply   --smtp-port 46500 --mx-host example-com.mail.protection.outlook.com   --accepted-domain example.com --fixed-sender alerts@example.com   --preserve-primary-mta exim --sidecar-hostname relay.example.com   --confirm-accepted-domain TENANT_DOMAIN_CHECKED   --confirm-preserve-primary-mta PRESERVE_EXISTING_EXIM
+```
+
+This is a **guarded preview**, not a verified migration or production-safe
+coexistence claim. Live Exim/Sendmail + Postfix package/service, queue and
+reboot testing is still required. The RHEL-family SELinux Enforcing install
+remains explicitly blocked and must NOT be bypassed.
 
 ## Generate a strong per-application SMTP password (Preview 15)
 
@@ -723,8 +746,10 @@ yet: restrict it to localhost unless the network is isolated and trusted.
 - Existing sidecar installations are never overwritten silently. Failed new
   installations remove their new service/configuration while retaining the
   separate queue for inspection. This is *not* a full restore of all packages.
-- Only existing Postfix is supported by this mode in Preview 9.
-  Existing Sendmail/Exim are protected; their sidecars are not implemented.
+- The XOAUTH2 sidecar installer still requires a primary Postfix. For a primary
+  Exim/Sendmail, only the separate fixed-sender Direct Send/Connector guarded
+  installer is currently offered; see the coexistence section. No mail queue
+  migration or automatic MTA package replacement is supported.
 
 **Deployment limitation:** the installer has not yet been exercised against
 a real running Postfix service and Microsoft 365 tenant. Perform the first
@@ -887,7 +912,7 @@ The repository exists at [sgennadi/LinuxMailRelay365](https://github.com/sgennad
 ## Known preview limitations
 
 - Real SMTP/Entra tenant and SSH hosts have not been exercised; verify in a dedicated test tenant and server before production.
-- Existing Sendmail/Exim remain untouched; automatic migration and isolated sidecars for them are not yet supported.
+- Exim/Sendmail automatic migration is not supported; their fixed-sender Direct Send/Connector isolated sidecar requires an already-installed Postfix, separate FQDN, guarded service/config fingerprint and explicit approval. Real mixed-MTA acceptance remains outstanding.
 - Hardware-backed OAuth signing and automatic Conditional Access enforcement are not implemented. Do not treat planned options as enabled.
 - Microsoft Entra tenant discovery uses `Az.Accounts` (installed for CurrentUser when absent) and `Get-AzTenant`. Azure APIs might not enumerate all external/guest tenants. User can enter the correct Tenant GUID manually. Discovery and actual Graph/Exchange provisioning are separate administrative sign-ins in this preview. Exchange tenant identity is independently checked using `Get-ConnectionInformation` before any changes.
 - The wizard uses PowerShell 7 for Microsoft 365 provisioning. The operator must consent with an authorized administrative account.
