@@ -24,6 +24,7 @@ internal static class EmbeddedAssets
     internal static string RhelSelinuxDoctor => Text("LinuxMailRelay365.linux.rhel-selinux-doctor.py");
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
     internal static string RelayHealth => Text("LinuxMailRelay365.linux.relay-health.py");
+    internal static string OutboundModePreflight => Text("LinuxMailRelay365.linux.outbound-mode-preflight.py");
     internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
     internal static string AuthTlsRestore => Text("LinuxMailRelay365.linux.auth-tls-restore.sh");
     internal static string InstalledSidecarAudit => Text("LinuxMailRelay365.linux.installed-sidecar-audit.py");
@@ -193,6 +194,37 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/enable-auth-tls.sh\" <<'LMR365_AUTH_TLS'\n" +
                Encode(AuthTlsInstaller) + "\nLMR365_AUTH_TLS\n" +
                "bash \"$work/enable-auth-tls.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildOutboundModePreflightBundle(string mode, int customPort,
+        string mxHost, string acceptedDomain, string publicIpv4, string linuxCert, bool checkNetwork)
+    {
+        if (mode is not ("connector" or "direct-send") ||
+            customPort is < 1024 or > 65535)
+            throw new ArgumentException("Invalid Microsoft 365 outbound plan.");
+        const string dns = @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z";
+        if (!Regex.IsMatch(mxHost, dns, RegexOptions.CultureInvariant) ||
+            !mxHost.EndsWith(".mail.protection.outlook.com", StringComparison.OrdinalIgnoreCase) ||
+            !Regex.IsMatch(acceptedDomain, dns, RegexOptions.CultureInvariant))
+            throw new ArgumentException("Enter a Microsoft 365 MX endpoint and accepted domain.");
+        if (!string.IsNullOrWhiteSpace(publicIpv4) &&
+            !System.Net.IPAddress.TryParse(publicIpv4, out _))
+            throw new ArgumentException("Invalid outbound public IPv4.");
+        if (!string.IsNullOrWhiteSpace(linuxCert) &&
+            (!Regex.IsMatch(linuxCert, @"\A/[A-Za-z0-9_./-]{1,255}\z") ||
+             linuxCert.Split('/').Contains("..")))
+            throw new ArgumentException("Invalid Linux connector certificate path.");
+        string args = "--mode " + mode + " --smtp-port " + customPort +
+                      " --mx-host " + mxHost + " --accepted-domain " + acceptedDomain;
+        if (!string.IsNullOrWhiteSpace(publicIpv4)) args += " --public-ip " + publicIpv4;
+        if (!string.IsNullOrWhiteSpace(linuxCert)) args += " --cert-file " + linuxCert;
+        if (checkNetwork) args += " --check-network";
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-outbound-plan.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/plan.py\" <<'LMR365_OUTBOUND'\n" +
+               Encode(OutboundModePreflight) + "\nLMR365_OUTBOUND\n" +
+               "python3 \"$work/plan.py\" " + args + "\n";
     }
 
     internal static string BuildRelayHealthBundle(int selectedPort)
