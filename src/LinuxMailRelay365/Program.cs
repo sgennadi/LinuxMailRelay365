@@ -26,6 +26,15 @@ internal static class Program
                 return listing.Contains("LMR365_RECOVERY", StringComparison.Ordinal) &&
                        embedded.Contains("LMR365_RECOVERY", StringComparison.Ordinal);
             }),
+            ("Isolated SMTP sidecar bundle", () =>
+            {
+                var bundle = EmbeddedAssets.BuildSidecarBundle(
+                    ["--tenant-id", "11111111-1111-1111-1111-111111111111",
+                     "--client-id", "22222222-2222-2222-2222-222222222222",
+                     "--mailbox", "smtp@example.com"]);
+                return bundle.Contains("LMR365_SIDECAR", StringComparison.Ordinal)
+                    && bundle.Contains("LMR365_TRANSPORT", StringComparison.Ordinal);
+            }),
             ("Tenant discovery", TenantDiscovery.SelfTest),
             ("Diagnostic privacy", DiagnosticJournal.SelfTest)
         };

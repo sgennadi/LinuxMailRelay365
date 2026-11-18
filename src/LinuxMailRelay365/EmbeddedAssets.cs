@@ -17,6 +17,7 @@ internal static class EmbeddedAssets
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
+    internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
     internal static string Provisioner => Text("LinuxMailRelay365.windows.provision.ps1");
     internal static string SecurityProbe => Text("LinuxMailRelay365.linux.security-probe.sh");
     internal static string CloudSecurityProbe => Text("LinuxMailRelay365.windows.cloud-security-probe.ps1");
@@ -42,6 +43,26 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/mail-config-recovery.sh\" <<'LMR365_RECOVERY'\n" +
                Encode(Recovery) + "\nLMR365_RECOVERY\n" +
                "bash \"$work/install-postfix-m365-xoauth2.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildSidecarBundle(string[] args)
+    {
+        // A secure, separate Postfix instance. No primary MTA configuration
+        // or default queue is touched by this installer.
+        foreach (string item in args)
+        {
+            if (item.Length > 320 || item.Any(c => !(char.IsAsciiLetterOrDigit(c) ||
+                    c is '.' or '-' or '_' or '@' or ':' or '/')))
+                throw new ArgumentException("Invalid sidecar installer argument.");
+        }
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-sidecar.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/install-sidecar.sh\" <<'LMR365_SIDECAR'\n" +
+               Encode(SidecarInstaller) + "\nLMR365_SIDECAR\n" +
+               "base64 -d > \"$work/m365_xoauth2_transport.py\" <<'LMR365_TRANSPORT'\n" +
+               Encode(Transport) + "\nLMR365_TRANSPORT\n" +
+               "bash \"$work/install-sidecar.sh\" " + string.Join(" ", args) + "\n";
     }
 
     internal static string BuildRecoveryBundle(string command, string? backupId = null)
