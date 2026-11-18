@@ -80,8 +80,9 @@ def trusted_networks(value):
     for network in ranges:
         if not isinstance(network, ipaddress.IPv4Network):
             return "unsafe"
-        if not (network.subnet_of(ipaddress.ip_network("127.0.0.0/8")) or
-                any(network.subnet_of(p) for p in PRIVATE)):
+        if not (network.network_address in ipaddress.ip_network("127.0.0.0/8") and
+                network.broadcast_address in ipaddress.ip_network("127.0.0.0/8")) and not any(
+                network.network_address in p and network.broadcast_address in p for p in PRIVATE):
             return "unsafe"
     return "private_only"
 
@@ -229,6 +230,13 @@ def audit(port, live=True):
     mode = run("getenforce")
     if mode and mode.lower() in ("enforcing", "permissive", "disabled"):
         d["SELINUX_MODE"] = mode.lower()
+    if d["SELINUX_MODE"] == "unknown" and not Path("/sys/fs/selinux/enforce").exists():
+        try:
+            os_data = Path("/etc/os-release").read_text(encoding="utf-8")
+        except OSError:
+            os_data = ""
+        if re.search(r"(?m)^ID=(?:\"|')?(?:ubuntu|debian)(?:\"|')?\\s*$", os_data):
+            d["SELINUX_MODE"] = "not_installed"
     if d["SELINUX_MODE"] in ("enforcing", "permissive"):
         d["SELINUX_SMTP_PORT"] = selinux_port_type(
             run("semanage", "port", "-l", timeout=12), port)
@@ -257,6 +265,7 @@ def audit(port, live=True):
         d["DOVECOT_SASL_SOCKET"] = auth_socket_status()
         d["AUTH_MATERIAL_PERMISSIONS"] = auth_file_status()
         if (tls == "encrypt" and auth_only == "yes" and
+                client_rule == ("permit_mynetworks", "reject") and
                 postconf("smtpd_sasl_type") == "dovecot" and
                 postconf("smtpd_sasl_path") == "private/auth" and
                 d["SMTP_RELAY_RESTRICTIONS"] == "auth_required"):
