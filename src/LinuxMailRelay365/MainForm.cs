@@ -437,6 +437,10 @@ internal sealed class MainForm : Form
                                   "Audit installed SMTP: AUTH/TLS, port, SELinux (read-only)",
                                   "בדיקת SMTP מותקן: AUTH/TLS, יציאה ו-SELinux"),
                                   AuditInstalledPrivateSmtpAsync, false, "shield", "smtp-live-audit");
+                AddAction(page, T("Проверить здоровье SMTP, очередь и сертификаты",
+                                  "Check SMTP health, queue and certificate expiry (read-only)",
+                                  "בדיקת SMTP, תור ואישורים"),
+                                  InspectRelayHealthAsync, false, "activity", "smtp-health");
                 AddAction(page, T("Открыть порт только доверенным сетям...",
                                   "Open SMTP port for trusted networks only...",
                                   "פתיחת יציאה לרשתות מהימנות בלבד"),
@@ -1154,6 +1158,28 @@ internal sealed class MainForm : Form
             throw new InvalidDataException("SMTP account update did not confirm success; inspect private service logs.");
         WriteLine(applied.StdOut);
         WriteLine("Update/revoke the affected application's SMTP credentials. No Microsoft 365 mailbox or primary Postfix changes were requested.");
+    }
+
+    private async Task InspectRelayHealthAsync()
+    {
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) ||
+            selectedPort is < 1024 or > 65535)
+            throw new InvalidDataException("Custom SMTP port must be 1024-65535.");
+        var endpoint = Endpoint();
+        int installedPort = await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None)
+            ? await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None)
+            : selectedPort;
+        var report = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildRelayHealthBundle(installedPort), TimeSpan.FromSeconds(70));
+        report.EnsureSuccess();
+        WriteLine("Read-only local SMTP operational health, custom TCP " + installedPort +
+                  ". Queue addresses and SMTP credentials are never returned.");
+        WriteLine(report.StdOut);
+        if (report.StdOut.Contains("HEALTH_STATUS=attention", StringComparison.Ordinal))
+            WriteLine("ATTENTION: review queue backlog, service status, free space and expiring certificates. " +
+                      "This does not prove Microsoft 365 delivery.");
+        if (report.StdOut.Contains("HEALTH_STATUS=local_preflight_only", StringComparison.Ordinal))
+            WriteLine("Local readiness checks passed. Actual Microsoft 365 and recipient delivery remain unverified.");
     }
 
     private async Task InspectRhelSelinuxAsync()
