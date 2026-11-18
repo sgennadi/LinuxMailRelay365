@@ -50,6 +50,7 @@ internal sealed class MainForm : Form
     private readonly TextBox smtpListenIp = Field("");
     private readonly TextBox smtpTrustedCidrs = Field("");
     private readonly TextBox isolatedSmtpPort = Field("2525");
+    private readonly TextBox foreignSidecarHostname = Field("");
     // Paths refer to files already prepared on the Linux host. No passwords,
     // private key contents, or hashes are entered into or persisted by the GUI.
     private readonly TextBox privateAuthDns = Field("");
@@ -202,6 +203,7 @@ internal sealed class MainForm : Form
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
+        foreignSidecarHostname.Leave += (_, _) => UpdatePreserveFlowPreview();
         privateAuthDns.Leave += (_, _) => SaveRoutingChoices();
         advancedSmtpTools.CheckedChanged += (_, _) =>
         {
@@ -579,6 +581,10 @@ internal sealed class MainForm : Form
                                           RestoreEopRouteAsync, false, "rotate-ccw", "eop-restore");
                     }
                 }
+                if (inspectedMail?.Mta is "exim" or "sendmail")
+                    AddField(page, T("FQDN отдельного SMTP для Exim/Sendmail (обязательно)",
+                                     "Independent Postfix hostname FQDN for Exim/Sendmail (required)",
+                                     "שם שרת Postfix עצמאי עבור Exim/Sendmail"), foreignSidecarHostname);
                 AddField(page, T("Порт отдельного SMTP (Preserve Existing Mail; по умолчанию 2525)",
                                  "Isolated SMTP port (Preserve Existing Mail; default 2525)",
                                  "פורט SMTP נפרד (ברירת מחדל 2525)"), isolatedSmtpPort);
@@ -820,8 +826,8 @@ internal sealed class MainForm : Form
                         "יש לבדוק תחילה את שרת הדואר.")));
                 }
                 AddLine(page, UiTheme.Text(T(
-                    "Для существующего Postfix режим Preserve Existing Mail создаёт отдельный экземпляр Postfix на выбранном SMTP-порту с отдельной очередью. Основные порты 25, main.cf, master.cf и текущая очередь не изменяются. Sendmail/Exim пока не поддерживаются.",
-                    "For an existing Postfix server, Preserve Existing Mail installs a separate Postfix instance on your selected TCP port with a separate queue. Primary port 25, main.cf, master.cf and queue are untouched. Sendmail/Exim sidecars are not yet supported.",
+                    "Для существующего Postfix режим Preserve Existing Mail создаёт отдельный экземпляр Postfix на выбранном SMTP-порту с отдельной очередью. При Exim/Sendmail доступен только режим Direct Send/Connector с уже установленным Postfix, FQDN и дополнительной проверкой сохранности основной MTA; SELinux Enforcing пока блокируется.",
+                    "Preserve Existing Mail uses an independent Postfix and queue. With existing Exim/Sendmail, guarded Direct Send/Connector needs already-installed Postfix binaries, explicit FQDN and approval; enforcing SELinux is not live-verified.",
                     "עבור Postfix קיים נוצר מופע נפרד ביציאת SMTP שנבחרה ללא שינוי בתצורה הקיימת.")));
                 AddLine(page, UiTheme.Text(T(
                     "Connector и политики сохранения/маскарада отправителя можно применить только к отдельному Postfix через Advanced SMTP с предварительной проверкой, подтверждением и Restore. Основной MTA, MX, SPF, DKIM и DMARC автоматически не меняются.",
@@ -1811,6 +1817,19 @@ internal sealed class MainForm : Form
         connectorApproved.Checked = false;
     }
 
+    // An explicit FQDN is needed when Postfix is not the primary mail MTA.
+    // Do not silently derive an identity from an SSH IP address.
+    private (string Mta, string Hostname) ForeignMtaOptions()
+    {
+        if (inspectedMail?.Mta is "exim" or "sendmail")
+        {
+            if (inspectedServerIdentity != SecurityOptionsStore.Identity(Endpoint()))
+                throw new InvalidOperationException("Reinspect the selected Exim/Sendmail server before using preservation mode.");
+            return (inspectedMail.Mta, foreignSidecarHostname.Text.Trim());
+        }
+        return ("", "");
+    }
+
     private async Task PreviewFreshConnectorAsync()
     {
         var cfg = EopOptions();
@@ -1818,10 +1837,11 @@ internal sealed class MainForm : Form
             throw new InvalidOperationException("Fresh private Connector requires a fixed sender; use EOP route Apply for advanced policies.");
         var trusted = smtpTrustedCidrs.Text.Split(',', StringSplitOptions.RemoveEmptyEntries |
             StringSplitOptions.TrimEntries);
+        var foreign = ForeignMtaOptions();
         var report = await SshRemote.RunRootScriptAsync(Endpoint(),
             EmbeddedAssets.BuildFreshConnectorBundle(cfg.Port, cfg.Mx, cfg.Domain,
                 cfg.Sender, smtpListenIp.Text.Trim(), trusted, cfg.PublicIp,
-                cfg.Cert, cfg.Key, false), TimeSpan.FromSeconds(65));
+                cfg.Cert, cfg.Key, false, foreign.Mta, foreign.Hostname), TimeSpan.FromSeconds(65));
         report.EnsureSuccess();
         if (!report.StdOut.Contains("CONNECTOR_PREFLIGHT=inputs_valid_only", StringComparison.Ordinal))
             throw new InvalidOperationException("New Connector input preflight did not succeed.");
@@ -1846,14 +1866,18 @@ internal sealed class MainForm : Form
         if (inspectedMail is null || inspectedServerIdentity != SecurityOptionsStore.Identity(endpoint) ||
             inspectedMail != inventory)
             throw new InvalidOperationException("Reinspect existing Linux mail configuration before installing a new Connector.");
-        if (inventory.Mta != "postfix" || !preserveExistingMail.Checked || allowExisting.Checked)
-            throw new InvalidOperationException("Fresh Connector requires Preserve Existing Mail and an existing primary Postfix.");
+        if (inventory.Mta is not ("postfix" or "exim" or "sendmail") ||
+            !preserveExistingMail.Checked || allowExisting.Checked)
+            throw new InvalidOperationException("Fresh Connector requires Preserve Existing Mail and a known existing primary MTA.");
+        var foreign = ForeignMtaOptions();
+        if (inventory.Mta != "postfix" && foreign.Mta != inventory.Mta)
+            throw new InvalidOperationException("The selected foreign MTA is not the inspected primary service.");
         var trusted = smtpTrustedCidrs.Text.Split(',', StringSplitOptions.RemoveEmptyEntries |
             StringSplitOptions.TrimEntries);
         var preview = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildFreshConnectorBundle(cfg.Port, cfg.Mx, cfg.Domain,
                 cfg.Sender, smtpListenIp.Text.Trim(), trusted, cfg.PublicIp,
-                cfg.Cert, cfg.Key, false), TimeSpan.FromSeconds(70));
+                cfg.Cert, cfg.Key, false, foreign.Mta, foreign.Hostname), TimeSpan.FromSeconds(70));
         preview.EnsureSuccess();
         if (!preview.StdOut.Contains("CONNECTOR_PREFLIGHT=inputs_valid_only", StringComparison.Ordinal))
             throw new InvalidOperationException("New Connector preflight did not succeed.");
@@ -1872,13 +1896,14 @@ internal sealed class MainForm : Form
             "authorize the selected public egress IP or TLS certificate and must be verified independently. " +
             "EXTERNAL recipients can be accepted for relay. Unauthenticated incoming clients are restricted " +
             "to the specified trusted private networks; public inbound access is not enabled. " +
-            "Existing primary Postfix, queue, config and port 25 must stay unchanged. " +
+            "Existing primary " + inventory.Mta + " service, config, queue and port 25 must stay unchanged. " +
+            (foreign.Mta.Length > 0 ? "This uses already-installed Postfix binaries and an explicit guard against foreign MTA changes; package installation is forbidden. " : "") +
             "This action does not create or change Entra/Exchange Connectors or DNS records.",
             "INSTALL PRIVATE CONNECTOR")) return;
         var result = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildFreshConnectorBundle(cfg.Port, cfg.Mx, cfg.Domain,
                 cfg.Sender, smtpListenIp.Text.Trim(), trusted, cfg.PublicIp,
-                cfg.Cert, cfg.Key, true), TimeSpan.FromMinutes(4));
+                cfg.Cert, cfg.Key, true, foreign.Mta, foreign.Hostname), TimeSpan.FromMinutes(4));
         result.EnsureSuccess();
         if (!result.StdOut.Contains("CONNECTOR_SIDECAR_INSTALLED=yes", StringComparison.Ordinal))
             throw new InvalidOperationException("New Connector sidecar installation was not confirmed.");
@@ -1897,9 +1922,10 @@ internal sealed class MainForm : Form
             throw new InvalidOperationException("Select Direct Send, not Connector.");
         var trusted = smtpTrustedCidrs.Text.Split(',', StringSplitOptions.RemoveEmptyEntries |
             StringSplitOptions.TrimEntries);
+        var foreign = ForeignMtaOptions();
         var report = await SshRemote.RunRootScriptAsync(Endpoint(),
             EmbeddedAssets.BuildDirectSendSidecarBundle(cfg.Port, cfg.Mx, cfg.Domain,
-                cfg.Sender, smtpListenIp.Text.Trim(), trusted, false),
+                cfg.Sender, smtpListenIp.Text.Trim(), trusted, false, foreign.Mta, foreign.Hostname),
             TimeSpan.FromSeconds(55));
         report.EnsureSuccess();
         WriteLine(report.StdOut);
@@ -1924,13 +1950,17 @@ internal sealed class MainForm : Form
         if (inspectedMail is null || inspectedServerIdentity != SecurityOptionsStore.Identity(endpoint) ||
             inspectedMail != inventory)
             throw new InvalidOperationException("Inspect the existing Linux mail configuration again before installation.");
-        if (inventory.Mta != "postfix" || !preserveExistingMail.Checked || allowExisting.Checked)
-            throw new InvalidOperationException("Fresh Direct Send requires Preserve Existing Mail with an existing primary Postfix.");
+        if (inventory.Mta is not ("postfix" or "exim" or "sendmail") ||
+            !preserveExistingMail.Checked || allowExisting.Checked)
+            throw new InvalidOperationException("Fresh Direct Send requires Preserve Existing Mail with a known primary MTA.");
+        var foreign = ForeignMtaOptions();
+        if (inventory.Mta != "postfix" && foreign.Mta != inventory.Mta)
+            throw new InvalidOperationException("The existing Exim/Sendmail inventory has changed.");
         var trusted = smtpTrustedCidrs.Text.Split(',', StringSplitOptions.RemoveEmptyEntries |
             StringSplitOptions.TrimEntries);
         var preflight = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildDirectSendSidecarBundle(cfg.Port, cfg.Mx, cfg.Domain,
-                cfg.Sender, smtpListenIp.Text.Trim(), trusted, false),
+                cfg.Sender, smtpListenIp.Text.Trim(), trusted, false, foreign.Mta, foreign.Hostname),
             TimeSpan.FromSeconds(60));
         preflight.EnsureSuccess();
         if (!preflight.StdOut.Contains("DIRECT_SEND_PREFLIGHT=inputs_valid_only", StringComparison.Ordinal))
@@ -1944,14 +1974,16 @@ internal sealed class MainForm : Form
             throw new InvalidOperationException("EOP MX TLS / DNS check failed. No Direct Send installed.");
         if (!ConfirmDestructive("LinuxMailRelay365 | New private Direct Send gateway",
             "Create only an isolated Postfix listener on custom TCP " + cfg.Port + ". " +
-            "Primary Postfix and port 25 stay untouched. Only the declared internal tenant domain " +
+            "Primary " + inventory.Mta + " service, queue, config and port 25 stay untouched. " +
+            (foreign.Mta.Length > 0 ? "Postfix binaries MUST already exist; no package/service replacement is performed. " : "") +
+            "Only the declared internal tenant domain " +
             "is eligible for RCPT TO, and the sender is rewritten to one declared address. " +
             "Public inbound SMTP uses a separate opt-in manager and is never opened by outbound routing. The Microsoft 365 domain must really be accepted in " +
             "the chosen tenant. Client devices must be changed only AFTER testing.",
             "INSTALL PRIVATE DIRECT SEND")) return;
         var applied = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildDirectSendSidecarBundle(cfg.Port, cfg.Mx, cfg.Domain,
-                cfg.Sender, smtpListenIp.Text.Trim(), trusted, true), TimeSpan.FromMinutes(4));
+                cfg.Sender, smtpListenIp.Text.Trim(), trusted, true, foreign.Mta, foreign.Hostname), TimeSpan.FromMinutes(4));
         applied.EnsureSuccess();
         if (!applied.StdOut.Contains("DIRECT_SEND_SIDECAR_INSTALLED=yes", StringComparison.Ordinal))
             throw new InvalidOperationException("Standalone Direct Send gateway did not confirm successful installation.");
