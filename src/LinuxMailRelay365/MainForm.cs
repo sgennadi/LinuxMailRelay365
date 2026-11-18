@@ -1385,6 +1385,8 @@ internal sealed class MainForm : Form
     {
         string username = smtpAccountName.Text.Trim();
         var endpoint = Endpoint();
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("Install an independent SMTP sidecar before creating client account credentials.");
         var check = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildSmtpCredentialGeneratorBundle(username, false),
             TimeSpan.FromSeconds(50));
