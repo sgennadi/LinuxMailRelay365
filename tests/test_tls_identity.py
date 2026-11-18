@@ -45,6 +45,17 @@ class TlsIdentityTests(unittest.TestCase):
                 obj._get_socket("evil.example.org", 46500, 5)
             self.assertEqual(connect.call_count, 1)
 
+    def test_wizard_integrates_exact_ca_dns_and_custom_port(self):
+        gui = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text()
+        embedded = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text()
+        project = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text()
+        self.assertIn("VerifyInstalledTlsIdentityAsync", gui)
+        self.assertIn("BuildTlsIdentityProbeBundle(installedPort, dns,", gui)
+        self.assertIn("privateTlsCaPath", gui)
+        self.assertIn("BuildTlsIdentityProbeBundle", embedded)
+        self.assertIn("verify-sidecar-tls-identity.py", project)
+        self.assertIn("IsSidecarAuthTlsEnabledAsync(endpoint", gui)
+
     def test_no_plaintext_auth_mail_data_or_unsafe_tls(self):
         source = SCRIPT.read_text(encoding="utf-8")
         for unsafe in ("smtp.login(", ".sendmail(", ".send_message(",
