@@ -94,7 +94,8 @@ sudo chmod 0600 "$FIXTURE/privkey.pem"
 sudo chmod 0644 "$FIXTURE/fullchain.pem"
 # Disposable CI-only fixture. Only the salted HASH is stored on disk.
 hash="$(openssl passwd -6 -salt ciRandomSalt ci-fixture-password)"
-printf 'lmr365-ci:{SHA512-CRYPT}%s\n' "$hash" |
+hash2="$(openssl passwd -6 -salt ciRandom2 ci-fixture-password-2)"
+printf 'lmr365-ci:{SHA512-CRYPT}%s\nlmr365-ci-b:{SHA512-CRYPT}%s\n' "$hash" "$hash2" |
   sudo tee "$FIXTURE/smtp-users" >/dev/null
 sudo chmod 0600 "$FIXTURE/smtp-users"
 
@@ -146,6 +147,7 @@ with smtplib.SMTP('127.0.0.1', port, timeout=10) as smtp:
     else:
         raise AssertionError('Wrong SMTP password was accepted')
     smtp.login('lmr365-ci','ci-fixture-password')
+    smtp.login('lmr365-ci-b','ci-fixture-password-2')
 print('AUTH_TLS_REAL_SMTP_SMOKE=PASS')
 PY
 if sudo bash "$AUTH_SCRIPT" --apply "${AUTH_ARGS[@]}" --confirm ENABLE_PRIVATE_AUTH_TLS; then
