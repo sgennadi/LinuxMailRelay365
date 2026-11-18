@@ -20,6 +20,7 @@ internal static class EmbeddedAssets
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
+    internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
     internal static string Provisioner => Text("LinuxMailRelay365.windows.provision.ps1");
     internal static string SecurityProbe => Text("LinuxMailRelay365.linux.security-probe.sh");
     internal static string CloudSecurityProbe => Text("LinuxMailRelay365.windows.cloud-security-probe.ps1");
@@ -93,6 +94,18 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/network-firewall.sh\" <<'LMR365_NETWORK'\n" +
                Encode(NetworkFirewall) + "\nLMR365_NETWORK\n" +
                "bash \"$work/network-firewall.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildPlatformCompatBundle(int smtpPort)
+    {
+        if (smtpPort is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(smtpPort));
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-platform.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/platform-compat.py\" <<'LMR365_PLATFORM'\n" +
+               Encode(PlatformCompat) + "\nLMR365_PLATFORM\n" +
+               "python3 \"$work/platform-compat.py\" --smtp-port " + smtpPort.ToString() + "\n";
     }
 
     internal static string BuildRecoveryBundle(string command, string? backupId = null)
