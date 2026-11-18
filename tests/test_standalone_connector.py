@@ -30,7 +30,7 @@ class FreshConnectorContracts(unittest.TestCase):
         body = source.split("internal static async Task<bool> HasIsolatedSidecarAsync(", 1)[1].split(
             "internal static async Task<int> GetIsolatedSidecarPortAsync", 1)[0]
         self.assertIn('"/smtp-port"', body)
-        self.assertIn('"/main.cf"', body)
+        self.assertIn('"/main.cf && test -r "', body)
         self.assertNotIn("SidecarIdentity", body)
 
     def test_bash_syntax_and_selftest(self):
