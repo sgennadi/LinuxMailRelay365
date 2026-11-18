@@ -255,6 +255,7 @@ service auth {
     group = postfix
   }
 }
+EOF
 else
   # Dovecot 2.4 does not accept the 2.3 passdb/userdb settings; the first
   # config lines must pin config/storage grammar. Never include the system
