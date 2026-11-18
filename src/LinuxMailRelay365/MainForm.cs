@@ -474,12 +474,12 @@ internal sealed class MainForm : Form
                     AddField(page, T("Путь к закрытому TLS-ключу на Linux (0600)",
                                      "Linux path to TLS private key (0600)",
                                      "נתיב המפתח הפרטי בלינוקס"), privateAuthKeyPath);
-                    AddField(page, T("Путь к файлу Linux с ОДНИМ хешированным пользователем (0600)",
-                                     "Linux path to ONE hashed SMTP account (0600)",
+                    AddField(page, T("Путь к файлу Linux с 1–64 хешированными SMTP-пользователями (0600)",
+                                     "Linux path to 1–64 hashed SMTP accounts (0600)",
                                      "נתיב לחשבון SMTP עם hash"), privateAuthHashPath);
                     AddLine(page, UiTheme.Text(T(
-                        "Создайте хеш на сервере интерактивно: doveadm pw -s SHA512-CRYPT. Сохраните строку user:{SHA512-CRYPT}$6$... в закрытый файл root:root 0600. Пароль и хеш не вводятся в мастер. Для TLS нужен действительный сертификат с SAN и проверкой доверия на клиентах. На SELinux Enforcing применение блокируется до проверенной настройки меток.",
-                        "On Linux create the hash interactively: doveadm pw -s SHA512-CRYPT. Save one user:{SHA512-CRYPT}$6$... entry as root:root 0600. Never enter passwords or hashes in the Wizard. TLS requires a valid DNS SAN certificate trusted by client machines. SELinux Enforcing is blocked pending verified socket labels.",
+                        "Создайте хеш на сервере интерактивно: doveadm pw -s SHA512-CRYPT. Сохраните 1–64 строки user:{SHA512-CRYPT}$6$... в закрытый файл root:root 0600, по одной на приложение. Пароль и хеш не вводятся в мастер. Для TLS нужен действительный сертификат с SAN и проверкой доверия на клиентах. На SELinux Enforcing применение блокируется до проверенной настройки меток.",
+                        "On Linux create the hash interactively: doveadm pw -s SHA512-CRYPT. Save 1–64 unique user:{SHA512-CRYPT}$6$... entries, one per app, as root:root 0600. Never enter passwords or hashes in the Wizard. TLS requires a valid DNS SAN certificate trusted by client machines. SELinux Enforcing is blocked pending verified socket labels.",
                         "יש ליצור hash ב-Linux ולשמור בקובץ מוגן; אין להזין סיסמה באשף.")));
                     AddAction(page, T("Проверить SMTP AUTH/STARTTLS (без изменений)",
                                       "Check SMTP AUTH/STARTTLS prerequisites (read-only)",
