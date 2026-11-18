@@ -114,6 +114,54 @@ upgrade so far is an isolated Ubuntu GitHub Actions VM: TLS handshake,
 wrong/correct SMTP AUTH credentials, no mail transfer and unchanged primary
 Postfix. No end-to-end Exchange Online delivery is claimed.
 
+## Opt-in restore of isolated SMTP AUTH + TLS (security downgrade)
+
+A separate **Restore previous private SMTP without AUTH/STARTTLS** action is
+available in Wizard step 4. It is intended for reverting the private sidecar
+to the **original trusted-network-only Postfix policy**, e.g. after an
+application compatibility issue. **It does NOT remove the sidecar or clear
+its mail queue**, and never changes the primary system Postfix or Microsoft
+365 application identity. The custom port is always discovered and verified
+against the actual Linux installation; **2525 is not hard-coded**.
+
+The restore is an intentional **security downgrade**. After confirmation,
+applications on approved private CIDRs can submit without per-client
+credentials or mandatory TLS. **Never expose this restored listener to the
+public internet or a broad/untrusted network.** Update affected applications
+explicitly; do not silently change their SMTP settings.
+
+Safety checks before any changes: live sidecar and auth service, exact
+custom port, non-public IPv4 listener, RFC1918-only trusted networks, strict
+original Postfix client/relay/recipient policies, root-owned pre-auth
+snapshot, activation-time SHA-256 fingerprints of `main.cf` and
+`master.cf`, and an exact current SHA-256 supplied by the Wizard after
+its read-only preflight. Conflicting changes, missing manifests, unknown
+relay rules and unsupported SELinux Enforcing state cause a **fail-closed**
+refusal. The operator must type **RESTORE TRUSTED SMTP** in the GUI.
+
+The root-side script uses an exclusive lock shared with the AUTH/TLS
+activation operation and makes a **new root-only recovery archive before
+modification** under `/var/lib/linuxmailrelay365-sidecar-auth-recovery`.
+The archive contains the original active AUTH config, its TLS key and
+**password hashes**. It must be retained securely, protected from backup
+exposure and retired under an approved retention policy. After a verified
+restore, the separate auth-only Dovecot service and its active files are
+removed; Postfix is reloaded in place, not restarted globally. Failure
+after reload attempts to restore the previous authenticated Postfix
+configuration and Dovecot service. If this verification fails, the archive
+remains available for **manual recovery** and the Wizard reports failure.
+
+**Compatibility limitation:** AUTH installations from development builds
+before the activation SHA-256 manifest was introduced cannot be restored
+automatically. First inspect and back them up manually; never fabricate
+or retroactively assign a fingerprint. The automated restore remains
+blocked on real SELinux Enforcing hosts until the complete
+queue/socket/file-context behavior has been integration-tested.
+
+No successful local restore test guarantees real Exchange Online delivery;
+verify token authorization, queue state and a final delivered test message
+after the maintenance change.
+
 ## Read-only audit of the installed custom SMTP port (development)
 
 The **Audit installed SMTP: AUTH/TLS, port, SELinux (read-only)** button in
