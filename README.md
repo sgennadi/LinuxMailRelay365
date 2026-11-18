@@ -2,6 +2,38 @@
 
 Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.12 — source and GitHub Actions builds; not a verified production release.**
 
+## New functionality in development branch (not Stable)
+
+See [final acceptance checklist](docs/FINAL_ACCEPTANCE.md) for the complete
+end-of-project test plan. These features are checked by GitHub Actions, **not
+yet verified on the user's real RHEL + SELinux Enforcing host or production
+Microsoft 365 tenant**. The application remains an unsigned Draft preview.
+
+- Custom private inbound SMTP TCP port (1024–65535; 2525 is only a default),
+  independent of outbound 587 (XOAUTH2) or outbound 25 (Direct Send/Connector).
+- Separate Postfix queue, Dovecot 2.3/2.4 private SMTP AUTH and mandatory
+  STARTTLS with 1–64 app-specific hashed accounts. Optional Add/Rotate/Revoke
+  account management now has Linux source + Windows Wizard UI, guarded by a
+  root-only hash source, SHA state check, explicit confirmation, backup and
+  local Dovecot restart. This account manager needs a full live integration
+  exercise before Stable.
+- Verified local SMTP certificate identity and opt-in isolated TLS certificate
+  rotation with a root-only recovery archive and local rollback. **Local
+  Linux trust is not a substitute for actual client trust validation.**
+- Read-only queue/deferred/oldest-age, disk and certificate-expiry health
+  diagnostics; optional 15-minute systemd timer writes to local journald only.
+  External alert delivery is not installed.
+- Root-only pre-reboot configuration snapshot and an explicit post-reboot
+  service/configuration comparison that refuses to pass without a changed
+  kernel boot ID. GitHub Actions stop/start tests are not a real OS reboot.
+- Read-only RHEL-family SELinux Enforcing acceptance report: TCP port type,
+  queue/auth socket and file/process labels. This **does NOT automatically
+  install SELinux policy or remove existing Enforcing safety blocks**.
+- Read-only Microsoft 365 Direct Send and inbound Connector readiness planning
+  for accepted domain, Exchange MX, declared connector identity and optional
+  outbound TCP25 TLS probe. **Both route deployments remain BLOCKED**, and
+  Direct Send is INTERNAL recipients only. Internet-wide SMTP remains BLOCKED.
+
 ## Development branch: cross-distro custom SMTP port and SELinux checks (not released)
 
 This branch adds a **read-only** Windows Wizard action in step 4:
@@ -383,12 +415,17 @@ Testing local TCP connectivity cannot verify remote client reachability.
 
 **Public internet SMTP is a selectable planning preference, disabled by
 default, saved per Linux server. Its activation is intentionally BLOCKED.**
-The current listener trusts network sources and has neither SMTP AUTH nor
-mandatory inbound TLS. Opening it to `0.0.0.0/0` would risk an open relay:
+The default listener trusts network sources and has neither SMTP AUTH nor
+mandatory inbound TLS. The optional private hardening step adds both but
+does **not** certify a safe public SMTP ingress. Opening the default
+listener to all source networks would risk an open relay:
 unsolicited spam, sender spoofing, stolen server capacity, IP/domain blacklists,
 mailbox reputation damage, leakage of mail content, and loss of mail service.
 A public plan can be inspected but cannot be installed or applied to firewall
 by the Wizard or the Linux firewall script.
+Public access remains intentionally blocked even when private SMTP AUTH and
+STARTTLS are active: real abuse detection, per-account enforcement, alerting
+and security review are separate requirements.
 
 For future public access the app must first provide and validate SMTP AUTH,
 mandatory TLS with a valid server certificate, anti-abuse rate limits,
@@ -532,7 +569,8 @@ dotnet publish ./src/LinuxMailRelay365/LinuxMailRelay365.csproj `
   -c Release -r win-x64 --self-contained true
 ```
 
-The app **can build without access to the private UniversalUpdater** module: public CI uses a small read-only GitHub Releases checker. If you restore the user's pinned `UniversalUpdater` module from `MODULES.lock`, the full shared release-verification code is compiled instead. The app uses `SSH.NET` v2026.0.0 via NuGet. No Windows binaries have been built or visually verified in this development environment.
+The app **can build without access to the private UniversalUpdater** module: public CI uses a small read-only GitHub Releases checker. If you restore the user's pinned `UniversalUpdater` module from `MODULES.lock`, the full shared release-verification code is compiled instead. The app uses `SSH.NET` v2026.0.0 via NuGet. GitHub Actions builds preview Windows x64/ARM64 executables; physical UI testing
+and code signing are still outstanding.
 
 ## Linux-only probe (zero changes)
 
@@ -569,7 +607,10 @@ The repository exists at [sgennadi/LinuxMailRelay365](https://github.com/sgennad
 - Hardware-backed OAuth signing and automatic Conditional Access enforcement are not implemented. Do not treat planned options as enabled.
 - Microsoft Entra tenant discovery uses `Az.Accounts` (installed for CurrentUser when absent) and `Get-AzTenant`. Azure APIs might not enumerate all external/guest tenants. User can enter the correct Tenant GUID manually. Discovery and actual Graph/Exchange provisioning are separate administrative sign-ins in this preview. Exchange tenant identity is independently checked using `Get-ConnectionInformation` before any changes.
 - The wizard uses PowerShell 7 for Microsoft 365 provisioning. The operator must consent with an authorized administrative account.
-- A certificate renewal feature exists in the Linux CLI (`--rotate-only` / `--activate-only`), but the complete managed GUI rotation workflow is not yet finished.
+- XOAUTH2 application signing certificate renewal exists in the Linux CLI
+  (--rotate-only/--activate-only); the Entra-verified, mailbox-scoped managed
+  GUI rotation workflow remains incomplete. Incoming SMTP TLS certificate
+  rotation is separately implemented for the private sidecar.
 - Password mode and MTA setup need a Windows/.NET build and server integration test before a stable release.
 
 ## Sources
