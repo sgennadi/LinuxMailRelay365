@@ -102,6 +102,7 @@ class FreshConnectorContracts(unittest.TestCase):
             "smtp_tls_security_level = secure", "smtp_tls_secure_cert_match = nexthop",
             "smtpd_client_restrictions = permit_mynetworks, reject",
             "smtpd_relay_restrictions = permit_mynetworks, reject",
+            "local_header_rewrite_clients = static:all",
             "eop-recipients.regexp", "smtp_tls_cert_file = $CERT",
             "selinux_enforcing_not_integration_verified"):
             self.assertIn(expected, source)
