@@ -21,6 +21,7 @@ jobs:
           python3 -m unittest discover -v -s tests
           python3 -m unittest discover -v -s tests -p test_signed_release_gate.py
           python3 linux/mta-coexistence-doctor.py --self-test
+          python3 linux/recovery-scope-audit.py --self-test
           python3 linux/generate-smtp-client-credential.py --self-test
           python3 linux/rhel-enforcing-live-smoke.py --self-test
   ubuntu-postfix-smoke:
@@ -147,6 +148,9 @@ jobs:
           bash linux/install-postfix-m365-xoauth2.sh --validate-network-only --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
           python3 -m unittest discover -v -s tests -p test_mta_coexistence_doctor.py
           python3 linux/mta-coexistence-doctor.py --self-test
+          python3 -m unittest discover -v -s tests -p test_recovery_scope_audit.py
+          python3 linux/recovery-scope-audit.py --self-test
+          python3 linux/recovery-scope-audit.py --smtp-port 46500 | grep -Fx 'CHANGES_APPLIED=no'
           python3 -m unittest discover -v -s tests -p test_platform_compat.py
 
   windows-build:
