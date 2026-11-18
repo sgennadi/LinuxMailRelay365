@@ -79,6 +79,26 @@ With explicit tenant administrator access on a TEST tenant, validate app-only OA
 
 Send from a real internal app to an approved internal mailbox, then, if the chosen transport supports it, an external test mailbox. Confirm queue disposition, Exchange acceptance and final receipt, including authorized sender identity. Collect no private keys, passwords, tokens or recipient mail contents. Do not claim delivery solely from localhost SMTP success.
 
+## 5a. Read-only Exchange Online accepted-domain / Connector evidence
+
+On the administrator's final test workstation with **PowerShell 7 and the
+ExchangeOnlineManagement module**, first open a delegated interactive Exchange
+Online session for the exact approved test tenant. The following PowerShell
+check works **inside that already authenticated session** (it will not
+connect, create or edit any Exchange object):
+
+    Connect-ExchangeOnline -Device
+    ./windows/Test-LinuxMailRelay365OutboundMode.ps1 -Mode DirectSend -AcceptedDomain example.org
+    ./windows/Test-LinuxMailRelay365OutboundMode.ps1 -Mode Connector -AcceptedDomain example.org -PublicIpv4 198.51.100.20
+
+Replace example domain and the documentation-only public IP with the real
+approved test values. The report never returns actual Connector names, tenant
+IDs, recipient addresses or secrets; it only reports accepted-domain and
+Connector **candidate** status. A Connector candidate is NOT proof of
+authorization or delivery. Check the actual Connector restrictions, certificate
+identity/IP, TLS policy, tenant context, scope and an approved end-to-end
+recipient delivery separately.
+
 ## 6. Windows release checks
 
 From the last successful CI download the x64 and ARM64 preview EXE artifacts. Check 100/200% DPI, RU/EN/HE and RTL, window resizing, long paths, SSH key/agent, password-SSH host key verification, current-server identity, host-scoped preferences, all wizard steps, failure warnings and backup/restore controls. Verify an uninstalled or unsupported option never silently modifies an existing mail server. Check updater against a verified signed publication, not just a self-contained CI build.
