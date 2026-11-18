@@ -63,8 +63,10 @@ settings are never modified by this route manager.**
 - To prevent accidental alteration of a pre-existing mail server, the
   current workflow requires **an already installed XOAUTH2 sidecar**; fresh
   Direct Send without XOAUTH2 provisioning is **not yet a standalone
-  installer mode**. Existing sidecar-queued messages may use the new
-  transport, so inspect and drain the isolated queue before switching.
+  installer mode**. The route manager refuses if the isolated sidecar queue
+  is nonempty. Drain/resolve pending messages and pause client submissions
+  before applying or restoring; concurrent new submissions still require
+  a planned maintenance window.
 - Real Ubuntu CI tests the Direct Send local SMTP MAIL/RCPT allowlist and
   checked Restore **without sending MAIL DATA**. This does not prove an
   accepted M365 Connector, a verified tenant domain, sender entitlement or
