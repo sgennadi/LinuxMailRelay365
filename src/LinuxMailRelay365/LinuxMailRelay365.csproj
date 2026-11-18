@@ -12,7 +12,7 @@
     <SelfContained>true</SelfContained>
     <PublishTrimmed>false</PublishTrimmed>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <Version>0.1.0-preview.13</Version>
+    <Version>0.1.0-preview.14</Version>
     <!-- Standalone builds work in a public repository. Reuse the user's private
          UniversalUpdater module when it has been restored locally. -->
     <UseSharedUpdater Condition="'$(UseSharedUpdater)' == '' and Exists('../../modules/UniversalUpdater/src/UniversalUpdater.Core/UniversalUpdater.Core.csproj')">true</UseSharedUpdater>
@@ -34,6 +34,7 @@
     <EmbeddedResource Include="../../linux/install-preserve-postfix-sidecar.sh" LogicalName="LinuxMailRelay365.linux.sidecar.sh" />
     <EmbeddedResource Include="../../linux/install-direct-send-sidecar.sh" LogicalName="LinuxMailRelay365.linux.direct-send-sidecar.sh" />
     <EmbeddedResource Include="../../linux/network-firewall.sh" LogicalName="LinuxMailRelay365.linux.network-firewall.sh" />
+    <EmbeddedResource Include="../../linux/manage-public-smtp.py" LogicalName="LinuxMailRelay365.linux.public-smtp-manager.py" />
     <EmbeddedResource Include="../../linux/audit-existing-smtp.py" LogicalName="LinuxMailRelay365.linux.existing-smtp-audit.py" />
     <EmbeddedResource Include="../../linux/platform-compat.py" LogicalName="LinuxMailRelay365.linux.platform-compat.py" />
     <EmbeddedResource Include="../../linux/rhel-selinux-doctor.py" LogicalName="LinuxMailRelay365.linux.rhel-selinux-doctor.py" />

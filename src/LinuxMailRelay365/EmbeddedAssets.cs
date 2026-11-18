@@ -24,6 +24,7 @@ internal static class EmbeddedAssets
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
     internal static string RhelSelinuxDoctor => Text("LinuxMailRelay365.linux.rhel-selinux-doctor.py");
     internal static string RhelSelinuxPortManager => Text("LinuxMailRelay365.linux.rhel-selinux-port-manager.py");
+    internal static string PublicSmtpManager => Text("LinuxMailRelay365.linux.public-smtp-manager.py");
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
     internal static string RelayHealth => Text("LinuxMailRelay365.linux.relay-health.py");
     internal static string HealthMonitorInstaller => Text("LinuxMailRelay365.linux.health-monitor-installer.sh");
@@ -138,6 +139,45 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/audit-smtp.py\" <<'LMR365_SMTP_AUDIT'\n" +
                Encode(ExistingSmtpAuditScript) + "\nLMR365_SMTP_AUDIT\n" +
                "python3 \"$work/audit-smtp.py\"\n";
+    }
+
+    internal static string BuildPublicSmtpBundle(int port, string listener, string dns,
+        string operation = "check", string? expectedSha = null, bool approved = false)
+    {
+        if (port is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(port));
+        if (operation is not ("check" or "apply" or "status" or "restore"))
+            throw new ArgumentException("Unsupported public SMTP operation.");
+        if (!Regex.IsMatch(listener, @"\A(?:[0-9]{1,3}\.){3}[0-9]{1,3}\z") ||
+            !Regex.IsMatch(dns,
+                @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z"))
+            throw new ArgumentException("Explicit private listener IPv4 and exact certificate DNS name required.");
+        if (operation is "apply" or "restore")
+        {
+            if (expectedSha is null || !Regex.IsMatch(expectedSha, @"\A[a-f0-9]{64}\z"))
+                throw new ArgumentException("Public SMTP requires reviewed configuration SHA-256.");
+            if (operation == "apply" && !approved)
+                throw new InvalidOperationException("Security acceptance and abuse-control testing required.");
+        }
+        else if (expectedSha is not null)
+            throw new ArgumentException("Unexpected public SMTP configuration SHA.");
+        string args = (operation switch
+        {
+            "apply" => "--apply", "status" => "--status", "restore" => "--restore", _ => "--check-only"
+        }) + " --smtp-port " + port + " --listen-ip " + listener + " --server-name " + dns;
+        if (operation is "apply" or "restore")
+        {
+            args += " --expect-main-sha256 " + expectedSha + " --confirm " +
+                (operation == "apply" ? "ENABLE_REVIEWED_PUBLIC_AUTH_SUBMISSION" : "RESTORE_PRIVATE_SMTP_ACCESS");
+            if (operation == "apply")
+                args += " --risk-attestation TESTED_BANS_AND_PUBLIC_EXPOSURE";
+        }
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-public-smtp.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/public.py\" <<'LMR365_PUBLIC_SMTP'\n" +
+               Encode(PublicSmtpManager) + "\nLMR365_PUBLIC_SMTP\n" +
+               "python3 \"$work/public.py\" " + args + "\n";
     }
 
     internal static string BuildNetworkFirewallBundle(string[] args)
