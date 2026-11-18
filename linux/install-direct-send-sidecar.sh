@@ -157,7 +157,7 @@ escaped=domain.replace('.','[.]')
 (root/'eop-fixed-sender.regexp').write_text(
     ':^{}$: OK\n'.format(re.escape(sender)),encoding='ascii')
 (root/'eop-sender-canonical.regexp').write_text(
-    '/^.+$/ {}\n'.format(sender),encoding='ascii')
+    '/^.+$/ {}\n'.format(sender.replace('$','$$')),encoding='ascii')
 (root/'eop-recipients.regexp').write_text(
     '/^[^@[:space:]]+@{}$/ OK\n'.format(escaped),encoding='ascii')
 PY
