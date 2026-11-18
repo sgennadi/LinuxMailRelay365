@@ -170,6 +170,36 @@ No successful local restore test guarantees real Exchange Online delivery;
 verify token authorization, queue state and a final delivered test message
 after the maintenance change.
 
+## Read-only SMTP AUTH recovery archive verification (development preview)
+
+The existing **Audit installed SMTP** and **Restore AUTH/STARTTLS** steps now
+automatically include a read-only recovery-archive report. No new popup or
+separate button is required. The Linux audit inspects
+`/var/lib/linuxmailrelay365-sidecar-auth-recovery`, never sends email,
+opens firewall ports, modifies backup files, or returns secrets to Windows.
+
+It reports only aggregate status codes, the number of inspected archives,
+and that **retention remains a manual administrator responsibility**.
+For each `recovery.XXXXXXXX` entry it verifies the archive and parent
+directories are root-owned and mode 0700, that required backups exist
+without symlinks or unsafe permissions, and that archived `main.cf`
+and `master.cf` match their activation-time SHA-256 manifests. TLS
+private-key contents and client password hashes are **never read or
+included in the report**.
+
+Possible statuses are `not_created`, `empty`, `verified_root_only`,
+`incomplete_or_tampered`, `unsafe_root_directory`, or a manual-review
+status for unexpected entries or excessive archive counts. A successful
+integrity report does **not** prove recoverability after a disk or OS
+failure, nor does it guarantee backups are encrypted off-host.
+There is **no automatic pruning**, because archived credentials and keys
+must follow the organization's explicitly approved retention policy.
+
+The Ubuntu integration smoke additionally checks controlled systemd
+cold-start of both isolated services on the actual selected TCP 2529,
+revalidates SMTP AUTH after STARTTLS and confirms the primary MTA remains
+unchanged. This is a service-stop/start simulation, **not a full VM reboot**.
+
 ## Read-only audit of the installed custom SMTP port (development)
 
 The **Audit installed SMTP: AUTH/TLS, port, SELinux (read-only)** button in
