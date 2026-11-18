@@ -49,6 +49,20 @@ On a test machine with a copy of the project branch, run the following commands 
     sudo python3 linux/manage-rhel-selinux-port.py --check-only --smtp-port 46500
     sudo python3 linux/installed-sidecar-audit.py --smtp-port 46500
     sudo python3 linux/recovery-scope-audit.py --smtp-port 46500
+
+The optional real SMTP client-authentication acceptance test must run at a
+trusted interactive terminal on an authorized TEST host (never in automation
+with a production password). After installing the dedicated Postfix/Dovecot
+AUTH/TLS service and the correct CA chain, run:
+
+    python3 linux/verify-sidecar-auth-client.py --smtp-port 46500 --server-name smtp.example.org --login smtp-app01 --ca-file /etc/ssl/certs/approved-ca.pem
+
+The program prompts for the app-specific password without echo, validates the
+TLS CA chain and exact DNS hostname **before requesting the password**, then
+performs only an AUTH login and QUIT. It sends no MAIL, RCPT or DATA, does not
+modify Linux configuration, and never claims tenant or recipient delivery.
+Run one successful and one intentionally wrong-password test using only
+approved disposable test credentials. It requires a real interactive tty.
     sudo python3 linux/relay-health.py --smtp-port 46500
     sudo python3 linux/audit-sidecar-auth-archives.py
 
