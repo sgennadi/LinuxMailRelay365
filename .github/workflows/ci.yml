@@ -45,6 +45,20 @@ jobs:
       - name: Install clean isolated Direct Send and verify SMTP RCPT restrictions
         run: bash tests/smoke_fresh_direct_send.sh
 
+  ubuntu-fresh-connector-smoke:
+    # Real Postfix with custom inbound port, no OAuth identity and no mail DATA.
+    # Tests private SMTP RCPT behavior; does not prove any Microsoft 365 tenant Connector.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install fresh isolated fixed-sender Connector and verify private relay
+        run: bash tests/smoke_fresh_connector.sh
+
   rhel-family-readonly-smoke:
     # Container-only validation. Not a full systemd/Postfix/SELinux integration test.
     runs-on: ubuntu-latest
