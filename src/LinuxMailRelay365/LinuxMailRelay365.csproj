@@ -42,6 +42,7 @@
     <EmbeddedResource Include="../../linux/rhel-enforcing-live-smoke.py" LogicalName="LinuxMailRelay365.linux.rhel-enforcing-live-smoke.py" />
     <EmbeddedResource Include="../../linux/manage-rhel-selinux-port.py" LogicalName="LinuxMailRelay365.linux.rhel-selinux-port-manager.py" />
     <EmbeddedResource Include="../../linux/manage-sidecar-smtp-accounts.py" LogicalName="LinuxMailRelay365.linux.smtp-account-manager.py" />
+    <EmbeddedResource Include="../../linux/generate-smtp-client-credential.py" LogicalName="LinuxMailRelay365.linux.smtp-credential-generator.py" />
     <EmbeddedResource Include="../../linux/relay-health.py" LogicalName="LinuxMailRelay365.linux.relay-health.py" />
     <EmbeddedResource Include="../../linux/manage-health-alerts.py" LogicalName="LinuxMailRelay365.linux.health-alerts.py" />
     <EmbeddedResource Include="../../linux/audit-m365-dns.py" LogicalName="LinuxMailRelay365.linux.m365-dns-audit.py" />

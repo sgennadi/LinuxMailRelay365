@@ -28,6 +28,7 @@ internal static class EmbeddedAssets
     internal static string RhelSelinuxPortManager => Text("LinuxMailRelay365.linux.rhel-selinux-port-manager.py");
     internal static string PublicSmtpManager => Text("LinuxMailRelay365.linux.public-smtp-manager.py");
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
+    internal static string SmtpCredentialGenerator => Text("LinuxMailRelay365.linux.smtp-credential-generator.py");
     internal static string RelayHealth => Text("LinuxMailRelay365.linux.relay-health.py");
     internal static string HealthAlerts => Text("LinuxMailRelay365.linux.health-alerts.py");
     internal static string M365DnsAudit => Text("LinuxMailRelay365.linux.m365-dns-audit.py");
@@ -600,6 +601,19 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/health.py\" <<'LMR365_HEALTH'\n" +
                Encode(RelayHealth) + "\nLMR365_HEALTH\n" +
                "python3 \"$work/health.py\" --smtp-port " + selectedPort + "\n";
+    }
+
+    internal static string BuildSmtpCredentialGeneratorBundle(string username, bool generate)
+    {
+        if (!Regex.IsMatch(username, @"\A[A-Za-z0-9][A-Za-z0-9._@-]{2,63}\z"))
+            throw new ArgumentException("SMTP account name must have 3-64 safe ASCII characters.");
+        var option = generate ? "--generate --confirm GENERATE_ONE_TIME_SMTP_PASSWORD" : "--check-only";
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-smtp-secret.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/generate.py\" <<'LMR365_SMTP_SECRET'\n" +
+               Encode(SmtpCredentialGenerator) + "\nLMR365_SMTP_SECRET\n" +
+               "python3 \"$work/generate.py\" " + option + " --username " + username + "\n";
     }
 
     internal static string BuildSmtpAccountManagerBundle(
