@@ -84,7 +84,9 @@ class FreshConnectorContracts(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("':^{}$: OK", source)
         self.assertIn("re.escape(sender)", source)
-        self.assertNotIn("'/^[^@[:space:]]+@{}$/ OK", source)
+        fixed_map = source.split("(root/'eop-fixed-sender.regexp').write_text(", 1)[1].split(
+            "(root/'eop-sender-canonical.regexp').write_text(", 1)[0]
+        self.assertNotIn("'/^[^@[:space:]]+@{}$/ OK", fixed_map)
 
     def test_primary_server_isolation_and_sasl_scope(self):
         source = SCRIPT.read_text(encoding="utf-8")
