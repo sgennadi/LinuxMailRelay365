@@ -108,6 +108,13 @@ Postfix queue, TLS material and Dovecot SASL socket is implemented. Do not
 disable SELinux as a workaround. Platform discovery and custom-port SELinux
 inspection do run read-only on RHEL/Oracle/Rocky/AlmaLinux. Full RHEL/Oracle
 Postfix+Dovecot+SELinux Enforcing activation is **not yet integration-tested**.
+The installer and restore utility also block RHEL-family hosts reporting
+**SELinux Permissive** or **unknown SELinux mode**: permissive mode is
+not proof that file/queue/socket policy will work after enforcement
+is enabled. Where `getenforce` is unavailable, the kernel's
+`/sys/fs/selinux/enforce` status is checked and unverified RHEL
+states are not treated as disabled. This protection does not change
+the SELinux enforcement mode or relabel anything.
 Dovecot 2.4 configuration is currently blocked, pending its dedicated
 configuration and live tests. The only real running service test for this
 upgrade so far is an isolated Ubuntu GitHub Actions VM: TLS handshake,
@@ -155,8 +162,9 @@ remains available for **manual recovery** and the Wizard reports failure.
 before the activation SHA-256 manifest was introduced cannot be restored
 automatically. First inspect and back them up manually; never fabricate
 or retroactively assign a fingerprint. The automated restore remains
-blocked on real SELinux Enforcing hosts until the complete
-queue/socket/file-context behavior has been integration-tested.
+blocked for RHEL-family SELinux Enforcing, Permissive or unknown states
+until the complete queue/socket/file-context behavior has been
+integration-tested. No tool silently disables or relabels SELinux.
 
 No successful local restore test guarantees real Exchange Online delivery;
 verify token authorization, queue state and a final delivered test message
