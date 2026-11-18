@@ -68,6 +68,16 @@ test "$(sudo postconf -c "$CONF" -h default_transport)" = \
   'smtp:[example-org.mail.protection.outlook.com]:25'
 test "$(sudo postconf -c "$CONF" -h smtp_tls_security_level)" = secure
 test "$(sudo postconf -c "$CONF" -h smtp_tls_secure_cert_match)" = nexthop
+# Exercise Postfix's POSIX regexp parser rather than only a Python approximation.
+sender_map="regexp:$CONF/eop-fixed-sender.regexp"
+test "$(sudo postmap -q alerts@example.org "$sender_map")" = OK
+for forbidden in different@example.org 'alerts+ci@example.org'     alerts@example.org.attacker.invalid; do
+  answer="$(sudo postmap -q "$forbidden" "$sender_map" || true)"
+  test -z "$answer" || {
+    echo 'SECURITY ERROR: unexpected fixed sender map match' >&2; exit 1;
+  }
+done
+echo 'FRESH_FIXED_SENDER_POSTMAP_EXACT_MATCH=PASS'
 test "$(sudo postconf -c "$CONF" -h smtpd_relay_restrictions)" = \
   'permit_mynetworks, reject'
 sudo test ! -e /etc/linuxmailrelay365/sidecar-identity/app.json
@@ -96,6 +106,16 @@ for attempt in range(20):
             if code<500:
                 code,_=smtp.rcpt('valid@example.org')
             assert code>=500, 'Spoof sender accepted '+str(code)
+            smtp.rset()
+            code,_=smtp.mail('different@example.org')
+            if code<500:
+                code,_=smtp.rcpt('valid@example.org')
+            assert code>=500, 'Same-domain non-approved MAIL FROM accepted '+str(code)
+            smtp.rset()
+            code,_=smtp.mail('alerts+tag@example.org')
+            if code<500:
+                code,_=smtp.rcpt('valid@example.org')
+            assert code>=500, 'Plus-address variation of approved sender accepted '+str(code)
         break
     except (OSError,smtplib.SMTPException,AssertionError) as err:
         last=str(err)[:120]
