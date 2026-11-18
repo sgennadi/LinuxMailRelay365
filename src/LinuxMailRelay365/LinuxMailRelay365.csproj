@@ -36,6 +36,7 @@
     <EmbeddedResource Include="../../linux/audit-existing-smtp.py" LogicalName="LinuxMailRelay365.linux.existing-smtp-audit.py" />
     <EmbeddedResource Include="../../linux/platform-compat.py" LogicalName="LinuxMailRelay365.linux.platform-compat.py" />
     <EmbeddedResource Include="../../linux/enable-sidecar-auth-tls.sh" LogicalName="LinuxMailRelay365.linux.auth-tls-installer.sh" />
+    <EmbeddedResource Include="../../linux/installed-sidecar-audit.py" LogicalName="LinuxMailRelay365.linux.installed-sidecar-audit.py" />
     <EmbeddedResource Include="../../windows/Test-LinuxMailRelay365Security.ps1" LogicalName="LinuxMailRelay365.windows.cloud-security-probe.ps1" />
     <EmbeddedResource Include="../../windows/Initialize-LinuxMailRelay365.ps1" LogicalName="LinuxMailRelay365.windows.provision.ps1" />
     <EmbeddedResource Include="../../windows/Discover-LinuxMailRelay365Tenants.ps1" LogicalName="LinuxMailRelay365.windows.tenant-discovery.ps1" />
