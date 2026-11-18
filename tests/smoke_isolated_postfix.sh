@@ -229,6 +229,38 @@ sudo python3 "$IDENTITY_SCRIPT" --smtp-port "$PORT" \
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
 echo 'SMTP_TLS_CERT_ROTATION_REAL_SMOKE=PASS'
 
+echo '=== Verify approved SMTP client credentials over trusted TLS; no mail DATA ==='
+python3 - "$PORT" "$FIXTURE/next-cert.pem" <<'PY'
+import importlib.util,sys
+spec=importlib.util.spec_from_file_location(
+    "lmr365_ci_auth_verify","linux/verify-sidecar-auth-client.py")
+mod=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+port=int(sys.argv[1]); ca=sys.argv[2]
+hostname="lmr365-ci.example.test"
+result=mod.verify(port, hostname,"lmr365-ci",ca,
+                  password_provider=lambda _: "ci-fixture-password")
+assert result in ("TLSv1.2","TLSv1.3"), "Unexpected TLS version"
+try:
+    mod.verify(port,hostname,"lmr365-ci",ca,
+               password_provider=lambda _: "wrong-ci-test-password")
+except mod.Refused:
+    pass
+else:
+    raise AssertionError("Wrong SMTP AUTH password accepted")
+called=[]
+try:
+    mod.verify(port,"wrong-host.example.test","lmr365-ci",ca,
+               password_provider=lambda _: called.append("called") or
+               "ci-fixture-password")
+except mod.Refused:
+    pass
+else:
+    raise AssertionError("Certificate identity mismatch accepted")
+assert not called, "Password was requested before trusted TLS identity"
+print("SMTP_AUTH_CLIENT_REAL_TLS_LOGIN=PASS")
+print("SMTP_MAIL_FROM_RCPT_DATA_SENT=no")
+PY
 echo '=== Exercise SMTP AUTH after STARTTLS, without MAIL FROM/RCPT/DATA ==='
 python3 - "$PORT" <<'PY'
 import smtplib, ssl, sys
