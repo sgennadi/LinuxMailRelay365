@@ -28,6 +28,10 @@ internal sealed class MainForm : Form
     private readonly TextBox testRecipient = Field("");
     private readonly CheckBox allowExisting = new() { AutoSize = true };
     private readonly ComboBox backupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
+    private readonly ComboBox sidecarBackupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
+    private string? reviewedSidecarRestoreSha;
+    private string? reviewedSidecarRestoreId;
+    private string? reviewedSidecarRestoreIdentity;
     private MailRoutingInventory? inspectedMail;
     private string? inspectedServerIdentity;
     private ExistingSmtpAudit? existingSmtpAudit;
@@ -861,6 +865,37 @@ internal sealed class MainForm : Form
                 }
                 AddAction(page, T("Восстановить выбранную конфигурацию...", "Restore selected configuration...", "שחזור תצורה קודמת"),
                     RestoreBackupAsync, false, "back", "restore");
+                if (advancedSmtpTools.Checked && preserveExistingMail.Checked)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "Отдельный SMTP Relay: резервирование только его конфигурации (не основного Postfix/Exim/Sendmail). Очереди и внешние сертификаты в архив НЕ входят. Restore только при остановленных службах Relay и пустой очереди.",
+                        "Isolated SMTP Relay: CONFIG-only backup (not primary Postfix/Exim/Sendmail). Queue, external certificates and tenant settings are NOT included. Restore requires all isolated services stopped and queue empty.",
+                        "גיבוי תצורת ממסר SMTP מבודד בלבד; ללא תור דואר או מפתחות חיצוניים.")));
+                    AddAction(page, T("Создать резервную копию отдельного Relay",
+                                      "Back up isolated Relay configuration",
+                                      "גיבוי תצורת ממסר מבודד"),
+                        BackupSidecarConfigAsync, false, "shield", "sidecar-config-backup");
+                    AddAction(page, T("Показать архивы отдельного Relay",
+                                      "List isolated Relay backups",
+                                      "רשימת גיבויי ממסר"),
+                        ListSidecarConfigBackupsAsync, false, "refresh", "sidecar-config-list");
+                    if (sidecarBackupSelector.Items.Count > 0)
+                    {
+                        AddLine(page, UiTheme.Text(T(
+                            "Архив отдельного Relay (не основной MTA)",
+                            "Isolated Relay backup (not primary MTA)",
+                            "גיבוי ממסר מבודד")));
+                        AddLine(page, sidecarBackupSelector);
+                    }
+                    AddAction(page, T("Проверить восстановление отдельного Relay",
+                                      "Preview isolated Relay offline restore",
+                                      "בדיקת שחזור ממסר מבודד"),
+                        PreviewSidecarConfigRestoreAsync, false, "check", "sidecar-config-restore-preview");
+                    AddAction(page, T("Восстановить конфигурацию отдельного Relay...",
+                                      "Restore isolated Relay config (offline)...",
+                                      "שחזור תצורת ממסר מבודד"),
+                        RestoreSidecarConfigAsync, false, "shield", "sidecar-config-restore");
+                }
                 AddLine(page, UiTheme.Text(T(
                     "Postfix будет принимать локальную почту и отправлять её через XOAUTH2. Не используйте этот профиль без проверки, если сервер уже принимает почту извне.",
                     "Postfix will use a local-only listener and XOAUTH2 transport. Review existing inbound-mail setups before applying.",
@@ -2577,6 +2612,102 @@ internal sealed class MainForm : Form
         dialog.CancelButton = cancel;
         dialog.Controls.Add(body);
         return dialog.ShowDialog(this) == DialogResult.OK;
+    }
+
+    private async Task BackupSidecarConfigAsync()
+    {
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildSidecarConfigRecoveryBundle("--backup"),
+            TimeSpan.FromMinutes(5));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("SIDECAR_BACKUP_STATUS=verified_config_only_no_queue",
+                StringComparison.Ordinal))
+            throw new InvalidDataException("Independent Relay backup was not verified.");
+        reviewedSidecarRestoreSha = null;
+        reviewedSidecarRestoreId = null;
+        WriteLine(result.StdOut);
+        WriteLine("Archive remains root-only on the Linux host. It contains local secrets; NEVER attach it to reports.");
+    }
+
+    private async Task ListSidecarConfigBackupsAsync()
+    {
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildSidecarConfigRecoveryBundle("--list"),
+            TimeSpan.FromMinutes(5));
+        result.EnsureSuccess();
+        sidecarBackupSelector.Items.Clear();
+        foreach (string line in result.StdOut.Split('\n'))
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(line.Trim(),
+                @"\ASIDECAR_BACKUP_ID=([0-9]{8}T[0-9]{6}Z-[a-f0-9]{12})\z");
+            if (match.Success)
+                sidecarBackupSelector.Items.Add(match.Groups[1].Value);
+        }
+        sidecarBackupSelector.SelectedIndex = -1;
+        reviewedSidecarRestoreSha = null;
+        reviewedSidecarRestoreId = null;
+        WriteLine("Verified independent Relay configuration archives: " +
+                  sidecarBackupSelector.Items.Count + ". Queue and external dependencies are excluded.");
+    }
+
+    private async Task PreviewSidecarConfigRestoreAsync()
+    {
+        if (sidecarBackupSelector.SelectedItem is not string backupId)
+            throw new InvalidOperationException("List and select a verified isolated Relay backup first.");
+        var endpoint = Endpoint();
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildSidecarConfigRecoveryBundle("--preview-restore", backupId),
+            TimeSpan.FromMinutes(5));
+        result.EnsureSuccess();
+        var sha = System.Text.RegularExpressions.Regex.Match(result.StdOut,
+            @"(?m)^SIDECAR_CURRENT_SHA256=([a-f0-9]{64})\r?$");
+        if (!sha.Success ||
+            !result.StdOut.Contains("SIDECAR_RESTORE_PREVIEW=", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("CHANGES_APPLIED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Isolated Restore Preview did not provide a verified current SHA-256.");
+        reviewedSidecarRestoreSha = sha.Groups[1].Value;
+        reviewedSidecarRestoreId = backupId;
+        reviewedSidecarRestoreIdentity = SecurityOptionsStore.Identity(endpoint);
+        WriteLine(result.StdOut);
+        WriteLine("The preview DOES NOT stop the Relay or prove an empty queue. Before restoring, stop ONLY " +
+            "linuxmailrelay365-sidecar.service, linuxmailrelay365-smtp-auth.service, " +
+            "linuxmailrelay365-health.service and linuxmailrelay365-health.timer, " +
+            "then ensure the independent queue is EMPTY. The restore tool never changes primary MTA services.");
+    }
+
+    private async Task RestoreSidecarConfigAsync()
+    {
+        if (sidecarBackupSelector.SelectedItem is not string backupId ||
+            reviewedSidecarRestoreId != backupId ||
+            reviewedSidecarRestoreSha is null ||
+            reviewedSidecarRestoreIdentity != SecurityOptionsStore.Identity(Endpoint()))
+            throw new InvalidOperationException("Run an isolated Relay Restore Preview for this exact server and backup first.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | OFFLINE isolated SMTP Relay restore",
+            T("Опасное действие: восстановить отдельную конфигурацию Relay из архива " + backupId +
+              ". Все службы Relay и мониторинга должны быть ОСТАНОВЛЕНЫ, очередь должна быть ПУСТОЙ. " +
+              "Письма из очереди, внешние сертификаты, пакеты и Microsoft 365 НЕ восстанавливаются. " +
+              "Создаётся аварийная копия. Службы после Restore НЕ запускаются автоматически. Основной MTA не изменяется.",
+              "Restore ONLY the independent SMTP Relay configuration from " + backupId +
+              ". Isolated SMTP/Auth/monitoring units MUST be stopped, queue EMPTY. " +
+              "External TLS keys, queued mail, packages and Microsoft 365 are NOT restored. " +
+              "An emergency snapshot is created. No services restart automatically. The primary MTA is untouched.",
+              "שחזור תצורת הממסר המבודד בלבד כשהשירותים עצורים והתור ריק."),
+            "RESTORE ISOLATED RELAY")) return;
+        string expected = reviewedSidecarRestoreSha;
+        reviewedSidecarRestoreSha = null;
+        reviewedSidecarRestoreId = null;
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildSidecarConfigRecoveryBundle("--restore", backupId, expected),
+            TimeSpan.FromMinutes(8));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("SIDECAR_RESTORED_BACKUP_ID=" + backupId, StringComparison.Ordinal) ||
+            !result.StdOut.Contains("SIDECAR_SERVICES_STARTED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Independent Relay configuration restoration was not confirmed.");
+        WriteLine(result.StdOut);
+        inspectedMail = null;
+        inspectedServerIdentity = null;
+        sidecarBackupSelector.Items.Clear();
+        WriteLine("Restored files ONLY. Recheck certificates, DNS, M365 delivery and Relay configuration BEFORE manually starting isolated services.");
     }
 
     private async Task BackupNowAsync()
