@@ -64,8 +64,11 @@ class PublicSmtpContracts(unittest.TestCase):
         self.assertIn("public_postfix_config_modified", source)
         self.assertIn("primary_postfix_changed_manual_review_required", source)
         self.assertIn("firewall_remove(", source)
+        self.assertIn("public_firewall_rule_already_exists", source)
+        self.assertIn("firewall_rule_query_unreliable", source)
         self.assertIn("reload_postfix(original)", source)
-        self.assertIn("atomic(BACKUP, before, 0o600)", source)
+        self.assertIn("atomic(STATE / archive, before, 0o600)", source)
+        self.assertIn("invalid_recovery_archive_name", source)
 
     def test_config_patch_is_deduplicated_and_scoped(self):
         old = b"smtpd_client_restrictions = permit_mynetworks, reject\nmyhostname = example.org\n"

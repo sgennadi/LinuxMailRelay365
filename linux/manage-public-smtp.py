@@ -15,6 +15,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import shutil
 import smtplib
 import ssl
@@ -28,7 +29,6 @@ CONF = Path("/etc/linuxmailrelay365/sidecar-postfix")
 PRIMARY = Path("/etc/postfix")
 STATE = Path("/var/lib/linuxmailrelay365-public-smtp")
 MANIFEST = STATE / "active.json"
-BACKUP = STATE / "main.before"
 LOCK = Path("/run/linuxmailrelay365-sidecar-auth.lock")
 EOP_ACTIVE = Path("/var/lib/linuxmailrelay365-eop-route-recovery/active.json")
 HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -210,7 +210,10 @@ def basic_host(port, ip, hostname):
 def verify_starttls(port, hostname):
     try:
         context = ssl.create_default_context()
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        if hasattr(ssl, "TLSVersion"):
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+        else:
+            context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
         with smtplib.SMTP("127.0.0.1", port, timeout=9) as smtp:
             smtp.ehlo("lmr365-public-preflight.invalid")
             if not smtp.has_extn("starttls") or smtp.has_extn("auth"):
@@ -219,6 +222,8 @@ def verify_starttls(port, hostname):
             # This is a localhost connection, so set the *verified* peer name.
             smtp._host = hostname
             smtp.starttls(context=context)
+            if smtp.sock.version() not in ("TLSv1.2", "TLSv1.3"):
+                raise Refused("tls_version_below_1_2")
             smtp.ehlo("lmr365-public-preflight.invalid")
             if not smtp.has_extn("auth"):
                 raise Refused("smtp_auth_missing_after_tls")
@@ -259,8 +264,20 @@ def firewall(ip, port):
             raise Refused("unverifiable_firewall_zone")
         rule = ('rule family="ipv4" destination address="{}" port port="{}" '
                 'protocol="tcp" accept').format(ip, port)
-        if not cmd(["firewall-cmd", "--zone=" + zone, "--query-rich-rule=" + rule]):
-            pass
+        # firewalld reports exit 0 if present, 1 if absent. Any other
+        # result is a probe failure: never claim the requested rule is new.
+        for permanent in (False, True):
+            query = ["firewall-cmd"] + (["--permanent"] if permanent else []) + [
+                "--zone=" + zone, "--query-rich-rule=" + rule]
+            try:
+                check = subprocess.run(query, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, timeout=12)
+            except (OSError, subprocess.TimeoutExpired):
+                raise Refused("firewall_rule_query_failed")
+            if check.returncode == 0:
+                raise Refused("public_firewall_rule_already_exists")
+            if check.returncode != 1:
+                raise Refused("firewall_rule_query_unreliable")
         return {"backend": "firewalld", "zone": zone, "rule": rule}
     # For UFW check any existing unrestricted port exposure; refuse changing
     # or taking ownership of an existing rule (the user must review it).
@@ -283,8 +300,20 @@ def firewall_apply(net, ip, port):
 def firewall_remove(net, ip, port):
     if net["backend"] == "firewalld":
         zone, rule = net["zone"], net["rule"]
-        cmd(["firewall-cmd", "--zone=" + zone, "--remove-rich-rule=" + rule])
-        cmd(["firewall-cmd", "--permanent", "--zone=" + zone, "--remove-rich-rule=" + rule])
+        # Removing only the exact rule recorded in our manifest also permits
+        # recovery from an interrupted runtime/permanent rule creation.
+        for permanent in (False, True):
+            prefix = ["firewall-cmd"] + (["--permanent"] if permanent else [])
+            query = prefix + ["--zone=" + zone, "--query-rich-rule=" + rule]
+            try:
+                result = subprocess.run(query, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, timeout=12)
+            except (OSError, subprocess.TimeoutExpired):
+                raise Refused("firewall_restore_query_failed")
+            if result.returncode == 0:
+                cmd(prefix + ["--zone=" + zone, "--remove-rich-rule=" + rule])
+            elif result.returncode != 1:
+                raise Refused("firewall_restore_query_unreliable")
     elif net["backend"] == "ufw":
         cmd(["ufw", "--force", "delete", "allow", "in", "proto", "tcp",
              "from", "any", "to", ip, "port", str(port)])
@@ -320,7 +349,6 @@ def reload_postfix(main):
 
 def read_manifest(port, ip, hostname):
     must_regular(MANIFEST, private=True)
-    must_regular(BACKUP, private=True)
     if STATE.is_symlink():
         raise Refused("unsafe_recovery_directory")
     data = json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -328,7 +356,11 @@ def read_manifest(port, ip, hostname):
             data.get("ip") != ip or data.get("hostname") != hostname or \
             data.get("firewall", {}).get("backend") not in ("ufw", "firewalld"):
         raise Refused("invalid_public_exposure_manifest")
-    if digest(BACKUP.read_bytes()) != data.get("before"):
+    archive = data.get("backup", "")
+    if not isinstance(archive, str) or not re.fullmatch(r"main-[a-f0-9]{24}[.]before", archive):
+        raise Refused("invalid_recovery_archive_name")
+    must_regular(STATE / archive, private=True)
+    if digest((STATE / archive).read_bytes()) != data.get("before"):
         raise Refused("recovery_baseline_hash_mismatch")
     return data
 
@@ -361,12 +393,13 @@ def deploy(args):
         raise Refused("nonprivate_baseline_refused")
     verify_starttls(args.smtp_port, args.server_name)
     net = firewall(args.listen_ip, args.smtp_port)
-    if MANIFEST.exists() or MANIFEST.is_symlink() or BACKUP.exists() or BACKUP.is_symlink():
+    if MANIFEST.exists() or MANIFEST.is_symlink():
         raise Refused("public_exposure_recovery_already_exists")
     main = mutate_main(before, CHANGES)
     original_primary = primary_sha()
     state_dir()
-    atomic(BACKUP, before, 0o600)
+    archive = "main-" + secrets.token_hex(12) + ".before"
+    atomic(STATE / archive, before, 0o600)
     edited, firewall_started = False, False
     try:
         edited = True
@@ -382,7 +415,7 @@ def deploy(args):
         data = {
             "version": 1, "port": args.smtp_port, "ip": args.listen_ip,
             "hostname": args.server_name, "before": digest(before),
-            "active": digest(main), "primary": original_primary, "firewall": net
+            "backup": archive, "active": digest(main), "primary": original_primary, "firewall": net
         }
         atomic(MANIFEST, (json.dumps(data, sort_keys=True) + "\n").encode("ascii"), 0o600)
     except (Refused, OSError, ValueError):
@@ -428,7 +461,7 @@ def restore(args):
         raise Refused("public_postfix_config_modified")
     if primary_sha() != data["primary"]:
         raise Refused("primary_postfix_changed_manual_review_required")
-    original = BACKUP.read_bytes()
+    original = (STATE / data["backup"]).read_bytes()
     # Firewall is closed before Postfix's client restrictions are restored.
     # Never re-open a public firewall rule to recover a failed restoration.
     firewall_remove(data["firewall"], args.listen_ip, args.smtp_port)
@@ -464,7 +497,8 @@ def main():
         parser.error("Custom SMTP port must be 1024-65535")
     try:
         ip = ipaddress.IPv4Address(args.listen_ip)
-        if not any(ip in p for p in PRIVATE) or str(ip) != args.listen_ip:
+        if not any(ip in p for p in PRIVATE) or str(ip) != args.listen_ip or \
+                ip.packed[-1] in (0, 255):
             raise ValueError("private_explicit_listener_required")
         if not FQDN.fullmatch(args.server_name):
             raise ValueError("server_dns_name_required")
