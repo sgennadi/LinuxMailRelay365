@@ -47,11 +47,16 @@ def safe_dir(path, uid, root_only):
     return True
 
 
-def safe_file(path, uid, max_bytes):
+def safe_file(path, uid, max_bytes, secret=False):
     item = file_stat(path)
     if item is None or not stat.S_ISREG(item.st_mode) or item.st_uid != uid:
         return False
-    if item.st_mode & 0o022 or item.st_mode & 0o007:
+    # Inside the root-only archive, nonsecret configs and public certs may
+    # retain 0644. Only TLS private key and password hashes need no 'other'
+    # permissions, while every file forbids non-root write access.
+    if item.st_mode & 0o022:
+        return False
+    if secret and item.st_mode & 0o007:
         return False
     return 0 < item.st_size <= max_bytes
 
@@ -71,7 +76,8 @@ def archive_integrity(path, uid):
         return "insecure_auth_dir"
     for name in REQUIRED:
         full = path / name
-        if not safe_file(full, uid, 5 * 1024 * 1024):
+        secret = name in ("smtp-auth/passwd", "smtp-auth/privkey.pem")
+        if not safe_file(full, uid, 5 * 1024 * 1024, secret=secret):
             return "missing_or_unsafe_file"
     for src, fingerprint in (
         ("main.cf.auth", "smtp-auth/main.cf.auth.sha256"),
