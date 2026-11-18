@@ -12,7 +12,7 @@ MODE=check
 PORT='' NAME='' CERT='' KEY='' HASHFILE='' CONFIRM=''
 usage() {
   echo 'Usage: enable-sidecar-auth-tls.sh --check-only|--apply --smtp-port N --server-name smtp.example.org --tls-cert /path/fullchain.pem --tls-key /path/key.pem --password-file /path/hashed-user'
-  echo 'Apply requires --confirm ENABLE_PRIVATE_AUTH_TLS. Source hash must be created with interactive doveadm pw -s SHA512-CRYPT.'
+  echo 'Apply requires --confirm ENABLE_PRIVATE_AUTH_TLS. Source hash must be created with interactive doveadm pw -s SHA512-CRYPT (1..64 distinct accounts).'
   echo 'NOT for public Internet. SELinux Enforcing requires separately validated socket labeling.'
 }
 while [ "$#" -gt 0 ]; do
@@ -111,14 +111,24 @@ for filename in (key, hashes):
     if os.stat(filename).st_mode & 0o077:
         raise SystemExit('AUTH_TLS_ERROR=key_and_hash_source_require_root_only_permissions')
 with open(hashes, 'r', encoding='ascii') as f:
-    data = f.read(512)
-if data.count('\n') > 1 or '\r' in data or ':' not in data:
-    raise SystemExit('AUTH_TLS_ERROR=only_one_hashed_account_is_supported')
-username, hashed = data.strip('\n').split(':', 1)
-if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._@-]{2,63}', username):
-    raise SystemExit('AUTH_TLS_ERROR=invalid_auth_username')
-if not re.fullmatch(r'\{SHA512-CRYPT\}\$6\$(?:rounds=[0-9]{3,9}\$)?[A-Za-z0-9./]{8,32}\$[A-Za-z0-9./]{30,128}', hashed):
-    raise SystemExit('AUTH_TLS_ERROR=only_doveadm_SHA512_CRYPT_hash_accepted')
+    data = f.read(32769)
+if not data or len(data) > 32768 or '\r' in data or '\x00' in data:
+    raise SystemExit('AUTH_TLS_ERROR=invalid_hash_file_size_or_newlines')
+lines = data.splitlines()
+if not 1 <= len(lines) <= 64:
+    raise SystemExit('AUTH_TLS_ERROR=one_to_64_hashed_accounts_required')
+seen = set()
+for line in lines:
+    if line.count(':') != 1:
+        raise SystemExit('AUTH_TLS_ERROR=invalid_auth_account_record')
+    username, hashed = line.split(':', 1)
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._@-]{2,63}', username):
+        raise SystemExit('AUTH_TLS_ERROR=invalid_auth_username')
+    if username.casefold() in seen:
+        raise SystemExit('AUTH_TLS_ERROR=duplicate_auth_username')
+    seen.add(username.casefold())
+    if not re.fullmatch(r'\{SHA512-CRYPT\}\$6\$(?:rounds=[0-9]{3,9}\$)?[A-Za-z0-9./]{8,32}\$[A-Za-z0-9./]{30,128}', hashed):
+        raise SystemExit('AUTH_TLS_ERROR=only_doveadm_SHA512_CRYPT_hash_accepted')
 check = subprocess.run(['openssl','x509','-in',cert,'-noout','-ext','subjectAltName'],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        universal_newlines=True, timeout=10)
