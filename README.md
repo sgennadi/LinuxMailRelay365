@@ -499,6 +499,25 @@ archive for each activation. AUTH/TLS downgrade, certificate rotation and
 EOP re-routing refuse to operate while public submission remains active.
 **No Stable release is implied.**
 
+## Signed Stable release gate (Preview 15, manual acceptance required)
+
+The repository includes a guarded PowerShell 7 release check:
+scripts/Test-LinuxMailRelay365SignedRelease.ps1. Before anyone can
+claim a Stable artifact, it must inspect BOTH x64 and ARM64 EXEs, verify
+their actual PE architecture headers, require the SAME numeric stable
+ProductVersion, check valid trusted Authenticode signatures and compare
+the signer certificate to an explicit pinned publisher thumbprint.
+Only then can it create a new (never-overwritten) SHA256 JSON manifest.
+It does not itself sign, publish or install anything and cannot replace
+real Microsoft 365/RHEL test acceptance.
+
+The Windows CI pipeline generates a separate SHA256 file for its
+UNSIGNED PREVIEW executables. A preview digest is not a publisher
+signature and does not make it a Stable release. Production signing
+requires the organization's actual trusted code-signing certificate and
+independent verification of its thumbprint. Never turn off certificate
+validation to force a Stable release.
+
 ## Existing Sendmail / Exim / Postfix coexistence (Preview 15)
 
 The Advanced SMTP Wizard now includes an entirely read-only MTA coexistence
