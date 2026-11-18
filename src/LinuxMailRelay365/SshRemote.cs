@@ -234,7 +234,7 @@ internal static class SshRemote
             "else printf 'unknown\\n'; fi",
             null, TimeSpan.FromSeconds(30), token);
         if (result.ExitCode != 0) return null;
-        var fields = result.StdOut.Trim().Split('\\n', StringSplitOptions.TrimEntries);
+        var fields = result.StdOut.Trim().Split('\n', StringSplitOptions.TrimEntries);
         if (fields.Length != 2) return null;
         if (fields[0] == "yes" && fields[1] == "encrypt") return true;
         if (fields[0] == "no" && fields[1] != "encrypt") return false;
