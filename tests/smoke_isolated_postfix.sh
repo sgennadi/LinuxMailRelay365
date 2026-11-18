@@ -81,6 +81,15 @@ sudo systemctl is-active --quiet linuxmailrelay365-health.timer
 sudo systemctl start linuxmailrelay365-health.service
 sudo systemctl is-active --quiet "$UNIT"
 echo 'HEALTH_TIMER_REAL_SYSTEMD_SMOKE=PASS'
+echo '=== Record reboot acceptance baseline without triggering an OS reboot ==='
+sudo python3 linux/verify-reboot-continuity.py --record-baseline --smtp-port "$PORT" |
+  tee /tmp/lmr365-reboot-baseline.txt
+grep -Fx 'REBOOT_CONTINUITY_RESULT=baseline_recorded_requires_real_reboot' /tmp/lmr365-reboot-baseline.txt
+if sudo python3 linux/verify-reboot-continuity.py --verify-after-reboot --smtp-port "$PORT"; then
+  echo 'SECURITY ERROR: systemctl start/stop incorrectly counted as real Linux reboot' >&2
+  exit 1
+fi
+echo 'REBOOT_VERIFIER_REFUSED_NO_REBOOT=PASS'
 echo '=== Check installed isolated sidecar read-only audit before AUTH/TLS ==='
 sudo python3 linux/installed-sidecar-audit.py --smtp-port "$PORT" |
   tee /tmp/lmr365-audit-before.txt
