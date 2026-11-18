@@ -98,6 +98,12 @@ class SidecarArchiveIntegrityTests(unittest.TestCase):
             self.assertNotIn(bad, code)
         self.assertIn("AUTH_TLS_ARCHIVE_POLICY", code)
         self.assertIn("manual_retention_required", code)
+        gui = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
+        embedded = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
+        project = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+        self.assertIn("BuildAuthArchiveAuditBundle", embedded)
+        self.assertIn("InspectAuthArchivesAsync", gui)
+        self.assertIn("audit-sidecar-auth-archives.py", project)
 
 
 if __name__ == "__main__":
