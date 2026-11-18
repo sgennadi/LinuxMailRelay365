@@ -66,6 +66,11 @@ test "$(sudo systemctl is-active postfix)" = "$primary_status"
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
 test "$(sudo postconf -h queue_directory)" = "$primary_queue"
 
+echo '=== Read-only operational queue and certificate health ==='
+sudo python3 linux/relay-health.py --smtp-port "$PORT" |
+  tee /tmp/lmr365-health-before.txt
+grep -Fx 'CUSTOM_SMTP_PORT=2529' /tmp/lmr365-health-before.txt
+grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-health-before.txt
 echo '=== Check installed isolated sidecar read-only audit before AUTH/TLS ==='
 sudo python3 linux/installed-sidecar-audit.py --smtp-port "$PORT" |
   tee /tmp/lmr365-audit-before.txt
