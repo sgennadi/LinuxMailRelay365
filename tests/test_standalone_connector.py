@@ -88,6 +88,10 @@ class FreshConnectorContracts(unittest.TestCase):
             "(root/'eop-sender-canonical.regexp').write_text(", 1)[0]
         self.assertNotIn("'/^[^@[:space:]]+@{}$/ OK", fixed_map)
 
+    def test_canonical_map_escapes_dollar_substitutions(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("sender.replace('$','$$')", source)
+
     def test_primary_server_isolation_and_sasl_scope(self):
         source = SCRIPT.read_text(encoding="utf-8")
         for expected in (
