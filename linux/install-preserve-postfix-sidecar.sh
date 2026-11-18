@@ -190,6 +190,11 @@ defer      unix  -       -       n       -       0       bounce
 trace      unix  -       -       n       -       0       bounce
 verify     unix  -       -       n       -       1       verify
 flush      unix  n       -       n       1000?   0       flush
+proxymap  unix  -       -       n       -       -       proxymap
+proxywrite unix -       -       n       -       1       proxymap
+anvil     unix  -       -       n       -       1       anvil
+scache    unix  -       -       n       -       1       scache
+tlsmgr    unix  -       -       n       1000?   1       tlsmgr
 showq      unix  n       -       n       -       -       showq
 error      unix  -       -       n       -       -       error
 m365xoauth2 unix - n n - 2 pipe
