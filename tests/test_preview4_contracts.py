@@ -35,7 +35,9 @@ class Preview4Contracts(unittest.TestCase):
         assert 'UseSharedUpdater' in proj and 'USE_UNIVERSAL_UPDATER' in proj
         assert "-p:UseSharedUpdater=false" in workflow
         assert 'win-arm64' in workflow and 'win-x64' in workflow
-        assert 'upload-artifact@v4' in workflow
+        # Upload action v6 is native Node.js 24; v4 was deprecated Node 20.
+        assert 'actions/upload-artifact@v6' in workflow
+        assert 'actions/upload-artifact@v4' not in workflow
         assert 'MODULES_READ_TOKEN' not in workflow
 
 if __name__ == '__main__':
