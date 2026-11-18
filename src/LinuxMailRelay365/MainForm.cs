@@ -525,6 +525,17 @@ internal sealed class MainForm : Form
                             "Продвинутый маршрут применяется только к установленному отдельному Postfix. Direct Send блокирует внешних получателей. Используется один фиксированный отправитель; Connector в Tenant должен существовать до применения. Все изменения обратимы через отдельный Restore.",
                             "Advanced outbound routing changes only isolated Postfix. Direct Send rejects external recipients and requires fixed sender. Connector can preserve verified-domain senders or rewrite approved subdomain sender identities. The Connector must already exist in the tenant.",
                             "ניתוב מתקדם למופע Postfix נפרד בלבד; Direct Send מוגבל לנמענים פנימיים.")));
+                        if (mailTransport.SelectedIndex == 1 && senderPolicy.SelectedIndex == 0)
+                        {
+                            AddAction(page, T("Проверить новый Connector Relay без OAuth",
+                                              "Preview NEW private Connector gateway (no OAuth)",
+                                              "בדיקת Connector חדש ללא OAuth"),
+                                              PreviewFreshConnectorAsync, false, "check", "connector-new-preview");
+                            AddAction(page, T("Установить отдельный Connector Relay без OAuth...",
+                                              "Install NEW isolated Connector Relay without OAuth...",
+                                              "התקנת Connector נפרד ללא OAuth"),
+                                              InstallFreshConnectorAsync, false, "shield", "connector-new-install");
+                        }
                         if (mailTransport.SelectedIndex == 2)
                         {
                             AddAction(page, T("Проверить новую установку Direct Send без OAuth",
@@ -1559,6 +1570,85 @@ internal sealed class MainForm : Form
         if (!result.StdOut.Contains("HEALTH_WEBHOOK_DISABLED=yes", StringComparison.Ordinal))
             throw new InvalidOperationException("External alerts disable could not be verified.");
         WriteLine(result.StdOut);
+    }
+
+    private async Task PreviewFreshConnectorAsync()
+    {
+        var cfg = EopOptions();
+        if (cfg.Mode != "connector" || cfg.SenderPolicy != "fixed-mailbox")
+            throw new InvalidOperationException("Fresh private Connector requires a fixed sender; use EOP route Apply for advanced policies.");
+        var trusted = smtpTrustedCidrs.Text.Split(',', StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries);
+        var report = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildFreshConnectorBundle(cfg.Port, cfg.Mx, cfg.Domain,
+                cfg.Sender, smtpListenIp.Text.Trim(), trusted, cfg.PublicIp,
+                cfg.Cert, cfg.Key, false), TimeSpan.FromSeconds(65));
+        report.EnsureSuccess();
+        if (!report.StdOut.Contains("CONNECTOR_PREFLIGHT=inputs_valid_only", StringComparison.Ordinal))
+            throw new InvalidOperationException("New Connector input preflight did not succeed.");
+        WriteLine(report.StdOut);
+        WriteLine("Inputs only: existing Microsoft 365 inbound Connector, fixed sender authorization, accepted domain and actual external recipients are NOT verified. No Linux changes.");
+    }
+
+    private async Task InstallFreshConnectorAsync()
+    {
+        var cfg = EopOptions();
+        if (cfg.Mode != "connector" || cfg.SenderPolicy != "fixed-mailbox")
+            throw new InvalidOperationException("Fresh Connector supports a fixed sender only; use EOP route manager for non-fixed senders.");
+        if (!acceptedDomainApproved.Checked || !connectorApproved.Checked)
+            throw new InvalidOperationException("Manually verify both the accepted domain and the existing Inbound Connector in the exact M365 tenant.");
+        var endpoint = Endpoint();
+        if (await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("Sidecar already installed. Do not overwrite; use its EOP routing manager.");
+        var observation = await SshRemote.ProbeSecurityAsync(endpoint,
+            EmbeddedAssets.SecurityProbe, CancellationToken.None);
+        observation.EnsureSuccess();
+        var inventory = MailRoutingInventory.Parse(observation.StdOut);
+        if (inspectedMail is null || inspectedServerIdentity != SecurityOptionsStore.Identity(endpoint) ||
+            inspectedMail != inventory)
+            throw new InvalidOperationException("Reinspect existing Linux mail configuration before installing a new Connector.");
+        if (inventory.Mta != "postfix" || !preserveExistingMail.Checked || allowExisting.Checked)
+            throw new InvalidOperationException("Fresh Connector requires Preserve Existing Mail and an existing primary Postfix.");
+        var trusted = smtpTrustedCidrs.Text.Split(',', StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries);
+        var preview = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildFreshConnectorBundle(cfg.Port, cfg.Mx, cfg.Domain,
+                cfg.Sender, smtpListenIp.Text.Trim(), trusted, cfg.PublicIp,
+                cfg.Cert, cfg.Key, false), TimeSpan.FromSeconds(70));
+        preview.EnsureSuccess();
+        if (!preview.StdOut.Contains("CONNECTOR_PREFLIGHT=inputs_valid_only", StringComparison.Ordinal))
+            throw new InvalidOperationException("New Connector preflight did not succeed.");
+        var tls = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildOutboundModePreflightBundle("connector", cfg.Port,
+                cfg.Mx, cfg.Domain, cfg.PublicIp, cfg.Cert, true),
+            TimeSpan.FromSeconds(90));
+        tls.EnsureSuccess();
+        if (!tls.StdOut.Contains("EOP_TLS_CONNECTIVITY=tls_12_plus_hostname_verified",
+                StringComparison.Ordinal))
+            throw new InvalidOperationException("Exchange Online EOP port 25 and certificate trust preflight failed.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | New isolated Microsoft 365 Connector",
+            "Create only a private independent Postfix listener on custom TCP " + cfg.Port +
+            " with a fixed sender under tenant-accepted domain " + cfg.Domain +
+            ". Outbound to Microsoft 365 EOP will use TCP 25. The existing tenant Connector MUST " +
+            "authorize the selected public egress IP or TLS certificate and must be verified independently. " +
+            "EXTERNAL recipients can be accepted for relay. Unauthenticated incoming clients are restricted " +
+            "to the specified trusted private networks; public inbound access is not enabled. " +
+            "Existing primary Postfix, queue, config and port 25 must stay unchanged. " +
+            "This action does not create or change Entra/Exchange Connectors or DNS records.",
+            "INSTALL PRIVATE CONNECTOR")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildFreshConnectorBundle(cfg.Port, cfg.Mx, cfg.Domain,
+                cfg.Sender, smtpListenIp.Text.Trim(), trusted, cfg.PublicIp,
+                cfg.Cert, cfg.Key, true), TimeSpan.FromMinutes(4));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("CONNECTOR_SIDECAR_INSTALLED=yes", StringComparison.Ordinal))
+            throw new InvalidOperationException("New Connector sidecar installation was not confirmed.");
+        WriteLine(result.StdOut);
+        WriteLine("Installed isolated fixed-sender Connector SMTP gateway. Actual tenant authorization and external recipient delivery remain UNVERIFIED.");
+        inspectedMail = null;
+        inspectedServerIdentity = null;
+        acceptedDomainApproved.Checked = false;
+        connectorApproved.Checked = false;
     }
 
     private async Task PreviewFreshDirectSendAsync()
