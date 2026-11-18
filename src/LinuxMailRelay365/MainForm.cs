@@ -36,6 +36,9 @@ internal sealed class MainForm : Form
     private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly CheckBox preserveExistingMail = new() { AutoSize = true, Checked = true };
     private readonly TextBox acceptedDomain = Field("");
+    private readonly TextBox outboundMxHost = Field("");
+    private readonly TextBox outboundPublicIp = Field("");
+    private readonly TextBox outboundCertPath = Field("");
     private readonly TextBox smtpListenIp = Field("");
     private readonly TextBox smtpTrustedCidrs = Field("");
     private readonly TextBox isolatedSmtpPort = Field("2525");
@@ -123,7 +126,8 @@ internal sealed class MainForm : Form
         sshAuthMode.Items.AddRange(["SSH key / ssh-agent", "SSH username + password"]);
         mailTransport.Items.AddRange([
             "XOAUTH2 · sender mailbox (available)",
-            "M365 SMTP Connector · verified domain (planned, no provisioning)"
+            "M365 SMTP Connector · verified domain (planning only)",
+            "Direct Send · internal tenant recipients only (planning only)"
         ]);
         senderPolicy.Items.AddRange([
             "Fixed Microsoft 365 sender mailbox (available)",
@@ -134,7 +138,15 @@ internal sealed class MainForm : Form
         smtpAccountOperation.SelectedIndex = 0;
         mailTransport.SelectedIndex = 0;
         senderPolicy.SelectedIndex = 0;
-        mailTransport.SelectedIndexChanged += (_, _) => { SaveRoutingChoices(); UpdatePreserveFlowPreview(); };
+        mailTransport.SelectedIndexChanged += (_, _) => {
+            SaveRoutingChoices(); UpdatePreserveFlowPreview();
+            if (step == 3 && !routingLoading && !busy)
+            {
+                int previousScroll = -pageHost.AutoScrollPosition.Y;
+                RenderPage();
+                pageHost.AutoScrollPosition = new Point(0, previousScroll);
+            }
+        };
         senderPolicy.SelectedIndexChanged += (_, _) => { SaveRoutingChoices(); UpdatePreserveFlowPreview(); };
         preserveExistingMail.CheckedChanged += (_, _) =>
         {
@@ -403,6 +415,29 @@ internal sealed class MainForm : Form
                 AddField(page, T("Подтверждённый домен (необязательно для XOAUTH2)",
                                  "Verified accepted domain (not needed for XOAUTH2)",
                                  "דומיין מאומת (לא נדרש ל-XOAUTH2)"), acceptedDomain);
+                if (mailTransport.SelectedIndex is 1 or 2)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "Проверка готовности без установки: домен и Connector проверяются в Microsoft 365 отдельно.",
+                        "Readiness only; accepted domain ownership and Connector require Microsoft 365 verification.",
+                        "בדיקה בלבד, ללא שינויים.")));
+                    AddField(page, T("MX Microsoft 365 (*.mail.protection.outlook.com)",
+                                     "Microsoft 365 MX endpoint (*.mail.protection.outlook.com)",
+                                     "כתובת MX ב-Microsoft 365"), outboundMxHost);
+                    if (mailTransport.SelectedIndex == 1)
+                    {
+                        AddField(page, T("Статический публичный IPv4 исходящего Linux",
+                                         "Static public egress IPv4 (optional with certificate)",
+                                         "כתובת IPv4 ציבורית"), outboundPublicIp);
+                        AddField(page, T("Сертификат Connector на Linux (необязательно)",
+                                         "Linux Connector TLS certificate (optional)",
+                                         "אישור TLS בלינוקס"), outboundCertPath);
+                    }
+                    AddAction(page, T("Проверить Direct Send / Connector, TCP 25 (только чтение)",
+                                      "Check Direct Send / Connector, outbound TCP 25 (read-only)",
+                                      "בדיקת Direct Send ו-Connector"),
+                                      CheckOutboundModeAsync, false, "check", "outbound-mode");
+                }
                 AddField(page, T("Порт отдельного SMTP (Preserve Existing Mail; по умолчанию 2525)",
                                  "Isolated SMTP port (Preserve Existing Mail; default 2525)",
                                  "פורט SMTP נפרד (ברירת מחדל 2525)"), isolatedSmtpPort);
@@ -766,7 +801,10 @@ internal sealed class MainForm : Form
         try
         {
             routingPlan = MailRoutingPlanStore.Load(dataDirectory, identity);
-            mailTransport.SelectedIndex = routingPlan.Transport == "connector" ? 1 : 0;
+            mailTransport.SelectedIndex = routingPlan.Transport switch
+             {
+                 "connector" => 1, "direct-send" => 2, _ => 0
+             };
             senderPolicy.SelectedIndex = routingPlan.SenderPolicy switch
             {
                 "preserve-domain" => 1, "masquerade" => 2, _ => 0
@@ -791,7 +829,10 @@ internal sealed class MainForm : Form
     private void SaveRoutingChoices()
     {
         if (routingLoading || routingIdentity is null) return;
-        routingPlan.Transport = mailTransport.SelectedIndex == 1 ? "connector" : "oauth2";
+        routingPlan.Transport = mailTransport.SelectedIndex switch
+        {
+            1 => "connector", 2 => "direct-send", _ => "oauth2"
+        };
         routingPlan.SenderPolicy = senderPolicy.SelectedIndex switch
         {
             1 => "preserve-domain", 2 => "masquerade", _ => "fixed-mailbox"
@@ -818,7 +859,7 @@ internal sealed class MainForm : Form
             mailbox.Text.Trim(), tenant.Text.Trim(), smtpTrustedCidrs.Text.Trim(),
             inspectedServerIdentity == TryCurrentIdentity() ? inspectedMail?.Mta : null,
             publicInternetRequested.Checked,
-            mailTransport.SelectedIndex == 1,
+            mailTransport.SelectedIndex != 0,
             senderPolicy.SelectedIndex != 0,
             acceptedDomain.Text.Trim());
     }
@@ -1158,6 +1199,25 @@ internal sealed class MainForm : Form
             throw new InvalidDataException("SMTP account update did not confirm success; inspect private service logs.");
         WriteLine(applied.StdOut);
         WriteLine("Update/revoke the affected application's SMTP credentials. No Microsoft 365 mailbox or primary Postfix changes were requested.");
+    }
+
+    private async Task CheckOutboundModeAsync()
+    {
+        if (mailTransport.SelectedIndex is not (1 or 2))
+            throw new InvalidOperationException("Select Connector or Direct Send first.");
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int customPort) ||
+            customPort is < 1024 or > 65535)
+            throw new InvalidDataException("Choose private Linux SMTP port 1024-65535.");
+        var report = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildOutboundModePreflightBundle(
+                mailTransport.SelectedIndex == 1 ? "connector" : "direct-send",
+                customPort, outboundMxHost.Text.Trim(), acceptedDomain.Text.Trim(),
+                outboundPublicIp.Text.Trim(), outboundCertPath.Text.Trim(), true),
+            TimeSpan.FromSeconds(85));
+        report.EnsureSuccess();
+        WriteLine(report.StdOut);
+        WriteLine("Read-only plan. Private Linux custom TCP " + customPort +
+                  " differs from Microsoft 365 outbound TCP 25. Tenant Connector and delivery remain unverified.");
     }
 
     private async Task InspectRelayHealthAsync()
@@ -1725,7 +1785,10 @@ internal sealed class MainForm : Form
         MailRoutingPlanStore.Validate(routingPlan);
         if (publicInternetRequested.Checked)
             throw new NotSupportedException("Public Internet SMTP is planning-only and blocked. Without mandatory TLS, SMTP AUTH and abuse controls it would risk an open relay. Clear the option to install local/trusted-only SMTP.");
-        var chosenTransport = mailTransport.SelectedIndex == 1 ? "connector" : "oauth2";
+        var chosenTransport = mailTransport.SelectedIndex switch
+        {
+            1 => "connector", 2 => "direct-send", _ => "oauth2"
+        };
         var chosenSender = senderPolicy.SelectedIndex;
         if (chosenTransport != "oauth2" || chosenSender != 0)
             throw new NotSupportedException("Connector and sender masquerade are planning-only in this preview. No Postfix changes were applied.");
