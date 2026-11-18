@@ -35,6 +35,15 @@ class SidecarTlsRotationTests(unittest.TestCase):
                       "--tls-key","/tmp/newkey.pem")
                 self.assertIn("invalid_custom_port",r.stderr)
 
+    def test_self_signed_cert_can_also_be_explicit_trust_anchor(self):
+        args=("--check-only","--smtp-port","2529",
+              "--server-name","smtp.example.org",
+              "--tls-cert","/tmp/newcert.pem","--tls-key","/tmp/newkey.pem",
+              "--ca-file","/tmp/newcert.pem")
+        r=self.run_cmd(*args)
+        self.assertNotIn("source_paths_must_differ",r.stderr)
+        self.assertNotIn("TLS_ROTATE_APPLIED=yes",r.stdout)
+
     def test_apply_requires_fingerprint_and_confirmation(self):
         base=("--apply","--smtp-port","2529","--server-name","smtp.example.org",
               "--tls-cert","/tmp/newcert.pem","--tls-key","/tmp/newkey.pem")
