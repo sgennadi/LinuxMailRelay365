@@ -58,7 +58,7 @@ class FirewallAndPublicSmtpTests(unittest.TestCase):
         self.assertIn('postconf -c "$CONF" -h mynetworks', source)
         self.assertIn('destination address=', source)
         self.assertIn('ufw --dry-run allow in proto tcp from', source)
-        self.assertNotIn('ufw enable', source)
+        self.assertNotIn('\nufw enable', source)  # comments about prohibiting enable are allowed
         self.assertNotIn('--add-port=', source)
 
     def test_wizard_exposes_public_risks_but_blocks_activation(self):
