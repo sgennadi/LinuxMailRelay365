@@ -4,23 +4,22 @@
 No package install, policy changes, firewall changes, port opening, or messages.
 Status is intentionally conservative: a local inspection does not prove mail delivery.
 """
-from __future__ import annotations
 
 import argparse
-import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Dict, Tuple
 
 KNOWN_RHEL = {"rhel", "ol", "rocky", "almalinux"}
 KNOWN_DEBIAN = {"ubuntu", "debian"}
 SUPPORTED_RHEL_MAJORS = {8, 9, 10}
 
 
-def parse_os_release(data: str) -> dict[str, str]:
+def parse_os_release(data: str) -> Dict[str, str]:
     # /etc/os-release is data, NEVER shell-source it.
-    result: dict[str, str] = {}
+    result: Dict[str, str] = {}
     for line in data.splitlines():
         match = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line.strip())
         if not match:
@@ -36,7 +35,7 @@ def parse_os_release(data: str) -> dict[str, str]:
     return result
 
 
-def distro_info(info: dict[str, str]) -> tuple[str, str, str]:
+def distro_info(info: Dict[str, str]) -> Tuple[str, str, str]:
     name = info.get("ID", "").lower()
     version = info.get("VERSION_ID", "")
     major_match = re.match(r"^(\d+)(?:\.|$)", version)
@@ -62,7 +61,7 @@ def dovecot_compat(version: str) -> str:
     return "unsupported_version"
 
 
-def parse_selinux_ports(data: str, port: int) -> tuple[str, str]:
+def parse_selinux_ports(data: str, port: int) -> Tuple[str, str]:
     owners = set()
     for line in data.splitlines():
         m = re.match(r"^(\S+)\s+tcp\s+(.+?)\s*$", line)
@@ -88,8 +87,8 @@ def safe_run(*argv: str, timeout: int = 5) -> str:
     if not argv or not shutil.which(argv[0]):
         return ""
     try:
-        completed = subprocess.run(argv, capture_output=True, text=True,
-                                   timeout=timeout, check=False)
+        completed = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   universal_newlines=True, timeout=timeout, check=False)
         if completed.returncode:
             return ""
         return (completed.stdout or completed.stderr).strip()[:32768]
@@ -97,7 +96,7 @@ def safe_run(*argv: str, timeout: int = 5) -> str:
         return ""
 
 
-def probe(os_release: str, port: int) -> dict[str, str]:
+def probe(os_release: str, port: int) -> Dict[str, str]:
     info = parse_os_release(os_release)
     family, major, status = distro_info(info)
     distro = info.get("ID", "unknown").lower()
