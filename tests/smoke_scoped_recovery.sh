@@ -20,6 +20,7 @@ primary_before="$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)"
 primary_queue="$(sudo postconf -h queue_directory)"
 primary_active="$(sudo systemctl is-active postfix)"
 main_before="$(sudo sha256sum "$CONF/main.cf" | awk '{print $1}')"
+master_before="$(sudo sha256sum "$CONF/master.cf" | awk '{print $1}')"
 
 echo '=== Real verified root-only independent Postfix configuration backup ==='
 backup_out="$(sudo python3 "$SCRIPT" --backup)"
@@ -95,6 +96,43 @@ test -z "$(sudo ss -H -ltn "( sport = :$PORT )")"
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
 test "$(sudo postconf -h queue_directory)" = "$primary_queue"
 test "$(sudo systemctl is-active postfix)" = "$primary_active"
+
+echo '=== Real fault injection: reject invalid archived extra SMTP listener and ROLLBACK ==='
+# This only changes the STOPPED independent master.cf on a DISPOSABLE VM.
+# An invalid archived listener is applied then rejected by postconf -M
+# verification. Original sidecar files MUST be restored automatically.
+bad_port="$((PORT + 1))"
+printf '%s inet n - n - - smtpd\n' "$bad_port" |
+  sudo tee -a "$CONF/master.cf" >/dev/null
+bad_backup="$(sudo python3 "$SCRIPT" --backup)"
+bad_id="$(printf '%s\n' "$bad_backup" | sed -n 's/^SIDECAR_BACKUP_ID=//p')"
+[[ "$bad_id" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ ]]
+sudo python3 "$SCRIPT" --verify "$bad_id" |
+  grep -Fx 'SIDECAR_BACKUP_STATUS=verified_config_only_no_queue'
+# Remove only the exact last line appended for the fault fixture.
+test "$(sudo tail -n 1 "$CONF/master.cf")" = "$bad_port inet n - n - - smtpd"
+sudo sed -i '$d' "$CONF/master.cf"
+test "$(sudo sha256sum "$CONF/master.cf" | awk '{print $1}')" = "$master_before"
+bad_review="$(sudo python3 "$SCRIPT" --preview-restore "$bad_id")"
+bad_expected="$(printf '%s\n' "$bad_review" | sed -n 's/^SIDECAR_CURRENT_SHA256=//p')"
+[[ "$bad_expected" =~ ^[a-f0-9]{64}$ ]]
+if failed_restore="$(sudo python3 "$SCRIPT" --restore "$bad_id" \
+  --expect-current-sha256 "$bad_expected" \
+  --confirm RESTORE_ISOLATED_RELAY_CONFIGURATION)"; then
+  echo 'RECOVERY_SMOKE_ERROR=invalid_master_was_restored' >&2; exit 1
+fi
+printf '%s\n' "$failed_restore" |
+  grep -Fx 'SIDECAR_RESTORE_FAILED_STAGE=restored_master_cf_has_unexpected_smtp_listener'
+printf '%s\n' "$failed_restore" |
+  grep -Fx 'SIDECAR_RECOVERY_ERROR=offline_restore_failed_original_configuration_retained'
+test "$(sudo sha256sum "$CONF/main.cf" | awk '{print $1}')" = "$main_before"
+test "$(sudo sha256sum "$CONF/master.cf" | awk '{print $1}')" = "$master_before"
+! sudo systemctl is-active --quiet "$UNIT"
+test -z "$(sudo ss -H -ltn "( sport = :$PORT )")"
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+test "$(sudo postconf -h queue_directory)" = "$primary_queue"
+test "$(sudo systemctl is-active postfix)" = "$primary_active"
+echo 'REAL_POSTFIX_INVALID_RESTORE_ROLLBACK=PASS'
 
 echo '=== Explicit restart AFTER restore; EHLO only, never MAIL DATA ==='
 sudo systemctl start "$UNIT"
