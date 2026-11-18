@@ -68,6 +68,7 @@ test "$(sudo postconf -c "$CONF" -h default_transport)" = \
   'smtp:[example-org.mail.protection.outlook.com]:25'
 test "$(sudo postconf -c "$CONF" -h smtp_tls_security_level)" = secure
 test "$(sudo postconf -c "$CONF" -h smtp_tls_secure_cert_match)" = nexthop
+test "$(sudo postconf -c "$CONF" -h local_header_rewrite_clients)" = static:all
 # Exercise Postfix's POSIX regexp parser rather than only a Python approximation.
 sender_map="regexp:$CONF/eop-fixed-sender.regexp"
 test "$(sudo postmap -q alerts@example.org "$sender_map")" = OK
