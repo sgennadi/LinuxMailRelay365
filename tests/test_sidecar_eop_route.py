@@ -61,6 +61,12 @@ class EopRouteContracts(unittest.TestCase):
                 self.assertEqual(sender, ":^alerts\\+ci@example\\.org$: OK\n")
                 self.assertNotIn("[^@[:space:]]+", sender)
 
+    def test_fixed_sender_canonical_map_escapes_postfix_dollar_macros(self):
+        a = opts(sender="billing$1@example.org")
+        sender, canonical, _ = eop.policy_maps(a)
+        self.assertIn(r"billing\$1@example\.org", sender)
+        self.assertEqual(canonical, "/^.+$/ billing$$1@example.org\n")
+
     def test_authenticated_clients_keep_auth_required(self):
         changes = eop.policy_changes(opts(), "/etc/ssl/certs/ca-certificates.crt", True)
         self.assertEqual(changes["smtpd_relay_restrictions"],
