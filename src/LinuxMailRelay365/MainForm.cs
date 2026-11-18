@@ -127,7 +127,12 @@ internal sealed class MainForm : Form
         preserveExistingMail.CheckedChanged += (_, _) =>
         {
             SaveRoutingChoices();
-            if (step == 3 && !routingLoading && !busy) RenderPage();
+            if (step == 3 && !routingLoading && !busy)
+            {
+                int previousScroll = -pageHost.AutoScrollPosition.Y;
+                RenderPage();
+                pageHost.AutoScrollPosition = new Point(0, previousScroll);
+            }
         };
         acceptedDomain.Leave += (_, _) => SaveRoutingChoices();
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
@@ -209,6 +214,7 @@ internal sealed class MainForm : Form
         shell.Controls.Add(pageHost, 0, 2);
         shell.Controls.Add(bottom, 0, 3);
         Controls.Add(shell);
+        pageHost.SizeChanged += (_, _) => ResizePreserveFlowHelp();
         RenderPage();
         WriteLine("Ready. No user passwords, app secrets, or OAuth tokens are stored by this manager.");
     }
@@ -287,6 +293,7 @@ internal sealed class MainForm : Form
         var page = NewPage();
         pageHost.Controls.Add(page);
         pageHost.AutoScrollPosition = Point.Empty;
+        ResizePreserveFlowHelp();
         switch (step)
         {
             case 0:
@@ -426,16 +433,20 @@ internal sealed class MainForm : Form
                         "How it works: existing apps keep their current SMTP. Configure NEW apps with the separate server/port shown below. Microsoft 365 sends using the chosen mailbox; recipients are unchanged.",
                         "יישומים קיימים נשארים בשרת הקודם. ליישומים חדשים מגדירים שרת ויציאת SMTP נפרדים.")));
                     UpdatePreserveFlowPreview();
+                    ResizePreserveFlowHelp();
                     AddLine(page, preserveFlowPreview);
                     AddLine(page, UiTheme.Text(T(
                         "Готовые настройки для конечного пользователя (из заполненных полей)",
                         "Ready-to-copy client setup (actual entered field values)",
                         "הגדרות ליישומי לקוח לפי הערכים שהוזנו")));
                     AddLine(page, preserveMailInstructions);
-                    AddAction(page, T("Копировать инструкции для приложений",
-                                      "Copy SMTP client setup instructions",
-                                      "העתקת הוראות הגדרת SMTP"),
-                        CopyPreserveInstructionsAsync, false, "copy", "client-setup");
+                    var copyInstructions = UiTheme.Action(
+                        T("Копировать инструкции для приложений",
+                          "Copy SMTP client setup instructions",
+                          "העתקת הוראות הגדרת SMTP"), false, "copy");
+                    copyInstructions.Enabled = !busy;
+                    copyInstructions.Click += (_, _) => CopyPreserveInstructions();
+                    AddLine(page, copyInstructions);
                     AddLine(page, UiTheme.Text(T(
                         "Схема — план, а не подтверждение установки. Если адрес слушателя пуст, 127.0.0.1 подходит только программам на самом Linux. В Preview нет SMTP AUTH/TLS для клиентских подключений: не выставляйте этот порт в интернет.",
                         "Preview is a PLAN, not proof of installation. With no listener IPv4, 127.0.0.1 works only for apps on the Linux itself. This preview has no inbound SMTP AUTH/TLS: never expose it to the internet.",
@@ -724,6 +735,14 @@ internal sealed class MainForm : Form
             acceptedDomain.Text.Trim());
     }
 
+    private void ResizePreserveFlowHelp()
+    {
+        if (IsDisposed) return;
+        int width = Math.Clamp(pageHost.ClientSize.Width - 54, 640, 890);
+        preserveFlowPreview.Width = width;
+        preserveMailInstructions.Width = width;
+    }
+
     private void UpdatePreserveFlowPreview()
     {
         if (IsDisposed) return;
@@ -732,13 +751,19 @@ internal sealed class MainForm : Form
         preserveMailInstructions.Text = snapshot.ClientInstructions(language.SelectedIndex);
     }
 
-    private Task CopyPreserveInstructionsAsync()
+    private void CopyPreserveInstructions()
     {
-        // Copies ONLY explicitly visible, non-secret connection/routing fields.
-        UpdatePreserveFlowPreview();
-        Clipboard.SetText(preserveMailInstructions.Text);
-        WriteLine("Copied Preserve Existing Mail client setup instructions.");
-        return Task.CompletedTask;
+        // Do not trigger navigation/re-render and lose the current scroll position.
+        try
+        {
+            UpdatePreserveFlowPreview();
+            Clipboard.SetText(preserveMailInstructions.Text);
+            WriteLine("Copied Preserve Existing Mail client setup instructions.");
+        }
+        catch (System.Runtime.InteropServices.ExternalException error)
+        {
+            WriteLine("Clipboard unavailable: " + error.Message);
+        }
     }
 
     private string[] NetworkFirewallArguments(string action, bool includePublic)
