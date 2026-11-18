@@ -20,6 +20,7 @@ internal static class EmbeddedAssets
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
     internal static string DirectSendSidecarInstaller => Text("LinuxMailRelay365.linux.direct-send-sidecar.sh");
     internal static string ConnectorSidecarInstaller => Text("LinuxMailRelay365.linux.connector-sidecar.sh");
+    internal static string ForeignMtaGuard => Text("LinuxMailRelay365.linux.foreign-mta-guard.py");
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
@@ -73,7 +74,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildDirectSendSidecarBundle(int port, string mxHost,
         string acceptedDomain, string sender, string listenIpv4,
-        string[] trustedNetworks, bool apply)
+        string[] trustedNetworks, bool apply, string foreignMta = "", string sidecarHostname = "")
     {
         if (port is < 1024 or > 65535 || trustedNetworks.Length > 8)
             throw new ArgumentException("Invalid private SMTP custom port or CIDR count.");
@@ -103,6 +104,20 @@ internal static class EmbeddedAssets
             args.Add("--trusted-network");
             args.Add(cidr);
         }
+        if (foreignMta.Length > 0)
+        {
+            if (foreignMta is not ("exim" or "sendmail") ||
+                !Regex.IsMatch(sidecarHostname, dns, RegexOptions.CultureInvariant) ||
+                sidecarHostname.Length > 253)
+                throw new ArgumentException("Foreign MTA preservation requires explicit Exim/Sendmail mode and an FQDN.");
+            args.AddRange(["--preserve-primary-mta", foreignMta,
+                           "--sidecar-hostname", sidecarHostname]);
+            if (apply)
+                args.AddRange(["--confirm-preserve-primary-mta",
+                               "PRESERVE_EXISTING_" + foreignMta.ToUpperInvariant()]);
+        }
+        else if (sidecarHostname.Length != 0)
+            throw new ArgumentException("Foreign sidecar hostname requires an explicitly selected existing Exim/Sendmail.");
         if (apply) args.AddRange(["--confirm-accepted-domain", "TENANT_DOMAIN_CHECKED"]);
         foreach (string item in args)
             if (item.Length > 256 || item.Any(c => !(char.IsAsciiLetterOrDigit(c) ||
@@ -113,12 +128,15 @@ internal static class EmbeddedAssets
                "trap 'rm -rf -- \"$work\"' EXIT\n" +
                "base64 -d > \"$work/install.sh\" <<'LMR365_DIRECT_SEND'\n" +
                Encode(DirectSendSidecarInstaller) + "\nLMR365_DIRECT_SEND\n" +
+               "base64 -d > \"$work/guard-foreign-mta.py\" <<'LMR365_FOREIGN_MTA'\n" +
+               Encode(ForeignMtaGuard) + "\nLMR365_FOREIGN_MTA\n" +
                "bash \"$work/install.sh\" " + string.Join(" ", args) + "\n";
     }
 
     internal static string BuildFreshConnectorBundle(int port, string mxHost,
         string acceptedDomain, string sender, string listenIpv4,
-        string[] trustedNetworks, string publicIp, string certPath, string keyPath, bool apply)
+        string[] trustedNetworks, string publicIp, string certPath, string keyPath, bool apply,
+        string foreignMta = "", string sidecarHostname = "")
     {
         if (port is < 1024 or > 65535 || trustedNetworks.Length > 8)
             throw new ArgumentException("Connector custom SMTP port must be 1024-65535.");
@@ -157,6 +175,20 @@ internal static class EmbeddedAssets
             args.Add("--tls-key");
             args.Add(keyPath);
         }
+        if (foreignMta.Length > 0)
+        {
+            if (foreignMta is not ("exim" or "sendmail") ||
+                !Regex.IsMatch(sidecarHostname, dns, RegexOptions.CultureInvariant) ||
+                sidecarHostname.Length > 253)
+                throw new ArgumentException("Foreign MTA preservation requires explicit Exim/Sendmail mode and an FQDN.");
+            args.AddRange(["--preserve-primary-mta", foreignMta,
+                           "--sidecar-hostname", sidecarHostname]);
+            if (apply)
+                args.AddRange(["--confirm-preserve-primary-mta",
+                               "PRESERVE_EXISTING_" + foreignMta.ToUpperInvariant()]);
+        }
+        else if (sidecarHostname.Length != 0)
+            throw new ArgumentException("Foreign sidecar hostname requires an explicitly selected existing Exim/Sendmail.");
         if (apply)
             args.AddRange(["--confirm-accepted-domain", "TENANT_DOMAIN_CHECKED",
                            "--confirm-connector", "TENANT_CONNECTOR_CHECKED"]);
@@ -171,6 +203,8 @@ internal static class EmbeddedAssets
                "trap 'rm -rf -- \"$work\"' EXIT\n" +
                "base64 -d > \"$work/install.sh\" <<'LMR365_FRESH_CONNECTOR'\n" +
                Encode(ConnectorSidecarInstaller) + "\nLMR365_FRESH_CONNECTOR\n" +
+               "base64 -d > \"$work/guard-foreign-mta.py\" <<'LMR365_FOREIGN_MTA'\n" +
+               Encode(ForeignMtaGuard) + "\nLMR365_FOREIGN_MTA\n" +
                "bash \"$work/install.sh\" " + string.Join(" ", args) + "\n";
     }
 
