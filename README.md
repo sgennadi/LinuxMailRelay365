@@ -763,6 +763,18 @@ mail routing, DNS records and external files referenced by Postfix
 are **not** included in the snapshot or rolled back; test on a nonproduction
 server before using Force Replace.
 
+### Read-only recovery scope inventory (Preview 15)
+
+Run `sudo python3 linux/recovery-scope-audit.py --smtp-port 46500`
+(on the target server, replacing the sample port). This Python 3.6+
+checker reports only statuses/counts for primary Postfix, a separate sidecar,
+Dovecot, systemd, queue, Sendmail/Exim coexistence and external configuration
+references. It never prints certificate paths or secret material, never
+sends SMTP and never changes a service. Candidate backup directory counts
+are intentionally **unverified**, not proof that restoration works. A complete
+external-system backup/restore, package recovery, queued-message recovery and
+live reboot acceptance are still mandatory before Stable.
+
 ## Domain, sender rewriting and existing mail safety
 
 The Wizard supports **XOAUTH2 fixed mailbox** and a separate guarded
