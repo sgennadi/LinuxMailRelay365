@@ -59,7 +59,7 @@ try:
     for cidr in cidrs:
         net = ipaddress.ip_network(cidr, strict=True)
         if not isinstance(net, ipaddress.IPv4Network) or not any(
-                net.subnet_of(base) for base in rfc1918):
+                (net.network_address in base and net.broadcast_address in base) for base in rfc1918):
             raise ValueError('CIDR outside RFC1918')
 except ValueError as exc:
     sys.stderr.write('Sidecar input rejected: ' + str(exc) + '\n')
