@@ -42,6 +42,7 @@ internal sealed class MainForm : Form
     private readonly TextBox outboundCertKeyPath = Field("");
     private readonly TextBox outboundFixedSender = Field("");
     private readonly CheckBox connectorApproved = new() { AutoSize = true, Checked = false };
+    private readonly CheckBox acceptedDomainApproved = new() { AutoSize = true, Checked = false };
     private readonly TextBox smtpListenIp = Field("");
     private readonly TextBox smtpTrustedCidrs = Field("");
     private readonly TextBox isolatedSmtpPort = Field("2525");
@@ -444,6 +445,11 @@ internal sealed class MainForm : Form
                     AddField(page, T("Фиксированный отправитель в подтверждённом домене",
                                      "Fixed sender in the tenant-accepted domain",
                                      "כתובת שולח קבועה בדומיין מאומת"), outboundFixedSender);
+                    acceptedDomainApproved.Text = T(
+                        "Я проверил этот принятый домен в Microsoft 365 (не сохранять согласие)",
+                        "I verified this accepted domain in the intended M365 tenant (not saved)",
+                        "אימתתי שהדומיין מאושר ב-Microsoft 365");
+                    AddLine(page, acceptedDomainApproved);
                     if (mailTransport.SelectedIndex == 1)
                     {
                         AddField(page, T("Статический публичный IPv4 исходящего Linux",
@@ -891,6 +897,7 @@ internal sealed class MainForm : Form
             outboundCertPath.Text = routingPlan.EopCertificatePath;
             outboundCertKeyPath.Text = routingPlan.EopKeyPath;
             connectorApproved.Checked = false;
+            acceptedDomainApproved.Checked = false;
             smtpListenIp.Text = routingPlan.ListenIpv4;
             smtpTrustedCidrs.Text = routingPlan.TrustedCidrs;
             isolatedSmtpPort.Text = routingPlan.SidecarPort.ToString();
