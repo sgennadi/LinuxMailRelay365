@@ -192,6 +192,69 @@ internal static class SshRemote
             null, TimeSpan.FromSeconds(90), token);
     }
 
+
+    private const string SidecarConfig = "/etc/linuxmailrelay365/sidecar-postfix";
+    private const string SidecarIdentity = "/etc/linuxmailrelay365/sidecar-identity/app.json";
+    private const string SidecarTransport = "/usr/local/libexec/linuxmailrelay365-sidecar-transport.py";
+
+    // Read-only, no sudo and no server configuration changes.
+    internal static async Task<bool> HasIsolatedSidecarAsync(SshEndpoint endpoint, CancellationToken token)
+    {
+        var result = await ExecuteAsync(endpoint,
+            "if test -r " + SidecarConfig + "/main.cf && test -r " + SidecarConfig +
+            "/master.cf && test -f " + SidecarIdentity +
+            "; then printf SIDECAR_PRESENT; else printf SIDECAR_ABSENT; fi",
+            null, TimeSpan.FromSeconds(30), token);
+        result.EnsureSuccess();
+        return result.StdOut.Trim() == "SIDECAR_PRESENT";
+    }
+
+    internal static Task<RemoteResult> SidecarDiagnosticsAsync(SshEndpoint endpoint,
+        CancellationToken token) =>
+        RunRootScriptAsync(endpoint,
+            "set -e\n" +
+            "echo '=== ISOLATED M365 POSTFIX ==='\n" +
+            "systemctl is-active linuxmailrelay365-sidecar.service\n" +
+            "postfix -c " + SidecarConfig + " check\n" +
+            "postfix -c " + SidecarConfig + " status\n" +
+            "echo '=== ISOLATED IDENTITY ==='\n" +
+            "runuser -u m365mailer -- python3 " + SidecarTransport +
+            " --config " + SidecarIdentity + " --config-check\n" +
+            "echo '=== MICROSOFT ENTRA TOKEN ==='\n" +
+            "runuser -u m365mailer -- python3 " + SidecarTransport +
+            " --config " + SidecarIdentity + " --token-check\n" +
+            "echo '=== ISOLATED QUEUE ==='\n" +
+            "postqueue -c " + SidecarConfig + " -p\n",
+            TimeSpan.FromMinutes(2), token);
+
+    internal static Task<RemoteResult> SendIsolatedSidecarTestAsync(
+        SshEndpoint endpoint, string mailbox, string recipient, CancellationToken token)
+    {
+        if (!IsEmail(mailbox) || !IsEmail(recipient))
+            throw new ArgumentException("Invalid SMTP test sender or recipient.");
+        // Only localhost receives the message. No connection to existing Postfix
+        // port 25 or invocation of the system sendmail compatibility binary.
+        var script = """
+            import smtplib
+            import sys
+            from email.message import EmailMessage
+            sender, recipient = sys.argv[1], sys.argv[2]
+            message = EmailMessage()
+            message['From'] = sender
+            message['To'] = recipient
+            message['Subject'] = 'LinuxMailRelay365 isolated SMTP test'
+            message.set_content('Submitted through the isolated Microsoft 365 relay.')
+            with smtplib.SMTP('127.0.0.1', 2525, timeout=25) as smtp:
+                smtp.send_message(message, from_addr=sender, to_addrs=[recipient])
+            print('ISOLATED_SMTP_ACCEPTED=yes; remote delivery still requires log verification.')
+            """;
+        string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(script));
+        return ExecuteAsync(endpoint,
+            "printf %s " + encoded + " | base64 -d | python3 - " +
+            QuoteShell(mailbox) + " " + QuoteShell(recipient),
+            null, TimeSpan.FromSeconds(45), token);
+    }
+
     // Shell-safe quoting: an email local part can legally contain apostrophes.
     private static string QuoteShell(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
 
