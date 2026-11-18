@@ -587,6 +587,18 @@ internal sealed class MainForm : Form
                                   "Enable local SMTP health timer every 15 minutes...",
                                   "הפעלת ניטור SMTP כל 15 דקות"),
                                   InstallHealthMonitorAsync, false, "activity", "health-monitor");
+                AddLine(page, UiTheme.Text(T(
+                    "Уведомления: на Linux создайте /etc/linuxmailrelay365/health-alerts.json (root:root, 0600) с HTTPS webhook. Секретный URL не вводится в мастер.",
+                    "Optional alerts: create /etc/linuxmailrelay365/health-alerts.json on Linux (root:root, 0600) with a private HTTPS webhook URL. Do not enter its token in the Wizard.",
+                    "התראות: צור קובץ webhook מוגן בשרת Linux. אין להזין סוד באשף.")));
+                AddAction(page, T("Включить HTTPS-уведомления SMTP...",
+                                  "Enable HTTPS SMTP health alerts...",
+                                  "הפעל התראות SMTP ב-HTTPS"),
+                                  EnableHealthAlertsAsync, false, "activity", "health-alerts-enable");
+                AddAction(page, T("Отключить внешние уведомления...",
+                                  "Disable external SMTP alerts...",
+                                  "השבת התראות חיצוניות"),
+                                  DisableHealthAlertsAsync, false, "shield", "health-alerts-disable");
                 AddAction(page, T("Открыть порт только доверенным сетям...",
                                   "Open SMTP port for trusted networks only...",
                                   "פתיחת יציאה לרשתות מהימנות בלבד"),
@@ -1463,6 +1475,68 @@ internal sealed class MainForm : Form
         WriteLine(applied.StdOut);
         WriteLine("Local systemd timer installed. Use journalctl -u linuxmailrelay365-health.service; " +
                   "integrate your monitoring platform separately for external alerts.");
+    }
+
+    private async Task EnableHealthAlertsAsync()
+    {
+        var endpoint = Endpoint();
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("Install isolated SMTP and its 15-minute local health timer first.");
+        int port = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selected) || selected != port)
+            throw new InvalidDataException("The selected SMTP port must match installed TCP " + port + ".");
+        var check = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHealthAlertsBundle(port, "check"), TimeSpan.FromSeconds(70));
+        check.EnsureSuccess();
+        var sha = System.Text.RegularExpressions.Regex.Match(check.StdOut,
+            @"(?m)^HEALTH_WEBHOOK_CONFIG_SHA256=([a-f0-9]{64})\r?$");
+        if (!check.StdOut.Contains("HEALTH_WEBHOOK_PREFLIGHT=ready", StringComparison.Ordinal) ||
+            !sha.Success)
+            throw new InvalidOperationException("HTTPS webhook did not pass local preflight.");
+        WriteLine(check.StdOut);
+        if (!ConfirmDestructive("LinuxMailRelay365 | Enable HTTPS health alerts",
+            "Adds only the LinuxMailRelay365-owned systemd drop-in for the existing 15-minute SMTP health timer. " +
+            "It may transmit aggregate alarm codes and queue metrics to the EXTERNAL HTTPS endpoint. " +
+            "The private webhook URL/token remains ONLY on the Linux server as root:root 0600, never on Windows. " +
+            "DNS/TLS and receipt are checked on the first actual alert; no alert is transmitted by this preview. " +
+            "The primary Postfix, its queue, and firewall are not changed.",
+            "ENABLE SMTP HEALTH ALERTS")) return;
+        var applied = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHealthAlertsBundle(port, "enable", sha.Groups[1].Value),
+            TimeSpan.FromSeconds(90));
+        applied.EnsureSuccess();
+        if (!applied.StdOut.Contains("HEALTH_WEBHOOK_ENABLED=yes", StringComparison.Ordinal))
+            throw new InvalidOperationException("External alert integration did not confirm success.");
+        WriteLine(applied.StdOut);
+        WriteLine("Opt-in HTTPS alerting now follows the existing timer. Test with a genuine alert/recovery event and verify the receiver.");
+    }
+
+    private async Task DisableHealthAlertsAsync()
+    {
+        var endpoint = Endpoint();
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("No isolated SMTP installed.");
+        int port = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+        var status = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHealthAlertsBundle(port, "status"),
+            TimeSpan.FromSeconds(50));
+        status.EnsureSuccess();
+        if (!status.StdOut.Contains("HEALTH_WEBHOOK_STATUS=enabled", StringComparison.Ordinal))
+        {
+            WriteLine("External HTTPS alerts are not enabled on this isolated SMTP instance.");
+            return;
+        }
+        if (!ConfirmDestructive("LinuxMailRelay365 | Disable external alerts",
+            "Remove only the owned systemd health-alert drop-in. The local 15-minute health timer continues. " +
+            "The root-only Linux webhook config and delivery-state file are retained for operator review. " +
+            "Postfix, existing mail and firewall are untouched.",
+            "DISABLE SMTP HEALTH ALERTS")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHealthAlertsBundle(port, "disable"), TimeSpan.FromSeconds(85));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("HEALTH_WEBHOOK_DISABLED=yes", StringComparison.Ordinal))
+            throw new InvalidOperationException("External alerts disable could not be verified.");
+        WriteLine(result.StdOut);
     }
 
     private async Task PreviewFreshDirectSendAsync()
