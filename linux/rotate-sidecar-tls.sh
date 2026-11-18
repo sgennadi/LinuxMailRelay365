@@ -39,7 +39,9 @@ except ValueError: pass
 for filename in (cert,key)+((ca,) if ca else ()):
     if not re.fullmatch(r'/[A-Za-z0-9_./-]{1,255}',filename) or '..' in filename.split('/'):
         raise SystemExit('TLS_ROTATE_ERROR=invalid_absolute_path')
-if len(set([cert,key,ca or '/no-ca'])) != 3:
+# Self-signed internal TLS cert may also be the explicit CA trust bundle.
+# Private key must NEVER be reused as certificate or CA bundle.
+if cert == key or (ca and ca == key):
     raise SystemExit('TLS_ROTATE_ERROR=source_paths_must_differ')
 if mode=='apply' and not re.fullmatch(r'[a-f0-9]{64}',sha):
     raise SystemExit('TLS_ROTATE_ERROR=expected_sha256_required')
