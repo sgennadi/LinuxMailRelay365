@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.7 — source and GitHub Actions builds; not a verified production release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.8 — source and GitHub Actions builds; not a verified production release.**
 
 ## Intended workflow
 
@@ -51,6 +51,37 @@ mode; every authorized client in a trusted network can submit mail as the
 configured mailbox. Use narrow subnets and host firewall rules, and do not
 forward public SMTP traffic to this port. SMTP submission from a trusted LAN
 remains unencrypted until separate TLS listener support is implemented.
+
+## Preserve Existing Mail: isolated Postfix channel (Preview 8)
+
+When the read-only Linux inspection finds **existing Postfix**, the default
+**Preserve Existing Mail** setting now configures an independent Postfix instance
+with its own configuration, queue and systemd unit. The only submission port is
+**TCP 2525**; its default listener is **127.0.0.1 only**. Optional remote
+submission requires an explicit local RFC1918 IPv4 and trusted RFC1918 CIDR.
+This is an unauthenticated/trusted-network-only listener, with no inbound TLS
+yet: restrict it to localhost unless the network is isolated and trusted.
+
+- Existing Postfix `/etc/postfix/main.cf`, `master.cf`, port 25, queue
+  and `postfix.service` are not modified, reloaded or restarted.
+- Sidecar configuration: `/etc/linuxmailrelay365/sidecar-postfix/`; identity:
+  `/etc/linuxmailrelay365/sidecar-identity/`.
+- Sidecar queue: `/var/spool/linuxmailrelay365-sidecar/`;
+  sidecar service: `linuxmailrelay365-sidecar.service`.
+- The XOAUTH2 transport enforces its own app mailbox and private certificate.
+  It does **not** preserve arbitrary input `From:` headers.
+- Diagnostics and test-mail submission automatically use TCP 2525 and the
+  isolated queue when a sidecar installation is detected.
+- Existing sidecar installations are never overwritten silently. Failed new
+  installations remove their new service/configuration while retaining the
+  separate queue for inspection. This is *not* a full restore of all packages.
+- Only existing Postfix is supported by this mode in Preview 8.
+  Existing Sendmail/Exim are protected; their sidecars are not implemented.
+
+**Deployment limitation:** the installer has not yet been exercised against
+a real running Postfix service and Microsoft 365 tenant. Perform the first
+end-to-end test in a disposable VM before using production systems.
+No production guarantee is implied by CI builds and source tests.
 
 ## Force Replace, Backup & Restore (Preview)
 
@@ -171,7 +202,7 @@ The repository exists at [sgennadi/LinuxMailRelay365](https://github.com/sgennad
 ## Known preview limitations
 
 - Real SMTP/Entra tenant and SSH hosts have not been exercised; verify in a dedicated test tenant and server before production.
-- Existing Sendmail remains untouched; automatic Sendmail migration is not yet supported.
+- Existing Sendmail/Exim remain untouched; automatic migration and isolated sidecars for them are not yet supported.
 - Hardware-backed OAuth signing and automatic Conditional Access enforcement are not implemented. Do not treat planned options as enabled.
 - Microsoft Entra tenant discovery uses `Az.Accounts` (installed for CurrentUser when absent) and `Get-AzTenant`. Azure APIs might not enumerate all external/guest tenants. User can enter the correct Tenant GUID manually. Discovery and actual Graph/Exchange provisioning are separate administrative sign-ins in this preview. Exchange tenant identity is independently checked using `Get-ConnectionInformation` before any changes.
 - The wizard uses PowerShell 7 for Microsoft 365 provisioning. The operator must consent with an authorized administrative account.

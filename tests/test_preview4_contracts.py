@@ -8,10 +8,10 @@ class Preview4Contracts(unittest.TestCase):
         proj = (ROOT/'src/LinuxMailRelay365/LinuxMailRelay365.csproj').read_text()
         app = (ROOT/'src/LinuxMailRelay365/MainForm.cs').read_text()
         fallback = (ROOT/'src/LinuxMailRelay365/UpdateCheck.Fallback.cs').read_text()
-        assert '<Version>0.1.0-preview.7</Version>' in proj
+        assert '<Version>0.1.0-preview.8</Version>' in proj
         assert '<ApplicationIcon>Assets/LinuxMailRelay365.ico</ApplicationIcon>' in proj
         assert 'GetManifestResourceStream("LinuxMailRelay365.BrandIcon")' in app
-        assert '0.1.0-preview.7' in fallback
+        assert '0.1.0-preview.8' in fallback
         assert (ROOT/'src/LinuxMailRelay365/Assets/LinuxMailRelay365.ico').stat().st_size > 1024
 
     def test_diagnostics_privacy_and_visible_export(self):
