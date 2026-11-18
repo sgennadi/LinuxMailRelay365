@@ -499,6 +499,29 @@ archive for each activation. AUTH/TLS downgrade, certificate rotation and
 EOP re-routing refuse to operate while public submission remains active.
 **No Stable release is implied.**
 
+## Generate a strong per-application SMTP password (Preview 15)
+
+Advanced SMTP now provides a one-time password generation action.
+After checking a safe account login and obtaining separate confirmation,
+Linux uses a cryptographic random generator and OpenSSL SHA512-CRYPT with
+a random salt. It creates only root-owned, mode 0600, hash-only and
+login:hash files under /etc/linuxmailrelay365/generated-accounts/ (0700).
+No plaintext password file is created.
+
+The one-time plaintext travels back over the administrator's verified SSH
+connection to a dedicated masked Windows dialog. This value is not written
+to diagnostics, wizard state or a mail configuration. The admin must copy
+it securely before closing the dialog. Clipboard copying is an explicit
+button action and leaves a clipboard copy under the admin's control.
+Abandoned hash files need deliberate root-only cleanup; the generator
+refuses to overwrite existing files. Password generation alone does not
+create a Dovecot account or change Microsoft 365. The usual Preview/Apply
+flow for Add/Rotate is still required.
+
+Do not run the standalone generate command using tee, transcript recording
+or an unattended job: it intentionally emits a ONE-TIME password to stdout.
+The Windows Wizard consumes that sensitive line without logging it.
+
 ## RHEL SELinux Enforcing live SMTP handshake test (Preview 15)
 
 A separate expert-only read-only live test checks an ALREADY-installed isolated

@@ -59,6 +59,20 @@ class SecretGenerationContract(unittest.TestCase):
             self.assertEqual(run.call_args[1]["input"],
                              "VeryLongRandomPassword_12345678901\n")
 
+    def test_wizard_uses_no_sensitive_result_logging(self):
+        wizard = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
+        embedded = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
+        project = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+        block = wizard.split("private async Task GenerateSmtpCredentialAsync()", 1)[1].split(
+            "private async Task PreviewSmtpAccountChangeAsync()", 1)[0]
+        self.assertIn("SMTP_GENERATED_SECRET=", block)
+        self.assertIn("BuildSmtpCredentialGeneratorBundle", block)
+        self.assertNotIn("WriteLine(generated.StdOut)", block)
+        self.assertNotIn("generated.EnsureSuccess()", block)
+        self.assertIn("UseSystemPasswordChar = true", block)
+        self.assertIn("BuildSmtpCredentialGeneratorBundle", embedded)
+        self.assertIn("generate-smtp-client-credential.py", project)
+
     def test_compatibility_with_existing_auth_sources(self):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('username+":"+salt_hash+"\\n"', source)
