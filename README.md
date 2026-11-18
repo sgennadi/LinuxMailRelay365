@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.8 — source and GitHub Actions builds; not a verified production release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.9 — source and GitHub Actions builds; not a verified production release.**
 
 ## Intended workflow
 
@@ -78,7 +78,7 @@ per-account controls, monitoring, and revocation; a warning acknowledgment
 alone is **not a technical security control**. This preview does not
 implement or claim those capabilities.
 
-## Preserve Existing Mail: isolated Postfix channel (Preview 8)
+## Preserve Existing Mail: isolated Postfix channel (Preview 9)
 
 When the read-only Linux inspection finds **existing Postfix**, the default
 **Preserve Existing Mail** setting now configures an independent Postfix instance
@@ -103,7 +103,7 @@ yet: restrict it to localhost unless the network is isolated and trusted.
 - Existing sidecar installations are never overwritten silently. Failed new
   installations remove their new service/configuration while retaining the
   separate queue for inspection. This is *not* a full restore of all packages.
-- Only existing Postfix is supported by this mode in Preview 8.
+- Only existing Postfix is supported by this mode in Preview 9.
   Existing Sendmail/Exim are protected; their sidecars are not implemented.
 
 **Deployment limitation:** the installer has not yet been exercised against
