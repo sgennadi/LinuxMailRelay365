@@ -46,9 +46,14 @@ function Fingerprint([guid]$tenant,[string]$domain,[string]$name,
         "$([string]$_.Identity)|$([string]$_.ConnectorType)|$([string]$_.Enabled)|$ips|$([string]$_.TlsSenderCertificateName)"
     } | Sort-Object)
     $nl = [Environment]::NewLine
-    $payload = [string]::Join($nl,@('lmr365-connector/v1',$tenant.ToString('D'),
-        $domain.ToLowerInvariant(),$name.ToLowerInvariant(),
-        $ident.ToLowerInvariant(), [string]::Join($nl,$lines)))
+    $parts = [System.Collections.Generic.List[string]]::new()
+    $parts.Add('lmr365-connector/v1')
+    $parts.Add($tenant.ToString('D'))
+    $parts.Add($domain.ToLowerInvariant())
+    $parts.Add($name.ToLowerInvariant())
+    $parts.Add($ident.ToLowerInvariant())
+    $parts.Add([string]::Join($nl, [string[]]$lines))
+    $payload = [string]::Join($nl, $parts.ToArray())
     $raw = [System.Text.Encoding]::UTF8.GetBytes($payload)
     return [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($raw)).ToLowerInvariant()
 }
