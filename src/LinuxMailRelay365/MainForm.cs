@@ -741,6 +741,10 @@ internal sealed class MainForm : Form
                         "SMTP client accounts: individual access (Microsoft 365 sender unchanged)",
                         "חשבונות SMTP נפרדים לכל יישום")));
                     AddLine(page, smtpAccountOperation);
+                    AddAction(page, T("Создать SMTP-пароль и хеш на Linux (показать один раз)...",
+                                      "Generate SMTP password + hash (show once)...",
+                                      "צור סיסמת SMTP והצג פעם אחת"),
+                                      GenerateSmtpCredentialAsync, false, "shield", "smtp-secret-generate");
                     AddField(page, T("Имя SMTP-учётной записи", "SMTP client username", "שם חשבון SMTP"), smtpAccountName);
                     AddField(page, T("Linux-файл с одним хешем (для Add/Rotate)",
                                      "Existing Linux file containing one salted hash (Add/Rotate)",
@@ -1371,6 +1375,78 @@ internal sealed class MainForm : Form
             _ => throw new InvalidDataException("Choose Add, Rotate or Revoke.")
         };
         return (port, operation, smtpAccountName.Text.Trim(), smtpAccountHashPath.Text.Trim());
+    }
+
+    private async Task GenerateSmtpCredentialAsync()
+    {
+        string username = smtpAccountName.Text.Trim();
+        var endpoint = Endpoint();
+        var check = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildSmtpCredentialGeneratorBundle(username, false),
+            TimeSpan.FromSeconds(50));
+        if (check.ExitCode != 0 ||
+            !check.StdOut.Contains("SMTP_SECRET_PREFLIGHT=valid_username_only", StringComparison.Ordinal))
+            throw new InvalidOperationException("SMTP credential preview refused the account name.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Generate per-client SMTP secret",
+            "Generate a cryptographically random SMTP client password on Linux. " +
+            "Only two new root-only salted SHA512-CRYPT hash files will remain on disk. " +
+            "The plaintext password is returned ONCE through your verified SSH session " +
+            "and shown only in a private Windows dialog; it is never written to logs or configuration. " +
+            "Existing files cannot be overwritten. This does not modify Postfix or Microsoft 365. " +
+            "Save the password securely before closing the dialog; the server cannot recover it.",
+            "GENERATE SMTP PASSWORD")) return;
+        var generated = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildSmtpCredentialGeneratorBundle(username, true),
+            TimeSpan.FromSeconds(70));
+        // Never call EnsureSuccess here: it formats remote stdout into the
+        // exception, which could accidentally disclose a generated secret.
+        if (generated.ExitCode != 0)
+            throw new InvalidOperationException("SMTP password generation failed. Inspect root-only Linux files without logging stdout.");
+        var secret = System.Text.RegularExpressions.Regex.Match(generated.StdOut,
+            @"(?m)^SMTP_GENERATED_SECRET=([A-Za-z0-9_-]{38,100})\r?$");
+        var hash = System.Text.RegularExpressions.Regex.Match(generated.StdOut,
+            @"(?m)^SMTP_GENERATED_HASH_PATH=(/etc/linuxmailrelay365/generated-accounts/[A-Za-z0-9._@-]+[.]hash)\r?$");
+        var passwd = System.Text.RegularExpressions.Regex.Match(generated.StdOut,
+            @"(?m)^SMTP_GENERATED_PASSWD_PATH=(/etc/linuxmailrelay365/generated-accounts/[A-Za-z0-9._@-]+[.]passwd)\r?$");
+        if (!secret.Success || !hash.Success || !passwd.Success ||
+            !generated.StdOut.Contains("SMTP_GENERATED_STATUS=created", StringComparison.Ordinal))
+            throw new InvalidDataException("Secret response incomplete. Inspect Linux hash files before retrying; plaintext cannot be recovered.");
+        smtpAccountHashPath.Text = hash.Groups[1].Value;
+        if (string.IsNullOrWhiteSpace(privateAuthHashPath.Text))
+            privateAuthHashPath.Text = passwd.Groups[1].Value;
+        WriteLine("Generated a private SMTP password and two root-only salted hash files. No plaintext entered logs.");
+        using var dialog = new Form
+        {
+            Text = "LinuxMailRelay365 | One-time SMTP password",
+            StartPosition = FormStartPosition.CenterParent,
+            ClientSize = new Size(655, 215),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MinimizeBox = false, MaximizeBox = false
+        };
+        var note = new Label
+        {
+            Left = 16, Top = 15, Width = 625, Height = 55,
+            Text = "This SMTP application password is shown only once. " +
+                   "Copy it securely into the client before closing this dialog."
+        };
+        var passwordField = new TextBox
+        {
+            Left = 16, Top = 77, Width = 625, ReadOnly = true,
+            Text = secret.Groups[1].Value, UseSystemPasswordChar = true
+        };
+        var show = new CheckBox { Left = 16, Top = 114, Width = 155,
+                                  Text = "Show password" };
+        show.CheckedChanged += (_, _) =>
+            passwordField.UseSystemPasswordChar = !show.Checked;
+        var copy = new Button { Left = 265, Top = 157, Width = 175,
+                                Text = "Copy to clipboard" };
+        copy.Click += (_, _) => Clipboard.SetText(passwordField.Text);
+        var close = new Button { Left = 453, Top = 157, Width = 188,
+                                 Text = "I saved the password", DialogResult = DialogResult.OK };
+        dialog.AcceptButton = close;
+        dialog.Controls.AddRange([note, passwordField, show, copy, close]);
+        try { dialog.ShowDialog(this); }
+        finally { passwordField.Clear(); }
     }
 
     private async Task PreviewSmtpAccountChangeAsync()
