@@ -145,13 +145,31 @@ PY
 # Enforcing hosts are not supported for the matching activation either.
 # Do not silently relabel queue/socket or disable enforcement on rollback.
 selinux_status="$(getenforce 2>/dev/null || true)"
-# If getenforce is absent but the kernel reports Enforcing, block anyway.
+# If getenforce is missing, inspect the kernel SELinux enforcement flag.
 if [ -r /sys/fs/selinux/enforce ] && [ "$(cat /sys/fs/selinux/enforce)" = 1 ]; then
   selinux_status=Enforcing
 fi
 rhel_like=0
 if [ -f /etc/os-release ] &&
-  grep -Eq '^ID="?(rhel|ol|rocky|almalinux|centos)"?
+   grep -Eq '^ID="?(rhel|ol|rocky|almalinux|centos)"?$' /etc/os-release; then
+  rhel_like=1
+fi
+if [ "$selinux_status" = Enforcing ]; then
+  echo 'AUTH_TLS_RESTORE_ERROR=selinux_enforcing_requires_manual_review' >&2
+  exit 3
+fi
+if [ "$selinux_status" = Permissive ] && [ "$rhel_like" -eq 1 ]; then
+  echo 'AUTH_TLS_RESTORE_ERROR=rhel_selinux_permissive_policy_not_verified' >&2
+  exit 3
+fi
+case "$selinux_status" in
+  Disabled|Permissive) ;;
+  *) if [ "$rhel_like" -eq 1 ] || [ -e /etc/selinux/config ] ||
+          [ -e /sys/fs/selinux/enforce ]; then
+       echo 'AUTH_TLS_RESTORE_ERROR=selinux_status_unknown_manual_review_required' >&2
+       exit 3
+     fi ;;
+esac
 read_hash() {
   local value
   value="$(cat "$1")" || return 1
