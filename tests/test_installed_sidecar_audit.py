@@ -75,6 +75,13 @@ class InstalledSidecarAuditUnitTests(unittest.TestCase):
         self.assertIn("ssl._create_unverified_context()", text)
         self.assertIn("TLS_CLIENT_CERT_TRUST", text)
         self.assertIn("not_verified", text)
+        embedded = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text()
+        gui = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text()
+        project = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text()
+        self.assertIn("BuildInstalledSidecarAuditBundle", embedded)
+        self.assertIn("installed-sidecar-audit.py", project)
+        self.assertIn("AuditInstalledPrivateSmtpAsync", gui)
+        self.assertIn("GetIsolatedSidecarPortAsync", gui)
 
     def test_unauthorized_relay_policy_never_gets_green(self):
         values = {
