@@ -249,6 +249,12 @@ def interface_for(ip):
     raise Refused("requested_ipv4_not_assigned")
 
 
+def ufw_matching_rules(text, ip, port):
+    return [line for line in text.splitlines()
+            if "ALLOW" in line and re.search(r"(?<![0-9]){}(?![0-9])".format(port), line) and
+            (ip in line or re.search(r"(?<![0-9]){}/tcp(?![0-9])".format(port), line))]
+
+
 def firewall(ip, port):
     iface = interface_for(ip)
     ufw = shutil.which("ufw") and "Status: active" in cmd(["ufw", "status"])
@@ -267,8 +273,20 @@ def firewall(ip, port):
         # firewalld reports exit 0 if present, 1 if absent. Any other
         # result is a probe failure: never claim the requested rule is new.
         for permanent in (False, True):
-            query = ["firewall-cmd"] + (["--permanent"] if permanent else []) + [
-                "--zone=" + zone, "--query-rich-rule=" + rule]
+            prefix = ["firewall-cmd"] + (["--permanent"] if permanent else [])
+            # A global port opening owned by someone else is not ours to
+            # replace or roll back. Refuse even before modifying Postfix.
+            global_query = prefix + ["--zone=" + zone, "--query-port={}/tcp".format(port)]
+            try:
+                global_result = subprocess.run(global_query, stdout=subprocess.PIPE,
+                                               stderr=subprocess.PIPE, timeout=12)
+            except (OSError, subprocess.TimeoutExpired):
+                raise Refused("firewall_port_query_failed")
+            if global_result.returncode == 0:
+                raise Refused("preexisting_global_firewall_port_rule")
+            if global_result.returncode != 1:
+                raise Refused("firewall_port_query_unreliable")
+            query = prefix + ["--zone=" + zone, "--query-rich-rule=" + rule]
             try:
                 check = subprocess.run(query, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, timeout=12)
@@ -282,7 +300,10 @@ def firewall(ip, port):
     # For UFW check any existing unrestricted port exposure; refuse changing
     # or taking ownership of an existing rule (the user must review it).
     raw = cmd(["ufw", "status"])
-    if re.search(r"(?m)^\s*{}(/tcp)?\s+ALLOW\s+Anywhere\b".format(port), raw):
+    # Inspect explicit destination rules as well as bare PORT/tcp entries.
+    # Fail closed if any other firewall change already owns the same
+    # destination and exposed TCP port.
+    if ufw_matching_rules(raw, ip, port):
         raise Refused("preexisting_public_firewall_rule")
     return {"backend": "ufw", "zone": "", "rule": ""}
 
@@ -315,8 +336,12 @@ def firewall_remove(net, ip, port):
             elif result.returncode != 1:
                 raise Refused("firewall_restore_query_unreliable")
     elif net["backend"] == "ufw":
-        cmd(["ufw", "--force", "delete", "allow", "in", "proto", "tcp",
-             "from", "any", "to", ip, "port", str(port)])
+        rules = ufw_matching_rules(cmd(["ufw", "status"]), ip, port)
+        if len(rules) > 1 or (rules and "LinuxMailRelay365Public" not in rules[0]):
+            raise Refused("ufw_public_rule_ownership_unverifiable")
+        if rules:
+            cmd(["ufw", "--force", "delete", "allow", "in", "proto", "tcp",
+                 "from", "any", "to", ip, "port", str(port)])
     else:
         raise Refused("invalid_owned_firewall_rule")
 

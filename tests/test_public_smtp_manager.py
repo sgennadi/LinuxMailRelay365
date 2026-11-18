@@ -66,6 +66,8 @@ class PublicSmtpContracts(unittest.TestCase):
         self.assertIn("firewall_remove(", source)
         self.assertIn("public_firewall_rule_already_exists", source)
         self.assertIn("firewall_rule_query_unreliable", source)
+        self.assertIn("preexisting_global_firewall_port_rule", source)
+        self.assertIn("ufw_public_rule_ownership_unverifiable", source)
         self.assertIn("reload_postfix(original)", source)
         self.assertIn("atomic(STATE / archive, before, 0o600)", source)
         self.assertIn("invalid_recovery_archive_name", source)
@@ -82,6 +84,14 @@ class PublicSmtpContracts(unittest.TestCase):
         self.assertIn(b"smtpd_client_event_limit_exceptions = \n", new)
         with self.assertRaisesRegex(module.Refused, "duplicate_postfix_parameter"):
             module.mutate_main(old + b"smtpd_client_restrictions = bad\n", module.CHANGES)
+
+    def test_ufw_rule_scope_and_comment_ownership(self):
+        matches = module.ufw_matching_rules(
+            "To Action From\n192.168.30.3 46500/tcp ALLOW IN Anywhere # LinuxMailRelay365Public\n"
+            "192.168.30.8 46501/tcp ALLOW IN Anywhere\n"
+            "22/tcp ALLOW IN Anywhere\n", "192.168.30.3", 46500)
+        self.assertEqual(len(matches), 1)
+        self.assertIn("LinuxMailRelay365Public", matches[0])
 
     def test_outbound_eop_route_cannot_be_mutated_beneath_manifest(self):
         src = SCRIPT.read_text(encoding="utf-8")
