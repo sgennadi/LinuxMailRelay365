@@ -140,4 +140,6 @@ sudo systemctl start "$UNIT"
 sudo systemctl is-active --quiet "$UNIT"
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
 sudo postfix -c "$CONF" check
+echo '=== Real isolated recovery smoke for fresh private Connector ==='
+bash tests/smoke_scoped_recovery.sh "$PORT"
 echo 'FRESH_CONNECTOR_NO_OAUTH_UBUNTU_SMOKE=PASS'
