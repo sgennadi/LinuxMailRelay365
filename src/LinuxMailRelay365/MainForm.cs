@@ -493,6 +493,10 @@ internal sealed class MainForm : Form
                                       "Enable SMTP AUTH + STARTTLS on isolated Postfix...",
                                       "הפעלת SMTP AUTH + STARTTLS בשרת נפרד"),
                                       EnableAuthTlsAsync, false, "shield", "auth-tls-apply");
+                    AddAction(page, T("Восстановить прежний SMTP без AUTH/STARTTLS... (опасное ослабление защиты)",
+                                      "Restore previous SMTP without AUTH/STARTTLS... (security downgrade)",
+                                      "שחזור SMTP ללא אימות והצפנה (הפחתת אבטחה)"),
+                                      RestoreAuthTlsAsync, false, "rotate-ccw", "auth-tls-restore");
                 }
                 if (inspectedMail is not null && inspectedServerIdentity == TryCurrentIdentity())
                 {
@@ -915,6 +919,55 @@ internal sealed class MainForm : Form
         WriteLine("Update clients: configured DNS name " + privateAuthDns.Text.Trim() +
                   ", custom port " + isolatedSmtpPort.Text.Trim() +
                   ", STARTTLS REQUIRED, SMTP AUTH REQUIRED, verify server DNS and CA trust. Authentication details are not stored by this wizard.");
+    }
+
+    private async Task RestoreAuthTlsAsync()
+    {
+        var endpoint = Endpoint();
+        if (publicInternetRequested.Checked)
+            throw new InvalidOperationException("Uncheck Public Internet SMTP planning before restoring an unauthenticated private relay.");
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("No installed isolated Postfix was detected.");
+        int installedPort = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) ||
+            selectedPort != installedPort)
+            throw new InvalidOperationException("The Wizard custom SMTP port must match the actual installed isolated TCP port (" + installedPort + ") before restoration.");
+        if (await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None) != true)
+            throw new InvalidOperationException("SMTP AUTH/STARTTLS is not verified as active. Restoration blocked until the installed mode is inspected.");
+        var preview = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildAuthTlsRestoreBundle(installedPort),
+            TimeSpan.FromSeconds(90));
+        preview.EnsureSuccess();
+        var hashMatch = System.Text.RegularExpressions.Regex.Match(preview.StdOut,
+            @"(?m)^AUTH_TLS_RESTORE_CURRENT_MAIN_SHA256=([a-f0-9]{64})\r?$");
+        if (!preview.StdOut.Contains("AUTH_TLS_RESTORE_PREFLIGHT=ready", StringComparison.Ordinal) ||
+            !hashMatch.Success)
+            throw new InvalidDataException("The isolated SMTP AUTH restore preflight did not return a verified SHA-256.");
+        string fingerprint = hashMatch.Groups[1].Value;
+        WriteLine("Restore preflight ready for installed isolated TCP " + installedPort +
+                  "; SMTP AUTH and mandatory STARTTLS will be DISABLED. Current configuration SHA-256: " + fingerprint +
+                  ". No changes made so far.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Restore previous private SMTP",
+            T("ОПАСНО: будет выключена обязательная TLS-защита и SMTP AUTH на порту ",
+              "SECURITY DOWNGRADE: mandatory TLS and per-client SMTP AUTH will be disabled on TCP ",
+              "אזהרה: הצפנה ואימות SMTP יוסרו ביציאה ") + installedPort +
+            "\n" + T("Приложения смогут отправлять почту без пароля из доверенных подсетей. Перед операцией создаётся закрытый backup действующих настроек, ключа и хешей. Основной Postfix не меняется. НЕ открывайте порт в интернет.",
+                "Applications in the trusted private CIDRs will be able to submit mail WITHOUT passwords. An offline root-only archive of the active TLS key and password hashes is retained for recovery. Primary Postfix is unchanged. NEVER expose this port to the Internet.",
+                "השחזור מאפשר שליחה מרשתות מהימנות ללא סיסמה. ארכיון פרטי יישמר. אין לפתוח את הפורט לאינטרנט."),
+            "RESTORE TRUSTED SMTP")) return;
+        // The root-side restore script rechecks the complete SHA-256, private
+        // listeners, stored manifests and policy under an exclusive lock.
+        var applied = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildAuthTlsRestoreBundle(installedPort, fingerprint),
+            TimeSpan.FromMinutes(3));
+        applied.EnsureSuccess();
+        if (!applied.StdOut.Contains("AUTH_TLS_RESTORED=yes", StringComparison.Ordinal))
+            throw new InvalidOperationException("The isolated SMTP restoration did not confirm success. Inspect recovery diagnostics.");
+        WriteLine(applied.StdOut);
+        WriteLine("Restored private trusted-CIDR SMTP on TCP " + installedPort +
+                  ". Update every affected application's settings: STARTTLS and SMTP AUTH are NO LONGER required. " +
+                  "The recovery archive holds sensitive TLS key/password hash material and must remain root-only. " +
+                  "Do not open the port to public internet.");
     }
 
     private async Task AuditInstalledPrivateSmtpAsync()
