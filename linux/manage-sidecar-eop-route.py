@@ -253,8 +253,9 @@ def runtime_checks(allow_active_route=False):
         for item in trusted:
             net = ipaddress.ip_network(item, strict=False)
             if not isinstance(net, ipaddress.IPv4Network) or not (
-                    net.subnet_of(ipaddress.ip_network("127.0.0.0/8")) or
-                    any(net.subnet_of(v) for v in private)):
+                    net.network_address in ipaddress.ip_network("127.0.0.0/8") and
+                    net.broadcast_address in ipaddress.ip_network("127.0.0.0/8") or
+                    any(net.network_address in v and net.broadcast_address in v for v in private)):
                 raise Refused("untrusted_client_network_blocked")
     except ValueError:
         raise Refused("invalid_private_cidr")
@@ -294,10 +295,24 @@ def runtime_checks(allow_active_route=False):
 
 def system_ca():
     for location in ("/etc/ssl/certs/ca-certificates.crt",
-                     "/etc/pki/tls/certs/ca-bundle.crt"):
+                     "/etc/pki/tls/certs/ca-bundle.crt",
+                     "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"):
         p = Path(location)
-        if p.is_file() and not p.is_symlink():
-            return location
+        if not p.is_file():
+            continue
+        # RHEL's documented CA bundle is commonly a root-owned symlink.
+        # Resolve it only inside known system-trust directories.
+        try:
+            target = p.resolve(strict=True)
+            path = str(target)
+            trusted_root = (path.startswith("/etc/ssl/certs/") or
+                            path.startswith("/etc/pki/ca-trust/extracted/"))
+            info = target.stat()
+            if trusted_root and stat.S_ISREG(info.st_mode) and not info.st_uid and \
+                    not info.st_mode & 0o022 and 0 < info.st_size <= 32 * 1024 * 1024:
+                return location
+        except OSError:
+            pass
     raise Refused("system_ca_bundle_not_found")
 
 
