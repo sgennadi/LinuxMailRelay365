@@ -758,6 +758,7 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/recovery.sh\" <<'LMR365_RECOVERY'\n" +
                Encode(Recovery) + "\nLMR365_RECOVERY\n" +
                "bash \"$work/recovery.sh\" " + command +
-               (backupId is null ? "" : " " + backupId) + "\n";
+               (backupId is null ? "" : " " + backupId) +
+               (command == "--restore" ? " --confirm RESTORE_POSTFIX_CONFIGURATION" : "") + "\n";
     }
 }
