@@ -78,7 +78,7 @@ internal static class MailRoutingPlanStore
     {
         if (state.SidecarPort is < 1024 or > 65535)
             throw new InvalidDataException("Isolated SMTP port must be between 1024 and 65535.");
-        if (state.Transport is not ("oauth2" or "connector") ||
+        if (state.Transport is not ("oauth2" or "connector" or "direct-send") ||
             state.SenderPolicy is not ("fixed-mailbox" or "preserve-domain" or "masquerade"))
             throw new InvalidDataException("Unsupported routing policy.");
         if (state.VerifiedDomain.Length > 253 ||
