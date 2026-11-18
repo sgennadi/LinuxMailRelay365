@@ -17,6 +17,7 @@ internal static class EmbeddedAssets
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
+    internal static string SidecarConfigRecovery => Text("LinuxMailRelay365.linux.sidecar-config-recovery.py");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
     internal static string DirectSendSidecarInstaller => Text("LinuxMailRelay365.linux.direct-send-sidecar.sh");
     internal static string ConnectorSidecarInstaller => Text("LinuxMailRelay365.linux.connector-sidecar.sh");
@@ -795,4 +796,34 @@ internal static class EmbeddedAssets
                (backupId is null ? "" : " " + backupId) +
                (command == "--restore" ? " --confirm RESTORE_POSTFIX_CONFIGURATION" : "") + "\n";
     }
+    internal static string BuildSidecarConfigRecoveryBundle(
+        string command, string? backupId = null, string? currentSha256 = null)
+    {
+        if (command is not ("--backup" or "--list" or "--verify" or "--preview-restore" or "--restore"))
+            throw new ArgumentException("Unsupported isolated SMTP recovery operation.");
+        bool needsId = command is "--verify" or "--preview-restore" or "--restore";
+        if (needsId != (backupId is not null) ||
+            (needsId && !Regex.IsMatch(backupId!,
+                @"\A[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\z", RegexOptions.CultureInvariant)))
+            throw new ArgumentException("Invalid isolated recovery backup identifier.");
+        if (command == "--restore")
+        {
+            if (currentSha256 is null || !Regex.IsMatch(currentSha256,
+                @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+                throw new ArgumentException("Review current isolated configuration SHA-256 before Restore.");
+        }
+        else if (currentSha256 is not null)
+            throw new ArgumentException("Current SHA-256 is allowed only for Restore.");
+        string args = command + (backupId is null ? "" : " " + backupId) +
+            (command == "--restore" ?
+                " --expect-current-sha256 " + currentSha256 +
+                " --confirm RESTORE_ISOLATED_RELAY_CONFIGURATION" : "");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-sidecar-recovery.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/sidecar-config-recovery.py\" <<'LMR365_SIDECAR_RECOVERY'\n" +
+               Encode(SidecarConfigRecovery) + "\nLMR365_SIDECAR_RECOVERY\n" +
+               "python3 \"$work/sidecar-config-recovery.py\" " + args + "\n";
+    }
+
 }
