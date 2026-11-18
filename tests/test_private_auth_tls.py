@@ -71,6 +71,13 @@ class PrivateSmtpAuthTlsTests(unittest.TestCase):
             'AUTH_TLS_ERROR=selinux_enforcing_not_verified',
             'AUTH_TLS_ERROR=rhel_selinux_permissive_policy_not_verified',
             'AUTH_TLS_ERROR=selinux_status_unknown_manual_review_required',
+            'DOVECOT_CONFIG_FAMILY=2.3',
+            'DOVECOT_CONFIG_FAMILY=2.4',
+            'dovecot_config_version = 2.4.0',
+            'dovecot_storage_version = 2.4.0',
+            'auth_allow_cleartext = yes',
+            'passdb passwd-file {',
+            'passwd_file_path = /etc/linuxmailrelay365/smtp-auth/passwd',
         ):
             self.assertIn(token, s)
         for forbidden in (
