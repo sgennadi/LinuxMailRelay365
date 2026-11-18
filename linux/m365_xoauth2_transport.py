@@ -25,6 +25,7 @@ from email.utils import formatdate, make_msgid
 from pathlib import Path
 
 CONF_FILE = Path('/etc/postfix/m365-oauth/app.json')
+SIDECAR_CONF_FILE = Path('/etc/linuxmailrelay365/sidecar-identity/app.json')
 EX_TEMPFAIL = 75
 EX_OK = 0
 MAX_MESSAGE_BYTES = 25 * 1024 * 1024
@@ -57,8 +58,11 @@ def validate_guid(value):
     return str(uuid.UUID(value))
 
 
-def load_config():
-    data = json.loads(CONF_FILE.read_text(encoding='utf-8'))
+def load_config(path=None):
+    path = CONF_FILE if path is None else Path(path)
+    if path not in (CONF_FILE, SIDECAR_CONF_FILE):
+        raise ValueError('Unsupported XOAUTH2 configuration path')
+    data = json.loads(path.read_text(encoding='utf-8'))
     for required in ('tenant_id', 'client_id', 'mailbox', 'certificate', 'private_key'):
         if not data.get(required):
             raise ValueError('Missing configuration entry: ' + required)
@@ -187,9 +191,11 @@ def run(argv=None):
     ap.add_argument('--recipient', help='Single envelope recipient from Postfix')
     ap.add_argument('--token-check', action='store_true', help='Check Entra token acquisition without printing token')
     ap.add_argument('--config-check', action='store_true', help='Check local configuration only')
+    ap.add_argument('--config', choices=[str(CONF_FILE), str(SIDECAR_CONF_FILE)],
+                    default=str(CONF_FILE), help='Explicit instance identity configuration')
     args = ap.parse_args(argv)
     try:
-        config = load_config()
+        config = load_config(args.config)
         if args.config_check:
             print('Local configuration OK (no network connection attempted)')
             return EX_OK
