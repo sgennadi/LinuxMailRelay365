@@ -152,7 +152,9 @@ def policy_maps(args):
     domain = fixed_regex(accepted)
     exact = "/^[^@[:space:]]+@{}$/ OK\n".format(domain)
     if args.sender_policy == "fixed-mailbox":
-        sender = exact
+        # Fixed mailbox: reject every other local-part in the same domain.
+        # The colon delimiter cannot appear in the validated mailbox syntax.
+        sender = ":^{}$: OK\n".format(re.escape(args.sender.lower()))
         canonical = "/^.+$/ {}\n".format(args.sender.lower())
     elif args.sender_policy == "preserve-domain":
         sender = exact
