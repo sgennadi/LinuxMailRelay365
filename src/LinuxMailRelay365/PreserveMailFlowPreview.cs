@@ -75,8 +75,8 @@ internal sealed record PreserveFlowSnapshot(
             "NEW APPLICATIONS (send via Microsoft 365):\r\n" +
             "  SMTP server: " + listener + "\r\n" +
             "  SMTP port: " + port + "\r\n" +
-            "  SMTP AUTH: not available on the sidecar in this preview.\r\n" +
-            "  SMTP TLS to Linux: not available on the sidecar in this preview.\r\n" +
+            "  SMTP AUTH: not enabled by default; optional private-sidecar AUTH requires explicit setup.\r\n" +
+            "  SMTP TLS to Linux: not enabled by default; mandatory STARTTLS after explicit hardening.\r\n" +
             "  Sender (From/envelope): rewritten to " + sender + "\r\n" +
             "  Recipient (To): preserved; Microsoft 365 routes it normally.\r\n" +
             "  Entra tenant: " + tenant + "\r\n" +
@@ -86,6 +86,7 @@ internal sealed record PreserveFlowSnapshot(
             (LocalOnly ? "  The application must run ON THIS LINUX HOST. Remote clients cannot use 127.0.0.1 on a different machine.\r\n" :
                          "  Remote clients must be in a trusted CIDR; an administrator must explicitly allow the selected port through firewall.\r\n") +
             "  Public internet SMTP: NOT SUPPORTED / NOT ENABLED.\r\n" +
+            "  Verify installed SMTP AUTH/TLS status before changing client settings.\r\n" +
             "Do not switch an existing application automatically. Verify an actual test message and Exchange delivery first.\r\n";
         if (lang == 2) return
             "LinuxMailRelay365 | שימור דואר קיים | הגדרות מוצעות (טרם אומתו)\r\n" +
@@ -94,7 +95,7 @@ internal sealed record PreserveFlowSnapshot(
             "יישומים קיימים: אין שינוי ביציאות, בניתוב או בתור הדואר.\r\n" +
             "יישומים חדשים:\r\n  שרת SMTP: " + listener +
             "\r\n  יציאת SMTP: " + port +
-            "\r\n  אימות SMTP: לא זמין בגרסה זו\r\n  TLS נכנס: לא זמין בגרסה זו" +
+            "\r\n  אימות SMTP: כבוי כברירת מחדל (ניתן להפעיל בנפרד)\r\n  STARTTLS: כבוי כברירת מחדל (חובה לאחר הפעלה מפורשת)" +
             "\r\n  כתובת השולח: " + sender + "\r\n  נמען: נשאר ללא שינוי" +
             "\r\n  Tenant: " + tenant + "\r\n  רשתות מהימנות: " + networks +
             "\r\n  תור נפרד: /var/spool/linuxmailrelay365-sidecar\r\n" +
@@ -109,8 +110,8 @@ internal sealed record PreserveFlowSnapshot(
             "НОВЫЕ ПРИЛОЖЕНИЯ для отправки через Microsoft 365:\r\n" +
             "  SMTP-сервер: " + listener + "\r\n" +
             "  SMTP-порт: " + port + "\r\n" +
-            "  SMTP AUTH: в этом Preview для локального SMTP не реализован.\r\n" +
-            "  Входящий TLS до Linux: в этом Preview не реализован.\r\n" +
+            "  SMTP AUTH: по умолчанию выключен; для отдельного Postfix включается явно.\r\n" +
+            "  STARTTLS до Linux: по умолчанию выключен; после явного включения обязателен.\r\n" +
             "  Отправитель From/envelope: будет заменён на " + sender + "\r\n" +
             "  Получатель To: остаётся прежним; доставку выполняет Microsoft 365.\r\n" +
             "  Tenant: " + tenant + "\r\n" +
