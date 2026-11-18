@@ -8,10 +8,12 @@ MODE=check
 SMTP_PORT=2525
 LISTEN_IP=''
 CONFIRM=''
+PUBLIC_INTERNET=0
 TRUSTED_NETWORKS=()
 usage() {
   echo 'Usage: network-firewall.sh --check|--validate-only|--apply --smtp-port N [--listen-ip IPv4 --trusted-network CIDR]...'
   echo 'Firewall changes require --apply --confirm OPEN_TRUSTED_SMTP_PORT.'
+  echo 'Option --public-internet is risk assessment ONLY. Public firewall opening is blocked until SMTP AUTH/TLS are implemented.'
 }
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -21,6 +23,7 @@ while [ "$#" -gt 0 ]; do
     --smtp-port) SMTP_PORT="${2:?}"; shift 2 ;;
     --listen-ip) LISTEN_IP="${2:?}"; shift 2 ;;
     --trusted-network) TRUSTED_NETWORKS+=("${2:?}"); shift 2 ;;
+    --public-internet) PUBLIC_INTERNET=1; shift ;;
     --confirm) CONFIRM="${2:?}"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) echo 'Unsupported network/firewall option.' >&2; exit 2 ;;
@@ -54,7 +57,17 @@ except ValueError as exc:
     sys.stderr.write('NETWORK_POLICY=invalid (' + str(exc) + ')\n')
     sys.exit(2)
 PY
+if [ "$PUBLIC_INTERNET" -eq 1 ] && [ "$MODE" = apply ]; then
+  echo 'PUBLIC_SMTP_APPLY_BLOCKED=authentication_tls_rate_limits_not_implemented' >&2
+  echo 'Opening a public unauthenticated relay would allow spam, abuse and blacklisting.' >&2
+  exit 3
+fi
 if [ "$MODE" = validate ]; then
+  if [ "$PUBLIC_INTERNET" -eq 1 ]; then
+    echo 'PUBLIC_SMTP_PLAN=selected_not_active'
+    echo 'PUBLIC_SMTP_APPLY_ALLOWED=no'
+    echo 'PUBLIC_SMTP_REQUIREMENTS=SMTP_AUTH_TLS_rate_limits_monitoring'
+  fi
   echo 'NETWORK_POLICY=valid'
   echo 'FIREWALL_CHANGES=no'
   exit 0
@@ -90,6 +103,12 @@ echo "FIREWALL_ACTIVE=$fw_active"
 echo "SMTP_PORT=$SMTP_PORT"
 echo "SMTP_LISTENER_REQUESTED=${LISTEN_IP:-loopback}"
 echo "TRUSTED_CIDR_COUNT=${#TRUSTED_NETWORKS[@]}"
+if [ "$PUBLIC_INTERNET" -eq 1 ]; then
+  echo 'PUBLIC_SMTP_PLAN=selected_not_active'
+  echo 'PUBLIC_SMTP_APPLY_ALLOWED=no'
+  echo 'PUBLIC_SMTP_ABUSE_RISK=spam_open_relay_blocklists_identity_reputation'
+  echo 'PUBLIC_SMTP_REQUIREMENTS=SMTP_AUTH_TLS_rate_limits_monitoring'
+fi
 if command -v ss >/dev/null 2>&1; then
   if ss -H -ltn "( sport = :$SMTP_PORT )" 2>/dev/null | grep -q .; then
     echo 'SMTP_LISTENER_PORT=in_use'
@@ -114,6 +133,19 @@ for label, host, port in (
         status = 'blocked_or_unavailable'
     print(label + '=' + status)
 PY
+  if [ "$PUBLIC_INTERNET" -eq 1 ]; then
+    conf=/etc/linuxmailrelay365/sidecar-postfix
+    if command -v postconf >/dev/null 2>&1 && [ -f "$conf/main.cf" ]; then
+      auth="$(postconf -c "$conf" -h smtpd_sasl_auth_enable 2>/dev/null || true)"
+      tls="$(postconf -c "$conf" -h smtpd_tls_security_level 2>/dev/null || true)"
+      [ "$auth" = yes ] && echo 'PUBLIC_SMTP_SASL_AUTH=available' || echo 'PUBLIC_SMTP_SASL_AUTH=missing'
+      [ "$tls" = encrypt ] && echo 'PUBLIC_SMTP_TLS_REQUIRED=yes' || echo 'PUBLIC_SMTP_TLS_REQUIRED=no'
+    else
+      echo 'PUBLIC_SMTP_SASL_AUTH=not_checked'
+      echo 'PUBLIC_SMTP_TLS_REQUIRED=not_checked'
+    fi
+    echo 'PUBLIC_SMTP_READY=no_unverified_auth_tls_security_controls'
+  fi
   echo 'FIREWALL_CHANGES=no'
   echo 'INBOUND_FROM_OTHER_HOST=not_verified_by_local_probe'
   exit 0
