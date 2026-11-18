@@ -964,10 +964,26 @@ internal sealed class MainForm : Form
         if (!applied.StdOut.Contains("AUTH_TLS_RESTORED=yes", StringComparison.Ordinal))
             throw new InvalidOperationException("The isolated SMTP restoration did not confirm success. Inspect recovery diagnostics.");
         WriteLine(applied.StdOut);
+        await InspectAuthArchivesAsync(endpoint);
         WriteLine("Restored private trusted-CIDR SMTP on TCP " + installedPort +
                   ". Update every affected application's settings: STARTTLS and SMTP AUTH are NO LONGER required. " +
                   "The recovery archive holds sensitive TLS key/password hash material and must remain root-only. " +
                   "Do not open the port to public internet.");
+    }
+
+    private async Task InspectAuthArchivesAsync(SshEndpoint endpoint)
+    {
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildAuthArchiveAuditBundle(), TimeSpan.FromSeconds(60));
+        result.EnsureSuccess();
+        WriteLine("Read-only SMTP AUTH recovery archive audit (metadata and SHA-256 only; no credential contents):");
+        WriteLine(result.StdOut);
+        if (result.StdOut.Contains("AUTH_TLS_ARCHIVE_STATUS=incomplete_or_tampered", StringComparison.Ordinal) ||
+            result.StdOut.Contains("AUTH_TLS_ARCHIVE_STATUS=unsafe_root_directory", StringComparison.Ordinal) ||
+            result.StdOut.Contains("AUTH_TLS_ARCHIVE_STATUS=unexpected_entry_manual_review", StringComparison.Ordinal))
+            WriteLine("WARNING: SMTP AUTH recovery archive must be inspected by an administrator before it is relied on for restoration.");
+        else if (result.StdOut.Contains("AUTH_TLS_ARCHIVE_STATUS=verified_root_only", StringComparison.Ordinal))
+            WriteLine("Recovery archives have root-only directory access and matching Postfix configuration SHA-256. This does not verify a full server disaster recovery restore.");
     }
 
     private async Task AuditInstalledPrivateSmtpAsync()
@@ -999,6 +1015,9 @@ internal sealed class MainForm : Form
             WriteLine("Local SMTP AUTH/STARTTLS handshake passes. Certificate trust on actual clients, firewall reachability and Microsoft 365 delivery remain unverified.");
         else if (report.StdOut.Contains("SMTP_SECURITY_RESULT=private_unauthenticated_not_public_safe", StringComparison.Ordinal))
             WriteLine("Private trusted-network relay without per-client SMTP AUTH. Do not expose it to the Internet.");
+        // A backup check belongs with the existing security audit; no extra
+        // wizard action or separate popup is required.
+        await InspectAuthArchivesAsync(endpoint);
     }
 
     private async Task InspectPlatformAsync()
