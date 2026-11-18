@@ -130,7 +130,7 @@ actually trigger a ban or whether the logs are collected from the sidecar.
 
 The separate public manager configures per-IP authentication, connection,
 message and recipient rate limits, removes rate-limit exceptions and
-preserves \`permit_sasl_authenticated, reject\` relay rules. It opens an
+preserves `permit_sasl_authenticated, reject` relay rules. It opens an
 all-source firewall rule **only to the chosen local private IPv4 and custom
 TCP port**, requiring exactly one already-active UFW/firewalld backend. It
 neither opens primary port 25 nor configures router/NAT forwarding. RHEL
@@ -146,7 +146,7 @@ external clients (TLS CA trust, bad password, unauthorized RCPT before AUTH),
 a real Fail2ban ban drill, alerting, quota/queue limits and emergency
 rollbacks on a disposable test VM.
 
-The same manager provides guarded \`--status\` and \`--restore\`, including\nan interrupted activation marked as incomplete in a durable recovery journal.\nRestore closes its
+The same manager provides guarded `--status` and `--restore`, including\nan interrupted activation marked as incomplete in a durable recovery journal.\nRestore closes its
 firewall rule before restoring the original Postfix client restrictions. Each
 activation retains an independent root-only archive. Verify interrupted
 firewall changes and manual emergency rule removal. Only after a successful

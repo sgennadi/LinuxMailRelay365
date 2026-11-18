@@ -469,9 +469,9 @@ Testing local TCP connectivity cannot verify remote client reachability.
 **Public Internet SMTP is off by default and requires a separate expert-only
 Preview / Apply / Restore operation (Preview 14).** Checking the host-scoped
 plan does not change Postfix, firewall or NAT. The ordinary
-\`network-firewall.sh\` continues to block every
-\`--public-internet --apply\` request. Only the dedicated
-\`linux/manage-public-smtp.py\` can expose the selected local RFC1918 IPv4
+`network-firewall.sh` continues to block every
+`--public-internet --apply` request. Only the dedicated
+`linux/manage-public-smtp.py` can expose the selected local RFC1918 IPv4
 and custom port to all IPv4 sources after prerequisites: mandatory STARTTLS
 and Dovecot SMTP AUTH, verified system CA and exact DNS/SNI, fixed XOAUTH2
 sender policy, Postfix rate limits, active systemd health timer, active
