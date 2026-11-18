@@ -12,7 +12,7 @@
 | SMTP certificate rotation and archived rollback | Preview | Live certificate renewal and client trust |
 | Read-only queue/service/cert health | Preview | Real queue, disk and expiry thresholds |
 | Signed x64/ARM64 Stable release gate | Manual Authenticode trusted signer + pinned publisher + arch/version verification | Real signing credentials, signed binary QA and tenant acceptance needed |
-| Sendmail/Exim/Postfix coexistence audit | Read-only service/package/port inventory | Mixed-MTA systemd + package coexistence + isolated Postfix live tests required |
+| Sendmail/Exim/Postfix coexistence audit | Read-only active-service inventory with unknown/mixed MTA fail-closed and owner-unattributed standard SMTP sockets | Mixed-MTA systemd + package coexistence + isolated Postfix live tests required |
 | Strong per-app SMTP password generator | Root-only SHA512-CRYPT files and one-time masked GUI reveal | Verify actual Dovecot login, clipboard handling and client configuration |
 | RHEL SELinux Enforcing local SMTP STARTTLS/AUTH probe | Read-only host runtime handshake and label/status checks | Successful SASL login, queue I/O, AVC audit, reboot and M365 delivery still needed |
 | Opt-in 15-min local journald systemd timer | Preview | Verify after real OS reboot |
@@ -41,6 +41,8 @@ Prepare an approved test Tenant, authorized mailbox and an exact DNS SAN TLS cer
 
 On a test machine with a copy of the project branch, run the following commands (replace 46500 with the chosen installed private port).
 
+    python3 linux/audit-existing-smtp.py
+    sudo python3 linux/mta-coexistence-doctor.py --smtp-port 46500
     sudo python3 linux/platform-compat.py --smtp-port 46500
     sudo python3 linux/rhel-selinux-doctor.py --smtp-port 46500
     sudo python3 linux/manage-rhel-selinux-port.py --check-only --smtp-port 46500
