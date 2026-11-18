@@ -865,7 +865,7 @@ internal sealed class MainForm : Form
                 }
                 AddAction(page, T("Восстановить выбранную конфигурацию...", "Restore selected configuration...", "שחזור תצורה קודמת"),
                     RestoreBackupAsync, false, "back", "restore");
-                if (advancedSmtpTools.Checked && preserveExistingMail.Checked)
+                if (advancedSmtpTools.Checked && (preserveExistingMail.Checked || mailTransport.SelectedIndex != 0))
                 {
                     AddLine(page, UiTheme.Text(T(
                         "Отдельный SMTP Relay: резервирование только его конфигурации (не основного Postfix/Exim/Sendmail). Очереди и внешние сертификаты в архив НЕ входят. Restore только при остановленных службах Relay и пустой очереди.",
@@ -1090,6 +1090,10 @@ internal sealed class MainForm : Form
             inspectedMail = null;
             inspectedServerIdentity = null;
             backupSelector.Items.Clear();
+            sidecarBackupSelector.Items.Clear();
+            reviewedSidecarRestoreSha = null;
+            reviewedSidecarRestoreId = null;
+            reviewedSidecarRestoreIdentity = null;
             existingSmtpAudit = null;
             existingSmtpAuditIdentity = null;
             routingIdentity = identity;
@@ -2648,6 +2652,7 @@ internal sealed class MainForm : Form
         reviewedSidecarRestoreId = null;
         WriteLine("Verified independent Relay configuration archives: " +
                   sidecarBackupSelector.Items.Count + ". Queue and external dependencies are excluded.");
+        RenderPage();
     }
 
     private async Task PreviewSidecarConfigRestoreAsync()
@@ -2734,6 +2739,7 @@ internal sealed class MainForm : Form
         backupSelector.SelectedIndex = -1;
         WriteLine("Verified Linux backups: " + backupSelector.Items.Count +
             ". Select a backup explicitly before Restore.");
+        RenderPage();
     }
 
     private async Task RestoreBackupAsync()
