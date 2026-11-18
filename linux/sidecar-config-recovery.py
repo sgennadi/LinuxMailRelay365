@@ -56,6 +56,7 @@ MAX_ITEMS = 4096
 MAX_SIZE = 96 * 1024 * 1024
 MAX_FILE = 16 * 1024 * 1024
 MAX_ARCHIVE = 128 * 1024 * 1024
+OWNER_UID = 0
 
 
 class Refused(Exception):
@@ -88,10 +89,10 @@ def secure(path, directory=None, owner=True):
         info = path.lstat()
     except OSError:
         raise Refused("source_or_archive_unavailable")
-    if owner and info.st_uid != 0:
+    if owner and info.st_uid != OWNER_UID:
         raise Refused("non_root_owned_backup_component")
-    if info.st_mode & 0o022:
-        raise Refused("group_or_world_writable_backup_component")
+    if info.st_mode & 0o7022:
+        raise Refused("untrusted_scoped_inode_mode")
     if directory is True and not stat.S_ISDIR(info.st_mode):
         raise Refused("expected_directory_not_present")
     if directory is False and not stat.S_ISREG(info.st_mode):
@@ -225,7 +226,7 @@ def lock():
     fd = os.open(str(LOCK), os.O_CREAT | os.O_RDWR |
                  getattr(os, "O_NOFOLLOW", 0), 0o600)
     meta = os.fstat(fd)
-    if not stat.S_ISREG(meta.st_mode) or meta.st_uid != 0 or meta.st_mode & 0o077:
+    if not stat.S_ISREG(meta.st_mode) or meta.st_uid != OWNER_UID or meta.st_mode & 0o077:
         os.close(fd)
         raise Refused("unsafe_global_sidecar_operation_lock")
     try:
@@ -311,7 +312,7 @@ def verify_snapshot(backup_id):
                 not isinstance(record["gid"], int) or \
                 record["mode"] < 0 or record["mode"] > 0o777 or \
                 record["uid"] < 0 or record["gid"] < 0 or \
-                record["uid"] != 0 or record["mode"] & 0o022:
+                record["uid"] != OWNER_UID or record["mode"] & 0o022:
             raise Refused("unsafe_snapshot_entry")
         if record["kind"] == "file":
             if not isinstance(record["size"], int) or record["size"] < 0 or \
@@ -475,31 +476,49 @@ def apply_services(states):
             command(["systemctl", "start", unit], timeout=55)
 
 
-def install_snapshot(snapshot_id):
+def check_offline_readiness():
+    """The operator must stop only isolated services; this tool never stops MTAs."""
+    states = service_state()
+    if any(record["active"] for record in states.values()):
+        raise Refused("stop_sidecar_auth_health_and_timer_before_offline_restore")
+    check_queue()
+    return states
+
+
+def validate_destination(rel):
+    """Refuse symlinked ancestors and targets before swapping any configuration."""
+    path = rooted(rel)
+    parent = path.parent
+    if parent.is_symlink() or not parent.is_dir():
+        raise Refused("unsafe_restore_parent")
+    for ancestor in parent.parents:
+        if ancestor == Path("/"):
+            break
+        if ancestor.is_symlink():
+            raise Refused("symlinked_restore_ancestor")
+    if path.exists() or path.is_symlink():
+        secure(path)
+    return path
+
+
+def stage_snapshot(snapshot_id):
+    """Stage all allowlisted roots on their target filesystems before mutation."""
     manifest, blobs = read_archive(snapshot_id)
     records = {x["path"]: x for x in manifest["entries"]}
-    # Pre-stage all selected roots on the same filesystems before mutation.
     staged = {}
-    retired = {}
-    moved = []
-    for rel in ROOTS:
-        path = rooted(rel)
-        parent = path.parent
-        if rel not in records and not any(x.startswith(rel + "/") for x in records):
-            continue
-        if not parent.is_dir() or parent.is_symlink():
-            raise Refused("restore_destination_parent_unavailable")
-        temp = Path(tempfile.mkdtemp(prefix=".lmr365-restore-", dir=str(parent)))
-        os.chmod(str(temp), 0o700)
-        payload = temp / "payload"
-        subset = [r for r in records.values()
-                  if r["path"] == rel or r["path"].startswith(rel + "/")]
-        if records.get(rel, {}).get("kind") == "file":
-            payload.write_bytes(blobs[rel])
-            os.chown(str(payload), records[rel]["uid"], records[rel]["gid"])
-            os.chmod(str(payload), records[rel]["mode"])
-        else:
-            subset.sort(key=lambda x: (x["path"].count("/"), x["path"]))
+    try:
+        for rel in ROOTS:
+            path = validate_destination(rel)
+            if rel not in records:
+                continue
+            temp = Path(tempfile.mkdtemp(
+                prefix=".lmr365-stage-", dir=str(path.parent)))
+            temp.chmod(0o700)
+            staged[rel] = temp
+            payload = temp / "payload"
+            subset = [r for r in records.values() if
+                      r["path"] == rel or r["path"].startswith(rel + "/")]
+            subset.sort(key=lambda r: (r["path"].count("/"), r["path"]))
             for record in subset:
                 suffix = record["path"][len(rel):].lstrip("/")
                 dest = payload / suffix if suffix else payload
@@ -507,63 +526,72 @@ def install_snapshot(snapshot_id):
                     dest.mkdir(parents=True, exist_ok=True)
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    with dest.open("xb") as writer:
-                        writer.write(blobs[record["path"]])
-            for record in sorted(subset, key=lambda x: x["path"].count("/"),
-                                 reverse=True):
+                    with dest.open("xb") as out:
+                        out.write(blobs[record["path"]])
+            for record in reversed(subset):
                 suffix = record["path"][len(rel):].lstrip("/")
                 dest = payload / suffix if suffix else payload
                 os.chown(str(dest), record["uid"], record["gid"])
-                os.chmod(str(dest), record["mode"])
-        staged[rel] = (temp, payload)
-    # When a member is absent from the snapshot, remove only known allowlisted
-    # roots, never an untracked directory/host file. Absent units are disabled.
-    try:
-        for rel in ROOTS:
-            path = rooted(rel)
-            if path.exists() or path.is_symlink():
-                secure(path)  # no link replacement and root-owned targets
-                directory = Path(tempfile.mkdtemp(
-                    prefix=".lmr365-retired-", dir=str(path.parent)))
-                os.chmod(str(directory), 0o700)
-                os.rename(str(path), str(directory / "previous"))
-                retired[rel] = directory
-                moved.append(rel)
-            if rel in staged:
-                os.rename(str(staged[rel][1]), str(path))
-                moved.append(rel + ":new")
-    except (OSError, Refused):
-        rollback_move(staged, retired, moved)
-        raise Refused("restore_filesystem_replacement_failed")
-    finally:
-        for temp, payload in staged.values():
+                dest.chmod(record["mode"])
+        return staged
+    except Exception:
+        for temp in staged.values():
             if temp.exists():
                 shutil.rmtree(str(temp))
-    return retired, moved
+        raise
 
 
-def rollback_move(staged, retired, moved):
+def rollback_switch(retired, deployed):
+    """Restore original file trees, including roots that existed only afterward."""
+    failures = []
     for rel in reversed(ROOTS):
+        if rel not in deployed:
+            continue
         path = rooted(rel)
-        if rel in retired:
-            if path.exists() or path.is_symlink():
+        try:
+            if path.is_symlink():
+                raise Refused("symlink_appeared_during_rollback")
+            if path.exists():
                 if path.is_dir():
                     shutil.rmtree(str(path))
                 else:
                     path.unlink()
-            previous = retired[rel] / "previous"
-            if previous.exists():
-                os.rename(str(previous), str(path))
-        elif rel in staged and (path.exists() or path.is_symlink()):
-            if path.is_dir():
-                shutil.rmtree(str(path))
-            else:
-                path.unlink()
+            if rel in retired:
+                previous = retired[rel] / "previous"
+                if not previous.exists() and not previous.is_symlink():
+                    raise Refused("retired_original_missing")
+                previous.rename(path)
+        except (OSError, Refused):
+            failures.append(rel)
+    if failures:
+        say("SIDECAR_CRITICAL_ROLLBACK", "manual_repair_required")
+        raise Refused("isolated_configuration_rollback_incomplete")
 
 
-def finish_retired(retired):
-    for directory in retired.values():
-        shutil.rmtree(str(directory))
+def offline_switch(staged, retired, deployed):
+    """Keep original paths for rollback until all validation has passed."""
+    for rel in ROOTS:
+        path = validate_destination(rel)
+        if path.exists():
+            holding = Path(tempfile.mkdtemp(
+                prefix=".lmr365-original-", dir=str(path.parent)))
+            holding.chmod(0o700)
+            retired[rel] = holding
+            path.rename(holding / "previous")
+            deployed.add(rel)
+        if rel in staged:
+            (staged[rel] / "payload").rename(path)
+            deployed.add(rel)
+
+
+def cleanup_workdirs(staged, retired, success):
+    for temp in staged.values():
+        if temp.exists():
+            shutil.rmtree(str(temp))
+    if success:
+        for temp in retired.values():
+            if temp.exists():
+                shutil.rmtree(str(temp))
 
 
 def restore(snapshot_id, expected):
@@ -572,34 +600,36 @@ def restore(snapshot_id, expected):
     ensure_base()
     fd = lock()
     try:
-        target = ensure_restorable(snapshot_id, expected)
-        check_queue()
-        # Verified, separate pre-restore safety snapshot first; never delete it.
+        manifest = ensure_restorable(snapshot_id, expected)
+        check_offline_readiness()
+        # Emergency backup of CURRENT independent config, not the mail queue.
         emergency_id = make_snapshot()
         say("SIDECAR_PRE_RESTORE_BACKUP_ID", emergency_id)
-        previous_units = service_state()
-        stop_isolated()
-        retired = None
+        staged = stage_snapshot(snapshot_id)
+        retired = {}
+        deployed = set()
+        success = False
         try:
-            check_queue()
-            retired, moved = install_snapshot(snapshot_id)
+            check_offline_readiness()
+            latest, ignored = current_state()
+            if latest != expected:
+                raise Refused("sidecar_changed_during_staging")
+            offline_switch(staged, retired, deployed)
+            # Postfix check does not start the isolated or primary service.
             command(["postfix", "-c", str(rooted(CONF + "/sidecar-postfix")),
                      "check"], timeout=40)
-            apply_services(target["units"])
-            finish_retired(retired)
+            command(["systemctl", "daemon-reload"])
+            success = True
         except Exception:
-            # Use filesystem rollback if we already have the old trees;
-            # otherwise no configuration was replaced.
-            try:
-                stop_isolated()
-                if retired is not None:
-                    rollback_move({}, retired, [])
-                    finish_retired(retired)
-                apply_services(previous_units)
-            except Exception:
-                say("SIDECAR_RESTORE_EMERGENCY_ROLLBACK", "failed_manual_repair_required")
-            raise Refused("sidecar_restore_failed_or_rolled_back")
+            if deployed:
+                rollback_switch(retired, deployed)
+                command(["systemctl", "daemon-reload"])
+            raise Refused("offline_restore_failed_original_configuration_retained")
+        finally:
+            cleanup_workdirs(staged, retired, success)
         say("SIDECAR_RESTORED_BACKUP_ID", snapshot_id)
+        say("SIDECAR_OFFLINE_RESTORE", "verified_files_only")
+        say("SIDECAR_SERVICES_STARTED", "no")
         say("PRIMARY_MTA_CHANGED", "no")
         say("QUEUE_RESTORED", "no")
         say("M365_TENANT_RESTORE_VERIFIED", "no")
