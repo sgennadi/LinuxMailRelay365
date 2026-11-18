@@ -299,8 +299,13 @@ def main():
             print("{}={}".format(key, value))
         return 0
     except (OSError, ValueError, UnicodeError) as error:
+        # Do not leak private paths or usernames from raw OSError messages.
+        # Only controlled ValueError status codes are returned to the GUI.
+        code = str(error) if type(error) is ValueError else "local_file_or_io_failure"
+        if not re.fullmatch(r"[a-z0-9_]{3,90}", code):
+            code = "manual_review_required"
         print("SMTP_ACCOUNT_RESULT=refused")
-        print("SMTP_ACCOUNT_ERROR={}".format(str(error)[:90]))
+        print("SMTP_ACCOUNT_ERROR={}".format(code))
         print("SMTP_ACCOUNT_CHANGED=unknown_if_apply" if args.apply else "SMTP_ACCOUNT_CHANGED=no")
         return 2
     finally:
