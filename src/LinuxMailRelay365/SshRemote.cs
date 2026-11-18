@@ -221,6 +221,26 @@ internal static class SshRemote
         return port;
     }
 
+    // Read-only inspection. A partial or malformed security configuration is
+    // UNKNOWN, never incorrectly classified as safe anonymous submission.
+    internal static async Task<bool?> IsSidecarAuthTlsEnabledAsync(
+        SshEndpoint endpoint, CancellationToken token)
+    {
+        var result = await ExecuteAsync(endpoint,
+            "if command -v postconf >/dev/null 2>&1 && test -r " + SidecarConfig +
+            "/main.cf; then " +
+            "postconf -c " + SidecarConfig + " -h smtpd_sasl_auth_enable; " +
+            "postconf -c " + SidecarConfig + " -h smtpd_tls_security_level; " +
+            "else printf 'unknown\\n'; fi",
+            null, TimeSpan.FromSeconds(30), token);
+        if (result.ExitCode != 0) return null;
+        var fields = result.StdOut.Trim().Split('\\n', StringSplitOptions.TrimEntries);
+        if (fields.Length != 2) return null;
+        if (fields[0] == "yes" && fields[1] == "encrypt") return true;
+        if (fields[0] == "no" && fields[1] != "encrypt") return false;
+        return null;
+    }
+
     internal static Task<RemoteResult> SidecarDiagnosticsAsync(SshEndpoint endpoint,
         CancellationToken token) =>
         RunRootScriptAsync(endpoint,
