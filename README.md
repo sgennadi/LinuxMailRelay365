@@ -19,7 +19,8 @@ script) and identifies **RHEL 8/9/10, Oracle Linux 8/9/10, Rocky Linux
 and Debian 11/12/13 as *candidate platforms*. Detection does **not** mean
 an isolated SMTP gateway has been integration-tested on that release.
 The probe checks whether Postfix and Dovecot exist, identifies Dovecot
-2.3 versus unsupported/unverified syntax versions such as 2.4, detects
+2.3 or 2.4 (using separate validated auth-only syntax), while other
+unrecognized versions fail closed, and detects
 Postfix's Dovecot SASL capability, queries SELinux status and evaluates
 the **actual selected port's** SELinux TCP type when `semanage` is installed.
 It never installs packages, invokes `semanage port -a/-m`, runs `restorecon`,
@@ -47,7 +48,7 @@ breaking existing clients. When explicitly activated, the upgrade:
 - Uses the actual installed **custom TCP port (1024–65535, default 2525)**,
   not a fixed port, while preserving the same private IP listener and trusted
   CIDR restrictions.
-- Starts an **independent, auth-only Dovecot 2.3** instance with a socket
+- Starts an **independent, auth-only Dovecot 2.3 or 2.4** instance with a socket
   inside the separate Postfix queue; does not modify a host Dovecot or the
   primary Postfix service, configuration, port 25, or queue.
 - Makes STARTTLS mandatory before SMTP AUTH and message submission. Refuses
@@ -115,11 +116,46 @@ is enabled. Where `getenforce` is unavailable, the kernel's
 `/sys/fs/selinux/enforce` status is checked and unverified RHEL
 states are not treated as disabled. This protection does not change
 the SELinux enforcement mode or relabel anything.
-Dovecot 2.4 configuration is currently blocked, pending its dedicated
-configuration and live tests. The only real running service test for this
-upgrade so far is an isolated Ubuntu GitHub Actions VM: TLS handshake,
+Dovecot 2.4 now uses separate config/storage version directives, named
+passwd-file passdb and static userdb filters, and an explicitly typed
+UNIX listener. Integration tests execute both Dovecot **2.3 (Ubuntu
+24.04)** and **2.4 (current ubuntu-latest)** against real isolated
+Postfix services: TLS handshake,
 wrong/correct SMTP AUTH credentials, no mail transfer and unchanged primary
 Postfix. No end-to-end Exchange Online delivery is claimed.
+
+## Verified local SMTP STARTTLS certificate identity (Preview 12)
+
+On Wizard step 4, enter the **SMTP server DNS name** that clients will
+actually use, along with an optional Linux CA bundle path. Leave the
+optional CA path blank to use the **Linux system trust store**. If using
+a private or self-signed enterprise CA for your internal SMTP clients,
+supply an administrator-approved CA certificate/bundle path already on
+Linux. The optional CA file is **not** a private key and is never copied
+to Windows.
+
+When **Audit installed SMTP** or **Check SMTP AUTH/STARTTLS prerequisites**
+detects that the installed isolated Postfix already uses mandatory
+STARTTLS and SMTP AUTH, the wizard can perform an additional **read-only**
+local TLS identity check against the actual installed custom port
+(default 2525, but not hardcoded). The Python 3.6+ script
+`linux/verify-sidecar-tls-identity.py` always opens the TCP socket to
+`127.0.0.1`, while presenting the entered DNS hostname as SNI and
+enforcing **both CA chain trust and exact certificate DNS identity**.
+It checks that AUTH is not offered until TLS is established and that
+TLS 1.2+ is negotiated. It performs **no SMTP login or message
+submission**, does not read SMTP passwords/hashes or private keys,
+and does not open firewall rules. If verification fails, the status
+is **not verified**, never silently accepted.
+
+Real Ubuntu CI now checks a test-trusted certificate, rejects a wrong
+DNS name with the same CA, rejects a self-signed certificate without
+its explicit trust anchor, and refuses a mismatched custom port.
+The results explicitly distinguish a **verified local Linux
+certificate chain and DNS identity** from unverified trust on actual
+Windows/Mac/mobile/application clients, external network access or
+Microsoft 365 delivery. The verification does not override a client's
+TLS trust or DNS rules; those must be separately tested from the client.
 
 ## Opt-in restore of isolated SMTP AUTH + TLS (security downgrade)
 
