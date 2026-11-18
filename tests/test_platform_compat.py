@@ -68,7 +68,9 @@ class PlatformCompatibilityTests(unittest.TestCase):
     def test_dovecot_versions_report_unsupported_instead_of_guessing(self):
         self.assertEqual(platform.dovecot_compat("2.3.21 (47349e2482)"),
                          "2_3_compatible")
-        self.assertEqual(platform.dovecot_compat("2.4.1"), "unsupported_version")
+        self.assertEqual(platform.dovecot_compat("2.4.1"),
+                         "2_4_auth_only_candidate")
+        self.assertEqual(platform.dovecot_compat("2.5.0"), "unsupported_version")
         self.assertEqual(platform.dovecot_compat(""), "missing")
 
     def test_selinux_port_label_uses_selected_port_not_hardcoded_2525(self):
