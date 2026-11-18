@@ -80,6 +80,12 @@ class FreshConnectorContracts(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("tenant_connector_confirmation_required", result.stderr)
 
+    def test_exact_fixed_sender_map_does_not_allow_other_local_parts(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("':^{}$: OK", source)
+        self.assertIn("re.escape(sender)", source)
+        self.assertNotIn("'/^[^@[:space:]]+@{}$/ OK", source)
+
     def test_primary_server_isolation_and_sasl_scope(self):
         source = SCRIPT.read_text(encoding="utf-8")
         for expected in (
