@@ -115,6 +115,27 @@ class ScopedRecoveryTests(unittest.TestCase):
         self.assertFalse(any(x.startswith(mod.QUEUE) for x in paths))
         self.assertNotIn(b"fixture-only", (mod.BASE / name / "manifest.json").read_bytes())
 
+    def test_email_named_account_hashes_and_rotation_snapshots_are_scoped(self):
+        self.patch_runtime()
+        accounts = self.root / mod.CONF / "generated-accounts"
+        accounts.mkdir()
+        credential = accounts / "notifications@example.org.hash"
+        credential.write_text("SHA512-hash-fixture-no-plaintext\n")
+        credential.chmod(0o600)
+        rotation = self.root / "var/lib/linuxmailrelay365-smtp-account-recovery"
+        rotation.mkdir(parents=True)
+        rotated = rotation / "old-hashes.backup"
+        rotated.write_text("test-rotation-history\n")
+        rotated.chmod(0o600)
+        name = mod.backup()
+        manifest = mod.verify_snapshot(name)
+        paths = {entry["path"] for entry in manifest["entries"]}
+        self.assertIn(mod.CONF + "/generated-accounts/notifications@example.org.hash",
+                      paths)
+        self.assertIn("var/lib/linuxmailrelay365-smtp-account-recovery/old-hashes.backup",
+                      paths)
+        self.assertNotIn("test-rotation-history", str(manifest))
+
     def test_backup_rejects_symlinked_credential(self):
         self.patch_runtime()
         (self.identity / "app.key").symlink_to("/etc/shadow")
