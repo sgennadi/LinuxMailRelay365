@@ -773,6 +773,22 @@ mail routing, DNS records and external files referenced by Postfix
 are **not** included in the snapshot or rolled back; test on a nonproduction
 server before using Force Replace.
 
+### Manual authenticated SMTP client verification (Preview 15)
+
+Once private Dovecot SMTP AUTH and the exact DNS/TLS certificate are installed,
+run **on the Linux host** from an interactive terminal:
+
+    python3 linux/verify-sidecar-auth-client.py --smtp-port 46500 --server-name smtp.example.org --login smtp-app01 --ca-file /etc/ssl/certs/approved-ca.pem
+
+The program only connects to loopback on the chosen inbound custom port. It
+verifies the server's CA chain and DNS identity with TLS 1.2+ **before**
+prompting for a hidden SMTP app password, then authenticates and quits. No
+email, recipient or message DATA is transmitted; no password is passed via
+command-line argument or written to disk. A successful local AUTH does not
+prove Microsoft 365 Connector authorization, permission, queue I/O or mail
+delivery. Ubuntu CI uses disposable credentials against real local Postfix
+and Dovecot; never automate this manual command with live credentials.
+
 ### Read-only recovery scope inventory (Preview 15)
 
 Run `sudo python3 linux/recovery-scope-audit.py --smtp-port 46500`
