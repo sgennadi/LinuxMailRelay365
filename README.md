@@ -70,6 +70,18 @@ SMTP AUTH and TLS limitations, and its prohibition on internet exposure,
 remain in force **for default, unhardened sidecar installations**. An
 optional private-sidecar AUTH/STARTTLS upgrade is available below.
 
+## Microsoft 365 tenant-side read-only readiness check
+
+An optional standalone PowerShell 7 script under
+windows/Test-LinuxMailRelay365OutboundMode.ps1 inspects the currently
+authenticated Exchange Online session. It reports only aggregate accepted
+domain and inbound Connector candidates, without modifying tenant objects.
+Connect interactively to the correct test tenant first, then run the script
+from the same session. It never creates connectors, grants app permissions,
+changes mail routes or verifies message delivery. Details and sample commands
+are in docs/FINAL_ACCEPTANCE.md. This is **separate** from the Linux MX TCP25
+preflight and is not an automatic Connector deployment.
+
 ## Optional private SMTP AUTH + mandatory STARTTLS (development preview)
 
 This branch adds a separate **opt-in hardening step** for an **already installed**
