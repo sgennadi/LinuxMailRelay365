@@ -46,6 +46,9 @@ internal sealed class MainForm : Form
     private readonly TextBox privateAuthKeyPath = Field("");
     private readonly TextBox privateAuthHashPath = Field("");
     private readonly TextBox privateTlsCaPath = Field("");
+    private readonly ComboBox smtpAccountOperation = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 420 };
+    private readonly TextBox smtpAccountName = Field("");
+    private readonly TextBox smtpAccountHashPath = Field("");
     private readonly PreserveMailFlowPreview preserveFlowPreview = new();
     private readonly TextBox preserveMailInstructions = new()
     {
@@ -127,6 +130,8 @@ internal sealed class MainForm : Form
             "Preserve verified domain sender (connector only, planned)",
             "Masquerade subdomains (connector only, planned)"
         ]);
+        smtpAccountOperation.Items.AddRange(["Add", "Rotate", "Revoke"]);
+        smtpAccountOperation.SelectedIndex = 0;
         mailTransport.SelectedIndex = 0;
         senderPolicy.SelectedIndex = 0;
         mailTransport.SelectedIndexChanged += (_, _) => { SaveRoutingChoices(); UpdatePreserveFlowPreview(); };
@@ -509,6 +514,27 @@ internal sealed class MainForm : Form
                                       "Restore previous SMTP without AUTH/STARTTLS... (security downgrade)",
                                       "שחזור SMTP ללא אימות והצפנה (הפחתת אבטחה)"),
                                       RestoreAuthTlsAsync, false, "rotate-ccw", "auth-tls-restore");
+                    AddLine(page, UiTheme.Text(T(
+                        "SMTP-клиенты: управление отдельными логинами (без изменения Microsoft 365)",
+                        "SMTP client accounts: individual access (Microsoft 365 sender unchanged)",
+                        "חשבונות SMTP נפרדים לכל יישום")));
+                    AddLine(page, smtpAccountOperation);
+                    AddField(page, T("Имя SMTP-учётной записи", "SMTP client username", "שם חשבון SMTP"), smtpAccountName);
+                    AddField(page, T("Linux-файл с одним хешем (для Add/Rotate)",
+                                     "Existing Linux file containing one salted hash (Add/Rotate)",
+                                     "קובץ hash בלינוקס"), smtpAccountHashPath);
+                    AddLine(page, UiTheme.Text(T(
+                        "Хеш создаётся на Linux командой doveadm pw -s SHA512-CRYPT. Пароль не передаётся в мастер. Отзыв не допускает удаления последнего пользователя. Изменение — только после проверки и подтверждения.",
+                        "Generate the hash on Linux with doveadm pw -s SHA512-CRYPT. No password enters the Wizard. The final account cannot be revoked. Preview and typed confirmation are mandatory.",
+                        "יש ליצור hash בלינוקס. פעולה דורשת אישור, ללא סיסמה באשף.")));
+                    AddAction(page, T("Проверить SMTP-пользователей (без изменений)",
+                                      "Preview SMTP client account change (read-only)",
+                                      "בדיקת שינוי חשבון SMTP"),
+                                      PreviewSmtpAccountChangeAsync, false, "check", "account-check");
+                    AddAction(page, T("Применить изменение SMTP-пользователя...",
+                                      "Apply SMTP client account change...",
+                                      "ביצוע שינוי חשבון SMTP"),
+                                      ApplySmtpAccountChangeAsync, false, "shield", "account-apply");
                 }
                 if (inspectedMail is not null && inspectedServerIdentity == TryCurrentIdentity())
                 {
@@ -1059,6 +1085,75 @@ internal sealed class MainForm : Form
         await InspectAuthArchivesAsync(endpoint);
         if (await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None) == true)
             await VerifyInstalledTlsIdentityAsync(endpoint, checkPort);
+    }
+
+    private (int Port, string Operation, string Username, string HashPath) GetSmtpAccountChange()
+    {
+        if (publicInternetRequested.Checked)
+            throw new InvalidOperationException("Public SMTP access cannot be combined with private account management.");
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || port is < 1024 or > 65535)
+            throw new InvalidDataException("Choose a custom SMTP port from 1024 to 65535.");
+        string operation = smtpAccountOperation.SelectedIndex switch
+        {
+            0 => "add",
+            1 => "rotate",
+            2 => "revoke",
+            _ => throw new InvalidDataException("Choose Add, Rotate or Revoke.")
+        };
+        return (port, operation, smtpAccountName.Text.Trim(), smtpAccountHashPath.Text.Trim());
+    }
+
+    private async Task PreviewSmtpAccountChangeAsync()
+    {
+        var entry = GetSmtpAccountChange();
+        var endpoint = Endpoint();
+        if (!await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("The isolated Postfix is not installed.");
+        int installed = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+        if (installed != entry.Port)
+            throw new InvalidDataException("Selected SMTP port does not match installed TCP " + installed + ".");
+        var report = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildSmtpAccountManagerBundle(entry.Port, entry.Operation,
+                entry.Username, entry.HashPath), TimeSpan.FromSeconds(60));
+        report.EnsureSuccess();
+        WriteLine(report.StdOut);
+        WriteLine("Preview only: SMTP account change NOT applied. Microsoft 365 sender identity is unchanged.");
+    }
+
+    private async Task ApplySmtpAccountChangeAsync()
+    {
+        var entry = GetSmtpAccountChange();
+        var endpoint = Endpoint();
+        if (await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None) != true)
+            throw new InvalidOperationException("Private SMTP AUTH and mandatory STARTTLS must already be active.");
+        if (await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None) != entry.Port)
+            throw new InvalidOperationException("Custom SMTP port mismatch with installed isolated Postfix.");
+        var preview = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildSmtpAccountManagerBundle(entry.Port, entry.Operation,
+                entry.Username, entry.HashPath), TimeSpan.FromSeconds(60));
+        preview.EnsureSuccess();
+        var match = System.Text.RegularExpressions.Regex.Match(preview.StdOut,
+            @"(?m)^SMTP_ACCOUNT_CURRENT_STATE_SHA256=([a-f0-9]{64})\r?$");
+        if (!match.Success || !preview.StdOut.Contains("SMTP_ACCOUNT_RESULT=preview_ready",
+              StringComparison.Ordinal))
+            throw new InvalidDataException("SMTP account preflight not ready. No changes applied.");
+        string currentSha = match.Groups[1].Value;
+        if (!ConfirmDestructive("LinuxMailRelay365 | Private SMTP account change",
+            T("Изменение доступа SMTP на отдельном Postfix. Убедитесь, что приложения готовы к изменению логина или пароля. Порт: ",
+              "Change one application's access to the private SMTP sidecar. Update affected app credentials after this operation. TCP port: ",
+              "שינוי חשבון SMTP של יישום נפרד. יציאה: ") + entry.Port +
+            "\n" + T("Действующий Postfix и M365-отправитель не меняются. На Linux будет создан закрытый backup. Операция: ",
+                       "Primary Postfix and M365 sender are unchanged; a root-only backup is retained. Operation: ",
+                       "שרת SMTP ראשי אינו משתנה. פעולה: ") + entry.Operation,
+            "CHANGE PRIVATE SMTP ACCOUNT")) return;
+        var applied = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildSmtpAccountManagerBundle(entry.Port, entry.Operation,
+                entry.Username, entry.HashPath, currentSha), TimeSpan.FromMinutes(3));
+        applied.EnsureSuccess();
+        if (!applied.StdOut.Contains("SMTP_ACCOUNT_RESULT=applied", StringComparison.Ordinal))
+            throw new InvalidDataException("SMTP account update did not confirm success; inspect private service logs.");
+        WriteLine(applied.StdOut);
+        WriteLine("Update/revoke the affected application's SMTP credentials. No Microsoft 365 mailbox or primary Postfix changes were requested.");
     }
 
     private async Task InspectRhelSelinuxAsync()
