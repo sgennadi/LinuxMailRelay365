@@ -44,7 +44,7 @@ class RhelSelinuxDoctorTests(unittest.TestCase):
         for mode in ("enforcing","permissive","unknown"):
             with self.subTest(mode=mode),\
                  patch.object(doctor,"OS_RELEASE",new=type("MockRelease",(),{
-                     "read_text":lambda *args,**kwargs:"ID=ol\\nVERSION_ID=10.1\\n"})()),\
+                     "read_text":lambda *args,**kwargs:"ID=ol\nVERSION_ID=10.1\n"})()),\
                  patch.object(doctor,"selinux_mode",return_value=mode),\
                  patch.object(doctor,"run",return_value="smtp_port_t tcp 2525, 46500\n"),\
                  patch.object(doctor,"file_label",return_value="present_not_policy_verified"),\
