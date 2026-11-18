@@ -60,6 +60,8 @@ class ScopedRecoveryTests(unittest.TestCase):
     def fake_command(self, argv, **kwargs):
         if argv[0] == "postqueue" and "-j" in argv:
             return ""
+        if argv[0] == "ss" and "-ltn" in argv:
+            return ""
         if argv[0] == "postconf" and "-h" in argv:
             return {
                 "queue_directory": str(self.root / mod.QUEUE),
@@ -215,6 +217,21 @@ class ScopedRecoveryTests(unittest.TestCase):
                     with self.assertRaises(mod.Refused):
                         mod.restore(backup_id, expected)
                 self.assertEqual(len(list(mod.BASE.glob("20*"))), 1)
+
+    def test_manually_running_smtp_listener_refuses_restore(self):
+        self.patch_runtime()
+        backup_id = mod.backup()
+        expected, _ = mod.current_state()
+        def bound_socket(argv, **kwargs):
+            if argv[0] == "ss":
+                self.assertIn(":46500", " ".join(argv))
+                return "LISTEN 0 100 127.0.0.1:46500 0.0.0.0:*"
+            return self.fake_command(argv, **kwargs)
+        with patch.object(mod, "command", side_effect=bound_socket):
+            with self.assertRaises(mod.Refused) as error:
+                mod.restore(backup_id, expected)
+        self.assertIn("still_listening", str(error.exception))
+        self.assertEqual(len(list(mod.BASE.glob("20*"))), 1)
 
     def test_multiple_postfix_smtp_listeners_fail_offline_validation(self):
         self.patch_runtime()
