@@ -210,7 +210,7 @@ def service_state():
     result = {}
     for unit in UNITS:
         active = command(["systemctl", "is-active", unit], allowed=(0, 3, 4))
-        enabled = command(["systemctl", "is-enabled", unit], allowed=(0, 1))
+        enabled = command(["systemctl", "is-enabled", unit], allowed=(0, 1, 3, 4))
         if active not in ("active", "inactive", "failed", "unknown") or \
                 enabled not in ("enabled", "disabled", "static", "masked", "indirect", "not-found"):
             raise Refused("service_state_not_verifiable")
