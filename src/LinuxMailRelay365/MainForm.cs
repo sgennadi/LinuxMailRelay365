@@ -498,6 +498,17 @@ internal sealed class MainForm : Form
                             "Продвинутый маршрут применяется только к установленному отдельному Postfix. Direct Send блокирует внешних получателей. Используется один фиксированный отправитель; Connector в Tenant должен существовать до применения. Все изменения обратимы через отдельный Restore.",
                             "Advanced outbound routing ONLY modifies installed isolated Postfix. Direct Send rejects external recipients locally. One fixed sender is enforced; Connector must already exist in your tenant. A separate Restore returns to XOAUTH2.",
                             "ניתוב מתקדם למופע Postfix נפרד בלבד; Direct Send מוגבל לנמענים פנימיים.")));
+                        if (mailTransport.SelectedIndex == 2)
+                        {
+                            AddAction(page, T("Проверить новую установку Direct Send без OAuth",
+                                              "Preview NEW private Direct Send (no OAuth application)",
+                                              "בדיקת Direct Send חדש ללא OAuth"),
+                                              PreviewFreshDirectSendAsync, false, "check", "directsend-new-preview");
+                            AddAction(page, T("Установить отдельный Direct Send без Entra...",
+                                              "Install NEW isolated Direct Send without Entra...",
+                                              "התקנת Direct Send נפרד ללא Entra"),
+                                              InstallFreshDirectSendAsync, false, "shield", "directsend-new-install");
+                        }
                         AddAction(page, T("Проверить применение EOP-маршрута (без изменений)",
                                           "Preview isolated EOP route changes (read-only)",
                                           "בדיקת ניתוב EOP"),
@@ -1426,6 +1437,79 @@ internal sealed class MainForm : Form
         WriteLine(applied.StdOut);
         WriteLine("Local systemd timer installed. Use journalctl -u linuxmailrelay365-health.service; " +
                   "integrate your monitoring platform separately for external alerts.");
+    }
+
+    private async Task PreviewFreshDirectSendAsync()
+    {
+        var cfg = EopOptions();
+        if (cfg.Mode != "direct-send")
+            throw new InvalidOperationException("Select Direct Send, not Connector.");
+        var trusted = smtpTrustedCidrs.Text.Split(',', StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries);
+        var report = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildDirectSendSidecarBundle(cfg.Port, cfg.Mx, cfg.Domain,
+                cfg.Sender, smtpListenIp.Text.Trim(), trusted, false),
+            TimeSpan.FromSeconds(55));
+        report.EnsureSuccess();
+        WriteLine(report.StdOut);
+        WriteLine("Input validation only. No Entra app, no Connector, no Postfix changes. " +
+                  "Accepted-domain ownership and recipient delivery are NOT verified.");
+    }
+
+    private async Task InstallFreshDirectSendAsync()
+    {
+        var cfg = EopOptions();
+        if (cfg.Mode != "direct-send")
+            throw new InvalidOperationException("Choose Direct Send in the outbound transport selector.");
+        if (!acceptedDomainApproved.Checked)
+            throw new InvalidOperationException("You must verify and approve the accepted domain in your Microsoft 365 tenant.");
+        var endpoint = Endpoint();
+        if (await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
+            throw new InvalidOperationException("An isolated SMTP sidecar already exists. Use the EOP route manager, never overwrite.");
+        var observed = await SshRemote.ProbeSecurityAsync(endpoint,
+            EmbeddedAssets.SecurityProbe, CancellationToken.None);
+        observed.EnsureSuccess();
+        var inventory = MailRoutingInventory.Parse(observed.StdOut);
+        if (inspectedMail is null || inspectedServerIdentity != SecurityOptionsStore.Identity(endpoint) ||
+            inspectedMail != inventory)
+            throw new InvalidOperationException("Inspect the existing Linux mail configuration again before installation.");
+        if (inventory.Mta != "postfix" || !preserveExistingMail.Checked || allowExisting.Checked)
+            throw new InvalidOperationException("Fresh Direct Send requires Preserve Existing Mail with an existing primary Postfix.");
+        var trusted = smtpTrustedCidrs.Text.Split(',', StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries);
+        var preflight = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildDirectSendSidecarBundle(cfg.Port, cfg.Mx, cfg.Domain,
+                cfg.Sender, smtpListenIp.Text.Trim(), trusted, false),
+            TimeSpan.FromSeconds(60));
+        preflight.EnsureSuccess();
+        if (!preflight.StdOut.Contains("DIRECT_SEND_PREFLIGHT=inputs_valid_only", StringComparison.Ordinal))
+            throw new InvalidOperationException("Direct Send installer preflight failed. Nothing was changed.");
+        var outbound = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildOutboundModePreflightBundle("direct-send", cfg.Port,
+                cfg.Mx, cfg.Domain, "", "", true), TimeSpan.FromSeconds(85));
+        outbound.EnsureSuccess();
+        if (!outbound.StdOut.Contains("EOP_TLS_CONNECTIVITY=tls_12_plus_hostname_verified",
+             StringComparison.Ordinal))
+            throw new InvalidOperationException("EOP MX TLS / DNS check failed. No Direct Send installed.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | New private Direct Send gateway",
+            "Create only an isolated Postfix listener on custom TCP " + cfg.Port + ". " +
+            "Primary Postfix and port 25 stay untouched. Only the declared internal tenant domain " +
+            "is eligible for RCPT TO, and the sender is rewritten to one declared address. " +
+            "Public SMTP remains blocked. The Microsoft 365 domain must really be accepted in " +
+            "the chosen tenant. Client devices must be changed only AFTER testing.",
+            "INSTALL PRIVATE DIRECT SEND")) return;
+        var applied = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildDirectSendSidecarBundle(cfg.Port, cfg.Mx, cfg.Domain,
+                cfg.Sender, smtpListenIp.Text.Trim(), trusted, true), TimeSpan.FromMinutes(4));
+        applied.EnsureSuccess();
+        if (!applied.StdOut.Contains("DIRECT_SEND_SIDECAR_INSTALLED=yes", StringComparison.Ordinal))
+            throw new InvalidOperationException("Standalone Direct Send gateway did not confirm successful installation.");
+        WriteLine(applied.StdOut);
+        inspectedMail = null;
+        inspectedServerIdentity = null;
+        acceptedDomainApproved.Checked = false;
+        WriteLine("New private Direct Send installed. This does NOT prove tenant mail delivery. " +
+                  "Verify client RCPT restrictions, TLS trust and actual internal delivery before switching apps.");
     }
 
     private (int Port, string Mode, string Mx, string Sender, string Domain,
