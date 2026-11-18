@@ -30,6 +30,8 @@ internal sealed class MainForm : Form
     private readonly ComboBox backupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private MailRoutingInventory? inspectedMail;
     private string? inspectedServerIdentity;
+    private ExistingSmtpAudit? existingSmtpAudit;
+    private string? existingSmtpAuditIdentity;
     private readonly ComboBox mailTransport = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly CheckBox preserveExistingMail = new() { AutoSize = true, Checked = true };
@@ -482,6 +484,17 @@ internal sealed class MainForm : Form
                     "Маскарад и Connector пока доступны только как план. Никакие изменения домена, MX, SPF, DKIM, DMARC или маршрутов существующего MTA не выполняются автоматически. Если MTA уже установлен, режим сохранения блокирует его изменение.",
                     "Masquerade and Connector are planning-only in this preview. No domain, MX, SPF, DKIM, DMARC, or existing MTA routes change automatically. Preserve mode blocks modifications of an existing MTA.",
                     "Connector והסוואת כתובות הם לתכנון בלבד. הגדרות שרת הדואר הקיים לא משתנות.")));
+                if (existingSmtpAudit is not null && existingSmtpAuditIdentity == TryCurrentIdentity())
+                    AddLine(page, UiTheme.Text(existingSmtpAudit.Summary(language.SelectedIndex)));
+                else
+                    AddLine(page, UiTheme.Text(T(
+                        "Публичный SMTP и безопасность пересылки пока не проверены. Проверка не отправляет письма и ничего не меняет.",
+                        "Public SMTP and relay safety not audited yet. The check sends no mail and changes nothing.",
+                        "טרם נבדקו שירותי SMTP ציבוריים והגבלות relay. הבדיקה אינה משנה דבר.")));
+                AddAction(page, T("Анализ существующего публичного SMTP и правил Relay",
+                                  "Audit existing public SMTP and relay policy",
+                                  "בדיקת SMTP ציבורי והרשאות relay"),
+                    InspectExistingPublicSmtpAsync, false, "shield", "smtp-audit");
                 AddAction(page, T("Проверить почтовый сервер и маршруты (только чтение)",
                                   "Inspect existing MTA and routing (read-only)",
                                   "בדיקת שרת הדואר והניתוב"),
@@ -669,6 +682,8 @@ internal sealed class MainForm : Form
             inspectedMail = null;
             inspectedServerIdentity = null;
             backupSelector.Items.Clear();
+            existingSmtpAudit = null;
+            existingSmtpAuditIdentity = null;
             routingIdentity = identity;
         }
         finally { routingLoading = false; }
@@ -784,6 +799,23 @@ internal sealed class MainForm : Form
         WriteLine("Firewall rules applied for explicitly trusted source networks. Check reachability from an actual client.");
     }
 
+    private async Task InspectExistingPublicSmtpAsync()
+    {
+        var endpoint = Endpoint();
+        WriteLine("Read-only public SMTP audit: active listener bindings, Postfix relay restrictions, SASL and TLS. No external mail or messages sent.");
+        var report = await SshRemote.ExecuteAsync(endpoint, "bash -s",
+            EmbeddedAssets.BuildExistingSmtpAuditBundle(),
+            timeout: TimeSpan.FromSeconds(120));
+        report.EnsureSuccess();
+        existingSmtpAudit = ExistingSmtpAudit.Parse(report.StdOut);
+        existingSmtpAuditIdentity = SecurityOptionsStore.Identity(endpoint);
+        WriteLine(existingSmtpAudit.Summary(language.SelectedIndex));
+        if (existingSmtpAudit.SuspectedUnsafeRelay)
+            WriteLine("WARNING: configuration suggests unsafe relay rules. This is not a proven open relay. Review immediately; avoid Force Replace until existing mail flow is understood.");
+        else if (existingSmtpAudit.PotentiallyPublic)
+            WriteLine("Potentially public SMTP bind detected; this is not proof of Internet access or an open relay.");
+    }
+
     private async Task InspectMailRoutingAsync()
     {
         var endpoint = Endpoint();
@@ -800,6 +832,18 @@ internal sealed class MainForm : Form
         if (inventory.Mta != "none")
             WriteLine("Existing mail flows detected. Preserve mode will NOT change them.");
         UpdatePreserveFlowPreview();
+        try
+        {
+            await InspectExistingPublicSmtpAsync();
+        }
+        catch (Exception error)
+        {
+            // Never report "safe" when Python, a service probe, or access rights
+            // are unavailable. Preserve the earlier valid MTA inventory.
+            existingSmtpAudit = null;
+            existingSmtpAuditIdentity = null;
+            WriteLine("Public SMTP audit could not complete; status UNKNOWN and requires manual review. " + error.Message);
+        }
     }
 
 
@@ -1281,10 +1325,18 @@ internal sealed class MainForm : Form
         if (inventory.Mta == "postfix" && !allowExisting.Checked)
             throw new InvalidOperationException("Force Replace requires explicit selection after MTA inspection.");
         bool force = inventory.Mta == "postfix";
+        string publicExposureWarning = existingSmtpAuditIdentity == SecurityOptionsStore.Identity(endpoint) &&
+            existingSmtpAudit?.PotentiallyPublic == true
+            ? T("\nОБНАРУЖЕН ПОТЕНЦИАЛЬНО ПУБЛИЧНЫЙ SMTP: замена может прервать входящую почту из интернета и старые маршруты.",
+                "\nPOTENTIALLY PUBLIC SMTP DETECTED: replacing may disrupt inbound internet mail and legacy routes.",
+                "\nזוהתה האזנת SMTP ציבורית אפשרית. החלפת ההגדרות עלולה לשבש דואר נכנס.")
+            : T("\nПубличный SMTP не подтверждён: проверка требует внешней проверки NAT/firewall и клиентской доставки.",
+                "\nPublic SMTP exposure is not confirmed. NAT/firewall and actual external delivery require separate verification.",
+                "\nמצב הגישה מהאינטרנט אינו מאומת.");
         if (force && !ConfirmDestructive("LinuxMailRelay365 | Force Replace Postfix",
             T("ОПАСНО: будут перезаписаны настройки Postfix, включая маршруты, входящую почту и параметры SMTP. Будет создан и проверен полный backup /etc/postfix. Возможен перерыв почтового обслуживания.",
               "DANGER: Postfix settings and routes will be overwritten; inbound and outbound mail may be interrupted. A verified /etc/postfix backup is mandatory; automatic rollback is attempted on failure.",
-              "אזהרה: הגדרות Postfix יוחלפו. ייווצר גיבוי מאומת."),
+              "אזהרה: הגדרות Postfix יוחלפו. ייווצר גיבוי מאומת.") + publicExposureWarning,
             "REPLACE POSTFIX")) return;
         var state = await ReadyStateAsync();
         var approval = MessageBox.Show(this,
