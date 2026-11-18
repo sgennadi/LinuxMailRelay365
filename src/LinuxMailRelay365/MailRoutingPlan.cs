@@ -13,6 +13,12 @@ internal sealed class MailRoutingPlan
     public string SenderPolicy { get; set; } = "fixed-mailbox";
     public bool PreserveExistingMail { get; set; } = true;
     public string VerifiedDomain { get; set; } = "";
+    // Per-Linux-host preflight choices. Paths only, never TLS key contents.
+    public string EopMxHost { get; set; } = "";
+    public string EopFixedSender { get; set; } = "";
+    public string EopPublicIp { get; set; } = "";
+    public string EopCertificatePath { get; set; } = "";
+    public string EopKeyPath { get; set; } = "";
     public string ListenIpv4 { get; set; } = "";
     public string TrustedCidrs { get; set; } = "";
     public int SidecarPort { get; set; } = 2525;
@@ -83,6 +89,12 @@ internal static class MailRoutingPlanStore
         if (state.Transport is not ("oauth2" or "connector" or "direct-send") ||
             state.SenderPolicy is not ("fixed-mailbox" or "preserve-domain" or "masquerade"))
             throw new InvalidDataException("Unsupported routing policy.");
+        // Only operator configuration hints are stored; no passwords,
+        // private key bytes, hash values, signed tokens or tenant attestations.
+        if (new[] { state.EopMxHost, state.EopFixedSender, state.EopPublicIp,
+                     state.EopCertificatePath, state.EopKeyPath }
+            .Any(value => value.Length > 256 || value.Contains('\n') || value.Contains('\r')))
+            throw new InvalidDataException("EOP routing option exceeds safe length.");
         if (state.VerifiedDomain.Length > 253 ||
             (state.VerifiedDomain.Length > 0 &&
              !Regex.IsMatch(state.VerifiedDomain, @"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
@@ -141,6 +153,12 @@ internal static class MailRoutingPlanStore
             if (!Load(folder, b).PublicInternetRequested || !Load(folder, b).ShowAdvancedSmtpTools ||
                 Load(folder, a).PublicInternetRequested || Load(folder, a).ShowAdvancedSmtpTools)
                 return false;
+            Save(folder, a, new MailRoutingPlan {
+                Transport = "direct-send", EopMxHost = "example-org.mail.protection.outlook.com",
+                EopFixedSender = "alerts@example.org", VerifiedDomain = "example.org",
+                ShowAdvancedSmtpTools = true });
+            if (Load(folder, a).EopFixedSender != "alerts@example.org" ||
+                Load(folder, b).EopMxHost != "") return false;
             Validate(new MailRoutingPlan { SidecarPort = 2526 });
             try { Validate(new MailRoutingPlan { SidecarPort = 25 }); return false; }
             catch (InvalidDataException) { }
