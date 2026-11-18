@@ -18,6 +18,7 @@ TRUSTED_NETWORKS=()
 VALIDATE_NETWORK_ONLY=0
 FORCE_REPLACE=0
 FORCE_ACK=''
+EXPECTED_CONFIG_SHA=''
 SNAPSHOT_ID=''
 
 usage() {
@@ -51,6 +52,7 @@ while [ "$#" -gt 0 ]; do
     --allow-existing) ALLOW_EXISTING=1; shift ;;
     --force-replace) FORCE_REPLACE=1; shift ;;
     --confirm-force-replace) FORCE_ACK="${2:?}"; shift 2 ;;
+    --expect-postfix-sha256) EXPECTED_CONFIG_SHA="${2:?}"; shift 2 ;;
     --listen-ip) LISTEN_IP="${2:?}"; shift 2 ;;
     --trusted-network) TRUSTED_NETWORKS+=("${2:?}"); shift 2 ;;
     --validate-network-only) VALIDATE_NETWORK_ONLY=1; shift ;;
@@ -187,9 +189,29 @@ if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] &&
     echo 'Force requires --force-replace --confirm-force-replace REPLACE_POSTFIX_CONFIG.' >&2
     exit 1
   fi
+  if ! [[ "$EXPECTED_CONFIG_SHA" =~ ^[a-f0-9]{64}$ ]] ||
+     [ ! -f /etc/postfix/main.cf ] || [ ! -f /etc/postfix/master.cf ]; then
+    echo 'Force Replace requires a valid SHA-256 fingerprint for main.cf and master.cf.' >&2
+    exit 1
+  fi
+  check_postfix_fingerprint() {
+    local actual
+    actual="$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf | sha256sum | awk '{print $1}')" || {
+      echo 'Cannot read the Postfix configuration for fingerprint validation.' >&2
+      return 1
+    }
+    if [ "$actual" != "$EXPECTED_CONFIG_SHA" ]; then
+      echo 'Postfix configuration changed since inspection. Force Replace blocked.' >&2
+      return 1
+    fi
+  }
+  check_postfix_fingerprint || exit 1
 elif [ "$FORCE_REPLACE" -eq 1 ]; then
   echo 'Force Replace only applies to detected Postfix. No changes made.' >&2
   exit 2
+elif [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ] && [ -e /etc/postfix ]; then
+  echo 'Postfix files exist without a usable postconf. Refusing silent replacement.' >&2
+  exit 1
 fi
 
 if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ]; then
@@ -204,6 +226,8 @@ if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ]; then
     echo 'Backup ID invalid or missing. Refusing to install.' >&2; exit 1
   fi
   bash "$SCRIPT_DIR/mail-config-recovery.sh" --verify "$SNAPSHOT_ID" >/dev/null || exit 1
+  # Another administrator could have modified Postfix during the snapshot.
+  if [ "$FORCE_REPLACE" -eq 1 ]; then check_postfix_fingerprint || exit 1; fi
   printf 'VERIFIED_PRE_CHANGE_BACKUP_ID=%s\n' "$SNAPSHOT_ID"
   rollback_if_failed() {
     local rc=$?

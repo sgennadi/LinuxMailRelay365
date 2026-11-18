@@ -16,6 +16,22 @@ if has postconf; then
   val MTA postfix
   val POSTFIX_RELAY "$(postconf -h relayhost 2>/dev/null || true)"
   val POSTFIX_TRANSPORT "$(postconf -h default_transport 2>/dev/null || true)"
+  # Return only a digest of the two main configuration files, never their
+  # contents. Any unreadable file blocks Force Replace in the wizard.
+  if has sha256sum && [ -r /etc/postfix/main.cf ] && [ -r /etc/postfix/master.cf ]; then
+    if digest_lines="$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf 2>/dev/null)"; then
+      digest="$(printf '%s\n' "$digest_lines" | sha256sum | awk '{print $1}')"
+      if [[ "$digest" =~ ^[a-f0-9]{64}$ ]]; then
+        val POSTFIX_CONFIG_SHA256 "$digest"
+      else
+        val POSTFIX_CONFIG_SHA256 unavailable
+      fi
+    else
+      val POSTFIX_CONFIG_SHA256 unavailable
+    fi
+  else
+    val POSTFIX_CONFIG_SHA256 unavailable
+  fi
 elif [ -e /etc/postfix ]; then
   val MTA unknown
 elif [ -f /etc/mail/sendmail.cf ] || { has rpm && rpm -q sendmail >/dev/null 2>&1; }; then

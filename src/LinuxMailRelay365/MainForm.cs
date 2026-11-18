@@ -364,7 +364,9 @@ internal sealed class MainForm : Form
                     AddLine(page, UiTheme.Text("Detected MTA: " + inspectedMail.Mta +
                         "; relay: " + inspectedMail.CurrentRelay +
                         "; default transport: " + inspectedMail.CurrentTransport));
-                    if (inspectedMail.Mta == "postfix")
+                    if (inspectedMail.Mta == "postfix" &&
+                        System.Text.RegularExpressions.Regex.IsMatch(inspectedMail.ConfigSha256,
+                            @"^[a-f0-9]{64}$"))
                     {
                         allowExisting.Text = T("Force Replace Configuration (опасно, только после backup)",
                             "Force Replace Configuration (destructive; verified backup required)",
@@ -374,6 +376,14 @@ internal sealed class MainForm : Form
                             "ВНИМАНИЕ: будет заменена конфигурация Postfix и перезапущена служба. Возможен перерыв входящей и исходящей почты. Сначала будет создан и проверен backup; Restore доступен позже.",
                             "WARNING: Existing Postfix routes and settings will be overwritten and service restarted. Mail may be interrupted. A verified backup is required; Restore remains available later.",
                             "אזהרה: תצורת Postfix הקיימת תוחלף וייתכן שיבוש בדואר.")));
+                    }
+                    else if (inspectedMail.Mta == "postfix")
+                    {
+                        allowExisting.Checked = false;
+                        AddLine(page, UiTheme.Text(T(
+                            "Force Replace недоступен: SHA-256 файлов main.cf и master.cf нельзя проверить. Проверьте доступ к ним у SSH-пользователя.",
+                            "Force Replace disabled: SHA-256 of main.cf and master.cf is unavailable. Verify SSH user's read permissions.",
+                            "לא ניתן לאמת קבצי Postfix. החלפה כפויה חסומה.")));
                     }
                 }
                 else
@@ -607,6 +617,7 @@ internal sealed class MainForm : Form
         allowExisting.Checked = false;
         WriteLine("Existing MTA: " + inventory.Mta + "; relayhost: " + inventory.CurrentRelay +
                   "; transport: " + inventory.CurrentTransport);
+        WriteLine("Postfix configuration fingerprint: " + inventory.ConfigSha256);
         if (inventory.Mta != "none")
             WriteLine("Existing mail flows detected. Preserve mode will NOT change them.");
     }
@@ -1037,7 +1048,10 @@ internal sealed class MainForm : Form
         if (inspectedMail is null || inspectedServerIdentity != SecurityOptionsStore.Identity(endpoint))
             throw new InvalidOperationException("First inspect the existing Linux mail server. No changes made.");
         if (inspectedMail != inventory)
-            throw new InvalidOperationException("Linux mail routing changed since inspection. Run MTA inspection again.");
+            throw new InvalidOperationException("Postfix configuration changed since inspection, including main.cf/master.cf fingerprint. Inspect again.");
+        if (inventory.Mta == "postfix" &&
+            !System.Text.RegularExpressions.Regex.IsMatch(inventory.ConfigSha256, @"^[a-f0-9]{64}$"))
+            throw new InvalidOperationException("Cannot verify Postfix configuration SHA-256. Force Replace disabled.");
         if (inventory.Mta is "sendmail" or "exim")
             throw new NotSupportedException("Existing Sendmail/Exim is preserved. Safe migration/sidecar deployment is not implemented yet.");
         if (inventory.Mta == "postfix" && preserveExistingMail.Checked)
@@ -1064,6 +1078,8 @@ internal sealed class MainForm : Form
             arguments.Add("--force-replace");
             arguments.Add("--confirm-force-replace");
             arguments.Add("REPLACE_POSTFIX_CONFIG");
+            arguments.Add("--expect-postfix-sha256");
+            arguments.Add(inventory.ConfigSha256);
         }
         if (routingPlan.ListenIpv4.Length > 0)
         {

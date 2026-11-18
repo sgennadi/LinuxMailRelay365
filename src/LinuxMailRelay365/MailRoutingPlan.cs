@@ -17,7 +17,7 @@ internal sealed class MailRoutingPlan
     public string TrustedCidrs { get; set; } = "";
 }
 
-internal sealed record MailRoutingInventory(string Mta, string CurrentRelay, string CurrentTransport)
+internal sealed record MailRoutingInventory(string Mta, string CurrentRelay, string CurrentTransport, string ConfigSha256)
 {
     internal static MailRoutingInventory Parse(string text)
     {
@@ -36,7 +36,8 @@ internal sealed record MailRoutingInventory(string Mta, string CurrentRelay, str
             throw new InvalidDataException("Unknown MTA; refusing to modify a mail server.");
         return new MailRoutingInventory(mta,
             values.GetValueOrDefault("POSTFIX_RELAY") ?? "",
-            values.GetValueOrDefault("POSTFIX_TRANSPORT") ?? "");
+            values.GetValueOrDefault("POSTFIX_TRANSPORT") ?? "",
+            values.GetValueOrDefault("POSTFIX_CONFIG_SHA256") ?? "unavailable");
     }
 }
 
@@ -132,7 +133,13 @@ internal static class MailRoutingPlanStore
                   PreserveExistingMail = true, VerifiedDomain = "example.org" });
             if (Load(folder, a).Transport != "connector" ||
                 Load(folder, b).Transport != "oauth2") return false;
-            var old = MailRoutingInventory.Parse("PROBE_VERSION=2\nMTA=postfix\nPOSTFIX_RELAY=[mail.example]\n");
+            const string digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            var old = MailRoutingInventory.Parse(
+                "PROBE_VERSION=2\nMTA=postfix\nPOSTFIX_RELAY=[mail.example]\nPOSTFIX_CONFIG_SHA256=" + digest + "\n");
+            var changed = MailRoutingInventory.Parse(
+                "PROBE_VERSION=2\nMTA=postfix\nPOSTFIX_RELAY=[mail.example]\nPOSTFIX_CONFIG_SHA256=" +
+                new string('b', 64) + "\n");
+            if (old == changed || old.ConfigSha256 != digest) return false;
             var privateMail = new MailRoutingPlan {
                 ListenIpv4 = "192.168.2.5", TrustedCidrs = "192.168.2.0/24" };
             Validate(privateMail);
