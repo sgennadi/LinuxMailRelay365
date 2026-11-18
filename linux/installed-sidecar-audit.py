@@ -46,6 +46,87 @@ def normalized_restrictions(value):
     return tuple(x.strip().lower() for x in value.split(",") if x.strip())
 
 
+def parse_fixed_sender_rule(data):
+    """Decode only a single exact literal POSIX regexp (never a wildcard).
+
+    Accepts the normalized format emitted by the fresh sidecar installers.
+    Does not return the address to callers; only the local postmap probe sees it.
+    """
+    if not isinstance(data, str) or len(data) > 1024 or data.count("\n") != 1:
+        return None
+    suffix = "$: OK\n"
+    if not data.startswith(":^") or not data.endswith(suffix):
+        return None
+    encoded = data[2:-len(suffix)]
+    special = r"\.^$*+?{}[]()|"
+    decoded = []
+    index = 0
+    while index < len(encoded):
+        ch = encoded[index]
+        if ch == "\\":
+            if index + 1 >= len(encoded) or encoded[index + 1] not in special:
+                return None
+            decoded.append(encoded[index + 1])
+            index += 2
+        elif ch in special or ch.isspace() or ch == ":" or ord(ch) < 33 or ord(ch) > 126:
+            return None
+        else:
+            decoded.append(ch)
+            index += 1
+    sender = "".join(decoded)
+    email = re.fullmatch(r"[A-Za-z0-9.!#$%&*+/=?^_~-]+@([A-Za-z0-9.-]+)", sender)
+    if not email:
+        return None
+    domain = email.group(1)
+    if not re.fullmatch(
+            r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+            r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+",
+            domain):
+        return None
+    # Refuse noncanonical encodings and over-broad regexp metacharacters.
+    quoted = "".join("\\" + ch if ch in special else ch for ch in sender)
+    if quoted != encoded:
+        return None
+    return sender
+
+
+def fixed_sender_map_status():
+    """Verify the live root-owned regexp table without any SMTP transaction."""
+    table = CONF / "eop-fixed-sender.regexp"
+    try:
+        info = table.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or
+                info.st_mode & 0o022 or not 12 <= info.st_size <= 1024):
+            return "unsafe_or_missing_map"
+        sender = parse_fixed_sender_rule(table.read_text(encoding="ascii"))
+    except (OSError, UnicodeError, ValueError):
+        return "unsafe_or_missing_map"
+    if sender is None:
+        return "invalid_fixed_sender_rule"
+    if not shutil.which("postmap"):
+        return "postmap_unavailable_or_failed"
+    user, domain = sender.rsplit("@", 1)
+    queries = (
+        (sender, "OK"),
+        ("different." + sender, ""),
+        (user + "@not-" + domain, ""),
+    )
+    try:
+        for address, expected in queries:
+            result = subprocess.run(
+                ["postmap", "-q", address, "regexp:" + str(table)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                timeout=6, universal_newlines=True)
+            # Missing keys may have exit 0 or 1 on different Postfix versions.
+            if (result.returncode not in (0, 1) or result.stderr.strip() or
+                    result.stdout.strip() != expected or
+                    (expected == "OK" and result.returncode != 0)):
+                return "postmap_lookup_failed"
+    except (OSError, subprocess.TimeoutExpired, UnicodeError):
+        return "postmap_unavailable_or_failed"
+    return "exact_postmap_verified"
+
+
 def private_listener(value):
     if value is None:
         return "unknown"
@@ -286,7 +367,7 @@ def audit(port, live=True):
         CONF / "eop-recipients.regexp"), "reject")
     eop_sidecar = (postconf("default_transport") or "").startswith("smtp:[")
     d["SMTP_FIXED_SENDER_MAP"] = (
-        "referenced_not_runtime_verified" if sender_rule == incoming_sender_map
+        fixed_sender_map_status() if sender_rule == incoming_sender_map
         else "not_verified")
     d["SMTP_HEADER_SENDER_REWRITE"] = (
         "all_clients" if postconf("local_header_rewrite_clients") == "static:all"
@@ -342,7 +423,7 @@ def audit(port, live=True):
         # A new unauthenticated EOP sidecar must keep strict sender policy
         # and must apply canonical sender maps to remote SMTP headers.
         common_safe = (common_safe and
-                       d["SMTP_FIXED_SENDER_MAP"] == "referenced_not_runtime_verified" and
+                       d["SMTP_FIXED_SENDER_MAP"] == "exact_postmap_verified" and
                        d["SMTP_HEADER_SENDER_REWRITE"] == "all_clients")
     if not common_safe:
         d["SMTP_SECURITY_RESULT"] = "needs_manual_review"
