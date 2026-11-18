@@ -98,6 +98,21 @@ class InstalledSidecarAuditUnitTests(unittest.TestCase):
             self.assertEqual(
                 audit.selinux_file_label_hints(auth_enabled=True), "missing_files")
 
+    def test_fixed_sender_regexp_parser_rejects_wildcards_and_extra_rules(self):
+        good = r":^alerts\+ci@example\.org$: OK" + "\n"
+        self.assertEqual(audit.parse_fixed_sender_rule(good),
+                         "alerts+ci@example.org")
+        for bad in (
+            r":^.*@example\.org$: OK" + "\n",
+            r":^alerts@example\.org$: OK" + "\n" + r":^.*$: OK" + "\n",
+            r":^alerts\@example\.org$: OK" + "\n",
+            r":^alerts@example\.org$: PERMIT" + "\n",
+            r":^alerts@example\.org$: OK" + "\r\n",
+            r":^alerts@example\.org$: OK",
+        ):
+            with self.subTest(rule=bad):
+                self.assertIsNone(audit.parse_fixed_sender_rule(bad))
+
     def test_fresh_fixed_sender_eop_audit_has_non_public_status(self):
         values = {
             "default_transport": "smtp:[example-org.mail.protection.outlook.com]:25",
@@ -120,6 +135,7 @@ class InstalledSidecarAuditUnitTests(unittest.TestCase):
             with patch.object(audit, "postconf", side_effect=lambda k: config.get(k)), \
                  patch.object(audit, "run", return_value="active"), \
                  patch.object(audit, "port_configuration", return_value="matched"), \
+                 patch.object(audit, "fixed_sender_map_status", return_value="exact_postmap_verified"), \
                  patch.object(Path, "is_file", return_value=True), \
                  patch.object(Path, "exists", return_value=False), \
                  patch.object(Path, "read_text", return_value='ID=ubuntu\n'):
@@ -128,7 +144,7 @@ class InstalledSidecarAuditUnitTests(unittest.TestCase):
         result = inspect(values)
         self.assertEqual(result["SMTP_RELAY_RESTRICTIONS"], "private_clients")
         self.assertEqual(result["SMTP_FIXED_SENDER_MAP"],
-                         "referenced_not_runtime_verified")
+                         "exact_postmap_verified")
         self.assertEqual(result["SMTP_HEADER_SENDER_REWRITE"], "all_clients")
         self.assertEqual(result["SMTP_SECURITY_RESULT"],
                          "private_unauthenticated_not_public_safe")
