@@ -98,6 +98,54 @@ class InstalledSidecarAuditUnitTests(unittest.TestCase):
             self.assertEqual(
                 audit.selinux_file_label_hints(auth_enabled=True), "missing_files")
 
+    def test_fresh_fixed_sender_eop_audit_has_non_public_status(self):
+        values = {
+            "default_transport": "smtp:[example-org.mail.protection.outlook.com]:25",
+            "inet_interfaces": "127.0.0.1",
+            "mynetworks": "127.0.0.0/8",
+            "smtpd_client_restrictions": "permit_mynetworks, reject",
+            "smtpd_relay_restrictions": "permit_mynetworks, reject",
+            "smtpd_recipient_restrictions": (
+                "check_recipient_access regexp:/etc/linuxmailrelay365/"
+                "sidecar-postfix/eop-recipients.regexp, reject"),
+            "smtpd_sender_restrictions": (
+                "check_sender_access regexp:/etc/linuxmailrelay365/"
+                "sidecar-postfix/eop-fixed-sender.regexp, reject"),
+            "local_header_rewrite_clients": "static:all",
+            "smtpd_tls_security_level": "may",
+            "smtpd_sasl_auth_enable": "no",
+            "smtpd_tls_auth_only": "no",
+        }
+        def inspect(config):
+            with patch.object(audit, "postconf", side_effect=lambda k: config.get(k)), \
+                 patch.object(audit, "run", return_value="active"), \
+                 patch.object(audit, "port_configuration", return_value="matched"), \
+                 patch.object(Path, "is_file", return_value=True), \
+                 patch.object(Path, "exists", return_value=False), \
+                 patch.object(Path, "read_text", return_value='ID=ubuntu\n'):
+                return audit.audit(46500, live=False)
+
+        result = inspect(values)
+        self.assertEqual(result["SMTP_RELAY_RESTRICTIONS"], "private_clients")
+        self.assertEqual(result["SMTP_FIXED_SENDER_MAP"],
+                         "referenced_not_runtime_verified")
+        self.assertEqual(result["SMTP_HEADER_SENDER_REWRITE"], "all_clients")
+        self.assertEqual(result["SMTP_SECURITY_RESULT"],
+                         "private_unauthenticated_not_public_safe")
+        self.assertEqual(result["PUBLIC_INTERNET_ACCESS_VERIFIED"], "no")
+        for key, bad in [
+            ("smtpd_sender_restrictions", "permit"),
+            ("smtpd_recipient_restrictions", "permit"),
+            ("local_header_rewrite_clients", ""),
+            ("smtpd_relay_restrictions", "permit_mynetworks, permit")
+        ]:
+            with self.subTest(key=key):
+                changed = dict(values)
+                changed[key] = bad
+                result = inspect(changed)
+                self.assertEqual(result["SMTP_SECURITY_RESULT"],
+                                 "needs_manual_review")
+
     def test_unauthorized_relay_policy_never_gets_green(self):
         values = {
             "inet_interfaces": "127.0.0.1, 192.168.10.7",
