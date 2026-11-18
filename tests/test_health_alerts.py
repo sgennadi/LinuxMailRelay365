@@ -91,6 +91,8 @@ class HealthAlertContracts(unittest.TestCase):
         self.assertIn("PinnedHTTPS", src)
         self.assertIn("server_hostname=self.host", src)
         self.assertIn("ExecStartPost=-/usr/bin/python3", src)
+        self.assertIn("StateDirectory=linuxmailrelay365-health-alerts", src)
+        self.assertIn("StateDirectoryMode=0700", src)
         for forbidden in ("postfix reload", "postconf -e", "ufw allow",
                           "systemctl enable --now", "Set-TransportConfig"):
             self.assertNotIn(forbidden, src)

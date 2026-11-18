@@ -278,6 +278,10 @@ def dispatch(port, now=None):
 
 def dropin(port):
     return ("[Service]\n"
+            # The existing health unit uses ProtectSystem=strict. Grant only
+            # this dedicated root-owned directory for alert dedup state.
+            "StateDirectory=linuxmailrelay365-health-alerts\n"
+            "StateDirectoryMode=0700\n"
             "ExecStartPost=-/usr/bin/python3 {} --dispatch --smtp-port {}\n"
             .format(INSTALLED, port)).encode("ascii")
 
