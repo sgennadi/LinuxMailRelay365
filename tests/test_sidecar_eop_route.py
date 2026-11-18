@@ -123,6 +123,20 @@ class EopRouteContracts(unittest.TestCase):
         self.assertIn("--status", SCRIPT.read_text(encoding="utf-8"))
         self.assertIn("EOP_ROUTE_CURRENT_MAIN_SHA256", SCRIPT.read_text(encoding="utf-8"))
 
+    def test_wizard_has_explicit_preview_apply_restore_and_root_only_asset(self):
+        embedded = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
+        project = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+        ui = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
+        self.assertIn("BuildEopRouteBundle", embedded)
+        self.assertIn("manage-sidecar-eop-route.py", project)
+        self.assertIn("PreviewEopRouteAsync", ui)
+        self.assertIn("ApplyEopRouteAsync", ui)
+        self.assertIn("RestoreEopRouteAsync", ui)
+        self.assertIn("acceptedDomainApproved", ui)
+        self.assertIn("connectorApproved", ui)
+        self.assertIn("EOP_TLS_CONNECTIVITY=tls_12_plus_hostname_verified", ui)
+        self.assertIn("DEPLOY PRIVATE EOP ROUTE", ui)
+
     def test_cli_invalid_port_and_no_credentials_or_mail_submission(self):
         for port in ("25", "587", "1023", "65536", "0"):
             proc = subprocess.run(
