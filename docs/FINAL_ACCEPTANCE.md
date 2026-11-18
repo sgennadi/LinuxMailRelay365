@@ -15,7 +15,7 @@
 | Root-only real reboot baseline and verification | Implemented | Controlled actual Linux reboot |
 | RHEL 8/9/10, Oracle, Rocky, Alma SELinux port/file/process context audit | Read-only | Real Enforcing process AVC allow/deny integration |
 | Microsoft 365 XOAUTH2 sender transport | Preview | Live Entra tenant + Exchange scoped mailbox + delivered test |
-| Microsoft 365 Direct Send / Connector | PLAN/READ-ONLY ONLY | Tenant accepted domain, Connector and actual relay evidence |
+| Microsoft 365 Direct Send / Connector | Guarded EOP route on existing XOAUTH2 sidecar; standalone deployment incomplete | Real tenant Connector, accepted domains, actual recipient delivery |
 | Sender masquerade / preserve original From | BLOCKED | Verified sender permissions and routing |
 | Internet-wide SMTP listener | BLOCKED | Approved abuse controls / rate limits and security review |
 | Signed Stable Windows EXE | Not released | Signing provenance, GUI / x64 / ARM64 production QA |
