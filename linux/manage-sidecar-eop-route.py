@@ -75,7 +75,7 @@ def owned_dir(path, private=False):
 def validate(args):
     if not 1024 <= args.smtp_port <= 65535:
         raise Refused("invalid_custom_port")
-    if args.restore:
+    if args.restore or args.status:
         if any((args.mode, args.mx_host, args.sender, args.recipient_domain,
                 args.public_ip, args.tls_cert, args.tls_key)):
             raise Refused("restore_accepts_only_port_and_expected_sha")
@@ -218,7 +218,7 @@ def postconf(key):
     return result.stdout.strip()
 
 
-def runtime_checks():
+def runtime_checks(allow_active_route=False):
     if os.geteuid():
         raise Refused("root_required")
     for tool in ("postfix", "postconf", "systemctl"):
@@ -266,21 +266,28 @@ def runtime_checks():
                 postconf("smtpd_tls_security_level") != "encrypt"):
             raise Refused("unexpected_sasl_tls_policy")
     elif sasl == "no":
-        if postconf("smtpd_relay_restrictions") != "permit_mynetworks, reject_unauth_destination":
+        allowed = ("permit_mynetworks, reject_unauth_destination",
+                   "permit_mynetworks, reject") if allow_active_route else (
+                   "permit_mynetworks, reject_unauth_destination",)
+        if postconf("smtpd_relay_restrictions") not in allowed:
             raise Refused("unexpected_trusted_network_policy")
     else:
         raise Refused("unknown_sasl_policy")
-    # Do not replace a manually modified sender / recipient policy or existing
-    # route tables with a different security interpretation.
-    original_rcpt = postconf("smtpd_recipient_restrictions")
-    if original_rcpt not in ("permit_mynetworks, reject_unauth_destination",
-                             "permit_sasl_authenticated, reject"):
-        raise Refused("unexpected_original_recipient_policy")
-    for key in ("sender_canonical_maps", "recipient_canonical_maps",
-                "transport_maps", "smtp_tls_policy_maps", "relayhost",
-                "smtpd_sender_restrictions"):
-        if postconf(key):
-            raise Refused("existing_routing_override_requires_manual_review")
+    if not allow_active_route:
+        # Only the original generated sidecar is eligible for transition.
+        original_rcpt = postconf("smtpd_recipient_restrictions")
+        if original_rcpt not in ("permit_mynetworks, reject_unauth_destination",
+                                 "permit_sasl_authenticated, reject"):
+            raise Refused("unexpected_original_recipient_policy")
+        for key in ("sender_canonical_maps", "recipient_canonical_maps",
+                    "transport_maps", "smtp_tls_policy_maps", "relayhost",
+                    "smtpd_sender_restrictions"):
+            if postconf(key):
+                raise Refused("existing_routing_override_requires_manual_review")
+    else:
+        expected = "check_recipient_access regexp:{}, reject".format(CONF / MAPS[2])
+        if postconf("smtpd_recipient_restrictions") != expected:
+            raise Refused("active_eop_recipient_policy_modified")
     if "regexp" not in run(["postconf", "-m"]).stdout.splitlines():
         raise Refused("regexp_dictionary_not_available")
 
@@ -427,6 +434,40 @@ def deploy(args):
     return 0
 
 
+def route_status(args):
+    # Returns no address/recipient content, only aggregate state and SHA.
+    if os.geteuid() != 0:
+        raise Refused("root_required")
+    local_policy_port = CONF / "smtp-port"
+    owned_file(local_policy_port)
+    if local_policy_port.read_text(encoding="ascii").strip() != str(args.smtp_port):
+        raise Refused("installed_custom_port_mismatch")
+    if not ACTIVE.exists() and not ACTIVE.is_symlink():
+        say("EOP_ROUTE_STATUS", "not_installed")
+        say("CHANGES_APPLIED", "no")
+        return 0
+    owned_file(ACTIVE)
+    owned_dir(RECOVERY, private=True)
+    data = json.loads(ACTIVE.read_text(encoding="ascii"))
+    if data.get("version") != 1 or data.get("port") != args.smtp_port or \
+            data.get("mode") not in ("direct-send", "connector"):
+        raise Refused("active_route_manifest_invalid")
+    main = CONF / "main.cf"
+    master = CONF / "master.cf"
+    owned_file(main)
+    owned_file(master)
+    msha = digest(main.read_bytes())
+    if msha != data.get("active_main") or \
+            digest(master.read_bytes()) != data.get("active_master"):
+        raise Refused("active_route_configuration_changed_since_deploy")
+    say("EOP_ROUTE_STATUS", "active")
+    say("EOP_ROUTE_CURRENT_MAIN_SHA256", msha)
+    say("EOP_ROUTE_MODE", data["mode"].replace("-", "_"))
+    say("EOP_ROUTE_CUSTOM_PORT", args.smtp_port)
+    say("CHANGES_APPLIED", "no")
+    return 0
+
+
 def rollback_route(args):
     owned_file(ACTIVE)
     owned_dir(RECOVERY, private=True)
@@ -479,6 +520,7 @@ def main():
     exclusive.add_argument("--check-only", action="store_true")
     exclusive.add_argument("--apply", action="store_true")
     exclusive.add_argument("--restore", action="store_true")
+    exclusive.add_argument("--status", action="store_true")
     p.add_argument("--smtp-port", type=int, required=True)
     p.add_argument("--mode", choices=("direct-send", "connector"))
     p.add_argument("--mx-host", default="")
@@ -493,7 +535,9 @@ def main():
     a = p.parse_args()
     try:
         validate(a)
-        runtime_checks()
+        if a.status:
+            return route_status(a)
+        runtime_checks(allow_active_route=a.restore)
         # Preflight is read-only; the apply/restore operations take the
         # same exclusive lock used by private SMTP AUTH and certificate changes.
         if a.check_only:
@@ -531,7 +575,7 @@ def main():
     except (Refused, OSError, UnicodeError, ValueError) as err:
         say("EOP_ROUTE_RESULT", "refused")
         say("EOP_ROUTE_ERROR", re.sub(r"[^a-z0-9_]", "_", str(err).lower())[:85])
-        say("CHANGES_APPLIED", "no" if a.check_only else "unknown_inspect_recovery")
+        say("CHANGES_APPLIED", "no" if a.check_only or a.status else "unknown_inspect_recovery")
         return 2
 
 
