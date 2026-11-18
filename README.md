@@ -510,6 +510,65 @@ archive for each activation. AUTH/TLS downgrade, certificate rotation and
 EOP re-routing refuse to operate while public submission remains active.
 **No Stable release is implied.**
 
+## Multi-sender RFC5322 From ownership guard — isolated Milter (Preview / opt-in)
+
+A Connector with sender-policy **preserve-domain** or **masquerade** can
+have multiple SMTP application identities. The existing
+\`reject_authenticated_sender_login_mismatch\` Postfix map protects SMTP
+\`MAIL FROM\`, but **does not validate the message's RFC5322 \`From:\` header**.
+A private Sendmail-protocol Milter is now staged for that gap:
+
+- \`linux/sidecar-from-owner-milter.py\` inspects SASL \`auth_authen\` and
+  \`auth_type\` macros, the exact SMTP envelope sender, **exactly one** \`From:\`,
+  optional \`Sender:\`, duplicate/ambiguous headers and headers after aborts.
+  Strict Preview policy requires \`From:\` = SMTP \`MAIL FROM\` = an address
+  owned by the authenticated application login. Resent headers are rejected.
+- \`linux/install-sidecar-from-guard.sh\` stages a **separate**, unprivileged
+  systemd service and private Unix socket; it requires SHA-reviewed, root-owned
+  policy/script inputs and a typed confirmation. It installs no packages and
+  changes **no** primary Postfix/Exim/Sendmail settings or queues.
+- For those multi-sender Connector policies, the EOP route refuses Preview
+  and Apply without this **running, policy-pinned** guard. When approved it
+  attaches the filter to the *isolated* Postfix with
+  \`milter_default_action = tempfail\` and explicit authenticated mail macros.
+  Local \`sendmail/postdrop\` submissions are disabled for this mode, as they
+  cannot supply trusted SMTP SASL macros.
+- Fixed-sender Direct Send and Connector routes **do not require** the new
+  filter and keep their existing sender canonical header rewriting.
+- The guard is independently scanned and archived by isolated configuration
+  Backup/Restore. It does **not** restore systemd users, runtime socket files,
+  Linux/SELinux labels, host packages or tenant configuration.
+
+Example **disposable VM only**, *before* configuring the multi-sender EOP
+route (replace paths, SHA values and custom port with approved ones):
+
+\`\`\`bash
+# Prepare a trusted root-only source and reviewed policy first.
+sudo install -o root -g root -m 0755 linux/sidecar-from-owner-milter.py \
+  /root/linuxmailrelay365-from-guard.py
+# Prepare /root/sender-owners.txt manually, mode 0600, lines:
+# alice@example.org smtp-app01
+# billing@example.org smtp-app02
+sudo bash linux/install-sidecar-from-guard.sh --check-only \
+  --smtp-port 46500 --owner-file /root/sender-owners.txt \
+  --engine-file /root/linuxmailrelay365-from-guard.py
+# Review FROM_GUARD_OWNER_SHA256 and FROM_GUARD_ENGINE_SHA256.
+sudo bash linux/install-sidecar-from-guard.sh --apply \
+  --smtp-port 46500 --owner-file /root/sender-owners.txt \
+  --engine-file /root/linuxmailrelay365-from-guard.py \
+  --expect-owner-sha256 REVIEWED_OWNER_SHA256 \
+  --expect-engine-sha256 REVIEWED_ENGINE_SHA256 \
+  --confirm ACTIVATE_PRIVATE_FROM_OWNER_GUARD
+\`\`\`
+
+The installed private service is not itself a mail route. It becomes active
+for SMTP submissions **only** with a separately approved Connector EOP route
+Apply, using the exact same reviewed owners file. If the service disappears,
+Postfix must tempfail and never silently accept a spoofed sender. This
+feature is **Preview** pending successful exact-commit CI socket/SMTP tests,
+a real recipient negative test and RHEL SELinux Enforcing validation; do not
+equate a successfully negotiated socket with proven final delivery.
+
 ## Signed Stable release gate (Preview 15, manual acceptance required)
 
 The repository includes a guarded PowerShell 7 release check:
