@@ -15,6 +15,7 @@ internal sealed class MailRoutingPlan
     public string VerifiedDomain { get; set; } = "";
     public string ListenIpv4 { get; set; } = "";
     public string TrustedCidrs { get; set; } = "";
+    public int SidecarPort { get; set; } = 2525;
 }
 
 internal sealed record MailRoutingInventory(string Mta, string CurrentRelay, string CurrentTransport, string ConfigSha256)
@@ -72,6 +73,8 @@ internal static class MailRoutingPlanStore
 
     internal static void Validate(MailRoutingPlan state)
     {
+        if (state.SidecarPort is < 1024 or > 65535)
+            throw new InvalidDataException("Isolated SMTP port must be between 1024 and 65535.");
         if (state.Transport is not ("oauth2" or "connector") ||
             state.SenderPolicy is not ("fixed-mailbox" or "preserve-domain" or "masquerade"))
             throw new InvalidDataException("Unsupported routing policy.");
@@ -127,7 +130,10 @@ internal static class MailRoutingPlanStore
             if (a == b || a != Identity("linux-a.example", "0022", "admin")) return false;
             var defaults = Load(folder, a);
             if (defaults.Transport != "oauth2" || defaults.SenderPolicy != "fixed-mailbox" ||
-                !defaults.PreserveExistingMail) return false;
+                !defaults.PreserveExistingMail || defaults.SidecarPort != 2525) return false;
+            Validate(new MailRoutingPlan { SidecarPort = 2526 });
+            try { Validate(new MailRoutingPlan { SidecarPort = 25 }); return false; }
+            catch (InvalidDataException) { }
             Save(folder, a, new MailRoutingPlan
                 { Transport = "connector", SenderPolicy = "preserve-domain",
                   PreserveExistingMail = true, VerifiedDomain = "example.org" });

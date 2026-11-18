@@ -57,7 +57,8 @@ remains unencrypted until separate TLS listener support is implemented.
 When the read-only Linux inspection finds **existing Postfix**, the default
 **Preserve Existing Mail** setting now configures an independent Postfix instance
 with its own configuration, queue and systemd unit. The only submission port is
-**TCP 2525**; its default listener is **127.0.0.1 only**. Optional remote
+**TCP 2525 by default**, configurable per Linux (1024–65535);
+its default listener is **127.0.0.1 only**. Optional remote
 submission requires an explicit local RFC1918 IPv4 and trusted RFC1918 CIDR.
 This is an unauthenticated/trusted-network-only listener, with no inbound TLS
 yet: restrict it to localhost unless the network is isolated and trusted.
@@ -70,7 +71,8 @@ yet: restrict it to localhost unless the network is isolated and trusted.
   sidecar service: `linuxmailrelay365-sidecar.service`.
 - The XOAUTH2 transport enforces its own app mailbox and private certificate.
   It does **not** preserve arbitrary input `From:` headers.
-- Diagnostics and test-mail submission automatically use TCP 2525 and the
+- Diagnostics and test-mail submission read the installed port from the Linux
+  sidecar (not a stale Windows preference) and use the
   isolated queue when a sidecar installation is detected.
 - Existing sidecar installations are never overwritten silently. Failed new
   installations remove their new service/configuration while retaining the

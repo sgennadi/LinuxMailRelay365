@@ -209,6 +209,18 @@ internal static class SshRemote
         return result.StdOut.Trim() == "SIDECAR_PRESENT";
     }
 
+    internal static async Task<int> GetIsolatedSidecarPortAsync(SshEndpoint endpoint, CancellationToken token)
+    {
+        var result = await ExecuteAsync(endpoint,
+            "if test -r " + SidecarConfig + "/smtp-port; then cat " +
+            SidecarConfig + "/smtp-port; else printf MISSING; fi",
+            null, TimeSpan.FromSeconds(30), token);
+        result.EnsureSuccess();
+        if (!int.TryParse(result.StdOut.Trim(), out int port) || port is < 1024 or > 65535)
+            throw new InvalidDataException("Cannot determine the installed isolated SMTP port.");
+        return port;
+    }
+
     internal static Task<RemoteResult> SidecarDiagnosticsAsync(SshEndpoint endpoint,
         CancellationToken token) =>
         RunRootScriptAsync(endpoint,
@@ -228,30 +240,30 @@ internal static class SshRemote
             TimeSpan.FromMinutes(2), token);
 
     internal static Task<RemoteResult> SendIsolatedSidecarTestAsync(
-        SshEndpoint endpoint, string mailbox, string recipient, CancellationToken token)
+        SshEndpoint endpoint, string mailbox, string recipient, int port, CancellationToken token)
     {
-        if (!IsEmail(mailbox) || !IsEmail(recipient))
-            throw new ArgumentException("Invalid SMTP test sender or recipient.");
+        if (!IsEmail(mailbox) || !IsEmail(recipient) || port is < 1024 or > 65535)
+            throw new ArgumentException("Invalid SMTP test sender, recipient or port.");
         // Only localhost receives the message. No connection to existing Postfix
         // port 25 or invocation of the system sendmail compatibility binary.
         var script = """
             import smtplib
             import sys
             from email.message import EmailMessage
-            sender, recipient = sys.argv[1], sys.argv[2]
+            sender, recipient, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
             message = EmailMessage()
             message['From'] = sender
             message['To'] = recipient
             message['Subject'] = 'LinuxMailRelay365 isolated SMTP test'
             message.set_content('Submitted through the isolated Microsoft 365 relay.')
-            with smtplib.SMTP('127.0.0.1', 2525, timeout=25) as smtp:
+            with smtplib.SMTP('127.0.0.1', port, timeout=25) as smtp:
                 smtp.send_message(message, from_addr=sender, to_addrs=[recipient])
             print('ISOLATED_SMTP_ACCEPTED=yes; remote delivery still requires log verification.')
             """;
         string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(script));
         return ExecuteAsync(endpoint,
             "printf %s " + encoded + " | base64 -d | python3 - " +
-            QuoteShell(mailbox) + " " + QuoteShell(recipient),
+            QuoteShell(mailbox) + " " + QuoteShell(recipient) + " " + port,
             null, TimeSpan.FromSeconds(45), token);
     }
 

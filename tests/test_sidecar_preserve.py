@@ -22,6 +22,13 @@ class IsolatedSidecarTests(unittest.TestCase):
                            '--trusted-network', '10.30.0.0/16')
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_custom_port_and_boundaries(self):
+        self.assertEqual(self.run_check('--smtp-port','2526').returncode,0)
+        self.assertEqual(self.run_check('--smtp-port','65535').returncode,0)
+        for port in ('25','0','65536','abc','-1'):
+            with self.subTest(port=port):
+                self.assertNotEqual(self.run_check('--smtp-port',port).returncode,0)
+
     def test_reject_wildcard_public_and_remote_untrusted(self):
         for args in [
             ('--listen-ip','0.0.0.0','--trusted-network','192.168.20.0/24'),
@@ -41,7 +48,9 @@ class IsolatedSidecarTests(unittest.TestCase):
         self.assertIn('CONF=/etc/linuxmailrelay365/sidecar-postfix', s)
         self.assertIn('linuxmailrelay365-sidecar.service', s)
         self.assertIn("postfix -c \"$CONF\" check", s)
-        self.assertIn('SIDECAR_PORT=2525', s)
+        self.assertIn('SIDECAR_PORT=$SMTP_PORT', s)
+        self.assertIn('--smtp-port', s)
+        self.assertIn('printf', s)
         self.assertIn('PRIMARY_POSTFIX_CONFIG_UNCHANGED=yes', s)
         for blocked in (
             "postconf -e ", "systemctl reload postfix", "systemctl restart postfix",

@@ -36,6 +36,7 @@ internal sealed class MainForm : Form
     private readonly TextBox acceptedDomain = Field("");
     private readonly TextBox smtpListenIp = Field("");
     private readonly TextBox smtpTrustedCidrs = Field("");
+    private readonly TextBox isolatedSmtpPort = Field("2525");
     private MailRoutingPlan routingPlan = new();
     private string? routingIdentity;
     private bool routingLoading;
@@ -116,6 +117,7 @@ internal sealed class MainForm : Form
         acceptedDomain.Leave += (_, _) => SaveRoutingChoices();
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
+        isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
         tenantSelector.AccessibleName = "Choose Microsoft Entra tenant";
         tenantSelector.SelectedIndexChanged += (_, _) =>
         {
@@ -344,6 +346,9 @@ internal sealed class MainForm : Form
                 AddField(page, T("Подтверждённый домен (необязательно для XOAUTH2)",
                                  "Verified accepted domain (not needed for XOAUTH2)",
                                  "דומיין מאומת (לא נדרש ל-XOAUTH2)"), acceptedDomain);
+                AddField(page, T("Порт отдельного SMTP (Preserve Existing Mail; по умолчанию 2525)",
+                                 "Isolated SMTP port (Preserve Existing Mail; default 2525)",
+                                 "פורט SMTP נפרד (ברירת מחדל 2525)"), isolatedSmtpPort);
                 AddField(page, T("Локальный IPv4 для SMTP (пусто = только loopback)",
                                  "Local IPv4 SMTP listener (blank = loopback only)",
                                  "כתובת IPv4 מקומית לקבלת SMTP"), smtpListenIp);
@@ -395,8 +400,8 @@ internal sealed class MainForm : Form
                         "יש לבדוק תחילה את שרת הדואר.")));
                 }
                 AddLine(page, UiTheme.Text(T(
-                    "Для существующего Postfix режим Preserve Existing Mail создаёт отдельный экземпляр Postfix на порту 2525 с отдельной очередью. Основные порты 25, main.cf, master.cf и текущая очередь не изменяются. Sendmail/Exim пока не поддерживаются.",
-                    "For an existing Postfix server, Preserve Existing Mail installs a separate Postfix instance on TCP 2525 with a separate queue. Primary port 25, main.cf, master.cf and queue are untouched. Sendmail/Exim sidecars are not yet supported.",
+                    "Для существующего Postfix режим Preserve Existing Mail создаёт отдельный экземпляр Postfix на выбранном SMTP-порту с отдельной очередью. Основные порты 25, main.cf, master.cf и текущая очередь не изменяются. Sendmail/Exim пока не поддерживаются.",
+                    "For an existing Postfix server, Preserve Existing Mail installs a separate Postfix instance on your selected TCP port with a separate queue. Primary port 25, main.cf, master.cf and queue are untouched. Sendmail/Exim sidecars are not yet supported.",
                     "עבור Postfix קיים נוצר מופע נפרד בפורט 2525 ללא שינוי בתצורה הקיימת.")));
                 AddLine(page, UiTheme.Text(T(
                     "Маскарад и Connector пока доступны только как план. Никакие изменения домена, MX, SPF, DKIM, DMARC или маршрутов существующего MTA не выполняются автоматически. Если MTA уже установлен, режим сохранения блокирует его изменение.",
@@ -583,6 +588,7 @@ internal sealed class MainForm : Form
             acceptedDomain.Text = routingPlan.VerifiedDomain;
             smtpListenIp.Text = routingPlan.ListenIpv4;
             smtpTrustedCidrs.Text = routingPlan.TrustedCidrs;
+            isolatedSmtpPort.Text = routingPlan.SidecarPort.ToString();
             allowExisting.Checked = false;
             inspectedMail = null;
             inspectedServerIdentity = null;
@@ -604,6 +610,8 @@ internal sealed class MainForm : Form
         routingPlan.VerifiedDomain = acceptedDomain.Text.Trim().ToLowerInvariant();
         routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
         routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
+        if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int port))
+            routingPlan.SidecarPort = port;
         // Operators can edit domain while typing. Save only valid completed values.
         try { MailRoutingPlanStore.Save(dataDirectory, routingIdentity, routingPlan); }
         catch (InvalidDataException) { }
@@ -1039,6 +1047,9 @@ internal sealed class MainForm : Form
         EnsureRoutingLoaded();
         routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
         routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort))
+            throw new InvalidDataException("Enter an isolated SMTP port from 1024 to 65535.");
+        routingPlan.SidecarPort = selectedPort;
         MailRoutingPlanStore.Validate(routingPlan);
         var chosenTransport = mailTransport.SelectedIndex == 1 ? "connector" : "oauth2";
         var chosenSender = senderPolicy.SelectedIndex;
@@ -1061,16 +1072,16 @@ internal sealed class MainForm : Form
                 throw new InvalidOperationException("Choose Preserve Existing Mail OR Force Replace, never both.");
             // This path does not modify the primary Postfix configuration,
             // restart its service, or write to its existing mail queue.
-            var state = await ReadyStateAsync();
+            var sidecarState = await ReadyStateAsync();
             var confirmation = MessageBox.Show(this, T(
-                "Установить отдельный экземпляр Postfix на TCP 2525? Существующий Postfix (порт 25) и его очередь останутся без изменений. Доставка Microsoft 365 будет использовать отдельную очередь и сертификат. Сетевой SMTP допускается только из указанных доверенных подсетей.",
-                "Install a separate Postfix instance on TCP 2525? Existing port 25, mail routing and queue stay untouched. Microsoft 365 uses an isolated queue and identity. Remote clients need explicitly trusted subnets.",
-                "להתקין מופע Postfix נפרד בפורט 2525 ללא שינוי בשרת הקיים?"),
+                "Установить отдельный экземпляр Postfix на TCP " + routingPlan.SidecarPort + "? Существующий Postfix (порт 25) и его очередь останутся без изменений. Сетевой SMTP допускается только из доверенных подсетей.",
+                "Install isolated Postfix on TCP " + routingPlan.SidecarPort + "? Existing port 25, mail routing and queue stay untouched. Remote clients require trusted subnets.",
+                "להתקין מופע Postfix נפרד בפורט " + routingPlan.SidecarPort + "?"),
                 Text, MessageBoxButtons.YesNo, MessageBoxIcon.Information);
             if (confirmation != DialogResult.Yes) return;
             var isolatedArgs = new List<string> {
-                "--tenant-id", state.Tenant.ToString(), "--client-id", state.Client,
-                "--mailbox", state.Mailbox
+                "--tenant-id", sidecarState.Tenant.ToString(), "--client-id", sidecarState.Client,
+                "--mailbox", sidecarState.Mailbox, "--smtp-port", routingPlan.SidecarPort.ToString()
             };
             if (routingPlan.ListenIpv4.Length > 0)
             {
@@ -1083,12 +1094,12 @@ internal sealed class MainForm : Form
                     isolatedArgs.Add(cidr);
                 }
             }
-            WriteLine("Installing isolated SMTP gateway (Postfix TCP 2525, independent queue); primary MTA unchanged.");
+            WriteLine("Installing isolated SMTP gateway (Postfix TCP " + routingPlan.SidecarPort + ", independent queue); primary MTA unchanged.");
             var installed = await SshRemote.RunRootScriptAsync(endpoint,
                 EmbeddedAssets.BuildSidecarBundle([.. isolatedArgs]), TimeSpan.FromMinutes(5));
             installed.EnsureSuccess();
             WriteLine(installed.StdOut);
-            WriteLine("Sidecar installed. Test SMTP 2525 and independently verify Microsoft 365 delivery.");
+            WriteLine("Sidecar installed. Test SMTP port " + routingPlan.SidecarPort + " and independently verify Microsoft 365 delivery.");
             inspectedMail = null;
             inspectedServerIdentity = null;
             allowExisting.Checked = false;
@@ -1152,7 +1163,7 @@ internal sealed class MainForm : Form
             ? await SshRemote.SidecarDiagnosticsAsync(endpoint, CancellationToken.None)
             : await SshRemote.DiagnosticsAsync(endpoint, CancellationToken.None);
         result.EnsureSuccess();
-        WriteLine(isolated ? "Isolated SMTP 2525 + separate Postfix queue detected." : "Primary Postfix mode.");
+        WriteLine(isolated ? "Isolated SMTP port " + await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None) + " with separate Postfix queue." : "Primary Postfix mode.");
         WriteLine(result.StdOut);
         WriteLine("Token-check verifies Entra authorization, not delivery; check Exchange and recipient logs.");
     }
@@ -1164,11 +1175,14 @@ internal sealed class MainForm : Form
         if (!SshRemote.IsEmail(dest)) throw new ArgumentException("Invalid test recipient.");
         var endpoint = Endpoint();
         bool isolated = await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None);
+        int installedPort = isolated
+            ? await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None)
+            : 0;
         var result = isolated
-            ? await SshRemote.SendIsolatedSidecarTestAsync(endpoint, cloud.Mailbox, dest, CancellationToken.None)
+            ? await SshRemote.SendIsolatedSidecarTestAsync(endpoint, cloud.Mailbox, dest, installedPort, CancellationToken.None)
             : await SshRemote.SendTestAsync(endpoint, cloud.Mailbox, dest, CancellationToken.None);
         result.EnsureSuccess();
-        WriteLine(isolated ? "Test message accepted by isolated SMTP :2525. " + result.StdOut
+        WriteLine(isolated ? "Test message accepted by isolated SMTP :" + installedPort + ". " + result.StdOut
                            : "Test submitted to primary Postfix. " + result.StdOut);
         WriteLine("Verify Exchange delivery; acceptance by a local queue is not final delivery.");
     }

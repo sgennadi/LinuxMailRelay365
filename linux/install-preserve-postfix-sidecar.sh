@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LinuxMailRelay365 Preserve Existing Mail: separate Postfix on TCP 2525.
+# LinuxMailRelay365 Preserve Existing Mail: isolated Postfix on configurable port (default TCP 2525).
 # NEVER changes the primary Postfix service, main.cf, master.cf, or mail queue.
 set -Eeuo pipefail
 umask 077
@@ -13,9 +13,10 @@ UNIT=/etc/systemd/system/linuxmailrelay365-sidecar.service
 TRANSPORT=/usr/local/libexec/linuxmailrelay365-sidecar-transport.py
 SOURCE_CERT=/etc/postfix/m365-oauth
 TENANT='' CLIENT='' MAILBOX='' LISTEN_IP='' CHECK_ONLY=0
+SMTP_PORT=2525
 TRUSTED_NETWORKS=()
 usage() {
-  echo 'Usage: sidecar.sh --tenant-id GUID --client-id GUID --mailbox address [--listen-ip IPv4 --trusted-network CIDR]'
+  echo 'Usage: sidecar.sh --tenant-id GUID --client-id GUID --mailbox address [--smtp-port 2525] [--listen-ip IPv4 --trusted-network CIDR]'
   echo 'Options: --check-only (no modifications) | --self-test'
 }
 if [ "${1:-}" = --self-test ] && [ "$#" -eq 1 ]; then
@@ -26,6 +27,7 @@ while [ "$#" -gt 0 ]; do
     --tenant-id) TENANT="${2:?}"; shift 2 ;;
     --client-id) CLIENT="${2:?}"; shift 2 ;;
     --mailbox) MAILBOX="${2:?}"; shift 2 ;;
+    --smtp-port) SMTP_PORT="${2:?}"; shift 2 ;;
     --listen-ip) LISTEN_IP="${2:?}"; shift 2 ;;
     --trusted-network) TRUSTED_NETWORKS+=("${2:?}"); shift 2 ;;
     --check-only) CHECK_ONLY=1; shift ;;
@@ -33,10 +35,12 @@ while [ "$#" -gt 0 ]; do
     *) echo 'Unsupported preserve-mode option.' >&2; exit 2 ;;
   esac
 done
-python3 - "$TENANT" "$CLIENT" "$MAILBOX" "$LISTEN_IP" "${TRUSTED_NETWORKS[@]}" <<'PY'
+python3 - "$TENANT" "$CLIENT" "$MAILBOX" "$LISTEN_IP" "$SMTP_PORT" "${TRUSTED_NETWORKS[@]}" <<'PY'
 import ipaddress, re, sys, uuid
 try:
-    tenant, client, mailbox, listen, *cidrs = sys.argv[1:]
+    tenant, client, mailbox, listen, port, *cidrs = sys.argv[1:]
+    if not re.fullmatch(r'[1-9][0-9]{3,4}', port) or not (1024 <= int(port) <= 65535):
+        raise ValueError('Isolated SMTP port must be from 1024 to 65535')
     for val in (tenant, client):
         if val and str(uuid.UUID(val)) != val.lower():
             raise ValueError('Invalid Tenant/Client ID')
@@ -101,8 +105,8 @@ if [ -n "$LISTEN_IP" ]; then
     echo 'Listener IP is not assigned locally.' >&2; exit 1;
   }
 fi
-if ss -H -ltn '( sport = :2525 )' | grep -q .; then
-  echo 'Port 2525 already in use. No service changed.' >&2
+if ss -H -ltn "( sport = :$SMTP_PORT )" | grep -q .; then
+  echo "Port $SMTP_PORT already in use. No service changed." >&2
   exit 1
 fi
 BEFORE="$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf | sha256sum | awk '{print $1}')"
@@ -174,8 +178,8 @@ m365xoauth2_destination_concurrency_limit = 2
 syslog_name = postfix-lmr365
 authorized_submit_users =
 EOF
-cat > "$CONF/master.cf" <<'EOF'
-2525       inet  n       -       n       -       -       smtpd
+printf '%-10s inet  n       -       n       -       -       smtpd\n' "$SMTP_PORT" > "$CONF/master.cf"
+cat >> "$CONF/master.cf" <<'EOF'
 pickup     unix  n       -       n       60      1       pickup
 cleanup    unix  n       -       n       -       0       cleanup
 qmgr       unix  n       -       n       300     1       qmgr
@@ -191,9 +195,11 @@ m365xoauth2 unix - n n - 2 pipe
   flags=q user=m365mailer argv=/usr/bin/python3 /usr/local/libexec/linuxmailrelay365-sidecar-transport.py --config /etc/linuxmailrelay365/sidecar-identity/app.json --recipient ${recipient}
 EOF
 chmod 0644 "$CONF/main.cf" "$CONF/master.cf"
+printf '%s\n' "$SMTP_PORT" > "$CONF/smtp-port"
+chmod 0644 "$CONF/smtp-port"
 cat > "$UNIT" <<'EOF'
 [Unit]
-Description=LinuxMailRelay365 isolated SMTP relay (Postfix 2525)
+Description=LinuxMailRelay365 isolated SMTP relay (secondary Postfix)
 Wants=network-online.target
 After=network-online.target
 
@@ -221,7 +227,7 @@ AFTER="$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf | sha256sum | awk
 }
 trap - EXIT
 echo 'SIDECAR_INSTALLED=yes'
-echo 'SIDECAR_PORT=2525'
+echo "SIDECAR_PORT=$SMTP_PORT"
 echo "SIDECAR_LISTEN=${LISTEN_IP:-127.0.0.1}"
 echo "SIDECAR_CONFIG=$CONF"
 echo "SIDECAR_QUEUE=$QUEUE"
