@@ -151,11 +151,11 @@ if [ -n "$LISTEN" ]; then
 fi
 python3 - "$CONF" "$DOMAIN" "$SENDER" <<'PY'
 from pathlib import Path
-import sys
+import re,sys
 root=Path(sys.argv[1]); domain=sys.argv[2].lower(); sender=sys.argv[3].lower()
 escaped=domain.replace('.','[.]')
 (root/'eop-fixed-sender.regexp').write_text(
-    '/^[^@[:space:]]+@{}$/ OK\n'.format(escaped),encoding='ascii')
+    ':^{}$: OK\n'.format(re.escape(sender)),encoding='ascii')
 (root/'eop-sender-canonical.regexp').write_text(
     '/^.+$/ {}\n'.format(sender),encoding='ascii')
 (root/'eop-recipients.regexp').write_text(
