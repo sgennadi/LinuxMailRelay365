@@ -49,6 +49,13 @@ if [ "$MODE" = apply ] && [ "$CONFIRM" != ENABLE_PRIVATE_AUTH_TLS ]; then
   echo 'AUTH_TLS_ERROR=confirmation_required' >&2; exit 2
 fi
 [ "$(id -u)" -eq 0 ] || { echo 'AUTH_TLS_ERROR=root_required' >&2; exit 1; }
+# Both activation and restoration use the same exclusive lock. Read-only
+# --check-only never creates a lock file or changes any mail service.
+if [ "$MODE" = apply ]; then
+  command -v flock >/dev/null || { echo 'AUTH_TLS_ERROR=flock_missing' >&2; exit 1; }
+  exec 9>/run/linuxmailrelay365-sidecar-auth.lock
+  flock -n 9 || { echo 'AUTH_TLS_ERROR=concurrent_change_blocked' >&2; exit 1; }
+fi
 for cmd in postfix postconf openssl doveconf dovecot systemctl stat sha256sum; do
   command -v "$cmd" >/dev/null || { echo "AUTH_TLS_ERROR=missing_$cmd" >&2; exit 1; }
 done
@@ -301,6 +308,11 @@ AFTER="$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf | sha256sum | awk
   echo 'AUTH_TLS_ERROR=primary_postfix_changed_during_install' >&2; exit 1;
 }
 cp -p "$BACKUP" "$AUTH/main.cf.before-auth"
+# Installation fingerprint. A future Restore must refuse changes if the
+# security configuration or master.cf was modified after this activation.
+sha256sum "$CONF/main.cf" | awk '{print $1}' > "$AUTH/main.cf.auth.sha256"
+sha256sum "$CONF/master.cf" | awk '{print $1}' > "$AUTH/master.cf.auth.sha256"
+chmod 0600 "$AUTH/main.cf.auth.sha256" "$AUTH/master.cf.auth.sha256"
 rm -f "$BACKUP"
 trap - EXIT
 echo 'AUTH_TLS_APPLIED=yes'
