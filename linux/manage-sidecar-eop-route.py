@@ -494,7 +494,8 @@ def runtime_checks(allow_active_route=False):
         for key in ("sender_canonical_maps", "recipient_canonical_maps",
                     "transport_maps", "smtp_tls_policy_maps", "relayhost",
                     "smtpd_sender_login_maps",
-                    "smtpd_sender_restrictions"):
+                    "smtpd_sender_restrictions", "smtpd_milters",
+                    "non_smtpd_milters", "smtpd_milter_maps"):
             if postconf(key):
                 raise Refused("existing_routing_override_requires_manual_review")
     else:
@@ -621,6 +622,7 @@ def deploy(args):
     if args.sender_policy != "fixed-mailbox" and \
             digest(Path(args.sender_owner_file).read_bytes()) != args.expect_owner_sha256:
         raise Refused("sender_owners_changed_since_preview")
+    verify_header_guard(args)
     ca = system_ca()
     auth_enabled = postconf("smtpd_sasl_auth_enable") == "yes"
     main = rewrite_main(before, policy_changes(args, ca, auth_enabled))
@@ -660,7 +662,9 @@ def deploy(args):
     say("EOP_ROUTE_MODE", args.mode.replace("-", "_"))
     say("EOP_ROUTE_SENDER_POLICY", args.sender_policy.replace("-", "_"))
     say("EOP_ROUTE_SENDER_OWNERSHIP", "auth_mail_from_login_map" if args.sender_policy != "fixed-mailbox" else "fixed_sender")
-    say("EOP_ROUTE_HEADER_FROM_MATCH_VERIFIED", "no")
+    say("EOP_ROUTE_HEADER_FROM_MATCH_VERIFIED",
+        "guard_attached_not_live_delivery" if args.sender_policy != "fixed-mailbox"
+        else "fixed_sender_canonical_rewrite")
     say("EOP_ROUTE_CUSTOM_PORT", args.smtp_port)
     say("EOP_ROUTE_OUTBOUND_PORT", 25)
     say("EOP_ROUTE_RECIPIENT_SCOPE", "internal_only" if args.mode == "direct-send" else "connector_authorized")
@@ -789,6 +793,7 @@ def main():
             if a.mode == "connector":
                 check_connector_cert(a)
             sender_owner_map(a)
+            verify_header_guard(a)
             system_ca()
             say("EOP_ROUTE_PREFLIGHT", "ready")
             say("EOP_ROUTE_MAIN_SHA256", digest(before))
@@ -800,7 +805,9 @@ def main():
             say("EOP_ROUTE_SENDER_OWNERSHIP", "auth_mail_from_login_map" if a.sender_policy != "fixed-mailbox" else "fixed_sender")
             if a.sender_policy != "fixed-mailbox":
                 say("EOP_ROUTE_OWNER_FILE_SHA256", digest(Path(a.sender_owner_file).read_bytes()))
-            say("EOP_ROUTE_HEADER_FROM_MATCH_VERIFIED", "no")
+            say("EOP_ROUTE_HEADER_FROM_MATCH_VERIFIED",
+                "guard_ready_not_live_delivery" if a.sender_policy != "fixed-mailbox"
+                else "fixed_sender_canonical_rewrite")
             say("EOP_ROUTE_FIXED_SENDER", "yes" if a.sender_policy == "fixed-mailbox" else "no")
             say("EXCHANGE_CONNECTOR_VERIFIED", "no")
             say("MICROSOFT365_DELIVERY_VERIFIED", "no")
@@ -817,6 +824,7 @@ def main():
             if a.mode == "connector":
                 check_connector_cert(a)
             sender_owner_map(a)
+            verify_header_guard(a)
             system_ca()
             return deploy(a)
         finally:
