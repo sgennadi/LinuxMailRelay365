@@ -150,6 +150,7 @@ jobs:
         shell: pwsh
         run: |
           ./windows/Test-LinuxMailRelay365OutboundMode.ps1 -SelfTest
+          ./windows/Manage-LinuxMailRelay365Connector.ps1 -SelfTest
       - name: Build portable single EXE x64
         shell: pwsh
         run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-x64 --self-contained true -p:UseSharedUpdater=false -o out/win-x64
