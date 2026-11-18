@@ -28,7 +28,7 @@
 | Connector sender preserve accepted domain / masquerade subdomains | Authenticated MAIL FROM account owner map required, reviewed SHA, isolated EOP route | Real Postfix account ownership/negative tests, RFC5322 From header protection and tenant delivery |
 | Internet-wide SMTP listener | Guarded opt-in manager, not production-approved | Real Fail2ban ban drill, external client TLS trust, firewall/NAT, abuse controls and rollback on disposable test host |
 | Primary Postfix backup restore confirmation | Linux `--restore ID` requires explicit confirmation; installer rollback has distinct marker | Restore/rollback after fault injection on disposable VM, validate external dependencies and queue durability |
-| Independent Relay config backup and offline restore | Root-only allowlisted application configuration, archive SHA+per-member hashes, pre-restore emergency snapshot, stopped isolated units + empty queue required, reviewed current SHA and explicit confirmation; no auto service start | Live disposable-VM recovery, actual systemd/SMTP AUTH/TLS, external cert/key dependencies, queue durability and RHEL SELinux labels |
+| Independent Relay config backup and offline restore | Root-only allowlisted application configuration, archive SHA+per-member hashes, pre-restore emergency snapshot, stopped isolated units + empty queue required, reviewed current SHA and explicit confirmation; no auto service start. Newly added **real Ubuntu/Postfix smoke** on Direct Send and Connector (must see exact HEAD CI pass before acceptance). | Fault-injected real rollback, Dovecot AUTH/TLS recovery, external cert/key dependencies, queue durability and RHEL SELinux labels |
 | Signed Stable Windows EXE | Not released | Signing provenance, GUI / x64 / ARM64 production QA |
 
 The incoming Linux custom port is separate from Microsoft 365 outbound 587 (XOAUTH2) or 25 (Direct Send / Connector). Direct Send is restricted to recipients in the Microsoft 365 organization.
@@ -72,6 +72,18 @@ unchanged; send a real pre/post test through the existing MTA and a separate
 client test through the new private port. Unknown or mixed active MTA state
 must block the operation. This has **not** been verified on a real
 Exim/Sendmail server, and enforcing SELinux is still blocked.
+
+The CI smoke script `tests/smoke_scoped_recovery.sh` is gated to disposable
+GitHub Actions runners and is invoked after both fresh Direct Send and fresh
+Connector installation on Ubuntu 24.04 and ubuntu-latest. It backs up the
+**running** separate Postfix, rejects an online restore and a nonempty
+`maildrop`, stops **only** the isolated Postfix, changes a non-secret
+sidecar setting, takes a SHA-reviewed preview, performs offline restoration,
+verifies its emergency snapshot and unchanged primary Postfix files/queue,
+then explicitly restarts the independent service and verifies EHLO without
+SMTP DATA. This is a real service/configuration smoke, not a Microsoft 365
+recipient-delivery or RHEL SELinux Enforcing test. Only declare it accepted
+after that exact revision's CI runs complete successfully.
 
 For an already installed independent Relay, verify separate root-only
 configuration backup and offline restore on a **disposable VM** only:
