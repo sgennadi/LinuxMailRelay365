@@ -49,13 +49,16 @@ settings are never modified by this route manager.**
 
 - **Direct Send**: permits SMTP RCPT TO only for explicitly declared accepted
   internal domains and rejects external recipients at the Linux sidecar
-  before DATA. Source MAIL FROM must be within the approved domain and
-  Postfix rewrites the envelope and From header to the single fixed sender.
+  before DATA. Fixed-mailbox MAIL FROM must match the exact approved sender
+  address (not merely another address in the same domain); Postfix then
+  canonicalizes envelope and applicable sender headers to that address.
   Direct Send does not support external recipient relay.
 - **Connector**: supports an external-recipient route only after an operator
   has verified a tenant-approved pre-existing Inbound Connector with static
   unshared public egress IP or the declared client TLS certificate. This
-  application **does not create or modify Exchange Online connectors**.
+  separate tenant Connector provisioner **can create a new Connector after
+  its independent guarded Preview and explicit administrator confirmation**;
+  this EOP route operation itself never creates or modifies tenant objects.
   It also fixes the sender to one permitted address, not arbitrary From.
 - Both modes require the installed port match, exact reviewed
   SHA-256, validated SMTP allowlists, root-only recovery archive, a separate
@@ -628,8 +631,12 @@ matching, unexpired and readable by the Postfix process. Public SMTP
 ingress is never opened and DNS/MX/Exchange objects are not modified.
 Unlike Direct Send, an authorized tenant Connector may relay to external
 recipients, which increases the importance of limiting private submitters.
-The fresh installer uses a fixed sender only; Connector sender preservation
-and login maps require a separately reviewed existing-sidecar migration.
+The fresh Direct Send and Connector installers accept only the exact
+fixed MAIL FROM sender, not another local-part in the same domain. Their
+private Postfix receiver canonicalizes sender headers, but it does not prove
+tenant Send As authorization or validate all RFC5322 From edge cases.
+Connector sender preservation and login maps require a separately reviewed
+existing-sidecar migration.
 Real tenant recipient acceptance and full rollback still need host testing.
 
 ## Optional HTTPS health notifications (Preview 15)
