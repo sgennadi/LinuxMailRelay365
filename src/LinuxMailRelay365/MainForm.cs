@@ -2323,8 +2323,8 @@ internal sealed class MainForm : Form
         report.EnsureSuccess();
         WriteLine(report.StdOut);
         WriteLine("Read-only MTA coexistence inventory: no package replacement, service restart, MX changes, or configuration updates. " +
-                  "Exim/Sendmail hosts remain manual-isolation candidates unless independent Postfix was already installed and reviewed. " +
-                  "An active second MTA or unverified package conflict must block automatic installation.");
+                  "Exim/Sendmail fixed-sender sidecars require already-installed Postfix binaries, an explicit FQDN, typed approval and a live root-only service/config fingerprint before and after startup. " +
+                  "Multiple active MTAs, unknown unit state, SELinux Enforcing or package conflicts must block installation.");
     }
 
     private async Task InspectPlatformAsync()
