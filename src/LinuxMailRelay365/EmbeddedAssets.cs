@@ -25,6 +25,7 @@ internal static class EmbeddedAssets
     internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
     internal static string RelayHealth => Text("LinuxMailRelay365.linux.relay-health.py");
     internal static string OutboundModePreflight => Text("LinuxMailRelay365.linux.outbound-mode-preflight.py");
+    internal static string SidecarTlsRotator => Text("LinuxMailRelay365.linux.sidecar-tls-rotator.sh");
     internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
     internal static string AuthTlsRestore => Text("LinuxMailRelay365.linux.auth-tls-restore.sh");
     internal static string InstalledSidecarAudit => Text("LinuxMailRelay365.linux.installed-sidecar-audit.py");
@@ -194,6 +195,44 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/enable-auth-tls.sh\" <<'LMR365_AUTH_TLS'\n" +
                Encode(AuthTlsInstaller) + "\nLMR365_AUTH_TLS\n" +
                "bash \"$work/enable-auth-tls.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildTlsRotationBundle(int selectedPort, string serverName,
+        string certificate, string privateKey, string? trustCaFile, string? expectedCertSha = null)
+    {
+        if (selectedPort is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(selectedPort));
+        if (!Regex.IsMatch(serverName,
+             @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z"))
+            throw new ArgumentException("Enter a valid TLS server DNS name.");
+        foreach (string candidate in new[] { certificate, privateKey, trustCaFile ?? "" })
+        {
+            if (candidate.Length == 0) continue;
+            if (candidate.Length > 256 ||
+                !Regex.IsMatch(candidate, @"\A/[A-Za-z0-9_./-]+\z") ||
+                candidate.Split('/').Contains(".."))
+                throw new ArgumentException("Enter a safe absolute Linux certificate/key/CA path.");
+        }
+        if (string.IsNullOrWhiteSpace(certificate) || string.IsNullOrWhiteSpace(privateKey))
+            throw new ArgumentException("Enter the new public TLS certificate and private-key Linux paths.");
+        if (expectedCertSha is not null &&
+            !Regex.IsMatch(expectedCertSha, @"\A[a-f0-9]{64}\z"))
+            throw new ArgumentException("Invalid preflight certificate fingerprint.");
+        string args = (expectedCertSha is null ? "--check-only" : "--apply") +
+                      " --smtp-port " + selectedPort + " --server-name " + serverName +
+                      " --tls-cert " + certificate + " --tls-key " + privateKey;
+        if (!string.IsNullOrWhiteSpace(trustCaFile)) args += " --ca-file " + trustCaFile;
+        if (expectedCertSha is not null)
+            args += " --expect-cert-sha256 " + expectedCertSha +
+                    " --confirm ROTATE_PRIVATE_SMTP_TLS";
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-tls-rotate.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/rotate.sh\" <<'LMR365_TLS_ROTATE'\n" +
+               Encode(SidecarTlsRotator) + "\nLMR365_TLS_ROTATE\n" +
+               "base64 -d > \"$work/verify-sidecar-tls-identity.py\" <<'LMR365_TLS_VERIFY'\n" +
+               Encode(TlsIdentityProbe) + "\nLMR365_TLS_VERIFY\n" +
+               "bash \"$work/rotate.sh\" " + args + "\n";
     }
 
     internal static string BuildOutboundModePreflightBundle(string mode, int customPort,
