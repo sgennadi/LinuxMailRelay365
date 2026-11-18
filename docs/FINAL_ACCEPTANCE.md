@@ -45,6 +45,7 @@ On a test machine with a copy of the project branch, run the following commands 
     sudo python3 linux/rhel-selinux-doctor.py --smtp-port 46500
     sudo python3 linux/manage-rhel-selinux-port.py --check-only --smtp-port 46500
     sudo python3 linux/installed-sidecar-audit.py --smtp-port 46500
+    sudo python3 linux/recovery-scope-audit.py --smtp-port 46500
     sudo python3 linux/relay-health.py --smtp-port 46500
     sudo python3 linux/audit-sidecar-auth-archives.py
 
