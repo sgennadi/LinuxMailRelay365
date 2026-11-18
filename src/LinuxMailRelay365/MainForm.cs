@@ -553,6 +553,10 @@ internal sealed class MainForm : Form
                                       "Restore previous SMTP without AUTH/STARTTLS... (security downgrade)",
                                       "שחזור SMTP ללא אימות והצפנה (הפחתת אבטחה)"),
                                       RestoreAuthTlsAsync, false, "rotate-ccw", "auth-tls-restore");
+                    AddAction(page, T("Заменить TLS-сертификат отдельного Postfix...",
+                                      "Rotate isolated SMTP TLS certificate (verified + rollback)...",
+                                      "החלפת אישור TLS של SMTP"),
+                                      RotateTlsCertificateAsync, false, "shield", "tls-rotate");
                     AddLine(page, UiTheme.Text(T(
                         "SMTP-клиенты: управление отдельными логинами (без изменения Microsoft 365)",
                         "SMTP client accounts: individual access (Microsoft 365 sender unchanged)",
@@ -1163,6 +1167,47 @@ internal sealed class MainForm : Form
         report.EnsureSuccess();
         WriteLine(report.StdOut);
         WriteLine("Preview only: SMTP account change NOT applied. Microsoft 365 sender identity is unchanged.");
+    }
+
+    private async Task RotateTlsCertificateAsync()
+    {
+        var endpoint = Endpoint();
+        if (publicInternetRequested.Checked)
+            throw new NotSupportedException("Public SMTP must remain blocked during TLS rotation.");
+        if (await SshRemote.IsSidecarAuthTlsEnabledAsync(endpoint, CancellationToken.None) != true)
+            throw new InvalidOperationException("The isolated Postfix does not have verified mandatory STARTTLS and SMTP AUTH.");
+        int installedPort = await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None);
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int desiredPort) || installedPort != desiredPort)
+            throw new InvalidDataException("Chosen custom SMTP port must match installed TCP " + installedPort + ".");
+        string dns = privateAuthDns.Text.Trim(), cert = privateAuthCertPath.Text.Trim(),
+               key = privateAuthKeyPath.Text.Trim(), ca = privateTlsCaPath.Text.Trim();
+        var preview = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildTlsRotationBundle(installedPort, dns, cert, key, ca),
+            TimeSpan.FromSeconds(90));
+        preview.EnsureSuccess();
+        var expected = System.Text.RegularExpressions.Regex.Match(preview.StdOut,
+            @"(?m)^TLS_ROTATE_OLD_CERT_SHA256=([a-f0-9]{64})\r?$");
+        if (!expected.Success || !preview.StdOut.Contains("TLS_ROTATE_PREFLIGHT=ready",
+                StringComparison.Ordinal))
+            throw new InvalidDataException("The new certificate preflight did not confirm readiness.");
+        WriteLine("TLS rotation preflight OK: custom TCP " + installedPort + "; old certificate SHA-256 " +
+                  expected.Groups[1].Value + ". No changes made.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Rotate private SMTP TLS",
+            T("Будет заменён сертификат только отдельного Postfix на TCP ",
+              "Replace ONLY the isolated Postfix STARTTLS certificate on TCP ",
+              "החלפת אישור SMTP בפורט ") + installedPort +
+            "\n" + T("При ошибке новая конфигурация будет откачена. Резервная копия с закрытым ключом останется только на Linux. Сертификат должен быть доверенным для всех приложений. Основной Postfix не меняется.",
+                       "Failure will attempt rollback. The root-only recovery archive contains the previous private key. Client trust must be checked separately; the primary Postfix is unchanged.",
+                       "בכשל יתבצע ניסיון שחזור. המפתח נשאר בלינוקס."),
+            "ROTATE PRIVATE SMTP TLS")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildTlsRotationBundle(installedPort, dns, cert, key, ca,
+                expected.Groups[1].Value), TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("TLS_ROTATE_APPLIED=yes", StringComparison.Ordinal))
+            throw new InvalidOperationException("SMTP TLS rotation did not confirm success; inspect recovery archive.");
+        WriteLine(result.StdOut);
+        await VerifyInstalledTlsIdentityAsync(endpoint, installedPort);
     }
 
     private async Task ApplySmtpAccountChangeAsync()
