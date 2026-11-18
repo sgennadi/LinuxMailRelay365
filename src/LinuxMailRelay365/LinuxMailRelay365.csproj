@@ -34,6 +34,7 @@
     <EmbeddedResource Include="../../linux/install-preserve-postfix-sidecar.sh" LogicalName="LinuxMailRelay365.linux.sidecar.sh" />
     <EmbeddedResource Include="../../linux/install-direct-send-sidecar.sh" LogicalName="LinuxMailRelay365.linux.direct-send-sidecar.sh" />
     <EmbeddedResource Include="../../linux/install-connector-sidecar.sh" LogicalName="LinuxMailRelay365.linux.connector-sidecar.sh" />
+    <EmbeddedResource Include="../../linux/guard-foreign-mta.py" LogicalName="LinuxMailRelay365.linux.foreign-mta-guard.py" />
     <EmbeddedResource Include="../../linux/network-firewall.sh" LogicalName="LinuxMailRelay365.linux.network-firewall.sh" />
     <EmbeddedResource Include="../../linux/manage-public-smtp.py" LogicalName="LinuxMailRelay365.linux.public-smtp-manager.py" />
     <EmbeddedResource Include="../../linux/audit-existing-smtp.py" LogicalName="LinuxMailRelay365.linux.existing-smtp-audit.py" />
