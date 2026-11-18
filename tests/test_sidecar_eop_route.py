@@ -101,6 +101,7 @@ class EopRouteContracts(unittest.TestCase):
             "envelope_sender, header_sender")
         a.mode = "direct-send"
         a.public_ip = ""
+        a.sender_owner_file = ""
         with self.assertRaisesRegex(eop.Refused, "direct_send_requires_fixed_sender"):
             eop.validate(a)
         a.sender_policy = "unknown"
