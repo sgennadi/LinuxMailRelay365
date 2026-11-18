@@ -131,8 +131,8 @@ internal sealed class MainForm : Form
         sshAuthMode.Items.AddRange(["SSH key / ssh-agent", "SSH username + password"]);
         mailTransport.Items.AddRange([
             "XOAUTH2 · sender mailbox (available)",
-            "M365 SMTP Connector · verified domain (planning only)",
-            "Direct Send · internal tenant recipients only (planning only)"
+            "M365 SMTP Connector · existing tenant Connector (Advanced apply)",
+            "Direct Send · internal recipients only (Advanced apply)"
         ]);
         senderPolicy.Items.AddRange([
             "Fixed Microsoft 365 sender mailbox (available)",
@@ -144,6 +144,10 @@ internal sealed class MainForm : Form
         mailTransport.SelectedIndex = 0;
         senderPolicy.SelectedIndex = 0;
         mailTransport.SelectedIndexChanged += (_, _) => {
+            if (!routingLoading) {
+                acceptedDomainApproved.Checked = false;
+                connectorApproved.Checked = false;
+            }
             SaveRoutingChoices(); UpdatePreserveFlowPreview();
             if (step == 3 && !routingLoading && !busy)
             {
@@ -164,6 +168,23 @@ internal sealed class MainForm : Form
             }
         };
         acceptedDomain.Leave += (_, _) => SaveRoutingChoices();
+        acceptedDomain.TextChanged += (_, _) =>
+        {
+            if (!routingLoading) {
+                acceptedDomainApproved.Checked = false;
+                connectorApproved.Checked = false;
+            }
+        };
+        outboundFixedSender.TextChanged += (_, _) =>
+        {
+            if (!routingLoading) acceptedDomainApproved.Checked = false;
+        };
+        foreach (var item in new[] { outboundMxHost, outboundPublicIp,
+                                     outboundCertPath, outboundCertKeyPath })
+            item.TextChanged += (_, _) =>
+            {
+                if (!routingLoading) connectorApproved.Checked = false;
+            };
         outboundMxHost.Leave += (_, _) => SaveRoutingChoices();
         outboundFixedSender.Leave += (_, _) => SaveRoutingChoices();
         outboundPublicIp.Leave += (_, _) => SaveRoutingChoices();
@@ -2129,7 +2150,7 @@ internal sealed class MainForm : Form
         };
         var chosenSender = senderPolicy.SelectedIndex;
         if (chosenTransport != "oauth2" || chosenSender != 0)
-            throw new NotSupportedException("Connector and sender masquerade are planning-only in this preview. No Postfix changes were applied.");
+            throw new NotSupportedException("Main Install applies XOAUTH2 only. For Direct Send or Connector, install the isolated Postfix first and use Advanced SMTP → EOP route Preview / Apply. Sender preservation and masquerading remain blocked.");
         var endpoint = Endpoint();
         var observed = await SshRemote.ProbeSecurityAsync(endpoint,
             EmbeddedAssets.SecurityProbe, CancellationToken.None);
