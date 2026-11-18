@@ -213,7 +213,7 @@ jobs:
             "STATUS=preview_unsigned_not_for_production"
           ) | Set-Content -Path ./out/preview-artifact-digests.txt -Encoding utf8
       - name: Upload preview build (not a stable release)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: LinuxMailRelay365-preview-builds
           path: |
