@@ -395,6 +395,10 @@ internal sealed class MainForm : Form
                         "יש לבדוק תחילה את שרת הדואר.")));
                 }
                 AddLine(page, UiTheme.Text(T(
+                    "Для существующего Postfix режим Preserve Existing Mail создаёт отдельный экземпляр Postfix на порту 2525 с отдельной очередью. Основные порты 25, main.cf, master.cf и текущая очередь не изменяются. Sendmail/Exim пока не поддерживаются.",
+                    "For an existing Postfix server, Preserve Existing Mail installs a separate Postfix instance on TCP 2525 with a separate queue. Primary port 25, main.cf, master.cf and queue are untouched. Sendmail/Exim sidecars are not yet supported.",
+                    "עבור Postfix קיים נוצר מופע נפרד בפורט 2525 ללא שינוי בתצורה הקיימת.")));
+                AddLine(page, UiTheme.Text(T(
                     "Маскарад и Connector пока доступны только как план. Никакие изменения домена, MX, SPF, DKIM, DMARC или маршрутов существующего MTA не выполняются автоматически. Если MTA уже установлен, режим сохранения блокирует его изменение.",
                     "Masquerade and Connector are planning-only in this preview. No domain, MX, SPF, DKIM, DMARC, or existing MTA routes change automatically. Preserve mode blocks modifications of an existing MTA.",
                     "Connector והסוואת כתובות הם לתכנון בלבד. הגדרות שרת הדואר הקיים לא משתנות.")));
@@ -1049,13 +1053,50 @@ internal sealed class MainForm : Form
             throw new InvalidOperationException("First inspect the existing Linux mail server. No changes made.");
         if (inspectedMail != inventory)
             throw new InvalidOperationException("Postfix configuration changed since inspection, including main.cf/master.cf fingerprint. Inspect again.");
+        if (inventory.Mta is "sendmail" or "exim")
+            throw new NotSupportedException("Sendmail/Exim are protected. Isolated gateway for these MTAs is planned but not implemented.");
+        if (inventory.Mta == "postfix" && preserveExistingMail.Checked)
+        {
+            if (allowExisting.Checked)
+                throw new InvalidOperationException("Choose Preserve Existing Mail OR Force Replace, never both.");
+            // This path does not modify the primary Postfix configuration,
+            // restart its service, or write to its existing mail queue.
+            var state = await ReadyStateAsync();
+            var confirmation = MessageBox.Show(this, T(
+                "Установить отдельный экземпляр Postfix на TCP 2525? Существующий Postfix (порт 25) и его очередь останутся без изменений. Доставка Microsoft 365 будет использовать отдельную очередь и сертификат. Сетевой SMTP допускается только из указанных доверенных подсетей.",
+                "Install a separate Postfix instance on TCP 2525? Existing port 25, mail routing and queue stay untouched. Microsoft 365 uses an isolated queue and identity. Remote clients need explicitly trusted subnets.",
+                "להתקין מופע Postfix נפרד בפורט 2525 ללא שינוי בשרת הקיים?"),
+                Text, MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (confirmation != DialogResult.Yes) return;
+            var isolatedArgs = new List<string> {
+                "--tenant-id", state.Tenant.ToString(), "--client-id", state.Client,
+                "--mailbox", state.Mailbox
+            };
+            if (routingPlan.ListenIpv4.Length > 0)
+            {
+                isolatedArgs.Add("--listen-ip");
+                isolatedArgs.Add(routingPlan.ListenIpv4);
+                foreach (var cidr in routingPlan.TrustedCidrs.Split(',',
+                             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    isolatedArgs.Add("--trusted-network");
+                    isolatedArgs.Add(cidr);
+                }
+            }
+            WriteLine("Installing isolated SMTP gateway (Postfix TCP 2525, independent queue); primary MTA unchanged.");
+            var installed = await SshRemote.RunRootScriptAsync(endpoint,
+                EmbeddedAssets.BuildSidecarBundle([.. isolatedArgs]), TimeSpan.FromMinutes(5));
+            installed.EnsureSuccess();
+            WriteLine(installed.StdOut);
+            WriteLine("Sidecar installed. Test SMTP 2525 and independently verify Microsoft 365 delivery.");
+            inspectedMail = null;
+            inspectedServerIdentity = null;
+            allowExisting.Checked = false;
+            return;
+        }
         if (inventory.Mta == "postfix" &&
             !System.Text.RegularExpressions.Regex.IsMatch(inventory.ConfigSha256, @"^[a-f0-9]{64}$"))
             throw new InvalidOperationException("Cannot verify Postfix configuration SHA-256. Force Replace disabled.");
-        if (inventory.Mta is "sendmail" or "exim")
-            throw new NotSupportedException("Existing Sendmail/Exim is preserved. Safe migration/sidecar deployment is not implemented yet.");
-        if (inventory.Mta == "postfix" && preserveExistingMail.Checked)
-            throw new NotSupportedException("Existing Postfix is protected by Preserve Existing Mail. No changes made.");
         if (inventory.Mta == "postfix" && !allowExisting.Checked)
             throw new InvalidOperationException("Force Replace requires explicit selection after MTA inspection.");
         bool force = inventory.Mta == "postfix";
@@ -1105,10 +1146,15 @@ internal sealed class MainForm : Form
 
     private async Task DiagnosticsAsync()
     {
-        var result = await SshRemote.DiagnosticsAsync(Endpoint(), CancellationToken.None);
+        var endpoint = Endpoint();
+        bool isolated = await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None);
+        var result = isolated
+            ? await SshRemote.SidecarDiagnosticsAsync(endpoint, CancellationToken.None)
+            : await SshRemote.DiagnosticsAsync(endpoint, CancellationToken.None);
         result.EnsureSuccess();
+        WriteLine(isolated ? "Isolated SMTP 2525 + separate Postfix queue detected." : "Primary Postfix mode.");
         WriteLine(result.StdOut);
-        WriteLine("Token-check is successful only when Microsoft Entra returned a token; it is not an SMTP delivery test.");
+        WriteLine("Token-check verifies Entra authorization, not delivery; check Exchange and recipient logs.");
     }
 
     private async Task SendTestAsync()
@@ -1116,10 +1162,15 @@ internal sealed class MainForm : Form
         var cloud = CloudInputs();
         string dest = testRecipient.Text.Trim();
         if (!SshRemote.IsEmail(dest)) throw new ArgumentException("Invalid test recipient.");
-        var result = await SshRemote.SendTestAsync(Endpoint(), cloud.Mailbox, dest, CancellationToken.None);
+        var endpoint = Endpoint();
+        bool isolated = await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None);
+        var result = isolated
+            ? await SshRemote.SendIsolatedSidecarTestAsync(endpoint, cloud.Mailbox, dest, CancellationToken.None)
+            : await SshRemote.SendTestAsync(endpoint, cloud.Mailbox, dest, CancellationToken.None);
         result.EnsureSuccess();
-        WriteLine("Test message submitted to local Postfix queue. " + result.StdOut);
-        WriteLine("Check Postfix logs for status=sent and recipient mailbox for actual delivery.");
+        WriteLine(isolated ? "Test message accepted by isolated SMTP :2525. " + result.StdOut
+                           : "Test submitted to primary Postfix. " + result.StdOut);
+        WriteLine("Verify Exchange delivery; acceptance by a local queue is not final delivery.");
     }
 
     private async Task CheckUpdatesAsync()
