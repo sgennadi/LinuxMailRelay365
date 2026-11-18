@@ -644,6 +644,55 @@ def offline_switch(staged, retired, deployed):
             deployed.add(rel)
 
 
+def verify_restored_auth_tls(config):
+    """Verify archived private Dovecot SMTP AUTH is not silently weakened.
+
+    Uses only postconf/doveconf READ commands; never starts either daemon,
+    creates sockets, or prints password hashes/certificate private keys.
+    """
+    auth_dir = rooted(CONF + "/smtp-auth")
+    unit = rooted("etc/systemd/system/" + AUTH)
+    auth_present = auth_dir.exists() or auth_dir.is_symlink()
+    unit_present = unit.exists() or unit.is_symlink()
+    sasl = command(["postconf", "-c", config, "-h", "smtpd_sasl_auth_enable"])
+    if not auth_present and not unit_present:
+        if sasl == "yes":
+            raise Refused("restored_auth_enabled_without_independent_dovecot")
+        return
+    if not auth_present or not unit_present:
+        raise Refused("restored_dovecot_config_or_unit_missing")
+    secure_parents(auth_dir)
+    secure(auth_dir, directory=True)
+    secure_parents(unit)
+    secure(unit, directory=False)
+    required = ("dovecot.conf", "passwd", "fullchain.pem", "privkey.pem")
+    for name in required:
+        local = auth_dir / name
+        secure_parents(local)
+        secure(local, directory=False)
+    values = {
+        "smtpd_sasl_auth_enable": "yes",
+        "smtpd_sasl_type": "dovecot",
+        "smtpd_sasl_path": "private/auth",
+        "smtpd_tls_security_level": "encrypt",
+        "smtpd_tls_auth_only": "yes",
+        "smtpd_relay_restrictions": "permit_sasl_authenticated, reject",
+        "smtpd_recipient_restrictions": "permit_sasl_authenticated, reject",
+        "smtpd_tls_cert_file": "/etc/linuxmailrelay365/smtp-auth/fullchain.pem",
+        "smtpd_tls_key_file": "/etc/linuxmailrelay365/smtp-auth/privkey.pem",
+    }
+    for key, expected in values.items():
+        actual = command(["postconf", "-c", config, "-h", key])
+        if actual != expected:
+            raise Refused("restored_dovecot_auth_tls_policy_mismatch")
+    # A malformed Dovecot 2.3 / 2.4 config would otherwise only fail
+    # AFTER an administrator manually starts the independent AUTH unit.
+    parsed = command(["doveconf", "-c",
+                      str(auth_dir / "dovecot.conf"), "-n"], timeout=25)
+    if not parsed or "auth_mechanisms" not in parsed:
+        raise Refused("restored_dovecot_config_readonly_validation_failed")
+
+
 def verify_restored_postfix():
     """Read-only validation, no queue creation, service start or MTA reload."""
     config = sidecar_config()
@@ -672,6 +721,7 @@ def verify_restored_postfix():
             listeners.append(fields[0])
     if len(listeners) != 1:
         raise Refused("restored_master_cf_has_unexpected_smtp_listener")
+    verify_restored_auth_tls(config)
 
 
 def cleanup_workdirs(staged, retired, success):
