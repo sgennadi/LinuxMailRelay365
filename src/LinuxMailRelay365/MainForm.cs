@@ -39,6 +39,9 @@ internal sealed class MainForm : Form
     private readonly TextBox outboundMxHost = Field("");
     private readonly TextBox outboundPublicIp = Field("");
     private readonly TextBox outboundCertPath = Field("");
+    private readonly TextBox outboundCertKeyPath = Field("");
+    private readonly TextBox outboundFixedSender = Field("");
+    private readonly CheckBox connectorApproved = new() { AutoSize = true, Checked = false };
     private readonly TextBox smtpListenIp = Field("");
     private readonly TextBox smtpTrustedCidrs = Field("");
     private readonly TextBox isolatedSmtpPort = Field("2525");
@@ -160,6 +163,11 @@ internal sealed class MainForm : Form
             }
         };
         acceptedDomain.Leave += (_, _) => SaveRoutingChoices();
+        outboundMxHost.Leave += (_, _) => SaveRoutingChoices();
+        outboundFixedSender.Leave += (_, _) => SaveRoutingChoices();
+        outboundPublicIp.Leave += (_, _) => SaveRoutingChoices();
+        outboundCertPath.Leave += (_, _) => SaveRoutingChoices();
+        outboundCertKeyPath.Leave += (_, _) => SaveRoutingChoices();
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
@@ -433,6 +441,9 @@ internal sealed class MainForm : Form
                     AddField(page, T("MX Microsoft 365 (*.mail.protection.outlook.com)",
                                      "Microsoft 365 MX endpoint (*.mail.protection.outlook.com)",
                                      "כתובת MX ב-Microsoft 365"), outboundMxHost);
+                    AddField(page, T("Фиксированный отправитель в подтверждённом домене",
+                                     "Fixed sender in the tenant-accepted domain",
+                                     "כתובת שולח קבועה בדומיין מאומת"), outboundFixedSender);
                     if (mailTransport.SelectedIndex == 1)
                     {
                         AddField(page, T("Статический публичный IPv4 исходящего Linux",
@@ -441,11 +452,38 @@ internal sealed class MainForm : Form
                         AddField(page, T("Сертификат Connector на Linux (необязательно)",
                                          "Linux Connector TLS certificate (optional)",
                                          "אישור TLS בלינוקס"), outboundCertPath);
+                        AddField(page, T("Закрытый ключ сертификата Connector на Linux",
+                                         "Linux client certificate private-key path (if certificate selected)",
+                                         "נתיב מפתח פרטי לאישור"), outboundCertKeyPath);
+                        connectorApproved.Text = T(
+                            "Я проверил действующий Inbound Connector в моём Microsoft 365 Tenant",
+                            "I have personally verified the EXISTING Microsoft 365 Inbound Connector",
+                            "אישרתי שה-Connector כבר קיים ב-Microsoft 365");
+                        AddLine(page, connectorApproved);
                     }
                     AddAction(page, T("Проверить Direct Send / Connector, TCP 25 (только чтение)",
                                       "Check Direct Send / Connector, outbound TCP 25 (read-only)",
                                       "בדיקת Direct Send ו-Connector"),
                                       CheckOutboundModeAsync, false, "check", "outbound-mode");
+                    if (advancedSmtpTools.Checked)
+                    {
+                        AddLine(page, UiTheme.Text(T(
+                            "Продвинутый маршрут применяется только к установленному отдельному Postfix. Direct Send блокирует внешних получателей. Используется один фиксированный отправитель; Connector в Tenant должен существовать до применения. Все изменения обратимы через отдельный Restore.",
+                            "Advanced outbound routing ONLY modifies installed isolated Postfix. Direct Send rejects external recipients locally. One fixed sender is enforced; Connector must already exist in your tenant. A separate Restore returns to XOAUTH2.",
+                            "ניתוב מתקדם למופע Postfix נפרד בלבד; Direct Send מוגבל לנמענים פנימיים.")));
+                        AddAction(page, T("Проверить применение EOP-маршрута (без изменений)",
+                                          "Preview isolated EOP route changes (read-only)",
+                                          "בדיקת ניתוב EOP"),
+                                          PreviewEopRouteAsync, false, "check", "eop-preview");
+                        AddAction(page, T("Применить отдельный EOP-маршрут...",
+                                          "Apply isolated Direct Send / Connector route...",
+                                          "הפעלת ניתוב EOP נפרד"),
+                                          ApplyEopRouteAsync, false, "shield", "eop-apply");
+                        AddAction(page, T("Восстановить прежний XOAUTH2-маршрут...",
+                                          "Restore original isolated XOAUTH2 outbound route...",
+                                          "שחזור XOAUTH2"),
+                                          RestoreEopRouteAsync, false, "rotate-ccw", "eop-restore");
+                    }
                 }
                 AddField(page, T("Порт отдельного SMTP (Preserve Existing Mail; по умолчанию 2525)",
                                  "Isolated SMTP port (Preserve Existing Mail; default 2525)",
@@ -847,6 +885,12 @@ internal sealed class MainForm : Form
             };
             preserveExistingMail.Checked = routingPlan.PreserveExistingMail;
             acceptedDomain.Text = routingPlan.VerifiedDomain;
+            outboundMxHost.Text = routingPlan.EopMxHost;
+            outboundFixedSender.Text = routingPlan.EopFixedSender;
+            outboundPublicIp.Text = routingPlan.EopPublicIp;
+            outboundCertPath.Text = routingPlan.EopCertificatePath;
+            outboundCertKeyPath.Text = routingPlan.EopKeyPath;
+            connectorApproved.Checked = false;
             smtpListenIp.Text = routingPlan.ListenIpv4;
             smtpTrustedCidrs.Text = routingPlan.TrustedCidrs;
             isolatedSmtpPort.Text = routingPlan.SidecarPort.ToString();
@@ -876,6 +920,11 @@ internal sealed class MainForm : Form
         };
         routingPlan.PreserveExistingMail = preserveExistingMail.Checked;
         routingPlan.VerifiedDomain = acceptedDomain.Text.Trim().ToLowerInvariant();
+        routingPlan.EopMxHost = outboundMxHost.Text.Trim().ToLowerInvariant();
+        routingPlan.EopFixedSender = outboundFixedSender.Text.Trim().ToLowerInvariant();
+        routingPlan.EopPublicIp = outboundPublicIp.Text.Trim();
+        routingPlan.EopCertificatePath = outboundCertPath.Text.Trim();
+        routingPlan.EopKeyPath = outboundCertKeyPath.Text.Trim();
         routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
         routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
         if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int port))
