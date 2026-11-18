@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.6 — source and GitHub Actions builds; not a verified production release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.7 — source and GitHub Actions builds; not a verified production release.**
 
 ## Intended workflow
 
@@ -53,6 +53,16 @@ forward public SMTP traffic to this port. SMTP submission from a trusted LAN
 remains unencrypted until separate TLS listener support is implemented.
 
 ## Force Replace, Backup & Restore (Preview)
+
+**Preview 7 improvement:** the read-only MTA inspection computes a SHA-256
+fingerprint of `main.cf` and `master.cf`. Force Replace is not offered
+unless both files are readable and the fingerprint is valid. The wizard checks
+that nothing changed since inspection; the Linux installer independently
+rechecks the fingerprint before the backup and after its verification.
+A mismatch aborts without changing mail settings. This does not cover
+every external Postfix map, database or referenced TLS key, so a verified
+full-tree snapshot and operator confirmation remain mandatory.
+
 
 Force Replace is **hidden until the Wizard reads the Linux MTA state**.
 Only an existing Postfix unlocks the option. It is OFF by default, and
