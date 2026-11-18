@@ -33,7 +33,8 @@ SIDECAR = "linuxmailrelay365-sidecar.service"
 AUTH = "linuxmailrelay365-smtp-auth.service"
 HEALTH = "linuxmailrelay365-health.service"
 TIMER = "linuxmailrelay365-health.timer"
-UNITS = (SIDECAR, AUTH, HEALTH, TIMER)
+FROM_GUARD = "linuxmailrelay365-from-guard.service"
+UNITS = (SIDECAR, AUTH, HEALTH, TIMER, FROM_GUARD)
 OPTIONAL = (
     "etc/systemd/system/linuxmailrelay365-sidecar.service",
     "etc/systemd/system/linuxmailrelay365-sidecar.service.d",
@@ -43,6 +44,9 @@ OPTIONAL = (
     "etc/systemd/system/linuxmailrelay365-health.timer",
     "etc/systemd/system/linuxmailrelay365-health.timer.d",
     "etc/systemd/system/linuxmailrelay365-health.service.d",
+    "etc/systemd/system/linuxmailrelay365-from-guard.service",
+    "etc/systemd/system/linuxmailrelay365-from-guard.service.d",
+    "usr/local/libexec/linuxmailrelay365-from-owner-milter.py",
     "usr/local/libexec/linuxmailrelay365-sidecar-transport.py",
     "usr/local/libexec/linuxmailrelay365-relay-health.py",
     "usr/local/libexec/linuxmailrelay365-health-alerts.py",
@@ -693,6 +697,38 @@ def verify_restored_auth_tls(config):
         raise Refused("restored_dovecot_config_readonly_validation_failed")
 
 
+def verify_restored_from_guard(config):
+    """Offline ownership guard recovery checks. Never open its UNIX socket."""
+    guard = rooted(CONF + "/sidecar-postfix/eop-from-owners.tsv")
+    service = rooted("etc/systemd/system/" + FROM_GUARD)
+    engine = rooted("usr/local/libexec/linuxmailrelay365-from-owner-milter.py")
+    required = ("smtpd_milters", "milter_default_action",
+                "milter_protocol", "milter_mail_macros",
+                "authorized_submit_users")
+    props = {name: command(["postconf", "-c", config, "-h", name])
+             for name in required}
+    if not props["smtpd_milters"]:
+        return
+    expected = "unix:/run/linuxmailrelay365-from-guard/from-guard.sock"
+    if (props["smtpd_milters"] != expected or
+            props["milter_default_action"] != "tempfail" or
+            props["milter_protocol"] != "6" or
+            props["authorized_submit_users"] != "" or
+            not all(x in props["milter_mail_macros"] for x in
+                    ("{auth_authen}", "{auth_type}"))):
+        raise Refused("restored_header_guard_policy_not_fail_closed")
+    try:
+        group = __import__("grp").getgrnam("postfix").gr_gid
+    except KeyError:
+        raise Refused("restored_header_guard_postfix_group_missing")
+    for item in (guard, service, engine):
+        secure_parents(item)
+        secure(item, directory=False)
+    st = guard.lstat()
+    if st.st_gid != group or stat.S_IMODE(st.st_mode) != 0o640:
+        raise Refused("restored_header_guard_owner_map_untrusted")
+
+
 def verify_restored_postfix():
     """Read-only validation, no queue creation, service start or MTA reload."""
     config = sidecar_config()
@@ -722,6 +758,7 @@ def verify_restored_postfix():
     if len(listeners) != 1:
         raise Refused("restored_master_cf_has_unexpected_smtp_listener")
     verify_restored_auth_tls(config)
+    verify_restored_from_guard(config)
 
 
 def cleanup_workdirs(staged, retired, success):
