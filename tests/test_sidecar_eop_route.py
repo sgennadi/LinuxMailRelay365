@@ -30,7 +30,7 @@ def opts(mode="direct-send", port=46500, sender="alerts@example.org",
         public_ip=public_ip, tls_cert=cert, tls_key=key,
         expect_main_sha256=expected, confirm=confirm,
         connector_attestation=attestation,
-        sender_policy="fixed-mailbox")
+        sender_policy="fixed-mailbox", sender_owner_file="")
 
 
 class EopRouteContracts(unittest.TestCase):
@@ -70,6 +70,9 @@ class EopRouteContracts(unittest.TestCase):
     def test_connector_sender_policy_is_explicit_and_domain_scoped(self):
         a = opts(mode="connector", public_ip="8.8.8.8")
         a.sender_policy = "preserve-domain"
+        with self.assertRaisesRegex(eop.Refused, "connector_sender_ownership_file_required"):
+            eop.validate(a)
+        a.sender_owner_file = "/root/reviewed-owners.txt"
         eop.validate(a)
         sender, canonical, _ = eop.policy_maps(a)
         self.assertIn("example[.]org", sender)
@@ -77,6 +80,8 @@ class EopRouteContracts(unittest.TestCase):
         self.assertTrue(canonical.startswith("# Preserve"))
         policy = eop.policy_changes(a, "/etc/ssl/testca.pem", True)
         self.assertEqual(policy["sender_canonical_maps"], "")
+        self.assertIn("reject_authenticated_sender_login_mismatch", policy["smtpd_sender_restrictions"])
+        self.assertIn("eop-sender-owners.regexp", policy["smtpd_sender_login_maps"])
         a.sender_policy = "masquerade"
         eop.validate(a)
         sender, canonical, _ = eop.policy_maps(a)
@@ -92,6 +97,32 @@ class EopRouteContracts(unittest.TestCase):
         a.sender_policy = "unknown"
         with self.assertRaisesRegex(eop.Refused, "invalid_sender_policy"):
             eop.validate(a)
+
+    def test_sender_owner_map_validates_active_login_and_domain(self):
+        import tempfile
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "owners"
+            passwd = Path(folder) / "passwd"
+            source.write_text("alice@example.org smtp-app01\n")
+            passwd.write_text("smtp-app01:{SHA512-CRYPT}fake\n")
+            args = opts(mode="connector", public_ip="8.8.8.8")
+            args.sender_policy = "preserve-domain"
+            args.sender_owner_file = str(source)
+            fake_st = SimpleNamespace(st_mode=0o100600, st_size=500, st_uid=0)
+            with patch.object(eop, "AUTH_USERS", passwd), \
+                 patch.object(eop, "owned_file", return_value=fake_st), \
+                 patch.object(eop, "postconf",
+                    side_effect=lambda key: "encrypt" if key == "smtpd_tls_security_level" else "yes"), \
+                 patch.object(eop, "run", return_value=SimpleNamespace(returncode=0)):
+                rules = eop.sender_owner_map(args)
+                self.assertIn("/^alice@example[.]org$/ smtp-app01", rules)
+                source.write_text("alice@other.example smtp-app01\n")
+                with self.assertRaisesRegex(eop.Refused, "outside_accepted_domain"):
+                    eop.sender_owner_map(args)
+                source.write_text("alice@example.org other-login\n")
+                with self.assertRaisesRegex(eop.Refused, "not_active_smtp_account"):
+                    eop.sender_owner_map(args)
 
     def test_public_inbound_and_unverified_rhel_never_implicitly_allowed(self):
         for bad in ("0.0.0.0", "192.168.5.1", "127.0.0.1", "10.0.0.1"):
@@ -158,6 +189,8 @@ class EopRouteContracts(unittest.TestCase):
         ui = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
         self.assertIn("BuildEopRouteBundle", embedded)
         self.assertIn("--sender-policy", embedded)
+        self.assertIn("sender-owner-file", SCRIPT.read_text(encoding="utf-8"))
+        self.assertIn("reject_authenticated_sender_login_mismatch", SCRIPT.read_text(encoding="utf-8"))
         self.assertIn("senderPolicy: opt.SenderPolicy", ui)
         self.assertIn("preserve-domain", ui)
         self.assertIn("manage-sidecar-eop-route.py", project)
