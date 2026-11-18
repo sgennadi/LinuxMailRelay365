@@ -69,6 +69,8 @@ class PrivateSmtpAuthTlsTests(unittest.TestCase):
             'smtpd_relay_restrictions = permit_sasl_authenticated, reject',
             'AUTH_TLS_ERROR=requested_port_differs_from_installed_sidecar',
             'AUTH_TLS_ERROR=selinux_enforcing_not_verified',
+            'AUTH_TLS_ERROR=rhel_selinux_permissive_policy_not_verified',
+            'AUTH_TLS_ERROR=selinux_status_unknown_manual_review_required',
         ):
             self.assertIn(token, s)
         for forbidden in (
