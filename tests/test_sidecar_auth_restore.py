@@ -49,6 +49,18 @@ class SidecarAuthTlsRestoreTests(unittest.TestCase):
                              "--confirm", "RESTORE_TRUSTED_NETWORK_SMTP")
         self.assertIn("expected_main_sha256_required", r.stderr)
 
+    def test_scripts_have_one_terminal_success_without_orphan_tail(self):
+        # An earlier code edit left a second partial SELinux block AFTER the
+        # final success output. Bash -n caught it, but guard the file layout.
+        for script in (ACTIVATE, RESTORE):
+            with self.subTest(script=script.name):
+                text = script.read_text(encoding="utf-8")
+                terminal = "echo 'MICROSOFT365_DELIVERY_VERIFIED=no'"
+                self.assertEqual(text.count(terminal), 1)
+                self.assertEqual(text.split(terminal, 1)[1].strip(), "")
+                self.assertEqual(text.count('selinux_status="$(getenforce'), 1)
+                self.assertIn("selinux_status_unknown_manual_review_required", text)
+
     def test_safe_restore_policy_is_only_private_and_never_public(self):
         text = RESTORE.read_text(encoding="utf-8")
         for required in (
