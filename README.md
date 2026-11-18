@@ -499,6 +499,30 @@ archive for each activation. AUTH/TLS downgrade, certificate rotation and
 EOP re-routing refuse to operate while public submission remains active.
 **No Stable release is implied.**
 
+## Fresh independent Connector without OAuth (Preview 15)
+
+The Advanced SMTP Wizard now provides a separate Preview/Install for a NEW,
+fixed-sender Microsoft 365 Connector gateway when the host already has a
+primary Postfix but has no isolated SMTP sidecar. No Entra application,
+XOAUTH2 certificate or SMTP AUTH credentials are required for outbound
+Connector delivery. The installation creates only a dedicated Postfix config,
+service and queue, using the chosen private inbound TCP port (1024-65535)
+and selected RFC1918 listener/client networks. Existing primary mail
+configuration, port 25 and queue remain untouched.
+
+The selected EOP MX is reached on outbound TCP 25 with mandatory verified TLS.
+The operator must separately verify that an existing inbound Connector in
+the exact Microsoft 365 tenant authorizes the actual public egress IP or
+validated certificate and that the declared sending domain is accepted.
+A certificate is only read from the root-controlled Linux path and must be
+matching, unexpired and readable by the Postfix process. Public SMTP
+ingress is never opened and DNS/MX/Exchange objects are not modified.
+Unlike Direct Send, an authorized tenant Connector may relay to external
+recipients, which increases the importance of limiting private submitters.
+The fresh installer uses a fixed sender only; Connector sender preservation
+and login maps require a separately reviewed existing-sidecar migration.
+Real tenant recipient acceptance and full rollback still need host testing.
+
 ## Optional HTTPS health notifications (Preview 15)
 
 The 15-minute systemd health timer remains local by default. A separate,

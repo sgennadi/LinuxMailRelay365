@@ -523,7 +523,7 @@ internal sealed class MainForm : Form
                     {
                         AddLine(page, UiTheme.Text(T(
                             "Продвинутый маршрут применяется только к установленному отдельному Postfix. Direct Send блокирует внешних получателей. Используется один фиксированный отправитель; Connector в Tenant должен существовать до применения. Все изменения обратимы через отдельный Restore.",
-                            "Advanced outbound routing changes only isolated Postfix. Direct Send rejects external recipients and requires fixed sender. Connector can preserve verified-domain senders or rewrite approved subdomain sender identities. The Connector must already exist in the tenant.",
+                            "Advanced EOP routing applies only to isolated Postfix. NEW fixed-sender Connector and Direct Send can be installed without a prior XOAUTH2 sidecar, but an authorized tenant Connector must already exist for Connector delivery. Domain-preserving Connector policies require a reviewed existing sidecar.",
                             "ניתוב מתקדם למופע Postfix נפרד בלבד; Direct Send מוגבל לנמענים פנימיים.")));
                         if (mailTransport.SelectedIndex == 1 && senderPolicy.SelectedIndex == 0)
                         {
