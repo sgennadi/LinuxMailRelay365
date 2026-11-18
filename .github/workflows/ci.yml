@@ -23,6 +23,37 @@ jobs:
       - name: Real isolated Postfix service and primary mail preservation smoke
         run: bash tests/smoke_isolated_postfix.sh
 
+  rhel-family-readonly-smoke:
+    # Container-only validation. Not a full systemd/Postfix/SELinux integration test.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - rockylinux:8
+          - rockylinux:9
+          - rockylinux:10
+          - almalinux:9
+          - oraclelinux:9
+          - oraclelinux:10
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install distribution Python
+        shell: bash
+        run: |
+          dnf -y install python3
+      - name: Verify real OS identification and custom port
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 linux/platform-compat.py --smtp-port 2526 | tee /tmp/lmr365-platform.log
+          grep -Fx 'OS_FAMILY=rhel' /tmp/lmr365-platform.log
+          grep -Fx 'SMTP_PORT=2526' /tmp/lmr365-platform.log
+          grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-platform.log
+          python3 -m unittest discover -v -s tests -p test_platform_compat.py
+
   windows-build:
     runs-on: windows-latest
     steps:
