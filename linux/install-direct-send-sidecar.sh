@@ -8,7 +8,7 @@ CONF=/etc/linuxmailrelay365/sidecar-postfix
 QUEUE=/var/spool/linuxmailrelay365-sidecar
 DATA=/var/lib/linuxmailrelay365-sidecar
 UNIT=/etc/systemd/system/linuxmailrelay365-sidecar.service
-PORT=2525 LISTEN='' CIDRS='' MX='' DOMAIN='' SENDER='' ACTION=check CONFIRM=''
+PORT=2525 LISTEN='' CIDRS='' MX='' DOMAIN='' SENDER='' ACTION=check CONFIRM='' FOREIGN_MTA='' SIDECAR_HOSTNAME='' PRESERVE_APPROVAL='' FOREIGN_BASELINE='' GUARD_PATH=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --smtp-port) PORT="$2"; shift 2 ;;
@@ -17,20 +17,25 @@ while [ "$#" -gt 0 ]; do
     --mx-host) MX="$2"; shift 2 ;;
     --accepted-domain) DOMAIN="$2"; shift 2 ;;
     --fixed-sender) SENDER="$2"; shift 2 ;;
+    --preserve-primary-mta) FOREIGN_MTA="$2"; shift 2 ;;
+    --sidecar-hostname) SIDECAR_HOSTNAME="$2"; shift 2 ;;
+    --confirm-preserve-primary-mta) PRESERVE_APPROVAL="$2"; shift 2 ;;
     --check-only) ACTION=check; shift ;;
     --apply) ACTION=apply; shift ;;
     --confirm-accepted-domain) CONFIRM="$2"; shift 2 ;;
     --self-test) echo 'DIRECT_SEND_SIDECAR_PARSER=ready'; exit 0 ;;
     --help|-h)
-      echo 'Usage: --mx-host EOP_MX --accepted-domain DOMAIN --fixed-sender ADDRESS --smtp-port PORT [--listen-ip PRIVATE_IP --trusted-network RFC1918_CIDR] --check-only|--apply'
+      echo 'Usage: --mx-host EOP_MX --accepted-domain DOMAIN --fixed-sender ADDRESS --smtp-port PORT [--listen-ip PRIVATE_IP --trusted-network RFC1918_CIDR] [--preserve-primary-mta exim|sendmail --sidecar-hostname FQDN --confirm-preserve-primary-mta PRESERVE_EXISTING_EXIM|PRESERVE_EXISTING_SENDMAIL] --check-only|--apply'
       exit 0 ;;
     *) echo 'DIRECT_SEND_ERROR=unknown_argument' >&2; exit 2 ;;
   esac
 done
-python3 - "$PORT" "$LISTEN" "$CIDRS" "$MX" "$DOMAIN" "$SENDER" <<'PY'
+python3 - "$PORT" "$LISTEN" "$CIDRS" "$MX" "$DOMAIN" "$SENDER" "$FOREIGN_MTA" "$SIDECAR_HOSTNAME" <<'PY'
 import ipaddress,re,sys
 try:
-    port,listen,networks,mx,domain,sender=sys.argv[1:]
+    port,listen,networks,mx,domain,sender,foreign,hostname=sys.argv[1:]
+    if foreign not in ('', 'exim', 'sendmail') or (foreign and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+',hostname)) or (not foreign and hostname):
+        raise ValueError('invalid_foreign_mta_or_explicit_sidecar_hostname')
     if not re.fullmatch(r'[0-9]{4,5}',port) or not 1024<=int(port)<=65535:
         raise ValueError('invalid_custom_port')
     dns=r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+'
@@ -65,21 +70,46 @@ if [ "$ACTION" = check ]; then
   echo "DIRECT_SEND_CUSTOM_PORT=$PORT"
   echo 'DIRECT_SEND_RECIPIENT_SCOPE=declared_internal_domain_only'
   echo 'DIRECT_SEND_TENANT_DOMAIN_VERIFIED=no'
+  if [ -n "$FOREIGN_MTA" ]; then
+    echo 'FOREIGN_PRIMARY_MTA_PRESERVATION=requires_live_root_guard_and_explicit_approval'
+    echo 'FOREIGN_PRIMARY_MTA_PACKAGE_MUTATION=no'
+  fi
   echo 'CHANGES_APPLIED=no'
   exit 0
 fi
 [ "$CONFIRM" = TENANT_DOMAIN_CHECKED ] || {
   echo 'DIRECT_SEND_ERROR=tenant_domain_confirmation_required' >&2; exit 2;
 }
+if [ -n "$FOREIGN_MTA" ]; then
+  [ "$PRESERVE_APPROVAL" = "PRESERVE_EXISTING_${FOREIGN_MTA^^}" ] || {
+    echo 'DIRECT_SEND_ERROR=foreign_mta_explicit_preservation_confirmation_required' >&2; exit 2;
+  }
+elif [ -n "$PRESERVE_APPROVAL" ]; then
+  echo 'DIRECT_SEND_ERROR=unexpected_foreign_mta_confirmation' >&2; exit 2
+fi
 [ "$(id -u)" -eq 0 ] || { echo 'DIRECT_SEND_ERROR=root_required' >&2; exit 1; }
 for cmd in postfix postconf postqueue python3 systemctl sha256sum ss flock; do
   command -v "$cmd" >/dev/null || {
     echo "DIRECT_SEND_ERROR=missing_$cmd" >&2; exit 1;
   }
 done
-[ -f /etc/postfix/main.cf ] && [ -f /etc/postfix/master.cf ] || {
-  echo 'DIRECT_SEND_ERROR=primary_postfix_required_preserve_mode' >&2; exit 1;
-}
+if [ -z "$FOREIGN_MTA" ]; then
+  [ -f /etc/postfix/main.cf ] && [ -f /etc/postfix/master.cf ] || {
+    echo 'DIRECT_SEND_ERROR=primary_postfix_required_preserve_mode' >&2; exit 1;
+  }
+  # Never install a default Postfix-mode sidecar onto an unacknowledged
+  # active Exim/Sendmail server. Select the explicit guarded path instead.
+  for foreign_unit in exim.service exim4.service sendmail.service; do
+    if systemctl is-active --quiet "$foreign_unit" 2>/dev/null; then
+      echo 'DIRECT_SEND_ERROR=active_foreign_mta_requires_preservation_mode' >&2; exit 1
+    fi
+  done
+else
+  GUARD_PATH="$(cd "$(dirname "$0")" && pwd)/guard-foreign-mta.py"
+  [ -f "$GUARD_PATH" ] && [ ! -L "$GUARD_PATH" ] || {
+    echo 'DIRECT_SEND_ERROR=foreign_primary_mta_guard_missing' >&2; exit 1;
+  }
+fi
 if [ -e "$CONF" ] || [ -L "$CONF" ] || [ -e "$UNIT" ] || [ -L "$UNIT" ]; then
   echo 'DIRECT_SEND_ERROR=existing_sidecar_refuse_overwrite' >&2; exit 1
 fi
@@ -117,13 +147,28 @@ for candidate in /etc/ssl/certs/ca-certificates.crt \
   if [ -s "$candidate" ]; then bundle="$candidate"; break; fi
 done
 [ -n "$bundle" ] || { echo 'DIRECT_SEND_ERROR=ca_bundle_missing' >&2; exit 1; }
-HOSTNAME="$(postconf -h myhostname)"
+if [ -n "$FOREIGN_MTA" ]; then
+  HOSTNAME="$SIDECAR_HOSTNAME"
+else
+  HOSTNAME="$(postconf -h myhostname)"
+fi
 [[ "$HOSTNAME" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$ ]] || {
   echo 'DIRECT_SEND_ERROR=bad_primary_hostname' >&2; exit 1;
 }
 exec 9>/run/linuxmailrelay365-sidecar-auth.lock
 flock -n 9 || { echo 'DIRECT_SEND_ERROR=concurrent_mail_operation' >&2; exit 1; }
-PRIMARY_BEFORE="$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)"
+if [ -n "$FOREIGN_MTA" ]; then
+  if ! foreign_output="$(python3 "$GUARD_PATH" --mta "$FOREIGN_MTA" --hostname "$HOSTNAME")"; then
+    echo "$foreign_output" >&2
+    echo 'DIRECT_SEND_ERROR=foreign_primary_mta_preflight_refused' >&2; exit 1
+  fi
+  FOREIGN_BASELINE="$(printf '%s\n' "$foreign_output" | sed -n 's/^FOREIGN_MTA_BASELINE_SHA256=//p')"
+  [[ "$FOREIGN_BASELINE" =~ ^[0-9a-f]{64}$ ]] || {
+    echo 'DIRECT_SEND_ERROR=foreign_mta_snapshot_invalid' >&2; exit 1;
+  }
+else
+  PRIMARY_BEFORE="$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)"
+fi
 STARTED=0
 rollback() {
   rc=$?
@@ -244,13 +289,26 @@ systemctl daemon-reload
 systemctl enable --now linuxmailrelay365-sidecar.service
 systemctl is-active --quiet linuxmailrelay365-sidecar.service
 postfix -c "$CONF" status >/dev/null
-[ "$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$PRIMARY_BEFORE" ] || {
-  echo 'DIRECT_SEND_ERROR=primary_postfix_changed' >&2; exit 1;
-}
+if [ -n "$FOREIGN_MTA" ]; then
+  if ! foreign_output="$(python3 "$GUARD_PATH" --mta "$FOREIGN_MTA" --hostname "$HOSTNAME" --expect-sha256 "$FOREIGN_BASELINE")"; then
+    echo "$foreign_output" >&2
+    echo 'DIRECT_SEND_ERROR=foreign_primary_mta_changed_or_unverified' >&2; exit 1
+  fi
+else
+  [ "$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$PRIMARY_BEFORE" ] || {
+    echo 'DIRECT_SEND_ERROR=primary_postfix_changed' >&2; exit 1;
+  }
+fi
 trap - EXIT
 echo 'DIRECT_SEND_SIDECAR_INSTALLED=yes'
 echo "DIRECT_SEND_CUSTOM_PORT=$PORT"
 echo 'DIRECT_SEND_RECIPIENT_SCOPE=declared_internal_domain_only'
 echo 'DIRECT_SEND_TENANT_DOMAIN_VERIFIED=operator_attestation_only'
 echo 'MICROSOFT365_DELIVERY_VERIFIED=no'
-echo 'PRIMARY_POSTFIX_CONFIG_UNCHANGED=yes'
+if [ -n "$FOREIGN_MTA" ]; then
+  echo 'PRIMARY_FOREIGN_MTA_PRESERVED=guard_fingerprint_unchanged'
+  echo 'PRIMARY_MTA_STOP_OR_RESTART=no'
+  echo 'PRIMARY_MTA_QUEUE_MODIFIED=no'
+else
+  echo 'PRIMARY_POSTFIX_CONFIG_UNCHANGED=yes'
+fi
