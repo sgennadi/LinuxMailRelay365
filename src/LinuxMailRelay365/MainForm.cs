@@ -413,6 +413,10 @@ internal sealed class MainForm : Form
                                   "Check ports 443/587, SMTP and firewall (read-only)",
                                   "בדיקת יציאות וחומת אש (קריאה בלבד)"),
                                   CheckNetworkFirewallAsync, false, "check", "network");
+                AddAction(page, T("Проверить Linux / SELinux для выбранного SMTP-порта",
+                                  "Check Linux / SELinux for the selected SMTP port",
+                                  "בדיקת לינוקס ו-SELinux עבור יציאת SMTP שנבחרה"),
+                                  InspectPlatformAsync, false, "check", "platform");
                 AddAction(page, T("Открыть порт только доверенным сетям...",
                                   "Open SMTP port for trusted networks only...",
                                   "פתיחת יציאה לרשתות מהימנות בלבד"),
@@ -788,6 +792,25 @@ internal sealed class MainForm : Form
         }
         if (includePublic && publicInternetRequested.Checked) args.Add("--public-internet");
         return [.. args];
+    }
+
+    private async Task InspectPlatformAsync()
+    {
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
+            port is < 1024 or > 65535)
+            throw new InvalidDataException("Custom SMTP port must be 1024-65535.");
+        WriteLine("Read-only platform preflight for the selected TCP port " + port +
+                  ": RHEL/Oracle/Rocky/Alma/CentOS Stream, Ubuntu/Debian, Dovecot, Postfix and SELinux.");
+        var report = await SshRemote.ExecuteAsync(Endpoint(), "bash -s",
+            EmbeddedAssets.BuildPlatformCompatBundle(port), timeout: TimeSpan.FromSeconds(60));
+        report.EnsureSuccess();
+        WriteLine(report.StdOut);
+        if (report.StdOut.Contains("SELINUX_SMTP_PORT=conflict", StringComparison.Ordinal) ||
+            report.StdOut.Contains("SELINUX_SMTP_PORT=unmapped", StringComparison.Ordinal))
+            WriteLine("SELinux may block the selected custom SMTP port. Review its current label; do NOT relabel an existing service port automatically.");
+        if (report.StdOut.Contains("PLATFORM_READINESS=unsupported_distro_manual_review", StringComparison.Ordinal))
+            WriteLine("Unsupported Linux release for the current automated plan. No system changes made.");
+        WriteLine("Platform inspection is informational only. Queue labels, OAuth delivery and firewall reachability remain unverified.");
     }
 
     private async Task CheckNetworkFirewallAsync()
