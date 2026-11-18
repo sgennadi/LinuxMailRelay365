@@ -36,7 +36,7 @@ class RelayHealthTests(unittest.TestCase):
              patch.object(health,"run",side_effect=lambda args,timeout=7: (
                 "no\n" if "smtpd_sasl_auth_enable" in args else
                 "may\n" if "smtpd_tls_security_level" in args else
-                '{"queue_name":"deferred","arrival_time":900,"sender":"secret@example.com","recipients":[]}\\n'
+                '{"queue_name":"deferred","arrival_time":900,"sender":"secret@example.com","recipients":[]}\n'
              )),\
              patch.object(health.shutil,"disk_usage",return_value=type("Disk",(),{"free":1024**3*10})()),\
              patch.object(health,"sender_certificate",return_value=100):
