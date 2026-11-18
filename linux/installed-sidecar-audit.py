@@ -237,6 +237,8 @@ def audit(port, live=True):
         "SMTP_TRUSTED_NETWORKS": "unknown",
         "SMTP_POLICY": "unknown",
         "SMTP_RELAY_RESTRICTIONS": "unknown",
+        "SMTP_FIXED_SENDER_MAP": "not_checked",
+        "SMTP_HEADER_SENDER_REWRITE": "not_checked",
         "AUTH_MATERIAL_PERMISSIONS": "not_applicable",
         "DOVECOT_SASL_SOCKET": "not_applicable",
         "DOVECOT_AUTH_SERVICE": "not_applicable",
@@ -277,6 +279,18 @@ def audit(port, live=True):
     client_rule = normalized_restrictions(postconf("smtpd_client_restrictions"))
     relay_rule = normalized_restrictions(postconf("smtpd_relay_restrictions"))
     recipient_rule = normalized_restrictions(postconf("smtpd_recipient_restrictions"))
+    sender_rule = normalized_restrictions(postconf("smtpd_sender_restrictions"))
+    incoming_sender_map = ("check_sender_access regexp:{}".format(
+        CONF / "eop-fixed-sender.regexp"), "reject")
+    incoming_recipient_map = ("check_recipient_access regexp:{}".format(
+        CONF / "eop-recipients.regexp"), "reject")
+    eop_sidecar = (postconf("default_transport") or "").startswith("smtp:[")
+    d["SMTP_FIXED_SENDER_MAP"] = (
+        "referenced_not_runtime_verified" if sender_rule == incoming_sender_map
+        else "not_verified")
+    d["SMTP_HEADER_SENDER_REWRITE"] = (
+        "all_clients" if postconf("local_header_rewrite_clients") == "static:all"
+        else "not_verified")
     tls = postconf("smtpd_tls_security_level")
     auth = postconf("smtpd_sasl_auth_enable")
     auth_only = postconf("smtpd_tls_auth_only")
@@ -285,7 +299,10 @@ def audit(port, live=True):
     d["SMTP_RELAY_RESTRICTIONS"] = (
         "auth_required" if relay_rule == ("permit_sasl_authenticated", "reject")
         and recipient_rule == ("permit_sasl_authenticated", "reject")
-        else "private_clients" if relay_rule == ("permit_mynetworks", "reject_unauth_destination")
+        else "private_clients" if (
+            relay_rule == ("permit_mynetworks", "reject_unauth_destination") or
+            (relay_rule == ("permit_mynetworks", "reject") and
+             recipient_rule == incoming_recipient_map))
         else "unrecognized"
     )
     if auth == "yes":
@@ -321,6 +338,12 @@ def audit(port, live=True):
         d["SELINUX_MODE"] != "unknown" and
         (d["SELINUX_MODE"] != "enforcing" or d["SELINUX_SMTP_PORT"] == "smtp_port_t")
     )
+    if eop_sidecar and auth == "no":
+        # A new unauthenticated EOP sidecar must keep strict sender policy
+        # and must apply canonical sender maps to remote SMTP headers.
+        common_safe = (common_safe and
+                       d["SMTP_FIXED_SENDER_MAP"] == "referenced_not_runtime_verified" and
+                       d["SMTP_HEADER_SENDER_REWRITE"] == "all_clients")
     if not common_safe:
         d["SMTP_SECURITY_RESULT"] = "needs_manual_review"
     elif d["SMTP_POLICY"] == "mandatory_tls_and_auth":
