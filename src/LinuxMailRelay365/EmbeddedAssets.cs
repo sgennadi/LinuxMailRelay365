@@ -22,6 +22,7 @@ internal static class EmbeddedAssets
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
     internal static string RhelSelinuxDoctor => Text("LinuxMailRelay365.linux.rhel-selinux-doctor.py");
+    internal static string SmtpAccountManager => Text("LinuxMailRelay365.linux.smtp-account-manager.py");
     internal static string AuthTlsInstaller => Text("LinuxMailRelay365.linux.auth-tls-installer.sh");
     internal static string AuthTlsRestore => Text("LinuxMailRelay365.linux.auth-tls-restore.sh");
     internal static string InstalledSidecarAudit => Text("LinuxMailRelay365.linux.installed-sidecar-audit.py");
@@ -191,6 +192,39 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/enable-auth-tls.sh\" <<'LMR365_AUTH_TLS'\n" +
                Encode(AuthTlsInstaller) + "\nLMR365_AUTH_TLS\n" +
                "bash \"$work/enable-auth-tls.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildSmtpAccountManagerBundle(
+        int selectedPort, string operation, string username, string? hashPath, string? stateSha = null)
+    {
+        if (selectedPort is < 1024 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(selectedPort));
+        if (operation is not ("add" or "rotate" or "revoke" or "status"))
+            throw new ArgumentException("Unsupported client account change.");
+        if (operation != "status" && !Regex.IsMatch(username,
+             @"\A[A-Za-z0-9][A-Za-z0-9._@-]{2,63}\z"))
+            throw new ArgumentException("Invalid SMTP client username.");
+        if (operation is "add" or "rotate")
+        {
+            if (string.IsNullOrWhiteSpace(hashPath) || hashPath.Length > 256 ||
+                !Regex.IsMatch(hashPath, @"\A/[A-Za-z0-9_./-]+\z") ||
+                hashPath.Split('/').Contains(".."))
+                throw new ArgumentException("Invalid root-protected hash source path on Linux.");
+        }
+        if (stateSha is not null && !Regex.IsMatch(stateSha, @"\A[a-f0-9]{64}\z"))
+            throw new ArgumentException("Invalid expected account file SHA-256.");
+        string args = "--smtp-port " + selectedPort + " --operation " + operation;
+        if (operation != "status") args += " --username " + username;
+        if (operation is "add" or "rotate") args += " --hash-file " + hashPath;
+        if (stateSha is not null)
+            args += " --apply --expected-state-sha256 " + stateSha +
+                    " --confirm CHANGE_PRIVATE_SMTP_ACCOUNT";
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-account-change.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/manage.py\" <<'LMR365_ACCOUNTS'\n" +
+               Encode(SmtpAccountManager) + "\nLMR365_ACCOUNTS\n" +
+               "python3 \"$work/manage.py\" " + args + "\n";
     }
 
     internal static string BuildRhelSelinuxDoctorBundle(int selectedPort)
