@@ -124,9 +124,19 @@ if [ -z "$FOREIGN_MTA" ]; then
   # Never install a default Postfix-mode sidecar onto an unacknowledged
   # active Exim/Sendmail server. Select the explicit guarded path instead.
   for foreign_unit in exim.service exim4.service sendmail.service; do
-    if systemctl is-active --quiet "$foreign_unit" 2>/dev/null; then
-      echo 'CONNECTOR_ERROR=active_foreign_mta_requires_preservation_mode' >&2; exit 1
-    fi
+    foreign_state="$(systemctl is-active "$foreign_unit" 2>/dev/null || true)"
+    case "$foreign_state" in
+      active)
+        echo 'CONNECTOR_ERROR=active_foreign_mta_requires_preservation_mode' >&2; exit 1 ;;
+      inactive|failed) ;;
+      unknown)
+        foreign_load="$(systemctl show --property=LoadState --value "$foreign_unit" 2>/dev/null || true)"
+        [ "$foreign_load" = not-found ] || {
+          echo 'CONNECTOR_ERROR=unknown_foreign_mta_state' >&2; exit 1;
+        } ;;
+      *)
+        echo 'CONNECTOR_ERROR=unknown_foreign_mta_state' >&2; exit 1 ;;
+    esac
   done
 else
   GUARD_PATH="$(cd "$(dirname "$0")" && pwd)/guard-foreign-mta.py"
