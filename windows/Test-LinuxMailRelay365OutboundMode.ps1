@@ -46,7 +46,12 @@ function Test-PublicIpv4([string]$Value) {
     if ($b[0] -eq 0 -or $b[0] -eq 10 -or $b[0] -eq 127 -or
         $b[0] -ge 224 -or ($b[0] -eq 169 -and $b[1] -eq 254) -or
         ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or
-        ($b[0] -eq 192 -and $b[1] -eq 168) -or
+        ($b[0] -eq 192 -and ($b[1] -eq 168 -or
+            ($b[1] -eq 0 -and $b[2] -eq 0) -or
+            ($b[1] -eq 0 -and $b[2] -eq 2))) -or
+        ($b[0] -eq 198 -and ($b[1] -eq 18 -or $b[1] -eq 19 -or
+            ($b[1] -eq 51 -and $b[2] -eq 100))) -or
+        ($b[0] -eq 203 -and $b[1] -eq 0 -and $b[2] -eq 113) -or
         ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127)) {
         return $false
     }
@@ -82,7 +87,10 @@ if ($SelfTest) {
         (Test-VerifiedDomain 'bad domain') -or
         (Test-PublicIpv4 '192.168.1.5') -or
         (Test-PublicIpv4 '10.0.0.7') -or
-        (Test-PublicIpv4 '100.64.0.1')) {
+        (Test-PublicIpv4 '100.64.0.1') -or
+        (Test-PublicIpv4 '203.0.113.20') -or
+        (Test-PublicIpv4 '198.51.100.20') -or
+        -not (Test-PublicIpv4 '8.8.8.8')) {
         throw 'Outbound mode validation self-test failed.'
     }
     Write-Status 'EXO_OUTBOUND_AUDIT_SELF_TEST' 'pass'
