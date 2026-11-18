@@ -75,9 +75,11 @@ def owned_dir(path, private=False):
 def validate(args):
     if not 1024 <= args.smtp_port <= 65535:
         raise Refused("invalid_custom_port")
+    if args.sender_policy not in ("fixed-mailbox", "preserve-domain", "masquerade"):
+        raise Refused("invalid_sender_policy")
     if args.restore or args.status:
         if any((args.mode, args.mx_host, args.sender, args.recipient_domain,
-                args.public_ip, args.tls_cert, args.tls_key)):
+                args.public_ip, args.tls_cert, args.tls_key)) or args.sender_policy != "fixed-mailbox":
             raise Refused("restore_accepts_only_port_and_expected_sha")
     else:
         if args.mode not in ("direct-send", "connector") or \
@@ -92,6 +94,8 @@ def validate(args):
             raise Refused("invalid_accepted_domain_allowlist")
         if args.sender.rsplit("@", 1)[1].lower() not in [d.lower() for d in args.recipient_domain]:
             raise Refused("sender_not_in_accepted_domain")
+        if args.mode == "direct-send" and args.sender_policy != "fixed-mailbox":
+            raise Refused("direct_send_requires_fixed_sender")
         if args.mode == "direct-send" and (args.public_ip or args.tls_cert or args.tls_key):
             raise Refused("direct_send_has_no_connector_identity")
         if args.mode == "connector":
@@ -125,10 +129,25 @@ def fixed_regex(domain):
 
 
 def policy_maps(args):
-    """Postfix regexp lookup entries: default is REJECT, never broad relay."""
-    sender_domain = fixed_regex(args.sender.rsplit("@", 1)[1])
-    sender = "/^[^@[:space:]]+@{}$/ OK\n".format(sender_domain)
-    canonical = "/^.+$/ {}\n".format(args.sender.lower())
+    """Restrict sender domain at SMTP and use Postfix regexp map lookups.
+
+    Connector is the only outbound mode allowed to preserve senders or
+    masquerade accepted-domain subdomains. Do not use broad catch-all rules.
+    """
+    accepted = args.sender.rsplit("@", 1)[1].lower()
+    domain = fixed_regex(accepted)
+    exact = "/^[^@[:space:]]+@{}$/ OK\n".format(domain)
+    if args.sender_policy == "fixed-mailbox":
+        sender = exact
+        canonical = "/^.+$/ {}\n".format(args.sender.lower())
+    elif args.sender_policy == "preserve-domain":
+        sender = exact
+        canonical = "# Preserve accepted-domain sender identity\n"
+    else:
+        subdomain = r"([A-Za-z0-9-]+[.])+{}".format(domain)
+        sender = exact + "/^[^@[:space:]]+@{}$/ OK\n".format(subdomain)
+        canonical = "/^([^@[:space:]]+)@{}$/ {}@{}\n".format(
+            subdomain, chr(36) + "{1}", accepted)
     if args.mode == "direct-send":
         recipients = "".join("/^[^@[:space:]]+@{}$/ OK\n".format(fixed_regex(d))
                              for d in args.recipient_domain)
@@ -139,23 +158,22 @@ def policy_maps(args):
 
 def policy_changes(args, ca, auth_enabled):
     mx = args.mx_host.lower()
+    rewriting = args.sender_policy != "preserve-domain"
     return {
         "default_transport": "smtp:[{}]:25".format(mx),
         "relay_transport": "smtp:[{}]:25".format(mx),
         "relayhost": "[{}]:25".format(mx),
         "local_transport": "error:LocalDeliveryDisabled",
-        # SMTP relay policy MUST authorize only the existing authenticated
-        # or trusted-network client; RCPT allowlisting then controls targets.
-        # Original reject_unauth_destination would reject all Direct Send
-        # recipients because mydestination/relay_domains are empty.
         "smtpd_relay_restrictions": (
             "permit_sasl_authenticated, reject" if auth_enabled else
             "permit_mynetworks, reject"),
         "smtpd_sender_restrictions": "check_sender_access regexp:{}, reject".format(CONF / MAPS[0]),
         "smtpd_recipient_restrictions": "check_recipient_access regexp:{}, reject".format(CONF / MAPS[2]),
-        "sender_canonical_maps": "regexp:{}".format(CONF / MAPS[1]),
-        "sender_canonical_classes": "envelope_sender, header_sender",
-        # Fixed explicit EOP nexthop => DNS-spoof-resistant TLS identity.
+        "sender_canonical_maps": "regexp:{}".format(CONF / MAPS[1]) if rewriting else "",
+        "sender_canonical_classes": "envelope_sender, header_sender" if rewriting else "",
+        # Permit header rewrite only for the isolated, access-controlled SMTP
+        # listener. Postfix otherwise does not rewrite remote SMTP headers.
+        "local_header_rewrite_clients": "static:all" if rewriting else "",
         "smtp_tls_security_level": "secure",
         "smtp_tls_secure_cert_match": "nexthop",
         "smtp_tls_CAfile": ca,
@@ -163,7 +181,6 @@ def policy_changes(args, ca, auth_enabled):
         "smtp_tls_cert_file": args.tls_cert if args.mode == "connector" else "",
         "smtp_tls_key_file": args.tls_key if args.mode == "connector" else "",
     }
-
 
 def rewrite_main(data, changes):
     text = data.decode("utf-8")
@@ -451,7 +468,8 @@ def deploy(args):
             raise Refused("primary_postfix_changed_during_deploy")
         metadata = {
             "version": 1, "port": args.smtp_port,
-            "mode": args.mode, "archive": archive.name,
+            "mode": args.mode, "sender_policy": args.sender_policy,
+            "archive": archive.name,
             "before_main": digest(before), "before_master": digest(master),
             "active_main": digest(main), "active_master": digest(newmaster),
         }
@@ -470,6 +488,7 @@ def deploy(args):
         raise
     say("EOP_ROUTE_APPLIED", "yes")
     say("EOP_ROUTE_MODE", args.mode.replace("-", "_"))
+    say("EOP_ROUTE_SENDER_POLICY", args.sender_policy.replace("-", "_"))
     say("EOP_ROUTE_CUSTOM_PORT", args.smtp_port)
     say("EOP_ROUTE_OUTBOUND_PORT", 25)
     say("EOP_ROUTE_RECIPIENT_SCOPE", "internal_only" if args.mode == "direct-send" else "connector_authorized")
@@ -508,6 +527,7 @@ def route_status(args):
     say("EOP_ROUTE_STATUS", "active")
     say("EOP_ROUTE_CURRENT_MAIN_SHA256", msha)
     say("EOP_ROUTE_MODE", data["mode"].replace("-", "_"))
+    say("EOP_ROUTE_SENDER_POLICY", data.get("sender_policy", "fixed-mailbox").replace("-", "_"))
     say("EOP_ROUTE_CUSTOM_PORT", args.smtp_port)
     say("CHANGES_APPLIED", "no")
     return 0
@@ -571,6 +591,8 @@ def main():
     p.add_argument("--mode", choices=("direct-send", "connector"))
     p.add_argument("--mx-host", default="")
     p.add_argument("--sender", default="")
+    p.add_argument("--sender-policy", choices=("fixed-mailbox", "preserve-domain", "masquerade"),
+                   default="fixed-mailbox")
     p.add_argument("--recipient-domain", action="append", default=[])
     p.add_argument("--public-ip", default="")
     p.add_argument("--tls-cert", default="")
@@ -599,7 +621,8 @@ def main():
             say("EOP_ROUTE_CUSTOM_PORT", a.smtp_port)
             say("EOP_ROUTE_OUTBOUND_PORT", 25)
             say("EOP_ROUTE_RECIPIENT_SCOPE", "internal_only" if a.mode == "direct-send" else "connector_candidate")
-            say("EOP_ROUTE_FIXED_SENDER", "yes")
+            say("EOP_ROUTE_SENDER_POLICY", a.sender_policy.replace("-", "_"))
+            say("EOP_ROUTE_FIXED_SENDER", "yes" if a.sender_policy == "fixed-mailbox" else "no")
             say("EXCHANGE_CONNECTOR_VERIFIED", "no")
             say("MICROSOFT365_DELIVERY_VERIFIED", "no")
             say("CHANGES_APPLIED", "no")

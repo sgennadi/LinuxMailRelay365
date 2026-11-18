@@ -29,7 +29,8 @@ def opts(mode="direct-send", port=46500, sender="alerts@example.org",
         sender=sender, recipient_domain=recipients if recipients is not None else ["example.org"],
         public_ip=public_ip, tls_cert=cert, tls_key=key,
         expect_main_sha256=expected, confirm=confirm,
-        connector_attestation=attestation)
+        connector_attestation=attestation,
+        sender_policy="fixed-mailbox")
 
 
 class EopRouteContracts(unittest.TestCase):
@@ -65,6 +66,32 @@ class EopRouteContracts(unittest.TestCase):
         self.assertIn("[^@[:space:]]+", eop.policy_maps(args)[2])
         self.assertEqual(eop.policy_changes(args, "/etc/ssl/testca.pem", True)
                          ["smtp_tls_security_level"], "secure")
+
+    def test_connector_sender_policy_is_explicit_and_domain_scoped(self):
+        a = opts(mode="connector", public_ip="8.8.8.8")
+        a.sender_policy = "preserve-domain"
+        eop.validate(a)
+        sender, canonical, _ = eop.policy_maps(a)
+        self.assertIn("example[.]org", sender)
+        self.assertNotIn("A-Za-z0-9-", sender)
+        self.assertTrue(canonical.startswith("# Preserve"))
+        policy = eop.policy_changes(a, "/etc/ssl/testca.pem", True)
+        self.assertEqual(policy["sender_canonical_maps"], "")
+        a.sender_policy = "masquerade"
+        eop.validate(a)
+        sender, canonical, _ = eop.policy_maps(a)
+        self.assertIn("A-Za-z0-9-", sender)
+        self.assertIn("\${1}@example.org".replace("\\", ""), canonical)
+        self.assertEqual(
+            eop.policy_changes(a, "/etc/ssl/testca.pem", True)["sender_canonical_classes"],
+            "envelope_sender, header_sender")
+        a.mode = "direct-send"
+        a.public_ip = ""
+        with self.assertRaisesRegex(eop.Refused, "direct_send_requires_fixed_sender"):
+            eop.validate(a)
+        a.sender_policy = "unknown"
+        with self.assertRaisesRegex(eop.Refused, "invalid_sender_policy"):
+            eop.validate(a)
 
     def test_public_inbound_and_unverified_rhel_never_implicitly_allowed(self):
         for bad in ("0.0.0.0", "192.168.5.1", "127.0.0.1", "10.0.0.1"):
