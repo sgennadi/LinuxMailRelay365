@@ -25,11 +25,25 @@
 | Microsoft 365 Connector | New isolated fixed-sender sidecar with exact fixed MAIL FROM or guarded switch of existing XOAUTH2 route | Verified tenant Connector authorization, exact-sender negative tests, real host install, external recipient receipt |
 | New Exchange Online tenant Inbound Connector | Guarded PowerShell 7 read-only Preview and separate Create with exact tenant, accepted domain and inventory SHA | Real authorized creation, exclusive IP/certificate, anti-abuse and message delivery on a test tenant |
 | Public-domain DNS MX/SPF/DMARC/DKIM report | Read-only evidence | Verify records against actual Exchange/tenant configuration, DKIM enabled state and recipients |
-| Connector sender preserve accepted domain / masquerade subdomains | Authenticated MAIL FROM account owner map required, reviewed SHA, isolated EOP route | Real Postfix account ownership/negative tests, RFC5322 From header protection and tenant delivery |
+| Connector sender preserve accepted domain / masquerade subdomains | Exact authenticated MAIL FROM owner map plus separately staged root-only, policy-pinned RFC5322 From Milter. Multi-sender route now **blocks** without the running, verified Milter; it attaches an SMTP-only fail-closed Milter and prohibits local postdrop bypass. New Ubuntu Postfix/Dovecot live Unix-socket and spoof-rejection smoke is **pending exact-HEAD CI**. | Actual Postfix message-header reject before queue, approved test-tenant delivery, real RHEL Enforcing and per-app negative mail tests |
 | Internet-wide SMTP listener | Guarded opt-in manager, not production-approved | Real Fail2ban ban drill, external client TLS trust, firewall/NAT, abuse controls and rollback on disposable test host |
 | Primary Postfix backup restore confirmation | Linux `--restore ID` requires explicit confirmation; installer rollback has distinct marker | Restore/rollback after fault injection on disposable VM, validate external dependencies and queue durability |
 | Independent Relay config backup and offline restore | Root-only allowlisted application configuration, archive SHA+per-member hashes, pre-restore emergency snapshot, stopped isolated units + empty queue required, reviewed current SHA and explicit confirmation; no auto service start. Real Ubuntu/Postfix Direct Send and Connector backup/restore + invalid-master fault injection; new Dovecot AUTH/TLS recovery smoke after credential rotation **pending exact-HEAD CI**. | Live RHEL SELinux Enforcing, cross-host disaster recovery, external CA/cert dependencies, queue durability and M365 tenant delivery; do not claim Stable based only on CI |
 | Signed Stable Windows EXE | Not released | Signing provenance, GUI / x64 / ARM64 production QA |
+
+The new standalone From Guard is staged through the Wizard (advanced Connector
+multi-sender policy) by a separate SHA-reviewed Preview and typed approval.
+It runs as a dedicated non-privileged systemd user with a private Unix
+socket; staging **does not** modify Postfix EOP routing. The separate
+Connector route Preview/Apply will refuse multi-sender sender preservation
+or masquerading unless the guard is live and its policy SHA matches the
+root-only sender-login ownership file. With the guard attached, Postfix
+must **tempfail**, never accept, on guard unavailability. Only strict
+From = MAIL FROM matching is supported in Preview; Sender must also
+match, ambiguous headers and Resent-* are refused. This may reject
+legitimate but more complex mail workflows. Require real test SMTP DATA
+rejection and authenticated positive recipient delivery before production.
+The non-SMTP local postdrop route is disabled only for this mode.
 
 The incoming Linux custom port is separate from Microsoft 365 outbound 587 (XOAUTH2) or 25 (Direct Send / Connector). Direct Send is restricted to recipients in the Microsoft 365 organization.
 
