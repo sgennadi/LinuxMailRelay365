@@ -114,6 +114,43 @@ upgrade so far is an isolated Ubuntu GitHub Actions VM: TLS handshake,
 wrong/correct SMTP AUTH credentials, no mail transfer and unchanged primary
 Postfix. No end-to-end Exchange Online delivery is claimed.
 
+## Read-only audit of the installed custom SMTP port (development)
+
+The **Audit installed SMTP: AUTH/TLS, port, SELinux (read-only)** button in
+Wizard step 4 checks the **port already installed on the Linux server**.
+If the value typed into the Wizard differs from the installed port, the
+button explains the mismatch and audits the actual live configuration.
+It does not silently change the listener or install anything.
+
+This audit verifies the private IPv4 binding and Postfix `mynetworks`,
+compares the port file against the isolated `master.cf`, checks active
+systemd units and the Postfix relay / recipient / client restrictions,
+and looks for insecure SMTP authentication settings. When AUTH + mandatory
+STARTTLS is configured, it performs a loopback-only SMTP feature handshake
+before and after STARTTLS, without sending credentials, `MAIL FROM`,
+`RCPT TO`, `DATA` or a message. It also checks restrictive ownership
+and permission **metadata** on the private key/hash files, without reading
+their contents.
+
+On RHEL/Oracle/Rocky/AlmaLinux hosts with SELinux enabled, it inspects
+the custom TCP port's SELinux type and the existence and labeling of the
+isolated Postfix queue, AUTH socket and credentials. **A label being present
+is not proof that the SELinux policy permits those operations.** The audit
+never changes policy, runs `setenforce`, installs dependencies or opens
+firewall ports. In SELinux Enforcing mode the final security result
+remains **needs_manual_review** until an actual enforcing integration
+test of process, queue and socket access is supported.
+
+The output contains only status codes, the selected TCP port and explicit
+`MICROSOFT365_DELIVERY_VERIFIED=no` and
+`PUBLIC_INTERNET_ACCESS_VERIFIED=no`. It does not reveal internal
+addresses, SMTP client usernames, salted hashes, private keys, mail
+contents or tokens. A passing local STARTTLS probe does **not** verify
+the SMTP certificate against an actual client DNS name and trusted
+certificate authority; complete that test from a client separately.
+The report distinguishes authenticated local SMTP, private but
+unauthenticated SMTP, and states requiring manual review.
+
 ## Intended workflow
 
 1. Connect to an Ubuntu/Debian or RHEL/Oracle Linux server using SSH private key/agent or user password; verify SSH host key. A separate `sudo` password is optional. Passwords exist in the live wizard session only, are not persisted, and are never passed as process command-line arguments.
