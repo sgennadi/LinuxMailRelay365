@@ -60,8 +60,9 @@ for cmd in postfix postconf openssl doveconf dovecot systemctl stat sha256sum; d
   command -v "$cmd" >/dev/null || { echo "AUTH_TLS_ERROR=missing_$cmd" >&2; exit 1; }
 done
 case "$(dovecot --version)" in
-  2.3.*) ;;
-  *) echo 'AUTH_TLS_ERROR=dovecot_2_3_required_2_4_is_incompatible' >&2; exit 1 ;;
+  2.3.*) DOVECOT_CONFIG_FAMILY=2.3 ;;
+  2.4.*) DOVECOT_CONFIG_FAMILY=2.4 ;;
+  *) echo 'AUTH_TLS_ERROR=unsupported_dovecot_configuration_version' >&2; exit 1 ;;
 esac
 postconf -a | grep -Fxq dovecot || {
   echo 'AUTH_TLS_ERROR=postfix_dovecot_sasl_unavailable' >&2; exit 1;
@@ -225,7 +226,8 @@ install -d -m 0755 -o root -g root /var/lib/linuxmailrelay365-dovecot
 install -o root -g root -m 0644 "$CERT" "$AUTH/fullchain.pem"
 install -o root -g postfix -m 0640 "$KEY" "$AUTH/privkey.pem"
 install -o root -g dovecot -m 0640 "$HASHFILE" "$AUTH/passwd"
-cat > "$AUTH/dovecot.conf" <<'EOF'
+if [ "$DOVECOT_CONFIG_FAMILY" = 2.3 ]; then
+  cat > "$AUTH/dovecot.conf" <<'EOF'
 # Separate Dovecot 2.3 auth-only instance: no IMAP, POP3 or LMTP listener.
 base_dir = /run/linuxmailrelay365-dovecot
 state_dir = /var/lib/linuxmailrelay365-dovecot
@@ -253,7 +255,43 @@ service auth {
     group = postfix
   }
 }
+else
+  # Dovecot 2.4 does not accept the 2.3 passdb/userdb settings; the first
+  # config lines must pin config/storage grammar. Never include the system
+  # Dovecot config, and never create an inet_listener.
+  cat > "$AUTH/dovecot.conf" <<'EOF'
+dovecot_config_version = 2.4.0
+dovecot_storage_version = 2.4.0
+base_dir = /run/linuxmailrelay365-dovecot
+state_dir = /var/lib/linuxmailrelay365-dovecot
+instance_name = linuxmailrelay365-smtp-auth
+# No IMAP, POP3, LMTP or internet listener. The only SASL access is
+# through the private Postfix UNIX socket. Postfix mandates STARTTLS.
+listen = 127.0.0.1
+ssl = no
+auth_mechanisms = plain login
+auth_allow_cleartext = yes
+auth_failure_delay = 2 secs
+passdb passwd-file {
+  passwd_file_path = /etc/linuxmailrelay365/smtp-auth/passwd
+}
+userdb static {
+  fields {
+    uid = postfix
+    gid = postfix
+    home = /nonexistent
+  }
+}
+service auth {
+  unix_listener /var/spool/linuxmailrelay365-sidecar/private/auth {
+    type = auth
+    mode = 0660
+    user = postfix
+    group = postfix
+  }
+}
 EOF
+fi
 chmod 0644 "$AUTH/dovecot.conf"
 cat > "$UNIT" <<'EOF'
 [Unit]
@@ -340,6 +378,7 @@ trap - EXIT
 echo 'AUTH_TLS_APPLIED=yes'
 echo "AUTH_TLS_CUSTOM_PORT=$PORT"
 echo 'AUTH_TLS_STARTTLS_REQUIRED=yes'
+echo "AUTH_TLS_DOVECOT_CONFIG_FAMILY=$DOVECOT_CONFIG_FAMILY"
 echo 'AUTH_TLS_SMTP_AUTH_REQUIRED=yes'
 echo 'AUTH_TLS_PUBLIC_INTERNET=blocked'
 echo 'AUTH_TLS_CA_TRUST=client_must_verify'
