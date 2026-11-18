@@ -174,6 +174,32 @@ def selinux_port_type(data, port):
     return "conflicting_type" if owners else "unmapped"
 
 
+def selinux_file_label_hints(auth_enabled):
+    """Check labels exist without assuming any label grants actual policy access.
+
+    Real allow/deny evidence needs AVC logs, service domains and an
+    Enforcing integration test. No label is printed to the user.
+    """
+    paths = [QUEUE, QUEUE / "private"]
+    if auth_enabled:
+        paths.extend((QUEUE / "private/auth", AUTH_DIR / "passwd",
+                      AUTH_DIR / "privkey.pem"))
+    for pathname in paths:
+        try:
+            raw = os.getxattr(str(pathname), "security.selinux")
+            label = raw.decode("ascii", "replace").strip("\x00")
+        except FileNotFoundError:
+            return "missing_files"
+        except (OSError, UnicodeError, AttributeError):
+            return "unavailable"
+        if not re.fullmatch(r"[A-Za-z0-9_]+:[A-Za-z0-9_]+:[A-Za-z0-9_]+:[A-Za-z0-9_.,:-]+",
+                            label):
+            return "unrecognized_label"
+        if any(bad in label for bad in (":unlabeled_t:", ":default_t:")):
+            return "unlabeled_or_default_type"
+    return "labels_present_requires_policy_review"
+
+
 def smtp_handshake(port, require_tls):
     """Local feature probe; never sends MAIL, RCPT, AUTH or DATA."""
     result = {"SMTP_EHLO": "unreachable", "SMTP_STARTTLS": "unknown",
@@ -254,6 +280,8 @@ def audit(port, live=True):
     tls = postconf("smtpd_tls_security_level")
     auth = postconf("smtpd_sasl_auth_enable")
     auth_only = postconf("smtpd_tls_auth_only")
+    if d["SELINUX_MODE"] in ("enforcing", "permissive"):
+        d["SELINUX_QUEUE_AND_SOCKET_LABELS"] = selinux_file_label_hints(auth == "yes")
     d["SMTP_RELAY_RESTRICTIONS"] = (
         "auth_required" if relay_rule == ("permit_sasl_authenticated", "reject")
         and recipient_rule == ("permit_sasl_authenticated", "reject")
