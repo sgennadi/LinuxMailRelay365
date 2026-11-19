@@ -85,6 +85,10 @@ internal sealed class MainForm : Form
     private string? securityServerIdentity;
     private SecurityOptions securityOptions = new();
     private LinuxSecurityInventory? linuxSecurity;
+    private readonly ComboBox tpmDependencyProfile = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 560 };
+    private string? reviewedTpmPlanSha;
+    private string? reviewedTpmPlanContext;
+    private string tpmPlanSummary = "";
     private string cloudSecuritySummary = "Не проверено";
     private readonly CheckBox previewUpdates = new() { AutoSize = true, Checked = true };
     private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
@@ -148,6 +152,20 @@ internal sealed class MainForm : Form
             "Preserve sender within verified domain (Connector only)",
             "Masquerade subdomain sender into accepted domain (Connector only)"
         ]);
+        tpmDependencyProfile.Items.AddRange([
+            "TPM2 utilities (RHEL/Oracle/Rocky/Alma 8-10)",
+            "TPM2 development/build prerequisites (RHEL 8-10)",
+            "TPM2 PKCS#11 OpenSSL 3 path (RHEL 9/10)",
+            "Native TPM2 OpenSSL provider (RHEL 10 only)"
+        ]);
+        tpmDependencyProfile.SelectedIndex = 0;
+        tpmDependencyProfile.SelectedIndexChanged += (_, _) =>
+        {
+            reviewedTpmPlanSha = null;
+            reviewedTpmPlanContext = null;
+            tpmPlanSummary = "";
+            if (step == 1 && !busy) RenderPage();
+        };
         smtpAccountOperation.Items.AddRange(["Add", "Rotate", "Revoke"]);
         smtpAccountOperation.SelectedIndex = 0;
         mailTransport.SelectedIndex = 0;
@@ -417,6 +435,24 @@ internal sealed class MainForm : Form
                                   "בדוק TPM/HSM לקריאה בלבד"), CheckLinuxSecurityAsync, true, "shield", "linux-security");
                 AddLine(page, UiTheme.Text(linuxSecurity?.SummaryRu() ??
                     T("Linux: проверка ещё не запускалась.", "Linux: not inspected yet.", "Linux: טרם נבדק.")));
+                if (linuxSecurity?.HasTpm2 == true)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "TPM 2.0 обнаружен. Проверьте зависимости RHEL-совместимой ОС перед отдельной установкой; установка не включает аппаратное подписание ключей.",
+                        "TPM 2.0 detected. Review RHEL-family dependencies before a separate approved installation; packages do not activate hardware signing.",
+                        "זוהה TPM 2.0. יש לבדוק חבילות לפני התקנה מאושרת. ההתקנה אינה מפעילה חתימה חומרתית.")));
+                    AddField(page, T("Профиль TPM2", "TPM2 dependency profile", "פרופיל TPM2"), tpmDependencyProfile);
+                    AddAction(page, T("Проверить необходимые RPM (без изменений)",
+                                      "Preview required RPM packages (read-only)",
+                                      "בדיקת חבילות RPM ללא שינויים"),
+                                      PreviewTpmDependenciesAsync, false, "check", "tpm-deps-preview");
+                    AddLine(page, UiTheme.Text(tpmPlanSummary));
+                    if (reviewedTpmPlanSha is not null)
+                        AddAction(page, T("Установить недостающие TPM2 пакеты...",
+                                          "Install reviewed missing TPM2 packages...",
+                                          "התקנת חבילות TPM2 לאחר אישור"),
+                                          InstallTpmDependenciesAsync, false, "shield", "tpm-deps-apply");
+                }
                 hardwareRequest.Text = T("Запланировать аппаратную защиту ключа (TPM/HSM) — не активировано",
                                          "Plan TPM/HSM-backed key — NOT active",
                                          "תכנון מפתח חומרה - לא פעיל");
@@ -2855,6 +2891,9 @@ internal sealed class MainForm : Form
             monitoringRequest.Checked = securityOptions.RequestEntraSignInMonitoring;
             securityServerIdentity = identity;
             linuxSecurity = null;
+            reviewedTpmPlanSha = null;
+            reviewedTpmPlanContext = null;
+            tpmPlanSummary = "";
             cloudSecuritySummary = "Microsoft 365: не проверено. Проверка выполняется только по запросу.";
         }
         finally { securityLoading = false; }
@@ -2879,6 +2918,90 @@ internal sealed class MainForm : Form
         linuxSecurity = LinuxSecurityInventory.Parse(result.StdOut);
         WriteLine(linuxSecurity.SummaryRu());
         WriteLine("Presence of TPM/HSM is NOT proof that the key is nonexportable or supported by OAuth transport.");
+        RenderPage();
+    }
+
+    private string SelectedTpmDependencyProfile() => tpmDependencyProfile.SelectedIndex switch
+    {
+        0 => "runtime",
+        1 => "build-prereqs",
+        2 => "pkcs11",
+        3 => "native-provider",
+        _ => throw new InvalidOperationException("Select a supported TPM dependency profile.")
+    };
+
+    private async Task PreviewTpmDependenciesAsync()
+    {
+        var endpoint = Endpoint();
+        if (linuxSecurity?.HasTpm2 != true)
+            throw new InvalidOperationException("A Linux TPM 2.0 inventory must first detect the hardware.");
+        if (linuxSecurity.Get("OS_ID") is not ("rhel" or "ol" or "rocky" or "almalinux"))
+            throw new InvalidOperationException("RPM dependency preparation is only available for RHEL/Oracle/Rocky/Alma 8-10.");
+        string profile = SelectedTpmDependencyProfile();
+        reviewedTpmPlanSha = null;
+        reviewedTpmPlanContext = null;
+        var report = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildTpmDependenciesBundle(profile), TimeSpan.FromSeconds(75));
+        report.EnsureSuccess();
+        var digest = System.Text.RegularExpressions.Regex.Match(report.StdOut,
+            @"(?m)^TPM_DEPS_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        if (!digest.Success || !report.StdOut.Contains("TPM_DEPS_APPLIED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("TPM package inventory did not return a safe read-only SHA-reviewed plan.");
+        reviewedTpmPlanSha = digest.Groups[1].Value;
+        reviewedTpmPlanContext = SecurityOptionsStore.Identity(endpoint) + "|" + profile;
+        tpmPlanSummary = report.StdOut.Trim();
+        WriteLine(tpmPlanSummary);
+        WriteLine("Read-only TPM RPM plan saved for review; no packages, firmware, services or keys changed.");
+        RenderPage();
+    }
+
+    private async Task InstallTpmDependenciesAsync()
+    {
+        var endpoint = Endpoint();
+        string profile = SelectedTpmDependencyProfile();
+        string identity = SecurityOptionsStore.Identity(endpoint) + "|" + profile;
+        if (reviewedTpmPlanContext != identity || reviewedTpmPlanSha is null)
+            throw new InvalidOperationException("Preview and review the exact TPM RPM plan on this Linux host first.");
+        string sha = reviewedTpmPlanSha;
+        var fresh = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildTpmDependenciesBundle(profile), TimeSpan.FromSeconds(75));
+        fresh.EnsureSuccess();
+        if (!fresh.StdOut.Contains("TPM_DEPS_PLAN_SHA256=" + sha, StringComparison.Ordinal) ||
+            !fresh.StdOut.Contains("TPM_DEPS_READY_FOR_INSTALL=yes", StringComparison.Ordinal) ||
+            !fresh.StdOut.Contains("TPM_DEPS_APPLIED=no", StringComparison.Ordinal))
+        {
+            reviewedTpmPlanSha = null;
+            reviewedTpmPlanContext = null;
+            throw new InvalidOperationException("TPM state or package plan changed; review a new plan before installing.");
+        }
+        var missing = System.Text.RegularExpressions.Regex.Match(fresh.StdOut,
+            @"(?m)^TPM_DEPS_MISSING=([A-Za-z0-9,._+\-]*)\r?$");
+        if (!missing.Success)
+            throw new InvalidDataException("TPM package inventory does not include a valid missing-package list.");
+        string packages = missing.Groups[1].Value.Length == 0 ? "(none)" : missing.Groups[1].Value;
+        if (!ConfirmDestructive("LinuxMailRelay365 | Install TPM2 RPM dependencies",
+            T("Установка DNF будет выполнена только после подтверждения. Пакеты: ",
+              "DNF will install packages only after your approval. Packages: ",
+              "חבילות RPM יותקנו רק לאחר אישור: ") + packages + "\n" +
+            T("Подпись Microsoft 365, TPM-ключи, службы, firewall, SELinux и Postfix НЕ будут включены или изменены. Репозитории уже должны быть настроены и доверены.",
+              "No Microsoft 365 signer, TPM keys, services, firewall, SELinux or Postfix will be enabled or changed. Existing trusted repositories are required.",
+              "לא יתבצע שינוי במפתחות TPM, בדואר, בחומת האש או בשירותים."),
+            "INSTALL_TPM2_DEPENDENCIES")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildTpmDependenciesBundle(profile, sha), TimeSpan.FromMinutes(18));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("TPM_DEPS_INSTALL_RESULT=verified_rpms", StringComparison.Ordinal) &&
+            !result.StdOut.Contains("TPM_DEPS_INSTALL_RESULT=already_installed", StringComparison.Ordinal))
+            throw new InvalidDataException("DNF completed without verified TPM RPM status.");
+        WriteLine(result.StdOut);
+        reviewedTpmPlanSha = null;
+        reviewedTpmPlanContext = null;
+        tpmPlanSummary = "";
+        var rescanned = await SshRemote.ProbeSecurityAsync(endpoint, EmbeddedAssets.SecurityProbe);
+        rescanned.EnsureSuccess();
+        linuxSecurity = LinuxSecurityInventory.Parse(rescanned.StdOut);
+        WriteLine(linuxSecurity.SummaryRu());
+        WriteLine("TPM2 RPM installation verified; non-exportable OAuth signing is NOT automatically configured.");
         RenderPage();
     }
 
