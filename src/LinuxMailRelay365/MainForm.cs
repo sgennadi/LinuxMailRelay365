@@ -44,6 +44,7 @@ internal sealed class MainForm : Form
     private readonly ComboBox oauthSenderMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly TextBox oauthSenderMapPath = Field("");
     private string oauthSenderAuditSummary = "";
+    private string oauthIngressAuditSummary = "";
     private readonly TextBox deliveryModeExplanation = new()
     {
         Width = 890, Height = 185, Multiline = true, ReadOnly = true,
@@ -286,7 +287,11 @@ internal sealed class MainForm : Form
         senderPolicy.SelectedIndex = 0;
         oauthSenderMode.SelectedIndexChanged += (_, _) =>
         {
-            oauthSenderAuditSummary = "";
+            if (!routingLoading)
+            {
+                oauthSenderAuditSummary = "";
+                oauthIngressAuditSummary = "";
+            }
             SaveRoutingChoices();
             UpdatePreserveFlowPreview();
             if (step == 3 && !routingLoading && !busy)
@@ -298,13 +303,23 @@ internal sealed class MainForm : Form
         };
         oauthSenderMapPath.TextChanged += (_, _) =>
         {
-            oauthSenderAuditSummary = "";
+            if (!routingLoading)
+            {
+                oauthSenderAuditSummary = "";
+                oauthIngressAuditSummary = "";
+            }
             SaveRoutingChoices();
             UpdatePreserveFlowPreview();
         };
-        mailTransport.SelectedIndexChanged += (_, _) => {
+        host.TextChanged += (_, _) =>
+        {
             oauthSenderAuditSummary = "";
+            oauthIngressAuditSummary = "";
+        };
+        mailTransport.SelectedIndexChanged += (_, _) => {
             if (!routingLoading) {
+                oauthSenderAuditSummary = "";
+                oauthIngressAuditSummary = "";
                 acceptedDomainApproved.Checked = false;
                 connectorApproved.Checked = false;
                 if (mailTransport.SelectedIndex != 1)
@@ -925,11 +940,21 @@ internal sealed class MainForm : Form
                             "Audit SMTP login → sender → M365 mailbox map (read-only)",
                             "בדיקת מיפוי משתמשים ותיבות (קריאה בלבד)"),
                             InspectOAuthSenderMapAsync, false, "check", "oauth-sender-map-audit");
+                        AddAction(page, T(
+                            "Сравнить карту с SMTP AUTH и From Guard на Linux (только чтение)",
+                            "Compare sender map with installed SMTP AUTH and From Guard (read-only)",
+                            "השוואת המפה עם SMTP AUTH ו-From Guard (קריאה בלבד)"),
+                            InspectOAuthIngressAsync, false, "shield", "oauth-ingress-audit");
                         AddLine(page, UiTheme.Text(string.IsNullOrEmpty(oauthSenderAuditSummary)
                             ? T("Карта ещё не проверена. Проверка только чтение; отправка отключена.",
                                 "Map not yet audited. Read-only review; mail delivery disabled.",
                                 "המפה טרם נבדקה. שליחה אינה פעילה.")
                             : oauthSenderAuditSummary));
+                        AddLine(page, UiTheme.Text(string.IsNullOrEmpty(oauthIngressAuditSummary)
+                            ? T("Состояние Postfix/Dovecot/From Guard ещё не сверено с картой.",
+                                "Postfix/Dovecot/From Guard not yet compared with the sender map.",
+                                "הגדרות Postfix ו-Dovecot טרם הושוו למפה.")
+                            : oauthIngressAuditSummary));
                         AddLine(page, UiTheme.Text(T(
                             "Формат Linux TSV: smtp_login, envelope_from, m365_mailbox, identity_config_path. Карта root:root 0600; конфигурации OAuth root:m365mailer 0640. Проверка НЕ включает отправку и не подтверждает Send As.",
                             "Linux TSV columns: smtp_login, envelope_from, m365_mailbox, identity_config_path. Root-owned TSV mode 0600; OAuth identity JSON root:m365mailer 0640. Audit does NOT enable mail delivery or prove Send As.",
@@ -1661,6 +1686,7 @@ internal sealed class MainForm : Form
             oauthSenderMode.SelectedIndex = routingPlan.OAuthSenderMode == "authorized-multiple-mailboxes" ? 1 : 0;
             oauthSenderMapPath.Text = routingPlan.OAuthSenderMapPath;
             oauthSenderAuditSummary = "";
+            oauthIngressAuditSummary = "";
             preserveExistingMail.Checked = routingPlan.PreserveExistingMail;
             acceptedDomain.Text = routingPlan.VerifiedDomain;
             outboundMxHost.Text = routingPlan.EopMxHost;
@@ -2547,6 +2573,77 @@ internal sealed class MainForm : Form
         RenderPage();
         WriteLine("Offline policy simulation passed: login, envelope sender, configured mailbox and From matching / negative spoofing tests. It is NOT real SMTP AUTH, installed Milter, Exchange Send As or delivery. No route was enabled.");
         WriteLine("Structural map review passed; sender authentication, header From ownership, Entra Exchange permissions and SMTP delivery remain NOT VERIFIED. No route was enabled.");
+    }
+
+    private async Task InspectOAuthIngressAsync()
+    {
+        EnsureRoutingLoaded();
+        if (mailTransport.SelectedIndex != 0 || oauthSenderMode.SelectedIndex != 1)
+            throw new InvalidOperationException("Choose the planned multi-mailbox XOAUTH2 sender mode before inspection.");
+        var endpoint = Endpoint();
+        string auditedPath = oauthSenderMapPath.Text.Trim();
+        string auditedIdentity = SecurityOptionsStore.Identity(endpoint);
+        oauthIngressAuditSummary = "";
+        var report = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildOAuthIngressAuditBundle(auditedPath), TimeSpan.FromSeconds(110));
+        report.EnsureSuccess();
+        // Untrusted Linux stdout must never reach user-visible logs unfiltered.
+        var allowed = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["OAUTH_INGRESS_REVIEW"] = @"\Aread_only\z",
+            ["OAUTH_INGRESS_MAP_SHA256"] = @"\A[a-f0-9]{64}\z",
+            ["OAUTH_INGRESS_AUTH_ACCOUNTS"] = @"\A(?:unavailable_or_unsafe|exact_match|different|over_64_account_limit)\z",
+            ["OAUTH_INGRESS_FROM_GUARD_POLICY"] = @"\A(?:unavailable_or_unsafe|exact_match|different|over_64_account_limit)\z",
+            ["OAUTH_INGRESS_SASL_TLS_CONFIG"] = @"\A(?:not_verified|configured_only)\z",
+            ["OAUTH_INGRESS_SENDER_LOGIN_CONFIG"] = @"\A(?:not_verified|configured_only)\z",
+            ["OAUTH_INGRESS_FROM_GUARD_MILTER_CONFIG"] = @"\A(?:not_verified|configured_fail_closed_only)\z",
+            ["OAUTH_INGRESS_SERVICES"] = @"\A(?:not_all_active|all_report_active)\z",
+            ["OAUTH_INGRESS_MILTER_SOCKET"] = @"\A(?:not_verified|metadata_matches_only)\z",
+            ["OAUTH_INGRESS_TRANSPORT"] = @"\A(?:not_multi_mailbox_xoauth2|eop_smtp_not_xoauth2_multi)\z",
+            ["OAUTH_INGRESS_OVERALL"] = @"\A(?:not_ready|ingress_config_consistent_not_live_verified)\z",
+            ["OAUTH_INGRESS_REAL_SMTP_LOGIN_VERIFIED"] = @"\Ano\z",
+            ["OAUTH_INGRESS_REAL_FROM_GUARD_MESSAGE_VERIFIED"] = @"\Ano\z",
+            ["OAUTH_INGRESS_M365_SENDAS_VERIFIED"] = @"\Ano\z",
+            ["OAUTH_INGRESS_MASTER_CF_OVERRIDES_VERIFIED"] = @"\Ano\z",
+            ["OAUTH_INGRESS_MULTI_MAILBOX_ENABLED"] = @"\Ano\z",
+            ["OAUTH_INGRESS_POSTFIX_CHANGED"] = @"\Ano\z",
+            ["OAUTH_INGRESS_MESSAGES_SENT"] = @"\Ano\z"
+        };
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string raw in report.StdOut.Split('\n'))
+        {
+            string line = raw.TrimEnd('\r');
+            int equal = line.IndexOf('=');
+            if (equal <= 0) continue;
+            string key = line[..equal];
+            string value = line[(equal + 1)..];
+            if (allowed.TryGetValue(key, out string? pattern))
+            {
+                if (!System.Text.RegularExpressions.Regex.IsMatch(value, pattern,
+                        System.Text.RegularExpressions.RegexOptions.CultureInvariant) ||
+                    !values.TryAdd(key, value))
+                    throw new InvalidDataException("Invalid or duplicate SMTP ingress audit status.");
+            }
+        }
+        if (values.Count != allowed.Count)
+            throw new InvalidDataException("Incomplete read-only SMTP ingress audit report.");
+        if (oauthSenderMapPath.Text.Trim() != auditedPath ||
+            auditedIdentity != TryCurrentIdentity() ||
+            mailTransport.SelectedIndex != 0 || oauthSenderMode.SelectedIndex != 1)
+            throw new InvalidOperationException("SMTP host, sender policy or map changed while inspecting; rerun the audit.");
+        foreach (string key in allowed.Keys)
+            WriteLine(key + "=" + values[key]);
+        bool consistent = values["OAUTH_INGRESS_OVERALL"] ==
+            "ingress_config_consistent_not_live_verified";
+        oauthIngressAuditSummary = consistent
+            ? T("SMTP AUTH, Dovecot и From Guard структурно согласованы с картой. Это НЕ реальный SMTP-тест и НЕ готовый XOAUTH2: почтовый поток остаётся заблокированным.",
+                "SMTP AUTH, Dovecot and From Guard are structurally consistent with the map. NOT a live SMTP test or multi-mailbox XOAUTH2 readiness; sending remains disabled.",
+                "התצורה תואמת למפה בלבד. שליחת XOAUTH2 עדיין חסומה.")
+            : T("Обнаружены отсутствующие или несовместимые настройки SMTP AUTH / From Guard. Проверьте диагностические статусы. Применение запрещено.",
+                "SMTP AUTH / From Guard is missing or differs from the planned map. See sanitized status report. Deployment remains blocked.",
+                "זוהתה תצורה לא תואמת. שליחה חסומה.");
+        RenderPage();
+        WriteLine("Ingress comparison is read-only: no real authenticated client, no Milter message inspection, no Exchange permissions, no SMTP delivery.");
     }
 
     private async Task PreviewFreshConnectorAsync()
