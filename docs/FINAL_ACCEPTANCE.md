@@ -537,3 +537,53 @@ CI screenshot capture exports seven real WinForms PNGs with synthetic
 defaults and no live tenants: five wizard steps and three transport
 variants in step 4. It is only a visual reference and not a DPI/RTL
 accessibility certification.
+
+## Multi-mailbox XOAUTH2 authorization map: read-only structural audit (Draft)
+
+The universal Wizard now displays the three delivery methods **before** the
+optional Entra step. Choosing Connector or Direct Send skips Entra app and
+mailbox provisioning. Switching to XOAUTH2 reveals those identity settings.
+
+The initial multi-mailbox XOAUTH2 engineering stage is deliberately a
+**non-deploying audit**. An administrator creates a UTF-8 tab-separated
+allowlist at an approved path under `/etc/linuxmailrelay365/` with exact
+header (tabs between columns):
+
+    smtp_login    envelope_from    m365_mailbox    identity_config_path
+
+Each subsequent record maps ONE authenticated Linux SMTP login to ONE
+permitted envelope sender and ONE Microsoft 365 mailbox and root-controlled
+OAuth identity JSON path. E.g. a scanner can map to a permitted dedicated
+service mailbox, but this audit does not grant the Exchange `Send As` right.
+A sender cannot be assigned to multiple logins in the same map. Up to 256
+unique envelope senders and 64 KiB map data are accepted.
+
+Linux map file requirements: exact `root:root 0600`, regular file, no
+symlink components and safe root-owned directories. The identity JSON
+must be a root-controlled regular file with exact `0640` and the local
+`m365mailer` group, with mailbox match, tenant/client GUIDs, certificate
+reference, and exactly one configured signing backend (PEM or signer).
+References to third-party paths or inline tokens, passwords, or secrets
+are refused. Identity private keys/certificates and the service's access
+to them are NOT inspected or validated at this stage.
+
+The Wizard action **Audit SMTP login → sender → M365 mailbox map** runs a
+temporary Python script over root SSH, returns only count summaries and a
+map SHA256, and exposes no addresses, credentials, mailbox map, identity
+JSON or private keys. It does not change files, Postfix, Entra, tokens or
+SMTP messages. Invoke directly on an approved Linux host via:
+
+    sudo python3 linux/audit-oauth-sender-map.py --map-path /etc/linuxmailrelay365/oauth-senders.tsv
+
+An audit success reports `structural_review_only`. It explicitly reports
+`LOCAL_SMTP_LOGIN_VERIFIED=no`, `ENVELOPE_AUTHORIZATION_ACTIVE=no`,
+`HEADER_FROM_GUARD_ACTIVE=no`, `EXCHANGE_SENDAS_VERIFIED=no`,
+`CERTIFICATE_AND_SIGNER_VERIFIED=no`, `POSTFIX_CHANGED=no` and
+`MESSAGES_SENT=no`. It must **never** be interpreted as an active
+multi-user XOAUTH2 implementation. Applying Postfix or sending a test
+while this mode is selected remains blocked. Future implementation requires
+authenticated login-to-envelope binding *before queue acceptance*,
+RFC5322 From / Sender validation without spoofable identity headers,
+per-mailbox OAuth token selection and verified Exchange app/Send As rights,
+alongside fallback/rollback, end-to-end tests, physical TPM acceptance,
+SELinux Enforcing checks and an explicit new approval gate.
