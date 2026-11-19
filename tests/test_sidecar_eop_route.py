@@ -106,6 +106,8 @@ class EopRouteContracts(unittest.TestCase):
         self.assertTrue(canonical.startswith("# Preserve"))
         policy = eop.policy_changes(a, "/etc/ssl/testca.pem", True)
         self.assertEqual(policy["sender_canonical_maps"], "")
+        self.assertEqual(policy["sender_canonical_classes"], "envelope_sender, header_sender")
+        self.assertEqual(policy["local_header_rewrite_clients"], "")
         self.assertIn("reject_authenticated_sender_login_mismatch", policy["smtpd_sender_restrictions"])
         self.assertIn("eop-sender-owners.regexp", policy["smtpd_sender_login_maps"])
         apply_args = opts(mode="connector", public_ip="8.8.8.8", apply=True,

@@ -213,7 +213,10 @@ def policy_changes(args, ca, auth_enabled):
             if args.mode == "connector" and args.sender_policy != "fixed-mailbox" else ""),
         "smtpd_recipient_restrictions": "check_recipient_access regexp:{}, reject".format(CONF / MAPS[2]),
         "sender_canonical_maps": "regexp:{}".format(CONF / MAPS[1]) if rewriting else "",
-        "sender_canonical_classes": "envelope_sender, header_sender" if rewriting else "",
+        # The cleanup worker rejects an empty sender_canonical_classes list.
+        # Preserve-domain disables rewriting via an empty canonical MAP, but
+        # leaves the documented nonempty class list intact.
+        "sender_canonical_classes": "envelope_sender, header_sender",
         # Permit header rewrite only for the isolated, access-controlled SMTP
         # listener. Postfix otherwise does not rewrite remote SMTP headers.
         "local_header_rewrite_clients": "static:all" if rewriting else "",

@@ -55,6 +55,11 @@ require_setting smtpd_tls_security_level encrypt
 require_setting smtpd_milters \
   unix:/run/linuxmailrelay365-from-guard/from-guard.sock
 require_setting milter_default_action tempfail
+# An empty sender_canonical_classes can pass postfix check, but cleanup
+# terminates when the first authenticated SMTP DATA reaches the queue.
+require_setting sender_canonical_maps ""
+require_setting sender_canonical_classes "envelope_sender, header_sender"
+require_setting local_header_rewrite_clients ""
 echo "SMTP_AUTH_GUARD_PRECHECK_INGRESS=pass"
 require_setting default_transport \
   "smtp:[example-org.mail.protection.outlook.com]:25"
