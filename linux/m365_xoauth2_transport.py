@@ -232,16 +232,59 @@ def check_smtp_auth(config, token):
 
 
 
-# Direct supervised delivery-acceptance messages use the already installed
-# active OAuth identity, not the staged identity and not the Postfix queue.
+# Direct supervised delivery acceptance is independent of the Postfix pipe.
+# It has no arbitrary message body, staged identity or recipient CLI argument.
 ACCEPTANCE_EMAIL = re.compile(
     r'^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
-    r'(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+
+    r'(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$')
+ACCEPTANCE_ID = re.compile(r'^[a-f0-9]{32}$')
+
+
+def submit_acceptance_message(config, request):
+    """Send ONE fixed test message; SMTP acceptance is not inbox delivery."""
+    if not isinstance(request, dict) or set(request) != {'recipient', 'run_id', 'role'}:
+        raise PermanentError('Invalid restricted acceptance request')
+    recipient = request['recipient']
+    run_id = request['run_id']
+    role = request['role']
+    if (not isinstance(recipient, str) or len(recipient) > 254 or
+            not ACCEPTANCE_EMAIL.fullmatch(recipient) or
+            not isinstance(run_id, str) or not ACCEPTANCE_ID.fullmatch(run_id) or
+            role not in ('internal', 'external')):
+        raise PermanentError('Invalid restricted acceptance recipient or marker')
+    sender = config['mailbox']
+    if not ACCEPTANCE_EMAIL.fullmatch(sender):
+        raise PermanentError('Invalid fixed test sender')
+    domain = sender.rsplit('@', 1)[1].lower()
+    recipient_domain = recipient.rsplit('@', 1)[1].lower()
+    if ((role == 'internal' and recipient_domain != domain) or
+            (role == 'external' and recipient_domain == domain)):
+        raise PermanentError('Recipient domain does not match reviewed test role')
+    # Fixed ASCII, no attachments, Bcc, arbitrary HTML, or input headers.
+    message = (
+        'To: ' + recipient + '\r\n'
+        'Subject: LinuxMailRelay365 acceptance ' + run_id + ' ' + role + '\r\n'
+        'Message-ID: <lmr365-' + run_id + '-' + role + '@' + domain + '>\r\n'
+        'X-LinuxMailRelay365-Test-ID: ' + run_id + '\r\n'
+        'Auto-Submitted: auto-generated\r\n'
+        'Content-Type: text/plain; charset=us-ascii\r\n'
+        '\r\n'
+        'Authorized LinuxMailRelay365 acceptance test.\r\n'
+        'Trace: ' + run_id + '\r\n'
+        'Class: ' + role + '\r\n'
+        'Confirm receipt independently to the operator.\r\n'
+    ).encode('ascii')
+    token = acquire_token(config)
+    send_smtp(config, recipient, message, token)
+
+
+
+def run(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--recipient', help='Single envelope recipient from Postfix')
     ap.add_argument('--token-check', action='store_true', help='Check Entra token acquisition without printing token')
     ap.add_argument('--smtp-auth-check', action='store_true', help='Verify real Microsoft 365 XOAUTH2 AUTH without MAIL/RCPT/DATA')
-    ap.add_argument('--acceptance-test', action='store_true', help='One fixed authorized test message; bounded JSON from stdin')
+    ap.add_argument('--acceptance-test', action='store_true', help='One fixed authorized test message, bounded JSON from stdin')
     ap.add_argument('--signing-check', action='store_true', help='Verify local PS256 signing without Entra traffic')
     ap.add_argument('--config-check', action='store_true', help='Check local configuration only')
     ap.add_argument('--config', choices=[str(CONF_FILE), str(SIDECAR_CONF_FILE)],
@@ -254,7 +297,7 @@ ACCEPTANCE_EMAIL = re.compile(
                 bool(args.smtp_auth_check), bool(args.acceptance_test))) > 1:
             ap.error('Select only one non-delivery diagnostic action')
         if args.acceptance_test and (args.candidate_config is not None or args.recipient):
-            ap.error('Test message must use active identity and cannot accept recipient CLI argument')
+            ap.error('Acceptance delivery may use active identity only, without CLI recipient')
         if args.candidate_config is not None:
             if not (args.token_check or args.signing_check or args.config_check or args.smtp_auth_check) or args.recipient:
                 ap.error('Candidate identity cannot send mail or accept a recipient')
@@ -282,193 +325,13 @@ ACCEPTANCE_EMAIL = re.compile(
         if args.acceptance_test:
             raw_request = sys.stdin.buffer.read(4097)
             if not raw_request or len(raw_request) > 4096:
-                raise PermanentError('Missing or oversized test request')
+                raise PermanentError('Missing or oversized restricted acceptance request')
             try:
                 request = json.loads(raw_request.decode('utf-8'))
             except (ValueError, UnicodeError):
-                raise PermanentError('Invalid test request')
+                raise PermanentError('Invalid restricted acceptance request')
             submit_acceptance_message(config, request)
             print('Acceptance SMTP submission accepted; recipient delivery not verified')
-            return EX_OK
-        if not args.recipient:
-            ap.error('--recipient is required for delivery')
-        raw = sys.stdin.buffer.read(MAX_MESSAGE_BYTES + 1)
-        if len(raw) > MAX_MESSAGE_BYTES:
-            raise PermanentError('Message is too large for this transport')
-        if not raw:
-            raise PermanentError('Empty message')
-        if not EMAIL_RE.fullmatch(args.recipient):
-            raise PermanentError('Invalid recipient address')
-        token = acquire_token(config)
-        send_smtp(config, args.recipient, raw, token)
-        print('2.0.0 Accepted by Microsoft 365 SMTP')
-        return EX_OK
-    except PermanentError as exc:
-        print('5.0.0 ' + str(exc), file=sys.stderr)
-        return 69
-    except (TransientError, HardwareSignerError, OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired,
-            smtplib.SMTPException, ssl.SSLError) as exc:
-        if isinstance(exc, smtplib.SMTPResponseException):
-            text = f'Exchange SMTP error {exc.smtp_code}'
-        elif isinstance(exc, (OSError, ValueError, json.JSONDecodeError)):
-            text = type(exc).__name__ + ': ' + str(exc)[:160]
-        else:
-            text = str(exc)[:160]
-        print('4.3.0 ' + text, file=sys.stderr)
-        return EX_TEMPFAIL
-
-
-if __name__ == '__main__':
-    sys.exit(run())
-)
-ACCEPTANCE_ID = re.compile(r'^[a-f0-9]{32}
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--recipient', help='Single envelope recipient from Postfix')
-    ap.add_argument('--token-check', action='store_true', help='Check Entra token acquisition without printing token')
-    ap.add_argument('--smtp-auth-check', action='store_true', help='Verify real Microsoft 365 XOAUTH2 AUTH without MAIL/RCPT/DATA')
-    ap.add_argument('--signing-check', action='store_true', help='Verify local PS256 signing without Entra traffic')
-    ap.add_argument('--config-check', action='store_true', help='Check local configuration only')
-    ap.add_argument('--config', choices=[str(CONF_FILE), str(SIDECAR_CONF_FILE)],
-                    default=str(CONF_FILE), help='Explicit installed identity configuration')
-    ap.add_argument('--candidate-config', choices=[str(x) for x in STAGED_CONF_FILES],
-                    help='Root-staged hardware identity, usable only for signing/token checks')
-    args = ap.parse_args(argv)
-    try:
-        if sum((bool(args.token_check), bool(args.signing_check), bool(args.config_check),
-                bool(args.smtp_auth_check))) > 1:
-            ap.error('Select only one non-delivery diagnostic action')
-        if args.candidate_config is not None:
-            if not (args.token_check or args.signing_check or args.config_check or args.smtp_auth_check) or args.recipient:
-                ap.error('Candidate identity cannot send mail or accept a recipient')
-            config = load_config(args.candidate_config)
-            if 'signer' not in config:
-                raise ValueError('Candidate hardware identity missing signer')
-        else:
-            config = load_config(args.config)
-        if args.config_check:
-            print('Local configuration OK (no network connection attempted)')
-            return EX_OK
-        if args.signing_check:
-            make_client_assertion(config)
-            print('Local PS256 signing and certificate match verified; no token requested')
-            return EX_OK
-        if args.token_check:
-            acquire_token(config)
-            print('Entra application token acquired (token not displayed)')
-            return EX_OK
-        if args.smtp_auth_check:
-            token = acquire_token(config)
-            check_smtp_auth(config, token)
-            print('Microsoft 365 STARTTLS and SMTP AUTH XOAUTH2 verified; no message submitted')
-            return EX_OK
-        if not args.recipient:
-            ap.error('--recipient is required for delivery')
-        raw = sys.stdin.buffer.read(MAX_MESSAGE_BYTES + 1)
-        if len(raw) > MAX_MESSAGE_BYTES:
-            raise PermanentError('Message is too large for this transport')
-        if not raw:
-            raise PermanentError('Empty message')
-        if not EMAIL_RE.fullmatch(args.recipient):
-            raise PermanentError('Invalid recipient address')
-        token = acquire_token(config)
-        send_smtp(config, args.recipient, raw, token)
-        print('2.0.0 Accepted by Microsoft 365 SMTP')
-        return EX_OK
-    except PermanentError as exc:
-        print('5.0.0 ' + str(exc), file=sys.stderr)
-        return 69
-    except (TransientError, HardwareSignerError, OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired,
-            smtplib.SMTPException, ssl.SSLError) as exc:
-        if isinstance(exc, smtplib.SMTPResponseException):
-            text = f'Exchange SMTP error {exc.smtp_code}'
-        elif isinstance(exc, (OSError, ValueError, json.JSONDecodeError)):
-            text = type(exc).__name__ + ': ' + str(exc)[:160]
-        else:
-            text = str(exc)[:160]
-        print('4.3.0 ' + text, file=sys.stderr)
-        return EX_TEMPFAIL
-
-
-if __name__ == '__main__':
-    sys.exit(run())
-)
-
-
-def submit_acceptance_message(config, request):
-    """One fixed test message only; SMTP 250 is not evidence of inbox arrival."""
-    if not isinstance(request, dict) or set(request) != {'recipient', 'run_id', 'role'}:
-        raise PermanentError('Invalid restricted acceptance request')
-    recipient, run_id, role = request['recipient'], request['run_id'], request['role']
-    if (not isinstance(recipient, str) or len(recipient) > 254 or
-            not ACCEPTANCE_EMAIL.fullmatch(recipient) or
-            not isinstance(run_id, str) or not ACCEPTANCE_ID.fullmatch(run_id) or
-            role not in ('internal', 'external')):
-        raise PermanentError('Invalid restricted acceptance recipient or marker')
-    sender = config['mailbox']
-    if not ACCEPTANCE_EMAIL.fullmatch(sender):
-        raise PermanentError('Invalid fixed test sender')
-    domain = sender.rsplit('@', 1)[1].lower()
-    recipient_domain = recipient.rsplit('@', 1)[1].lower()
-    if (role == 'internal' and recipient_domain != domain or
-            role == 'external' and recipient_domain == domain):
-        raise PermanentError('Test recipient domain role mismatch')
-    message = (
-        'To: ' + recipient + '\r\n'
-        'Subject: LinuxMailRelay365 acceptance ' + run_id + ' ' + role + '\r\n'
-        'Message-ID: <lmr365-' + run_id + '-' + role + '@' + domain + '>\r\n'
-        'X-LinuxMailRelay365-Test-ID: ' + run_id + '\r\n'
-        'Auto-Submitted: auto-generated\r\n'
-        'Content-Type: text/plain; charset=us-ascii\r\n'
-        '\r\n'
-        'Authorized LinuxMailRelay365 delivery acceptance test.\r\n'
-        'Trace: ' + run_id + '\r\n'
-        'Class: ' + role + '\r\n'
-        'Confirm receipt to the operator independently.\r\n'
-    ).encode('ascii')
-    token = acquire_token(config)
-    send_smtp(config, recipient, message, token)
-
-
-
-def run(argv=None):
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--recipient', help='Single envelope recipient from Postfix')
-    ap.add_argument('--token-check', action='store_true', help='Check Entra token acquisition without printing token')
-    ap.add_argument('--smtp-auth-check', action='store_true', help='Verify real Microsoft 365 XOAUTH2 AUTH without MAIL/RCPT/DATA')
-    ap.add_argument('--signing-check', action='store_true', help='Verify local PS256 signing without Entra traffic')
-    ap.add_argument('--config-check', action='store_true', help='Check local configuration only')
-    ap.add_argument('--config', choices=[str(CONF_FILE), str(SIDECAR_CONF_FILE)],
-                    default=str(CONF_FILE), help='Explicit installed identity configuration')
-    ap.add_argument('--candidate-config', choices=[str(x) for x in STAGED_CONF_FILES],
-                    help='Root-staged hardware identity, usable only for signing/token checks')
-    args = ap.parse_args(argv)
-    try:
-        if sum((bool(args.token_check), bool(args.signing_check), bool(args.config_check),
-                bool(args.smtp_auth_check))) > 1:
-            ap.error('Select only one non-delivery diagnostic action')
-        if args.candidate_config is not None:
-            if not (args.token_check or args.signing_check or args.config_check or args.smtp_auth_check) or args.recipient:
-                ap.error('Candidate identity cannot send mail or accept a recipient')
-            config = load_config(args.candidate_config)
-            if 'signer' not in config:
-                raise ValueError('Candidate hardware identity missing signer')
-        else:
-            config = load_config(args.config)
-        if args.config_check:
-            print('Local configuration OK (no network connection attempted)')
-            return EX_OK
-        if args.signing_check:
-            make_client_assertion(config)
-            print('Local PS256 signing and certificate match verified; no token requested')
-            return EX_OK
-        if args.token_check:
-            acquire_token(config)
-            print('Entra application token acquired (token not displayed)')
-            return EX_OK
-        if args.smtp_auth_check:
-            token = acquire_token(config)
-            check_smtp_auth(config, token)
-            print('Microsoft 365 STARTTLS and SMTP AUTH XOAUTH2 verified; no message submitted')
             return EX_OK
         if not args.recipient:
             ap.error('--recipient is required for delivery')
