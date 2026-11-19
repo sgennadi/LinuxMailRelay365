@@ -186,6 +186,26 @@ internal static class Program
                 }
                 return true;
             }),
+            ("Read-only XOAUTH2 ingress comparison bundle", () =>
+            {
+                const string path = "/etc/linuxmailrelay365/oauth-senders.tsv";
+                string bundle = EmbeddedAssets.BuildOAuthIngressAuditBundle(path);
+                if (!bundle.Contains("LMR365_OAUTH_INGRESS_AUDIT", StringComparison.Ordinal) ||
+                    !bundle.Contains("LMR365_OAUTH_SENDER_MAP_LIB", StringComparison.Ordinal) ||
+                    !bundle.Contains("--map-path " + path, StringComparison.Ordinal))
+                    return false;
+                foreach (string unsafePath in new[] {
+                    "/tmp/any.tsv",
+                    "/etc/linuxmailrelay365/../other.tsv",
+                    "/etc/linuxmailrelay365/map.tsv;curl",
+                    "/etc/linuxmailrelay365/senders.json"
+                })
+                {
+                    try { EmbeddedAssets.BuildOAuthIngressAuditBundle(unsafePath); return false; }
+                    catch (ArgumentException) { }
+                }
+                return true;
+            }),
             ("Preserve mail diagram", PreserveFlowSnapshot.SelfTest),
             ("Live delivery route explanations", MailRoutingGuidance.SelfTest),
             ("Existing public SMTP audit", () =>
