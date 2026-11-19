@@ -11,6 +11,10 @@ internal sealed class MailRoutingPlan
 {
     public string Transport { get; set; } = "oauth2";
     public string SenderPolicy { get; set; } = "fixed-mailbox";
+    // Operator intent only. Multi-mailbox XOAUTH2 is NOT applied until
+    // authenticated sender ownership and Exchange rights are validated.
+    public string OAuthSenderMode { get; set; } = "fixed-mailbox";
+    public string OAuthSenderMapPath { get; set; } = "";
     public bool PreserveExistingMail { get; set; } = true;
     public string VerifiedDomain { get; set; } = "";
     // Per-Linux-host preflight choices. Paths only, never TLS key contents.
@@ -92,8 +96,21 @@ internal static class MailRoutingPlanStore
         if (state.SidecarPort is < 1024 or > 65535)
             throw new InvalidDataException("Isolated SMTP port must be between 1024 and 65535.");
         if (state.Transport is not ("oauth2" or "connector" or "direct-send") ||
-            state.SenderPolicy is not ("fixed-mailbox" or "preserve-domain" or "masquerade"))
+            state.SenderPolicy is not ("fixed-mailbox" or "preserve-domain" or "masquerade") ||
+            state.OAuthSenderMode is not ("fixed-mailbox" or "authorized-multiple-mailboxes"))
             throw new InvalidDataException("Unsupported routing policy.");
+        // This plan does NOT authorize any mailbox or SMTP account and never
+        // supplies the sender map directly to the active Postfix transport.
+        string senderMap = state.OAuthSenderMapPath;
+        if (senderMap.Length > 0 &&
+            (senderMap.Length > 256 || !Regex.IsMatch(senderMap,
+                 @"\A/[A-Za-z0-9_./-]{1,255}\z", RegexOptions.CultureInvariant) ||
+             senderMap.Split('/').Any(part => part is "." or "..") ||
+             !senderMap.StartsWith("/etc/linuxmailrelay365/", StringComparison.Ordinal)))
+            throw new InvalidDataException("OAuth sender map must be an absolute trusted Linux /etc/linuxmailrelay365/ path.");
+        if (state.OAuthSenderMode == "authorized-multiple-mailboxes" &&
+            state.Transport == "oauth2" && senderMap.Length == 0)
+            throw new InvalidDataException("Choose an OAuth sender authorization map path before saving multi-mailbox intent.");
         // Only operator configuration hints are stored; no passwords,
         // private key bytes, hash values, signed tokens or tenant attestations.
         if (state.EopConnectorName.Length is < 3 or > 70 ||
@@ -161,6 +178,7 @@ internal static class MailRoutingPlanStore
             if (a == b || a != Identity("linux-a.example", "0022", "admin")) return false;
             var defaults = Load(folder, a);
             if (defaults.Transport != "oauth2" || defaults.SenderPolicy != "fixed-mailbox" ||
+                defaults.OAuthSenderMode != "fixed-mailbox" || defaults.OAuthSenderMapPath != "" ||
                 !defaults.PreserveExistingMail || defaults.SidecarPort != 2525 ||
                 defaults.PublicInternetRequested || defaults.ShowAdvancedSmtpTools) return false;
             Save(folder, b, new MailRoutingPlan { PublicInternetRequested = true,
@@ -177,6 +195,22 @@ internal static class MailRoutingPlanStore
                 ShowAdvancedSmtpTools = true });
             if (Load(folder, a).EopFixedSender != "alerts@example.org" ||
                 Load(folder, b).EopMxHost != "") return false;
+            Save(folder, a, new MailRoutingPlan {
+                Transport = "oauth2", OAuthSenderMode = "authorized-multiple-mailboxes",
+                OAuthSenderMapPath = "/etc/linuxmailrelay365/oauth-senders.tsv" });
+            if (Load(folder, a).OAuthSenderMode != "authorized-multiple-mailboxes" ||
+                Load(folder, a).OAuthSenderMapPath != "/etc/linuxmailrelay365/oauth-senders.tsv") return false;
+            try { Validate(new MailRoutingPlan {
+                OAuthSenderMode = "authorized-multiple-mailboxes",
+                OAuthSenderMapPath = "../../bad/path" }); return false;
+            } catch (InvalidDataException) { }
+            try { Validate(new MailRoutingPlan {
+                OAuthSenderMode = "authorized-multiple-mailboxes",
+                OAuthSenderMapPath = "/etc/linuxmailrelay365/../etc/passwd" }); return false;
+            } catch (InvalidDataException) { }
+            try { Validate(new MailRoutingPlan {
+                OAuthSenderMode = "authorized-multiple-mailboxes" }); return false;
+            } catch (InvalidDataException) { }
             Validate(new MailRoutingPlan { SidecarPort = 2526 });
             try { Validate(new MailRoutingPlan { SidecarPort = 25 }); return false; }
             catch (InvalidDataException) { }
