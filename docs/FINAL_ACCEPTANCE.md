@@ -680,3 +680,46 @@ comparison remains `not_ready`. Neither finding proves that the
 running Milter actually processed any SMTP message or that
 `master.cf` does not contain overrides; those remain explicitly
 unverified and require a separate live acceptance test.
+
+## Real SMTP AUTH/STARTTLS and RFC5322 From Guard via independent Postfix (CI-only)
+
+The disposable Ubuntu 24.04 and ubuntu-latest Postfix CI fixtures now run
+`tests/smoke_authenticated_from_guard_loopback.sh` after installing and
+activating the existing private SMTP AUTH/Dovecot and Connector From Guard.
+The fixture checks actual Postfix SMTP behavior, **not merely a direct
+Milter Unix-socket call or an offline parser simulation**.
+
+Before submitting any SMTP DATA, the shell test requires GitHub Actions
+disposable-runner context, a private 127.0.0.1 listener, active independent
+Postfix/Dovecot/From Guard, active Milter and mandatory incoming TLS/Auth,
+expected fixture-only EOP relay parameters, no alternate routing maps or
+real fallback host, and a provably empty independent Postfix queue. It
+stops **only** the isolated Postfix service; then it directs relayhost,
+default_transport and relay_transport to fixed `127.0.0.1:46601`, explicitly
+clears smtp_fallback_relay and binds the outbound SMTP client to loopback.
+Postfix's documented `smtp_fallback_relay=$fallback_relay` default alias
+is accepted only if the underlying `fallback_relay` is empty.
+
+The Python client uses the disposable TLS CA and local SMTP AUTH account,
+checks no AUTH before STARTTLS, refuses anonymous or wrong-password access,
+checks refusal of another account's envelope sender, and submits synthetic
+DATA containing mismatched or duplicate From/Sender and forged Return-Path
+and Resent-From. It requires server-side refusal; it also verifies one
+positive, correctly matched RFC5322 From and MAIL FROM is accepted into
+the real Postfix queue and arrives at exactly one loopback-only SMTP sink.
+An existing separate TLS identity test checks DNS/certificate hostname;
+this fixture uses the pinned disposable CA on the loopback address.
+
+After the test, the independent queue must be empty, and the isolated
+main.cf/master.cf and the primary Postfix configuration and queue location
+must match their pre-test fingerprints. A failed queue inspection or a
+nonempty queue **leaves isolated Postfix stopped**, without restoring the
+live EOP route. The disposable runner is then discarded.
+
+**This does not establish multi-mailbox XOAUTH2 delivery.** Incoming
+SMTP login/auth/From enforcement is a separate trust boundary from
+mailbox-specific outbound OAuth credential choice, Exchange Online
+application Send As permissions, or any live M365 recipient inbox. The
+test never sends to a real tenant. Hardware TPM, SELinux Enforcing,
+real-system reboot and signed Stable acceptance remain outstanding.
+CI result must be checked for the exact commit; code presence is not a pass.
