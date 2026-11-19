@@ -1198,3 +1198,24 @@ Alternatively an experienced Linux administrator can create a root-owned `hardwa
 **Then** register the candidate public certificate with the existing Entra application using a separately approved tenant workflow; only afterwards review the distinct **hardware cutover** SHA plan and explicitly approve its live token preflight and rollback-protected activation.
 
 **Not yet implemented:** automatic hardware RSA key provisioning, key attestation/provenance, provider-config generation and certificate registration. A successful test of a provider's PS256 signature does not itself prove TPM/HSM key origin or Exchange Online SMTP delivery.
+
+
+## TPM2 RSA OAuth key provisioning (Preview)
+
+The Windows Wizard / Optional security checks now offers an **explicit reviewed TPM2 key creation** workflow, distinct from package preparation, candidate staging and live OAuth cutover. It provisions a **new** RSA-2048 signing primary object in TPM2 owner persistent NV at a user-reviewed free `0x8101xxxx` handle. The key is never exported to a software private PEM. The same operation creates the matching public, self-signed X.509 certificate and a fixed TPM2 OpenSSL provider configuration in the selected root-managed identity directory.
+
+**Prerequisites:** TPM 2.0 accessible through `/dev/tpmrm0`; TPM2 sysfs reports major `2`; TPM2 command-line tools and an OpenSSL **3+** `tpm2` provider already installed from a trusted source; an existing root:m365mailer `app.json`; `m365mailer` service account with device access; a free selected persistent handle and an owner hierarchy authorized for this command. The provisioning tool **never** installs packages, resets/clears a TPM, evicts existing objects, changes the owner password, upgrades system OpenSSL, or builds a provider from source. RHEL 8 defaults to OpenSSL 1.1; no automatic provider activation or system OpenSSL upgrade is attempted.
+
+1. Use **Review TPM2 key provisioning**. The read-only root preflight checks device, executable availability, OpenSSL 3/provider, installed identity and its SHA, the current persistent handle inventory and that `hardware-app.crt`, `tpm2.cnf`, `hardware-staged.json` do not already exist. It outputs a reproducible plan SHA256 without modifying the TPM.
+2. Separately **Approve TPM2 key and certificate creation**. The manager rechecks the exact plan SHA, obtains the cross-workflow file lock, creates an RSA-2048 sign-only TPM primary with fresh unique input and makes its transient context persistent only at the reviewed free owner handle. `tpm2_evictcontrol` is invoked **only with the transient context file**; it is never invoked with an existing persistent object to delete one. It checks public key identity before and after persistence, creates root-managed `tpm2.cnf` and public `hardware-app.crt`, and demands a local PS256 signature as the restricted `m365mailer` account matching the public certificate.
+3. After success, the Wizard fills in the `handle:0x8101xxxx` reference for the separate staged hardware OAuth candidate workflow. **Nothing becomes active automatically**. The public certificate must still be registered in the existing Entra application before the separate live token test, guarded cutover and rollback.
+
+Approved/test-host CLI:
+
+    sudo python3 linux/manage-tpm-oauth-key.py --target sidecar --handle 0x81010001 --plan
+
+    sudo python3 linux/manage-tpm-oauth-key.py --target sidecar --handle 0x81010001 --apply --approve-sha256 <exact-reviewed-64-hex> --confirm CREATE_TPM2_OAUTH_KEY
+
+Both `sidecar` and `primary` targets are supported but the primary identity requires an explicit change window and separate approval. File ownership is root:m365mailer; the provider config is mode `0640` and public certificate mode `0644`. All SHA manifests and console status are secretless.
+
+**Recovery/safety:** TPM key persistence consumes scarce TPM NV resources. A failure **after** key creation may leave a persistent handle or partial certificate/configuration; the tool refuses to delete TPM objects or overwrite any pre-existing key/cert/config. Inspect and resolve the partial state manually. This provisioning is supported only for owner hierarchies that do not require an interactive/secret owner authorization; otherwise it fails closed. No TPM provenance attestation, reboot-continuity evidence, actual Microsoft 365 delivery, or runtime SELinux Enforcing acceptance is claimed by mocked CI. Live disposable host testing remains required before Stable.
