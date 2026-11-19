@@ -21,7 +21,8 @@
 | RHEL 8/9/10, Oracle, Rocky, Alma SELinux port/file/process context audit | Read-only | Real Enforcing process AVC allow/deny integration |
 | RHEL SELinux custom smtp_port_t label preparation and rollback | Implemented with reviewed SHA and explicit confirmation | Verify `semanage port` change/rollback on a real disposable enforcing host; not a full service acceptance |
 | RHEL-family TPM2 dependency preparation | Read-only RPM preview and SHA-approved DNF install, separate native-provider vs PKCS#11 profiles | Verified real RHEL/Rocky host package transactions and provider availability; RPM scriptlet/service review |
-| Offline TPM/HSM OAuth signing diagnostics | Fixed root-owned active/staged identity audit and optional PS256 provider signature check as `m365mailer`; no mail or Entra traffic | Physical hardware key provenance, nonexportability, reboot continuity, staged-to-active approval/rollback and tenant test are NOT proven |
+| Offline TPM/HSM OAuth signing diagnostics | Fixed root-owned active/staged identity audit and PS256 signature check as `m365mailer`; no SMTP | Physical hardware provenance/nonexportability still unverified |
+| TPM/HSM identity staged-to-active switch and rollback | SHA-reviewed, operator-approved, pre- and post-activation local PS256+live Entra token check; root-only identity backup; atomic swap and fail-closed rollback; both sidecar and primary targets | Real TPM/HSM and Entra tenant acceptance, concurrent sending, SELinux AVCs, reboot continuity, SMTP delivery and operator change window not yet verified |
 | Microsoft 365 XOAUTH2 sender transport | Preview | Live Entra tenant + Exchange scoped mailbox + delivered test |
 | Microsoft 365 Direct Send | Fresh isolated installation without Entra/OAuth, or guarded route switch of an existing XOAUTH2 sidecar; exact fixed MAIL FROM required | Approved accepted domain, root-owned map/postmap negative tests, real internal recipient receipt |
 | Microsoft 365 Connector | New isolated fixed-sender sidecar with exact fixed MAIL FROM or guarded switch of existing XOAUTH2 route | Verified tenant Connector authorization, exact-sender negative tests, real host install, external recipient receipt |
@@ -295,3 +296,16 @@ These tests do not provision TPM keys, install providers, alter an active identi
     sudo python3 linux/verify-hardware-oauth.py
 
 An unconfigured or PEM-only identity remains `not_configured` or `software_signer_or_unconfigured`. Signed results report `provider_ps256_certificate_match_verified` only for successful OpenSSL provider signing and certificate verification; hardware provenance is separately marked NOT verified. Inspect system SELinux AVCs, TPM provider, module path and service-user access separately, without leaking keys or device PINs. This is **not** an end-to-end acceptance test.
+
+
+## Staged TPM/HSM OAuth activation acceptance — pending live host
+
+Before any production trial, create and protect a matching TPM/HSM certificate already registered with the Entra app, and stage the candidate `hardware-staged.json` under the correct identity directory. The operator must approve a separate window and verify the original PEM key/cert remain usable.
+
+Run plan-only and review all status fields: `HARDWARE_CUTOVER_ROUTING_IDENTITY_UNCHANGED=yes`, the 64-character `HARDWARE_CUTOVER_PLAN_SHA256`, plus explicit NOT YET statuses for signing/Entra. Approve the same plan SHA and typed `ACTIVATE_HARDWARE_OAUTH`. Confirm Entra token and local PS256 succeed before active JSON replacement and after it. Record the opaque recovery ID without copying identity contents.
+
+Exercise negative cases on a disposable host: mismatching tenant/client/mailbox, malicious PKCS#11 URI, symlinked identity, changed cert/transport bytes, wrong typed approval, invalid Entra token, interrupted postcheck and preexisting administrator config change. Automatic rollback must restore original SHA or report critical/manual restoration; it must never silently overwrite an unexpected current identity.
+
+Independently test the explicit rollback from the listed root-only backup. Verify there were **no changes** to Postfix configuration, service state, mail queues, DNS, firewall, active SMTP port, Entra app registration or private-key storage.
+
+Blocked until actual physical key tests: TPM provenance/attestation, RHEL8 OpenSSL3 limitations, the RHEL9 PKCS#11 module requirements, SELinux Enforcing service-user authorization, real Microsoft 365 SMTP delivery with internal/external recipients, reboot continuity and signed Windows stable acceptance.
