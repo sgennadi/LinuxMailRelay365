@@ -18,6 +18,7 @@ internal static class EmbeddedAssets
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
     internal static string HardwareSigner => Text("LinuxMailRelay365.linux.hardware-signer.py");
     internal static string TpmDependencies => Text("LinuxMailRelay365.linux.tpm-dependencies.py");
+    internal static string HardwareOAuthDiagnostics => Text("LinuxMailRelay365.linux.hardware-oauth-diagnostics.py");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarConfigRecovery => Text("LinuxMailRelay365.linux.sidecar-config-recovery.py");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
@@ -56,6 +57,19 @@ internal static class EmbeddedAssets
     internal static string TenantConnectorManager => Text("LinuxMailRelay365.windows.tenant-connector-manager.ps1");
 
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+
+    internal static string BuildHardwareOAuthDiagnosticBundle(bool verifySigning)
+    {
+        // Stage code in a root-only temporary directory; no identity or key
+        // material is transferred to Windows or embedded in shell arguments.
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-hwauth.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/verify-hardware-oauth.py\" <<'LMR365_HW_OAUTH'\n" +
+               Encode(HardwareOAuthDiagnostics) + "\nLMR365_HW_OAUTH\n" +
+               "python3 \"$work/verify-hardware-oauth.py\" " +
+               (verifySigning ? "" : "--inventory-only") + "\n";
+    }
 
     internal static string BuildTpmDependenciesBundle(string profile, string? reviewedSha = null)
     {
