@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Independent ephemeral GitHub Actions VM, NO Entra app, NO mail DATA.
+# Disposable GitHub Actions VM, no Entra app or real M365 mail.
+# RCPT restrictions are checked first; one synthetic DATA message is sent to 127.0.0.1.
 set -Eeuo pipefail
 export LC_ALL=C DEBIAN_FRONTEND=noninteractive
 PORT=46500
@@ -127,6 +128,11 @@ else:
 print('FRESH_DIRECT_SEND_LOCAL_RCPT_POLICY=PASS')
 print('MAIL_DATA_SENT=no')
 PY
+echo '=== Direct Send: full local SMTP DATA to loopback SMTP sink, no external recipient ==='
+bash tests/smoke_local_postfix_delivery.sh "$PORT"
+sudo systemctl is-active --quiet "$UNIT"
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+test "$(sudo postconf -h queue_directory)" = "$primary_queue"
 echo '=== Isolated systemd service cold start, no OS reboot ==='
 sudo systemctl stop "$UNIT"
 sudo systemctl start "$UNIT"
