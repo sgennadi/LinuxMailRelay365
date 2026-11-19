@@ -814,6 +814,8 @@ internal sealed class MainForm : Form
                     "How this route works (live preview from your fields)",
                     "כיצד יעבוד המסלול שנבחר")));
                 UpdatePreserveFlowPreview();
+                ResizePreserveFlowHelp();
+                AddLine(page, preserveFlowPreview);
                 AddLine(page, deliveryModeExplanation);
                 AddField(page, T("Подтверждённый домен (необязательно для XOAUTH2)",
                                  "Verified accepted domain (not needed for XOAUTH2)",
@@ -1035,7 +1037,6 @@ internal sealed class MainForm : Form
                 AddLine(page, preserveExistingMail);
                 UpdatePreserveFlowPreview();
                 ResizePreserveFlowHelp();
-                AddLine(page, preserveFlowPreview);
                 AddLine(page, UiTheme.Text(T(
                     "Инструкции для новых SMTP-клиентов — только план, до проверки установленного сервера",
                     "Proposed SMTP client instructions — verify installed server first",
@@ -1599,6 +1600,7 @@ internal sealed class MainForm : Form
         int width = Math.Clamp(pageHost.ClientSize.Width - 54, 640, 890);
         preserveFlowPreview.Width = width;
         preserveMailInstructions.Width = width;
+        deliveryModeExplanation.Width = width;
     }
 
     private void UpdatePreserveFlowPreview()
@@ -4606,6 +4608,9 @@ internal sealed class MainForm : Form
 
     private async Task SendTestAsync()
     {
+        if (mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 1)
+            throw new NotSupportedException(
+                "Multi-mailbox XOAUTH2 has not been installed or verified. The current transport uses one fixed mailbox; no test email was sent.");
         var cloud = CloudInputs();
         string dest = testRecipient.Text.Trim();
         if (!SshRemote.IsEmail(dest)) throw new ArgumentException("Invalid test recipient.");
