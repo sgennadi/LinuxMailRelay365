@@ -67,7 +67,7 @@ def simulated_probe(rcpt_code=250, expect_reject=False):
                          "alerts@example.org", "internal@example.org",
                          expect_reject=expect_reject,
                          password_provider=lambda _prompt: "Temporary-Secret_123456")
-    assert connect.call_args.args == (("127.0.0.1", 46500),)
+    assert connect.call_args[0] == (("127.0.0.1", 46500),)
     return status, plain, tls
 
 
