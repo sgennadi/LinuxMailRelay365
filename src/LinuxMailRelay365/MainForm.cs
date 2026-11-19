@@ -2615,6 +2615,7 @@ internal sealed class MainForm : Form
             ["OAUTH_INGRESS_SERVICES"] = @"\A(?:not_all_active|all_report_active)\z",
             ["OAUTH_INGRESS_MILTER_SOCKET"] = @"\A(?:not_verified|metadata_matches_only)\z",
             ["OAUTH_INGRESS_MASTER_CF_SERVICE"] = @"\A(?:unavailable_or_unsafe|single_private_smtpd_no_overrides|unexpected_inet_service|per_service_overrides_present)\z",
+            ["OAUTH_INGRESS_TRACE_HEADER_GUARD"] = @"\A(?:not_verified|exact_static_reject|different_rule|unavailable_or_unsafe|different_configuration)\z",
             ["OAUTH_INGRESS_TRANSPORT"] = @"\A(?:not_multi_mailbox_xoauth2|eop_smtp_not_xoauth2_multi)\z",
             ["OAUTH_INGRESS_OVERALL"] = @"\A(?:not_ready|ingress_config_consistent_not_live_verified)\z",
             ["OAUTH_INGRESS_REAL_SMTP_LOGIN_VERIFIED"] = @"\Ano\z",
@@ -2656,7 +2657,7 @@ internal sealed class MainForm : Form
                 "SMTP AUTH, Dovecot, From Guard and Postfix master.cf readback are structurally consistent. NOT a live SMTP test or multi-mailbox XOAUTH2 readiness; sending remains disabled.",
                 "התצורה תואמת למפה בלבד. שליחת XOAUTH2 עדיין חסומה.")
             : T("Обнаружены отсутствующие или несовместимые настройки SMTP AUTH / From Guard. Проверьте диагностические статусы. Применение запрещено.",
-                "SMTP AUTH / From Guard is missing or differs from the planned map. See sanitized status report. Deployment remains blocked.",
+                "SMTP AUTH, From Guard or Return-Path trace-header protection is missing or differs from the planned map. See sanitized status report. Deployment remains blocked.",
                 "זוהתה תצורה לא תואמת. שליחה חסומה.");
         RenderPage();
         WriteLine("Ingress comparison is read-only: no real authenticated client, no Milter message inspection, no Exchange permissions, no SMTP delivery.");

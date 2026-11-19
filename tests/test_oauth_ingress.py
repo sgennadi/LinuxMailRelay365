@@ -40,6 +40,7 @@ class IngressAuditTests(unittest.TestCase):
             AUDIT.GUARD: b"alice@example.org alice\nbob@example.org bob\n",
             AUDIT.OWNER_RULES: b"/^alice@example[.]org$/ alice\n/^bob@example[.]org$/ bob\n",
             AUDIT.SMTP_PORT_FILE: b"46500\n",
+            AUDIT.TRACE_HEADER_FILE: AUDIT.TRACE_HEADER_EXACT,
         }
         self.master = ("46500 inet n - n - - smtpd\n", "")
         self.cfg = dict(
@@ -62,6 +63,9 @@ class IngressAuditTests(unittest.TestCase):
             non_smtpd_milters="",
             smtpd_milter_maps="",
             authorized_submit_users="",
+            header_checks=AUDIT.TRACE_HEADER_MAP,
+            mime_header_checks="",
+            nested_header_checks="",
             default_transport="smtp:[example-org.mail.protection.outlook.com]:25",
         )
 
@@ -89,6 +93,7 @@ class IngressAuditTests(unittest.TestCase):
         self.assertEqual(results["SERVICES"], "all_report_active")
         self.assertEqual(results["MILTER_SOCKET"], "metadata_matches_only")
         self.assertEqual(results["MASTER_CF_SERVICE"], "single_private_smtpd_no_overrides")
+        self.assertEqual(results["TRACE_HEADER_GUARD"], "exact_static_reject")
         self.assertEqual(results["TRANSPORT"], "eop_smtp_not_xoauth2_multi")
         self.assertEqual(results["OVERALL"],
                          "ingress_config_consistent_not_live_verified")
@@ -130,6 +135,32 @@ class IngressAuditTests(unittest.TestCase):
             ["/usr/sbin/postconf", "-c", AUDIT.CONF, "-M"],
             ["/usr/sbin/postconf", "-c", AUDIT.CONF, "-P"],
         ])
+
+    def test_return_path_header_guard_is_required_and_exact(self):
+        valid = self.blobs[AUDIT.TRACE_HEADER_FILE]
+        for contents in (b"/^Return-Path:/ IGNORE\n",
+                         valid + b"/^.*$/ OK\n",
+                         b"/^Return-Path:/ REJECT altered_reason\n"):
+            with self.subTest(contents=contents[:50]):
+                self.blobs[AUDIT.TRACE_HEADER_FILE] = contents
+                report = self.evaluate()
+                self.assertEqual(report["TRACE_HEADER_GUARD"], "different_rule")
+                self.assertEqual(report["OVERALL"], "not_ready")
+        self.blobs.pop(AUDIT.TRACE_HEADER_FILE)
+        self.assertEqual(self.evaluate()["TRACE_HEADER_GUARD"], "unavailable_or_unsafe")
+        self.assertEqual(self.evaluate()["OVERALL"], "not_ready")
+
+    def test_return_path_header_config_override_is_not_ready(self):
+        for key, bad in (("header_checks", ""),
+                         ("mime_header_checks", "regexp:/tmp/bypass"),
+                         ("nested_header_checks", "regexp:/tmp/bypass")):
+            with self.subTest(key=key):
+                old = self.cfg[key]
+                self.cfg[key] = bad
+                report = self.evaluate()
+                self.assertEqual(report["TRACE_HEADER_GUARD"], "different_configuration")
+                self.assertEqual(report["OVERALL"], "not_ready")
+                self.cfg[key] = old
 
     def test_login_mismatch_and_duplicate_are_not_reported_ready(self):
         self.blobs[AUDIT.HASHES] = self.blobs[AUDIT.HASHES].replace(b"bob:", b"eve:")
@@ -246,6 +277,8 @@ class IngressAuditTests(unittest.TestCase):
                           "tpm2_clear", "tpm2_evictcontrol"):
             self.assertNotIn(forbidden, src)
         self.assertIn("OAUTH_INGRESS_MULTI_MAILBOX_ENABLED=no", src)
+        self.assertIn("TRACE_HEADER_GUARD", src)
+        self.assertIn("TRACE_HEADER_EXACT", src)
         self.assertIn("OAUTH_INGRESS_MESSAGES_SENT=no", src)
         self.assertIn("OAUTH_INGRESS_REAL_SMTP_LOGIN_VERIFIED=no", src)
 

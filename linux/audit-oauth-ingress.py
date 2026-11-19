@@ -27,6 +27,9 @@ SOCKET = "/run/linuxmailrelay365-from-guard/from-guard.sock"
 MILTER = "unix:" + SOCKET
 OWNER_MAP = "regexp:" + CONF + "/eop-sender-owners.regexp"
 SMTP_PORT_FILE = CONF + "/smtp-port"
+TRACE_HEADER_FILE = CONF + "/eop-reject-trace-header.regexp"
+TRACE_HEADER_MAP = "regexp:" + TRACE_HEADER_FILE
+TRACE_HEADER_EXACT = b"/^Return-Path:/ REJECT client_supplied_return_path_denied\n"
 SENDER_POLICY = "reject_authenticated_sender_login_mismatch, check_sender_access regexp:" + CONF + "/eop-fixed-sender.regexp, reject"
 HASH_RE = re.compile(
     r"\{SHA512-CRYPT\}\$6\$(?:rounds=[0-9]{3,9}\$)?"
@@ -273,6 +276,7 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
         "SASL_TLS_CONFIG": "not_verified",
         "SENDER_LOGIN_CONFIG": "not_verified",
         "FROM_GUARD_MILTER_CONFIG": "not_verified",
+        "TRACE_HEADER_GUARD": "not_verified",
         "SERVICES": "not_all_active",
         "MILTER_SOCKET": "not_verified",
         "MASTER_CF_SERVICE": "unavailable_or_unsafe",
@@ -331,7 +335,8 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
         "smtpd_sender_restrictions", "smtpd_milters", "milter_protocol",
         "milter_default_action", "milter_mail_macros",
         "non_smtpd_milters", "smtpd_milter_maps", "authorized_submit_users",
-        "default_transport",
+        "default_transport", "header_checks", "mime_header_checks",
+        "nested_header_checks",
     ):
         values[key] = config(key)
     if all(values.get(key) == value for key, value in (
@@ -349,6 +354,22 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
     if (values["smtpd_sender_login_maps"] == OWNER_MAP and
             values["smtpd_sender_restrictions"] == SENDER_POLICY):
         result["SENDER_LOGIN_CONFIG"] = "configured_only"
+    # Postfix discards Return-Path before the Milter can inspect it. An
+    # exact header_checks regexp must reject client-controlled Return-Path
+    # before cleanup discards the trace header. Missing or altered rules
+    # invalidate the static ingress review (no Postfix changes here).
+    if (values["header_checks"] == TRACE_HEADER_MAP and
+            values["mime_header_checks"] == "" and
+            values["nested_header_checks"] == ""):
+        try:
+            actual_trace = read_file(TRACE_HEADER_FILE, MAX_OWNERS, 0o644, None)
+            result["TRACE_HEADER_GUARD"] = (
+                "exact_static_reject" if actual_trace == TRACE_HEADER_EXACT
+                else "different_rule")
+        except (OSError, ValueError, KeyError, AuditRefused, auditor.Refused):
+            result["TRACE_HEADER_GUARD"] = "unavailable_or_unsafe"
+    else:
+        result["TRACE_HEADER_GUARD"] = "different_configuration"
     if (values["smtpd_milters"] == MILTER and
             values["milter_protocol"] == "6" and
             values["milter_default_action"] == "tempfail" and
@@ -377,6 +398,7 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
         ("SASL_TLS_CONFIG", "configured_only"),
         ("SENDER_LOGIN_CONFIG", "configured_only"),
         ("FROM_GUARD_MILTER_CONFIG", "configured_fail_closed_only"),
+        ("TRACE_HEADER_GUARD", "exact_static_reject"),
         ("SERVICES", "all_report_active"),
         ("MILTER_SOCKET", "metadata_matches_only"),
         ("MASTER_CF_SERVICE", "single_private_smtpd_no_overrides"),
@@ -408,6 +430,7 @@ def main(argv=None):
         for key in ("AUTH_ACCOUNTS", "FROM_GUARD_POLICY", "POSTFIX_OWNER_RULES",
                     "FROM_GUARD_SHA_PIN", "SASL_TLS_CONFIG",
                     "SENDER_LOGIN_CONFIG", "FROM_GUARD_MILTER_CONFIG",
+                    "TRACE_HEADER_GUARD",
                     "SERVICES", "MILTER_SOCKET", "MASTER_CF_SERVICE", "TRANSPORT", "OVERALL"):
             print("OAUTH_INGRESS_" + key + "=" + report[key])
         print("OAUTH_INGRESS_REAL_SMTP_LOGIN_VERIFIED=no")
