@@ -17,6 +17,7 @@ internal static class EmbeddedAssets
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
     internal static string OAuthSenderMapAudit => Text("LinuxMailRelay365.linux.oauth-sender-map-audit.py");
+    internal static string OAuthIngressAudit => Text("LinuxMailRelay365.linux.oauth-ingress-audit.py");
     internal static string HardwareSigner => Text("LinuxMailRelay365.linux.hardware-signer.py");
     internal static string TpmDependencies => Text("LinuxMailRelay365.linux.tpm-dependencies.py");
     internal static string HardwareOAuthDiagnostics => Text("LinuxMailRelay365.linux.hardware-oauth-diagnostics.py");
@@ -296,6 +297,26 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/audit-oauth-sender-map.py\" <<'LMR365_OAUTH_MAP_AUDIT'\n" +
                Encode(OAuthSenderMapAudit) + "\nLMR365_OAUTH_MAP_AUDIT\n" +
                "python3 \"$work/audit-oauth-sender-map.py\" --map-path " + mapPath + "\n";
+    }
+
+    internal static string BuildOAuthIngressAuditBundle(string mapPath)
+    {
+        // The Linux handler only inspects protected local files and reads
+        // Postfix parameters. No token, certificate or sender address is sent
+        // from Windows; no SMTP message is submitted.
+        if (mapPath.Length > 256 ||
+            !Regex.IsMatch(mapPath, @"\A/etc/linuxmailrelay365/[A-Za-z0-9_./-]{1,240}\.tsv\z",
+                           RegexOptions.CultureInvariant) ||
+            mapPath.Split('/').Skip(1).Any(part => part is "." or ".." or ""))
+            throw new ArgumentException("Only an absolute /etc/linuxmailrelay365/ sender map TSV path is allowed.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-ingress-audit.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/audit-oauth-sender-map.py\" <<'LMR365_OAUTH_SENDER_MAP_LIB'\n" +
+               Encode(OAuthSenderMapAudit) + "\nLMR365_OAUTH_SENDER_MAP_LIB\n" +
+               "base64 -d > \"$work/audit-oauth-ingress.py\" <<'LMR365_OAUTH_INGRESS_AUDIT'\n" +
+               Encode(OAuthIngressAudit) + "\nLMR365_OAUTH_INGRESS_AUDIT\n" +
+               "python3 \"$work/audit-oauth-ingress.py\" --map-path " + mapPath + "\n";
     }
 
     internal static string BuildLinuxBundle(string[] args)
