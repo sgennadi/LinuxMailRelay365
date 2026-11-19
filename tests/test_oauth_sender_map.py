@@ -82,7 +82,7 @@ class OAuthSenderMapTests(unittest.TestCase):
         good = list(self.rows)
         samples = (
             good + [good[0]],
-            [(good[0][0], good[0][1], "other@example.org", IDENTITY_B)],
+            [("bad login!", good[0][1], "other@example.org", IDENTITY_B)],
             [("alice\tinjected", good[0][1], good[0][2], good[0][3])],
             [("hacker", "admin@example.org", "admin@example.org",
               "/etc/linuxmailrelay365/oauth-identities/../private.json")],
