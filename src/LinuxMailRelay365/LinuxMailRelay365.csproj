@@ -33,6 +33,7 @@
     <EmbeddedResource Include="../../linux/manage-tpm-dependencies.py" LogicalName="LinuxMailRelay365.linux.tpm-dependencies.py" />
     <EmbeddedResource Include="../../linux/verify-hardware-oauth.py" LogicalName="LinuxMailRelay365.linux.hardware-oauth-diagnostics.py" />
     <EmbeddedResource Include="../../linux/manage-hardware-oauth-cutover.py" LogicalName="LinuxMailRelay365.linux.hardware-oauth-cutover.py" />
+    <EmbeddedResource Include="../../linux/manage-m365-delivery-acceptance.py" LogicalName="LinuxMailRelay365.linux.delivery-acceptance.py" />
     <EmbeddedResource Include="../../linux/manage-tpm-oauth-key.py" LogicalName="LinuxMailRelay365.linux.tpm-oauth-provision.py" />
     <EmbeddedResource Include="../../linux/export-hardware-oauth-cert.py" LogicalName="LinuxMailRelay365.linux.entra-public-cert-export.py" />
     <EmbeddedResource Include="../../linux/probe-linux.sh" LogicalName="LinuxMailRelay365.linux.security-probe.sh" />
