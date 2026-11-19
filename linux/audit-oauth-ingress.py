@@ -21,6 +21,7 @@ import sys
 AUDITOR_FILE = Path(__file__).with_name("audit-oauth-sender-map.py")
 HASHES = "/etc/linuxmailrelay365/smtp-auth/passwd"
 GUARD = "/etc/linuxmailrelay365/sidecar-postfix/eop-from-owners.tsv"
+OWNER_RULES = "/etc/linuxmailrelay365/sidecar-postfix/eop-sender-owners.regexp"
 CONF = "/etc/linuxmailrelay365/sidecar-postfix"
 SOCKET = "/run/linuxmailrelay365-from-guard/from-guard.sock"
 MILTER = "unix:" + SOCKET
@@ -94,6 +95,48 @@ def parse_guard_owners(raw, email_re, login_re):
     return result
 
 
+
+def exact_postfix_owner_rules(raw, rows):
+    """Compare only the literal rules this application's EOP deployer writes.
+
+    Never evaluate user-controlled regexp content; compare byte-for-byte rule
+    lines against trusted literal rules derived from the reviewed sender map.
+    Order is immaterial. Extra rules, wildcard rules or duplicate rules fail.
+    """
+    if not isinstance(raw, bytes) or not 1 <= len(raw) <= MAX_OWNERS or \
+            b"\r" in raw or b"\x00" in raw or not raw.endswith(b"\n"):
+        return False
+    try:
+        actual = raw.decode("ascii").splitlines()
+    except UnicodeError:
+        return False
+    expected = []
+    for login, sender, _mailbox, _identity in rows:
+        escaped = sender.replace(".", "[.]").replace("+", "[+]")
+        expected.append("/^{}$/ {}".format(escaped, login))
+    return len(actual) == len(expected) and set(actual) == set(expected)
+
+
+def guard_pinned_policy(policy_hash):
+    """Check the guard's configured systemd ExecStart SHA without restart."""
+    if not re.fullmatch(r"[a-f0-9]{64}", policy_hash):
+        return False
+    binary = _trusted_binary("systemctl", ("/usr/bin/systemctl", "/bin/systemctl"))
+    if binary is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [binary, "show", "-p", "ExecStart", "--value",
+             "linuxmailrelay365-from-guard.service"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            universal_newlines=True, timeout=5, check=False)
+        return (proc.returncode == 0 and len(proc.stdout) < 8192 and
+                "/usr/local/libexec/linuxmailrelay365-from-owner-milter.py" in proc.stdout and
+                "--expected-map-sha256 " + policy_hash in proc.stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _trusted_binary(name, choices):
     path = shutil.which(name)
     if path not in choices:
@@ -152,7 +195,7 @@ def socket_metadata():
 
 
 def assess(rows, auditor, read_file=None, config=None, active=None,
-           gids=None, socket_check=None):
+           gids=None, socket_check=None, guard_pin=None):
     """Pure report orchestration: mocked inputs can test every negative branch.
 
     Even an entirely positive report is only a *static configuration* review.
@@ -163,6 +206,7 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
     config = config or read_postconf
     active = active or service_active
     socket_check = socket_check or socket_metadata
+    guard_pin = guard_pin or guard_pinned_policy
     if gids is None:
         try:
             gids = (grp.getgrnam("dovecot").gr_gid, grp.getgrnam("postfix").gr_gid)
@@ -173,6 +217,8 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
     result = {
         "AUTH_ACCOUNTS": "unavailable_or_unsafe",
         "FROM_GUARD_POLICY": "unavailable_or_unsafe",
+        "POSTFIX_OWNER_RULES": "unavailable_or_unsafe",
+        "FROM_GUARD_SHA_PIN": "not_verified",
         "SASL_TLS_CONFIG": "not_verified",
         "SENDER_LOGIN_CONFIG": "not_verified",
         "FROM_GUARD_MILTER_CONFIG": "not_verified",
@@ -198,10 +244,23 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
                 auditor.EMAIL, auditor.LOGIN)
             result["FROM_GUARD_POLICY"] = (
                 "exact_match" if actual_owners == expected_owners else "different")
+            if result["FROM_GUARD_POLICY"] == "exact_match" and \
+                    guard_pin(hashlib.sha256(read_file(GUARD, MAX_OWNERS, 0o640, gids[1])).hexdigest()):
+                result["FROM_GUARD_SHA_PIN"] = "configured_pinned_only"
         except (OSError, ValueError, AuditRefused, auditor.Refused):
             pass
     elif len(rows) > 64:
         result["FROM_GUARD_POLICY"] = "over_64_account_limit"
+
+    if len(rows) <= 64:
+        try:
+            rule_data = read_file(OWNER_RULES, MAX_OWNERS, 0o644, None)
+            result["POSTFIX_OWNER_RULES"] = (
+                "exact_match" if exact_postfix_owner_rules(rule_data, rows) else "different")
+        except (OSError, ValueError, AuditRefused, auditor.Refused):
+            pass
+    else:
+        result["POSTFIX_OWNER_RULES"] = "over_64_account_limit"
 
     values = {}
     for key in (
@@ -253,6 +312,8 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
     if all(result[key] == target for key, target in (
         ("AUTH_ACCOUNTS", "exact_match"),
         ("FROM_GUARD_POLICY", "exact_match"),
+        ("POSTFIX_OWNER_RULES", "exact_match"),
+        ("FROM_GUARD_SHA_PIN", "configured_pinned_only"),
         ("SASL_TLS_CONFIG", "configured_only"),
         ("SENDER_LOGIN_CONFIG", "configured_only"),
         ("FROM_GUARD_MILTER_CONFIG", "configured_fail_closed_only"),
@@ -283,7 +344,8 @@ def main(argv=None):
         report = assess(rows, auditor)
         print("OAUTH_INGRESS_REVIEW=read_only")
         print("OAUTH_INGRESS_MAP_SHA256=" + structural["MAP_SHA256"])
-        for key in ("AUTH_ACCOUNTS", "FROM_GUARD_POLICY", "SASL_TLS_CONFIG",
+        for key in ("AUTH_ACCOUNTS", "FROM_GUARD_POLICY", "POSTFIX_OWNER_RULES",
+                    "FROM_GUARD_SHA_PIN", "SASL_TLS_CONFIG",
                     "SENDER_LOGIN_CONFIG", "FROM_GUARD_MILTER_CONFIG",
                     "SERVICES", "MILTER_SOCKET", "TRANSPORT", "OVERALL"):
             print("OAUTH_INGRESS_" + key + "=" + report[key])
