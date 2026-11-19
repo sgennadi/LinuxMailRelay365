@@ -906,6 +906,15 @@ internal sealed class MainForm : Form
                             "Этот режим НЕ УСТАНАВЛИВАЕТСЯ. Для каждого локального отправителя понадобятся проверка SMTP-логина, владения From и разрешений Exchange. Не меняйте сервер до появления проверенной реализации.",
                             "PLAN ONLY, NOT DEPLOYABLE: each local sender must have a verified SMTP login, RFC5322 From ownership and Exchange mailbox permission. The current XOAUTH2 transport always rewrites From.",
                             "תכנון בלבד: לא ניתן להפעיל עד לאימות זהות והרשאות שולחים.")));
+                        AddAction(page, T(
+                            "Проверить карту SMTP-логинов и ящиков M365 (только чтение)",
+                            "Audit SMTP login → sender → M365 mailbox map (read-only)",
+                            "בדיקת מיפוי משתמשים ותיבות (קריאה בלבד)"),
+                            InspectOAuthSenderMapAsync, false, "check", "oauth-sender-map-audit");
+                        AddLine(page, UiTheme.Text(T(
+                            "Формат Linux TSV: smtp_login, envelope_from, m365_mailbox, identity_config_path. Карта root:root 0600; конфигурации OAuth root:m365mailer 0640. Проверка НЕ включает отправку и не подтверждает Send As.",
+                            "Linux TSV columns: smtp_login, envelope_from, m365_mailbox, identity_config_path. Root-owned TSV mode 0600; OAuth identity JSON root:m365mailer 0640. Audit does NOT enable mail delivery or prove Send As.",
+                            "קובץ TSV בבעלות root. הבדיקה אינה מפעילה שליחה או הרשאות Exchange.")));
                     }
                 }
                 else if (mailTransport.SelectedIndex == 1)
@@ -2427,6 +2436,61 @@ internal sealed class MainForm : Form
             return (inspectedMail.Mta, foreignSidecarHostname.Text.Trim());
         }
         return ("", "");
+    }
+
+    private async Task InspectOAuthSenderMapAsync()
+    {
+        EnsureRoutingLoaded();
+        if (mailTransport.SelectedIndex != 0 || oauthSenderMode.SelectedIndex != 1)
+            throw new InvalidOperationException(
+                "Select the XOAUTH2 multi-mailbox PLAN before inspecting its sender map.");
+        var endpoint = Endpoint();
+        var script = EmbeddedAssets.BuildOAuthSenderMapAuditBundle(
+            oauthSenderMapPath.Text.Trim());
+        var report = await SshRemote.RunRootScriptAsync(endpoint, script,
+            TimeSpan.FromSeconds(90));
+        report.EnsureSuccess();
+        // Do not print arbitrary remote stdout; expose ONLY fixed, nonsecret
+        // result keys and bounded numeric/hash values.
+        var allowed = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["OAUTH_SENDER_MAP_RESULT"] = @"\Astructural_review_only\z",
+            ["OAUTH_SENDER_MAP_MAP_SHA256"] = @"\A[a-f0-9]{64}\z",
+            ["OAUTH_SENDER_MAP_ENTRIES"] = @"\A[1-9][0-9]{0,3}\z",
+            ["OAUTH_SENDER_MAP_LOCAL_LOGINS"] = @"\A[1-9][0-9]{0,3}\z",
+            ["OAUTH_SENDER_MAP_MAILBOXES"] = @"\A[1-9][0-9]{0,3}\z",
+            ["OAUTH_SENDER_MAP_IDENTITIES"] = @"\A[1-9][0-9]{0,3}\z",
+            ["OAUTH_SENDER_MAP_TENANTS"] = @"\A[1-9][0-9]{0,3}\z",
+            ["OAUTH_SENDER_MAP_SENDAS_DIFFERENT_FROM"] = @"\A[0-9]{1,4}\z",
+            ["OAUTH_SENDER_MAP_LOCAL_SMTP_LOGIN_VERIFIED"] = @"\Ano\z",
+            ["OAUTH_SENDER_MAP_ENVELOPE_AUTHORIZATION_ACTIVE"] = @"\Ano\z",
+            ["OAUTH_SENDER_MAP_HEADER_FROM_GUARD_ACTIVE"] = @"\Ano\z",
+            ["OAUTH_SENDER_MAP_EXCHANGE_SENDAS_VERIFIED"] = @"\Ano\z",
+            ["OAUTH_SENDER_MAP_CERTIFICATE_AND_SIGNER_VERIFIED"] = @"\Ano\z",
+            ["OAUTH_SENDER_MAP_POSTFIX_CHANGED"] = @"\Ano\z",
+            ["OAUTH_SENDER_MAP_MESSAGES_SENT"] = @"\Ano\z"
+        };
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string raw in report.StdOut.Split('\n'))
+        {
+            string line = raw.TrimEnd('\r');
+            int equal = line.IndexOf('=');
+            if (equal <= 0) continue;
+            string key = line[..equal];
+            string value = line[(equal + 1)..];
+            if (allowed.TryGetValue(key, out string? pattern))
+            {
+                if (!System.Text.RegularExpressions.Regex.IsMatch(value, pattern,
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant) ||
+                    !values.TryAdd(key, value))
+                    throw new InvalidDataException("Malformed multi-mailbox audit report.");
+            }
+        }
+        if (values.Count != allowed.Count)
+            throw new InvalidDataException("Incomplete multi-mailbox audit report.");
+        foreach (string key in allowed.Keys)
+            WriteLine(key + "=" + values[key]);
+        WriteLine("Structural map review passed; sender authentication, header From ownership, Entra Exchange permissions and SMTP delivery remain NOT VERIFIED. No route was enabled.");
     }
 
     private async Task PreviewFreshConnectorAsync()
