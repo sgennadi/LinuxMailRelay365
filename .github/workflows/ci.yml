@@ -135,6 +135,8 @@ jobs:
           python3 -m py_compile linux/export-hardware-oauth-cert.py
           python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
           python3 -m py_compile linux/m365_xoauth2_transport.py linux/manage-m365-delivery-acceptance.py
+          python3 -m py_compile linux/audit-oauth-sender-map.py
+          python3 -m unittest discover -v -s tests -p test_oauth_sender_map.py
           python3 -m unittest discover -v -s tests -p test_m365_delivery_acceptance.py
           grep -Fx 'OS_FAMILY=rhel' /tmp/lmr365-platform.log
           grep -Fx 'SMTP_PORT=2526' /tmp/lmr365-platform.log
