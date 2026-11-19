@@ -110,6 +110,8 @@ internal sealed class MainForm : Form
     private readonly ComboBox hardwareCutoverTarget = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 560 };
     private readonly ComboBox hardwareCutoverBackup = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 560 };
     private string hardwareCutoverSummary = "";
+    private string? verifiedHardwarePreflightSha;
+    private string? verifiedHardwarePreflightContext;
     private string? reviewedHardwareCutoverSha;
     private string? reviewedHardwareCutoverContext;
     private string? listedHardwareBackupsContext;
@@ -217,6 +219,8 @@ internal sealed class MainForm : Form
             reviewedHardwareCutoverSha = null;
             reviewedHardwareCutoverContext = null;
             hardwareCutoverSummary = "";
+            verifiedHardwarePreflightSha = null;
+            verifiedHardwarePreflightContext = null;
             listedHardwareBackupsContext = null;
             hardwareCutoverBackup.Items.Clear();
             reviewedHardwareStageSha = null;
@@ -611,10 +615,16 @@ internal sealed class MainForm : Form
                     if (!string.IsNullOrEmpty(hardwareCutoverSummary))
                         AddLine(page, UiTheme.Text(hardwareCutoverSummary));
                     if (reviewedHardwareCutoverSha is not null)
+                    {
+                        AddAction(page, T("Проверить получение токена Entra новым TPM/HSM (без смены OAuth)...",
+                                          "Verify staged TPM/HSM Entra token without switching...",
+                                          "בדיקת אסימון Entra ללא שינוי זהות OAuth"),
+                                          VerifyStagedHardwareEntraTokenAsync, false, "shield", "hardware-staged-entra-token");
                         AddAction(page, T("Подтвердить и активировать аппаратный OAuth...",
                                           "Approve and activate hardware OAuth...",
                                           "אישור והפעלת OAuth חומרה"),
                                           ApplyHardwareCutoverAsync, false, "shield", "hardware-cutover-apply");
+                    }
                     AddAction(page, T("Показать доступные резервные копии OAuth",
                                       "List hardware OAuth rollback snapshots",
                                       "רשימת גיבויי OAuth"),
@@ -3083,6 +3093,8 @@ internal sealed class MainForm : Form
             reviewedHardwareStageContext = null;
             hardwareStageKeyRef.Text = "";
             hardwareCutoverSummary = "";
+            verifiedHardwarePreflightSha = null;
+            verifiedHardwarePreflightContext = null;
             reviewedHardwareCutoverSha = null;
             reviewedHardwareCutoverContext = null;
             listedHardwareBackupsContext = null;
@@ -3532,6 +3544,54 @@ internal sealed class MainForm : Form
         RenderPage();
     }
 
+    private async Task VerifyStagedHardwareEntraTokenAsync()
+    {
+        if (linuxSecurity is null)
+            throw new InvalidOperationException("Run Linux security discovery before staged OAuth verification.");
+        var endpoint = Endpoint();
+        string target = SelectedHardwareCutoverTarget();
+        string context = SecurityOptionsStore.Identity(endpoint) + "|" + target;
+        if (reviewedHardwareCutoverSha is null || reviewedHardwareCutoverContext != context)
+            throw new InvalidOperationException("Review the matching hardware OAuth cutover plan first.");
+        string sha = reviewedHardwareCutoverSha;
+        var fresh = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHardwareOAuthCutoverBundle(target, "plan"), TimeSpan.FromSeconds(90));
+        fresh.EnsureSuccess();
+        var match = System.Text.RegularExpressions.Regex.Match(fresh.StdOut,
+            @"(?m)^HARDWARE_CUTOVER_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        if (!match.Success || match.Groups[1].Value != sha ||
+            !fresh.StdOut.Contains("HARDWARE_CUTOVER_APPLIED=no", StringComparison.Ordinal))
+        {
+            verifiedHardwarePreflightSha = null;
+            verifiedHardwarePreflightContext = null;
+            reviewedHardwareCutoverSha = null;
+            reviewedHardwareCutoverContext = null;
+            throw new InvalidOperationException("Staged identity, hardware key or certificate changed. Review the plan again.");
+        }
+        if (MessageBox.Show(this, T(
+            "Операция отправит реальный запрос токена в Entra через существующий TPM/HSM-ключ. Письмо не отправляется, активный app.json и Postfix не меняются. Проверка требует разрешений существующего Entra-приложения. Продолжить?",
+            "This calls the REAL Entra token endpoint with the staged TPM/HSM key. No mail is sent and the active app.json and Postfix stay unchanged. The existing Entra application must already authorize the certificate. Continue?",
+            "הפעולה בודקת אסימון Entra באמצעות המפתח החומרתי ללא שינוי תצורת הדואר. להמשיך?"),
+            "LinuxMailRelay365 | Staged TPM/HSM token check",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHardwareOAuthCutoverBundle(target, "token-preflight", approvalSha: sha),
+            TimeSpan.FromMinutes(4));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("HARDWARE_CUTOVER_STAGED_ONLY=yes", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_ENTRA_TOKEN_VERIFIED=yes", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_LOCAL_SIGNING_VERIFIED=yes", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_TOKEN_PRINTED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_ACTIVE_OAUTH_CHANGED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_MAIL_SENT=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Staged Entra token test did not verify the expected read-only mail state.");
+        verifiedHardwarePreflightSha = sha;
+        verifiedHardwarePreflightContext = context;
+        WriteLine(result.StdOut.Trim());
+        WriteLine("Staged hardware key acquired an Entra application token without activating a mail transport. Exchange SMTP authorization and recipient delivery still need a separate test.");
+        RenderPage();
+    }
+
     private async Task ApplyHardwareCutoverAsync()
     {
         if (linuxSecurity is null)
@@ -3572,6 +3632,8 @@ internal sealed class MainForm : Form
             throw new InvalidDataException("Hardware identity cutover did not return verified success. Inspect the Linux backup state.");
         reviewedHardwareCutoverSha = null;
         reviewedHardwareCutoverContext = null;
+        verifiedHardwarePreflightSha = null;
+        verifiedHardwarePreflightContext = null;
         hardwareCutoverSummary = response.StdOut.Trim();
         WriteLine(hardwareCutoverSummary);
         WriteLine("Hardware OAuth identity activated. MTA, certificate and TPM key files were NOT restarted, replaced or deleted. Check the live mail path separately.");
