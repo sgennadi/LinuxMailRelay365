@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""Read-only comparison: planned multi-mailbox map versus installed SMTP ingress.
+
+NEVER enables XOAUTH2, starts services, edits Postfix, authenticates SMTP,
+loads OAuth secrets, or sends mail. Python 3.6+ for RHEL/OL/Rocky/Alma 8-10.
+Sanitized status codes only: no usernames, addresses, paths or hash contents.
+This tool is intentionally NOT an authorization gate for sending messages.
+"""
+import argparse
+import grp
+import hashlib
+import importlib.util
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import sys
+
+AUDITOR_FILE = Path(__file__).with_name("audit-oauth-sender-map.py")
+HASHES = "/etc/linuxmailrelay365/smtp-auth/passwd"
+GUARD = "/etc/linuxmailrelay365/sidecar-postfix/eop-from-owners.tsv"
+CONF = "/etc/linuxmailrelay365/sidecar-postfix"
+SOCKET = "/run/linuxmailrelay365-from-guard/from-guard.sock"
+MILTER = "unix:" + SOCKET
+OWNER_MAP = "regexp:" + CONF + "/eop-sender-owners.regexp"
+SENDER_POLICY = "reject_authenticated_sender_login_mismatch, check_sender_access regexp:" + CONF + "/eop-fixed-sender.regexp, reject"
+HASH_RE = re.compile(
+    r"\{SHA512-CRYPT\}\$6\$(?:rounds=[0-9]{3,9}\$)?"
+    r"[A-Za-z0-9./]{8,32}\$[A-Za-z0-9./]{30,128}\Z"
+)
+MAX_HASHES = 32768
+MAX_OWNERS = 16384
+
+class AuditRefused(Exception):
+    pass
+
+
+def auditor_module():
+    spec = importlib.util.spec_from_file_location("lmr365_sender_audit", str(AUDITOR_FILE))
+    if spec is None or spec.loader is None:
+        raise AuditRefused("source_module_unavailable")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except (OSError, ValueError, SyntaxError):
+        raise AuditRefused("source_module_unavailable")
+    return module
+
+
+def parse_auth_users(raw, username_re):
+    """Load only the login names. Never return, print or persist password hashes."""
+    if not isinstance(raw, bytes) or not 1 <= len(raw) <= MAX_HASHES or b"\r" in raw or b"\0" in raw:
+        raise AuditRefused("unsafe_auth_file")
+    try:
+        lines = raw.decode("ascii").splitlines()
+    except UnicodeError:
+        raise AuditRefused("unsafe_auth_file")
+    if not 1 <= len(lines) <= 64:
+        raise AuditRefused("auth_account_count_outside_1_64")
+    names = set()
+    for line in lines:
+        if line.count(":") != 1:
+            raise AuditRefused("invalid_auth_account_record")
+        username, hashed = line.split(":", 1)
+        if not username_re.fullmatch(username) or not HASH_RE.fullmatch(hashed):
+            raise AuditRefused("invalid_auth_account_record")
+        folded = username.casefold()
+        if folded in names:
+            raise AuditRefused("duplicate_auth_account")
+        names.add(folded)
+    return names
+
+
+def parse_guard_owners(raw, email_re, login_re):
+    if not isinstance(raw, bytes) or not 1 <= len(raw) <= MAX_OWNERS or b"\r" in raw or b"\0" in raw:
+        raise AuditRefused("unsafe_guard_policy")
+    try:
+        lines = raw.decode("ascii").splitlines()
+    except UnicodeError:
+        raise AuditRefused("unsafe_guard_policy")
+    if not 1 <= len(lines) <= 64:
+        raise AuditRefused("guard_owner_count_outside_1_64")
+    result = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 2 or not email_re.fullmatch(parts[0]) or not login_re.fullmatch(parts[1]):
+            raise AuditRefused("invalid_guard_owner_record")
+        sender, login = parts[0].casefold(), parts[1].casefold()
+        if sender in result:
+            raise AuditRefused("duplicate_guard_sender")
+        result[sender] = login
+    return result
+
+
+def _trusted_binary(name, choices):
+    path = shutil.which(name)
+    if path not in choices:
+        return None
+    return path
+
+
+def read_postconf(key):
+    """Run fixed argv; do not log stderr/config output."""
+    binary = _trusted_binary("postconf", ("/usr/sbin/postconf", "/usr/bin/postconf"))
+    if not binary:
+        return None
+    try:
+        p = subprocess.run(
+            [binary, "-c", CONF, "-h", key],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            universal_newlines=True, timeout=5, check=False)
+        if p.returncode or len(p.stdout) > 4096:
+            return None
+        return p.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def service_active(unit):
+    if unit not in ("linuxmailrelay365-sidecar.service",
+                    "linuxmailrelay365-smtp-auth.service",
+                    "linuxmailrelay365-from-guard.service"):
+        return False
+    binary = _trusted_binary("systemctl", ("/usr/bin/systemctl", "/bin/systemctl"))
+    if not binary:
+        return False
+    try:
+        r = subprocess.run([binary, "is-active", "--quiet", unit],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=5, check=False)
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def socket_metadata():
+    """A local socket is *presence* only, never proof of Milter message checks."""
+    try:
+        st = os.lstat(SOCKET)
+        parent = os.lstat(str(Path(SOCKET).parent))
+        service = __import__("pwd").getpwnam("linuxmailrelay365-fromguard")
+        postfix = grp.getgrnam("postfix")
+        return (stat.S_ISSOCK(st.st_mode) and st.st_uid == service.pw_uid and
+                st.st_gid == postfix.gr_gid and stat.S_IMODE(st.st_mode) == 0o660 and
+                stat.S_ISDIR(parent.st_mode) and parent.st_uid == service.pw_uid and
+                parent.st_gid == postfix.gr_gid and
+                stat.S_IMODE(parent.st_mode) == 0o750)
+    except (OSError, KeyError):
+        return False
+
+
+def assess(rows, auditor, read_file=None, config=None, active=None,
+           gids=None, socket_check=None):
+    """Pure report orchestration: mocked inputs can test every negative branch.
+
+    Even an entirely positive report is only a *static configuration* review.
+    It cannot prove a real client presented SMTP AUTH or the running Postfix
+    accepted/rejected a message, and it cannot authorize OAuth transmission.
+    """
+    read_file = read_file or auditor.secure_read
+    config = config or read_postconf
+    active = active or service_active
+    socket_check = socket_check or socket_metadata
+    if gids is None:
+        try:
+            gids = (grp.getgrnam("dovecot").gr_gid, grp.getgrnam("postfix").gr_gid)
+        except (OSError, KeyError):
+            gids = (None, None)
+    logins = set(row[0] for row in rows)
+    expected_owners = {row[1]: row[0] for row in rows}
+    result = {
+        "AUTH_ACCOUNTS": "unavailable_or_unsafe",
+        "FROM_GUARD_POLICY": "unavailable_or_unsafe",
+        "SASL_TLS_CONFIG": "not_verified",
+        "SENDER_LOGIN_CONFIG": "not_verified",
+        "FROM_GUARD_MILTER_CONFIG": "not_verified",
+        "SERVICES": "not_all_active",
+        "MILTER_SOCKET": "not_verified",
+        "TRANSPORT": "not_multi_mailbox_xoauth2",
+        "OVERALL": "not_ready",
+    }
+    if len(rows) <= 64 and gids[0] is not None:
+        try:
+            actual_logins = parse_auth_users(
+                read_file(HASHES, MAX_HASHES, 0o640, gids[0]), auditor.LOGIN)
+            result["AUTH_ACCOUNTS"] = (
+                "exact_match" if actual_logins == logins else "different")
+        except (OSError, ValueError, AuditRefused, auditor.Refused):
+            pass
+    elif len(rows) > 64:
+        result["AUTH_ACCOUNTS"] = "over_64_account_limit"
+    if len(rows) <= 64 and gids[1] is not None:
+        try:
+            actual_owners = parse_guard_owners(
+                read_file(GUARD, MAX_OWNERS, 0o640, gids[1]),
+                auditor.EMAIL, auditor.LOGIN)
+            result["FROM_GUARD_POLICY"] = (
+                "exact_match" if actual_owners == expected_owners else "different")
+        except (OSError, ValueError, AuditRefused, auditor.Refused):
+            pass
+    elif len(rows) > 64:
+        result["FROM_GUARD_POLICY"] = "over_64_account_limit"
+
+    values = {}
+    for key in (
+        "smtpd_sasl_auth_enable", "smtpd_tls_security_level",
+        "smtpd_tls_auth_only", "smtpd_sasl_type", "smtpd_sasl_path",
+        "smtpd_relay_restrictions", "smtpd_sender_login_maps",
+        "smtpd_sender_restrictions", "smtpd_milters", "milter_protocol",
+        "milter_default_action", "milter_mail_macros",
+        "non_smtpd_milters", "smtpd_milter_maps", "authorized_submit_users",
+        "default_transport",
+    ):
+        values[key] = config(key)
+    if all(values.get(key) == value for key, value in (
+        ("smtpd_sasl_auth_enable", "yes"),
+        ("smtpd_tls_security_level", "encrypt"),
+        ("smtpd_tls_auth_only", "yes"),
+        ("smtpd_sasl_type", "dovecot"),
+        ("smtpd_sasl_path", "private/auth"),
+        ("smtpd_relay_restrictions", "permit_sasl_authenticated, reject"),
+    )):
+        result["SASL_TLS_CONFIG"] = "configured_only"
+    if (values["smtpd_sender_login_maps"] == OWNER_MAP and
+            values["smtpd_sender_restrictions"] == SENDER_POLICY):
+        result["SENDER_LOGIN_CONFIG"] = "configured_only"
+    if (values["smtpd_milters"] == MILTER and
+            values["milter_protocol"] == "6" and
+            values["milter_default_action"] == "tempfail" and
+            values["milter_mail_macros"] == "i {mail_addr} {auth_authen} {auth_type}" and
+            values["non_smtpd_milters"] == "" and
+            values["smtpd_milter_maps"] == "" and
+            values["authorized_submit_users"] == ""):
+        result["FROM_GUARD_MILTER_CONFIG"] = "configured_fail_closed_only"
+
+    if all(active(unit) for unit in (
+        "linuxmailrelay365-sidecar.service",
+        "linuxmailrelay365-smtp-auth.service",
+        "linuxmailrelay365-from-guard.service",
+    )):
+        result["SERVICES"] = "all_report_active"
+    if socket_check():
+        result["MILTER_SOCKET"] = "metadata_matches_only"
+    if isinstance(values["default_transport"], str) and \
+            values["default_transport"].startswith("smtp:["):
+        result["TRANSPORT"] = "eop_smtp_not_xoauth2_multi"
+    if all(result[key] == target for key, target in (
+        ("AUTH_ACCOUNTS", "exact_match"),
+        ("FROM_GUARD_POLICY", "exact_match"),
+        ("SASL_TLS_CONFIG", "configured_only"),
+        ("SENDER_LOGIN_CONFIG", "configured_only"),
+        ("FROM_GUARD_MILTER_CONFIG", "configured_fail_closed_only"),
+        ("SERVICES", "all_report_active"),
+        ("MILTER_SOCKET", "metadata_matches_only"),
+    )):
+        result["OVERALL"] = "ingress_config_consistent_not_live_verified"
+    return result
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Read-only SMTP ingress versus XOAUTH2 sender map review")
+    parser.add_argument("--map-path", required=True)
+    args = parser.parse_args(argv)
+    try:
+        if os.geteuid() != 0:
+            raise AuditRefused("root_required")
+        auditor = auditor_module()
+        auditor.allowed_path(args.map_path)
+        structural = auditor.audit(args.map_path)
+        raw = auditor.secure_read(args.map_path, auditor.MAX_MAP, 0o600, None)
+        if hashlib.sha256(raw).hexdigest() != structural["MAP_SHA256"]:
+            raise AuditRefused("sender_map_changed_during_review")
+        rows = auditor.parse_map(raw)
+        report = assess(rows, auditor)
+        print("OAUTH_INGRESS_REVIEW=read_only")
+        print("OAUTH_INGRESS_MAP_SHA256=" + structural["MAP_SHA256"])
+        for key in ("AUTH_ACCOUNTS", "FROM_GUARD_POLICY", "SASL_TLS_CONFIG",
+                    "SENDER_LOGIN_CONFIG", "FROM_GUARD_MILTER_CONFIG",
+                    "SERVICES", "MILTER_SOCKET", "TRANSPORT", "OVERALL"):
+            print("OAUTH_INGRESS_" + key + "=" + report[key])
+        print("OAUTH_INGRESS_REAL_SMTP_LOGIN_VERIFIED=no")
+        print("OAUTH_INGRESS_REAL_FROM_GUARD_MESSAGE_VERIFIED=no")
+        print("OAUTH_INGRESS_M365_SENDAS_VERIFIED=no")
+        print("OAUTH_INGRESS_MULTI_MAILBOX_ENABLED=no")
+        print("OAUTH_INGRESS_POSTFIX_CHANGED=no")
+        print("OAUTH_INGRESS_MESSAGES_SENT=no")
+        return 0
+    except (AuditRefused, OSError, ValueError) as exc:
+        # Refusal codes are fixed literals; never print raw exception messages
+        # from Postfix, files, tenant identity, or external programs.
+        if isinstance(exc, AuditRefused) and str(exc) in (
+            "root_required", "sender_map_changed_during_review",
+            "source_module_unavailable"):
+            reason = str(exc)
+        else:
+            reason = "read_only_inputs_not_valid"
+        print("OAUTH_INGRESS_REVIEW=refused", file=sys.stderr)
+        print("OAUTH_INGRESS_ERROR=" + reason, file=sys.stderr)
+        print("OAUTH_INGRESS_POSTFIX_CHANGED=no", file=sys.stderr)
+        print("OAUTH_INGRESS_MESSAGES_SENT=no", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
