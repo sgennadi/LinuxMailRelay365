@@ -626,11 +626,16 @@ def stage_report(plan):
 
 
 def stage_identity(plan):
-    """Exclusive atomic publication: existing staged file is never replaced."""
+    """Publish only a new candidate and undo partial publication on failure.
+
+    The final os.link is exclusive; it cannot overwrite a candidate created by
+    another administrator. We only remove the inode we linked ourselves.
+    """
     directory = plan["directory"]
     output = directory / "hardware-staged.json"
     temp = directory / (".hardware-staged-" + secrets.token_hex(12))
     fd = None
+    linked = False
     try:
         fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL |
                      getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -656,11 +661,23 @@ def stage_identity(plan):
             writer.flush()
             os.fsync(writer.fileno())
         checked_file(temp, MAX_IDENTITY, plan["gid"])
-        # Python os.link raises EEXIST for an existing stage, including
-        # symlinks; no replace()/rename() that could clobber a review.
         os.link(str(temp), str(output), follow_symlinks=False)
+        linked = True
         temp.unlink()
         fsync_dir(directory)
+    except Exception:
+        if linked:
+            # A failed directory fsync after os.link must not leave an
+            # unsigned, half-published candidate discoverable by cutover.
+            try:
+                if digest(read_checked(output, MAX_IDENTITY, plan["gid"])) != \
+                        plan["candidate_sha"]:
+                    raise Refused("candidate_modified_during_publish")
+                output.unlink()
+                fsync_dir(directory)
+            except Exception:
+                raise Refused("stage_publish_failed_manual_cleanup_required")
+        raise Refused("stage_publish_refused_without_live_change")
     finally:
         if fd is not None:
             os.close(fd)
