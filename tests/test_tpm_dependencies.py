@@ -158,6 +158,26 @@ class TpmDependencyTests(unittest.TestCase):
              contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(MANAGER.main(["--inspect-provider", "--apply"]), 2)
 
+    def test_explicit_provider_diagnostic_cli_cannot_install_packages(self):
+        plan, digest = mock_plan("10", "auto")
+        outcome = {"OPENSSL3": "available", "SERVICE_USER": "present",
+                   "TPM2_PROVIDER": "loaded_as_m365mailer",
+                   "PKCS11_PROVIDER": "not_loadable",
+                   "TPM2_DEVICE_AS_SERVICE": "read_verified"}
+        with mock.patch.object(MANAGER.os, "geteuid", return_value=0), \
+             mock.patch.object(MANAGER, "read_os_release", return_value=os_info("10")), \
+             mock.patch.object(MANAGER, "make_plan", return_value=(plan, digest)), \
+             mock.patch.object(MANAGER, "provider_doctor", return_value=outcome), \
+             mock.patch.object(MANAGER, "install") as apply, \
+             contextlib.redirect_stdout(io.StringIO()) as report:
+            self.assertEqual(MANAGER.main(["--profile", "auto", "--inspect-provider"]), 0)
+        apply.assert_not_called()
+        text = report.getvalue()
+        self.assertIn("TPM_DEPS_PROVIDER_DIAGNOSTIC=read_only", text)
+        self.assertIn("TPM_DEPS_DIAG_TPM2_PROVIDER=loaded_as_m365mailer", text)
+        self.assertIn("TPM_DEPS_DIAG_KEY_OR_SERVICE_CHANGED=no", text)
+        self.assertIn("TPM_DEPS_APPLIED=no", text)
+
     def test_rhel8_requested_runtime_and_build_headers(self):
         runtime, _ = mock_plan("8", "runtime")
         self.assertEqual(runtime["packages"],
