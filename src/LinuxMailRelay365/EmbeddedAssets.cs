@@ -29,6 +29,7 @@ internal static class EmbeddedAssets
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarConfigRecovery => Text("LinuxMailRelay365.linux.sidecar-config-recovery.py");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
+    internal static string CleanPostfixPreparation => Text("LinuxMailRelay365.linux.prepare-clean-postfix.py");
     internal static string DirectSendSidecarInstaller => Text("LinuxMailRelay365.linux.direct-send-sidecar.sh");
     internal static string ConnectorSidecarInstaller => Text("LinuxMailRelay365.linux.connector-sidecar.sh");
     internal static string ForeignMtaGuard => Text("LinuxMailRelay365.linux.foreign-mta-guard.py");
@@ -497,6 +498,32 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/m365_hardware_signer.py\" <<'LMR365_HARDWARE_SIGNER'\n" +
                Encode(HardwareSigner) + "\nLMR365_HARDWARE_SIGNER\n" +
                "bash \"$work/install-sidecar.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildCleanPostfixBundle(
+        int port, string operation, string? expectedSha = null)
+    {
+        if (port is < 1024 or > 65535 ||
+            operation is not ("check" or "apply" or "verify"))
+            throw new ArgumentException("Invalid clean Postfix bootstrap operation or port.");
+        if (operation == "apply")
+        {
+            if (expectedSha is null ||
+                !Regex.IsMatch(expectedSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+                throw new ArgumentException("Clean package installation requires a reviewed SHA256.");
+        }
+        else if (expectedSha is not null)
+            throw new ArgumentException("Read-only clean Linux action cannot accept an approval fingerprint.");
+        var action = operation == "apply"
+            ? "--apply --expected-plan-sha256 " + expectedSha +
+              " --confirm INSTALL_CLEAN_POSTFIX_PACKAGES"
+            : operation == "verify" ? "--verify-prepared" : "--check-only";
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-clean-postfix.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/prepare.py\" <<'LMR365_CLEAN_POSTFIX'\n" +
+               Encode(CleanPostfixPreparation) + "\nLMR365_CLEAN_POSTFIX\n" +
+               "python3 \"$work/prepare.py\" --smtp-port " + port + " " + action + "\n";
     }
 
     internal static string BuildExistingSmtpAuditBundle()

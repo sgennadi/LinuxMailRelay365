@@ -58,6 +58,19 @@ internal static class Program
                 MainForm.UseWideDeliveryChoices(1500, 192)),
             ("Delivery route chooser guidance", DeliveryModeOverview.SelfTest),
             ("Read-only MTA discovery recommendations", MailServerDiscoveryDecision.SelfTest),
+            ("Clean Postfix bootstrap approval contract", () =>
+            {
+                var preview = EmbeddedAssets.BuildCleanPostfixBundle(2525, "check");
+                var verify = EmbeddedAssets.BuildCleanPostfixBundle(2525, "verify");
+                var apply = EmbeddedAssets.BuildCleanPostfixBundle(2525, "apply", new string('a', 64));
+                bool rejects;
+                try { EmbeddedAssets.BuildCleanPostfixBundle(2525, "apply"); rejects = false; }
+                catch (ArgumentException) { rejects = true; }
+                return preview.Contains("--check-only", StringComparison.Ordinal) &&
+                       verify.Contains("--verify-prepared", StringComparison.Ordinal) &&
+                       apply.Contains("INSTALL_CLEAN_POSTFIX_PACKAGES", StringComparison.Ordinal) &&
+                       rejects;
+            }),
             ("Security plans", SecurityOptionsSelfTest.Run),
             ("Entra public certificate bridge", () =>
             {

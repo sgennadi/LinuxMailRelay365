@@ -1567,3 +1567,29 @@ unavailable socket inventory block the fresh primary install.
 The lightweight read-only Linux inventory now prioritizes active Exim/Sendmail
 over an unused installed postconf utility when identifying a primary MTA.
 The active-service audit remains authoritative for the final install gate.
+
+
+### Clean Linux package preparation: two guarded steps (Preview)
+
+A clean system without recognized Postfix/Exim/Sendmail and without occupied
+SMTP ports now offers **Preview clean Linux Postfix packages**. A read-only
+inspection checks the distribution, systemd mail units, package state, SMTP
+ports and existing mail paths. The returned SHA-256 is bound to OS, unit,
+package and port evidence.
+
+Only a second, separately confirmed **Prepare Postfix PACKAGES** action
+may install the distro Postfix package. It applies a temporary service
+startup block, leaves the primary Postfix service disabled, and creates
+a root-only marker with hashes of the installed primary main.cf/master.cf.
+This is **not** installation of the M365 sidecar, SMTP listener, firewall
+rules, Microsoft 365 connector, or sender account. Installation packages
+are not silently purged on failure.
+
+After package preparation, the Wizard re-inspects the host. A fresh
+Connector/Direct Send sidecar can be installed **only** after live EOP
+preflight plus a separate root-owned marker/hash check proving that the
+primary Postfix is disabled and ports are free. Other installed-but-inactive
+Postfix servers must not use the clean-bootstrap exception.
+
+No clean Linux route is automatically selected; tenant connector identity
+or internal-only recipient scope still requires independent verification.

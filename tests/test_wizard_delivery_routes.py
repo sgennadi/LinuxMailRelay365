@@ -167,6 +167,13 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
         self.assertIn("MailServerDiscoveryDecision.SelfTest", self.program)
         self.assertIn("Do not assume an empty mail server", advisor)
         self.assertIn("No changes were made", advisor)
+        self.assertIn("PreviewCleanPostfixAsync", self.form)
+        self.assertIn("ApplyCleanPostfixAsync", self.form)
+        self.assertIn("CleanBootstrapScriptAsync", self.form)
+        self.assertIn("CLEAN_POSTFIX_PREPARED_VERIFIED=yes", self.form)
+        assets = (project / "EmbeddedAssets.cs").read_text(encoding="utf-8")
+        self.assertIn("BuildCleanPostfixBundle(", assets)
+        self.assertIn("INSTALL_CLEAN_POSTFIX_PACKAGES", assets)
         self.assertIn("ConfirmCurrentActiveMtaForInstallationAsync", self.form)
         self.assertGreaterEqual(
             self.form.count("await ConfirmCurrentActiveMtaForInstallationAsync(endpoint, inventory);"), 3)

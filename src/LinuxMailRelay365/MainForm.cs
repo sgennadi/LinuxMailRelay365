@@ -41,6 +41,10 @@ internal sealed class MainForm : Form
     private string? existingSmtpAuditIdentity;
     private bool? discoveredIsolatedRelay;
     private string? discoveredMailIdentity;
+    private string? previewedCleanBootstrapSha;
+    private string? previewedCleanBootstrapIdentity;
+    private int previewedCleanBootstrapPort;
+    private string cleanBootstrapSummary = "";
     private readonly ComboBox mailTransport = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox oauthSenderMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
@@ -363,6 +367,9 @@ internal sealed class MainForm : Form
                 // Never show evidence from the previous host as current.
                 discoveredIsolatedRelay = null;
                 discoveredMailIdentity = null;
+                previewedCleanBootstrapSha = null;
+                previewedCleanBootstrapIdentity = null;
+                cleanBootstrapSummary = "";
                 inspectedMail = null;
                 inspectedServerIdentity = null;
                 existingSmtpAudit = null;
@@ -1533,6 +1540,24 @@ internal sealed class MainForm : Form
                                       "Check Direct Send / Connector, outbound TCP 25 (read-only)",
                                       "בדיקת Direct Send ו-Connector"),
                                       CheckOutboundModeAsync, false, "check", "outbound-mode");
+                    if (inspectedMail?.Mta == "none")
+                    {
+                        AddLine(page, UiTheme.Text(T(
+                            "Чистая система: сначала отдельно подготовьте пакеты Postfix. Это не запускает основной Postfix и не устанавливает Relay.",
+                            "Clean Linux: prepare Postfix packages separately before installing the isolated Relay. The primary Postfix is not started.",
+                            "שרת נקי: יש להכין חבילות Postfix לפני התקנת הממסר.")));
+                        AddAction(page, T("Проверить подготовку Postfix-пакетов (без изменений)",
+                                          "Preview clean Linux Postfix packages (read-only)",
+                                          "בדיקת חבילות Postfix ללא שינויים"),
+                            PreviewCleanPostfixAsync, false, "check", "clean-postfix-preview");
+                        if (previewedCleanBootstrapSha is not null)
+                            AddAction(page, T("Подтвердить установку пакетов Postfix...",
+                                              "Confirm Postfix PACKAGE installation...",
+                                              "אישור התקנת חבילות Postfix"),
+                                ApplyCleanPostfixAsync, false, "shield", "clean-postfix-apply");
+                        if (!string.IsNullOrWhiteSpace(cleanBootstrapSummary))
+                            AddLine(page, UiTheme.Text(cleanBootstrapSummary));
+                    }
                     AddLine(page, UiTheme.Text(T(
                         "Создание нового отдельного SMTP Relay (требуется проверка существующего MTA, домена и разрешений)",
                         "Install a new isolated SMTP relay (existing MTA, tenant domain and permissions are checked first)",
@@ -2368,6 +2393,9 @@ internal sealed class MainForm : Form
             existingSmtpAuditIdentity = null;
             discoveredIsolatedRelay = null;
             discoveredMailIdentity = null;
+            previewedCleanBootstrapSha = null;
+            previewedCleanBootstrapIdentity = null;
+            cleanBootstrapSummary = "";
             routingIdentity = identity;
         }
         finally { routingLoading = false; }
@@ -3300,6 +3328,112 @@ internal sealed class MainForm : Form
                 "זוהתה תצורה לא תואמת. שליחה חסומה.");
         RenderPage();
         WriteLine("Ingress comparison is read-only: no real authenticated client, no Milter message inspection, no Exchange permissions, no SMTP delivery.");
+    }
+
+
+    private async Task<RemoteResult> CleanBootstrapScriptAsync(
+        SshEndpoint endpoint, string action, int port, string? sha = null)
+    {
+        string script = EmbeddedAssets.BuildCleanPostfixBundle(port, action, sha);
+        // Root SSH accounts need no sudo binary on a fresh minimal Linux.
+        return endpoint.Username == "root"
+            ? await SshRemote.ExecuteAsync(endpoint, "bash -s", script,
+                timeout: TimeSpan.FromMinutes(action == "apply" ? 17 : 2))
+            : await SshRemote.RunRootScriptAsync(endpoint, script,
+                TimeSpan.FromMinutes(action == "apply" ? 17 : 2));
+    }
+
+    private async Task PreviewCleanPostfixAsync()
+    {
+        EnsureRoutingLoaded();
+        if (mailTransport.SelectedIndex is not (1 or 2))
+            throw new InvalidOperationException("Clean Postfix package preparation is for Connector or Direct Send.");
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || port is < 1024 or > 65535)
+            throw new ArgumentException("Choose a private SMTP port 1024..65535.");
+        var endpoint = Endpoint();
+        if (inspectedMail?.Mta != "none" ||
+            inspectedServerIdentity != SecurityOptionsStore.Identity(endpoint) ||
+            existingSmtpAuditIdentity != SecurityOptionsStore.Identity(endpoint) ||
+            existingSmtpAudit is null ||
+            MailServerDiscoveryDecision.InstallationSafetyStatus(inspectedMail, existingSmtpAudit) != "ready")
+            throw new InvalidOperationException(
+                "Fresh clean-package preparation requires a prior verified read-only inspection " +
+                "with no recognized MTA or unexplained SMTP listeners. Run Reinspect MTA first.");
+        previewedCleanBootstrapSha = null;
+        previewedCleanBootstrapIdentity = null;
+        cleanBootstrapSummary = "";
+        var report = await SshRemote.ExecuteAsync(endpoint, "bash -s",
+            EmbeddedAssets.BuildCleanPostfixBundle(port, "check"),
+            timeout: TimeSpan.FromSeconds(120));
+        report.EnsureSuccess();
+        var ready = System.Text.RegularExpressions.Regex.Match(report.StdOut,
+            @"(?m)^CLEAN_POSTFIX_BOOTSTRAP_READY=(yes|no)\r?$");
+        var sha = System.Text.RegularExpressions.Regex.Match(report.StdOut,
+            @"(?m)^CLEAN_POSTFIX_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        var blockers = System.Text.RegularExpressions.Regex.Match(report.StdOut,
+            @"(?m)^CLEAN_POSTFIX_BLOCKERS=([a-z0-9_,]{1,500})\r?$");
+        if (!report.StdOut.Contains("CLEAN_POSTFIX_BOOTSTRAP_VERSION=1", StringComparison.Ordinal) ||
+            !report.StdOut.Contains("CHANGES_APPLIED=no", StringComparison.Ordinal) ||
+            !ready.Success || !blockers.Success)
+            throw new InvalidDataException("Incomplete read-only clean Linux package preflight.");
+        if (ready.Groups[1].Value != "yes")
+        {
+            cleanBootstrapSummary = T(
+                "Установка пока запрещена. Причины: ", "Package preparation blocked. Reasons: ",
+                "הכנת החבילות חסומה. סיבות: ") + blockers.Groups[1].Value;
+            WriteLine("Clean Linux preflight blocked: " + blockers.Groups[1].Value +
+                      ". No changes made.");
+            return;
+        }
+        if (!sha.Success || blockers.Groups[1].Value != "none")
+            throw new InvalidDataException("Clean-package preflight did not return a consistent SHA256.");
+        previewedCleanBootstrapSha = sha.Groups[1].Value;
+        previewedCleanBootstrapIdentity = SecurityOptionsStore.Identity(endpoint);
+        previewedCleanBootstrapPort = port;
+        cleanBootstrapSummary = T(
+            "Чистый Linux подтверждён по проверке. Postfix ещё не установлен. Следующая кнопка установит пакет Postfix с отключённым основным сервисом; затем потребуется отдельно установить Relay.",
+            "Clean host preflight passed. Next action installs Postfix packages with primary service disabled; the isolated SMTP Relay still requires separate installation.",
+            "נמצא שרת נקי. התקנת החבילות מחייבת אישור; הממסר יותקן בנפרד.");
+        WriteLine("Clean Postfix package plan checked (SHA256 " + sha.Groups[1].Value +
+                  "). This is a preview only. No packages, services or ports changed.");
+    }
+
+    private async Task ApplyCleanPostfixAsync()
+    {
+        if (previewedCleanBootstrapSha is null)
+            throw new InvalidOperationException("Run clean-host package Preview first.");
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
+            port != previewedCleanBootstrapPort ||
+            previewedCleanBootstrapIdentity != TryCurrentIdentity() ||
+            mailTransport.SelectedIndex is not (1 or 2))
+            throw new InvalidOperationException(
+                "Linux host, route or custom SMTP port changed after package Preview. Reinspect and preview again.");
+        string expected = previewedCleanBootstrapSha;
+        if (!ConfirmDestructive("LinuxMailRelay365 | Prepare CLEAN Linux Postfix packages",
+            "PACKAGE INSTALLATION on a verified clean Linux server. Install the distro Postfix " +
+            "package and its package dependencies. A temporary startup block is used and removed " +
+            "afterward; the PRIMARY postfix.service will remain disabled. " +
+            "No isolated SMTP listener, firewall change, DNS change, M365 Connector or message " +
+            "will be created. Package-manager postinstall scripts may modify system files. " +
+            "If installation fails, packages are NOT automatically purged; manual review or " +
+            "recovery may be required. Proceed only if the target VM has a tested backup.",
+            "INSTALL CLEAN POSTFIX")) return;
+        previewedCleanBootstrapSha = null;
+        previewedCleanBootstrapIdentity = null;
+        var endpoint = Endpoint();
+        var response = await CleanBootstrapScriptAsync(endpoint, "apply", port, expected);
+        response.EnsureSuccess();
+        if (!response.StdOut.Contains("CLEAN_POSTFIX_PACKAGES_PREPARED=yes", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("PRIMARY_POSTFIX_SERVICE=disabled", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("ISOLATED_RELAY_INSTALLED=no", StringComparison.Ordinal))
+            throw new InvalidDataException(
+                "Postfix package installation outcome is uncertain. Inspect the host manually before continuing.");
+        cleanBootstrapSummary = T(
+            "Postfix-пакеты подготовлены, основной Postfix выключен. Выполните повторный анализ и затем отдельную установку Connector/Direct Send.",
+            "Postfix packages are prepared; the primary service is disabled. Reinspect the MTA and install the isolated Connector/Direct Send separately.",
+            "החבילות הותקנו. השירות הראשי כבוי; יש לבדוק שוב לפני התקנת הממסר.");
+        WriteLine("Clean Linux Postfix package preparation succeeded; no isolated SMTP Relay was installed.");
+        await InspectMailRoutingAsync();
     }
 
     private async Task PreviewFreshConnectorAsync()
@@ -5492,9 +5626,35 @@ internal sealed class MainForm : Form
         string safety = MailServerDiscoveryDecision.InstallationSafetyStatus(
             installed, liveAudit);
         if (safety != "ready")
+        {
+            // A clean, explicitly reviewed package bootstrap may leave a
+            // DISABLED primary Postfix. Require verified root-owned hashes and
+            // zero SMTP listeners before the first isolated EOP installation.
+            if (installed.Mta == "postfix" &&
+                liveAudit.Mta == "no_active_mta_verified" &&
+                mailTransport.SelectedIndex is 1 or 2)
+            {
+                if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port))
+                    throw new InvalidDataException("A custom SMTP port is required.");
+                var prepared = await CleanBootstrapScriptAsync(
+                    endpoint, "verify", port);
+                prepared.EnsureSuccess();
+                if (prepared.StdOut.Contains("CLEAN_POSTFIX_PREPARED_VERIFIED=yes",
+                      StringComparison.Ordinal) &&
+                    prepared.StdOut.Contains("CLEAN_POSTFIX_PREPARED_CUSTOM_PORT=" +
+                      port, StringComparison.Ordinal) &&
+                    prepared.StdOut.Contains("POSTFIX_PRIMARY_STARTED=no",
+                      StringComparison.Ordinal))
+                {
+                    WriteLine("Inactive primary Postfix is verified against the one-time " +
+                        "root-owned clean-bootstrap marker; first isolated EOP setup permitted.");
+                    return;
+                }
+            }
             throw new InvalidOperationException(
                 "Current active MTA does not safely match the inspected Linux configuration: " +
                 safety + ". No installation performed. Run read-only MTA discovery again.");
+        }
         WriteLine("Active MTA rechecked immediately before Apply; type matches installed MTA. " +
                   "This is not proof of an Internet-safe relay or Microsoft 365 delivery.");
     }

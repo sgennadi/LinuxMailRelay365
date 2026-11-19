@@ -41,6 +41,7 @@
     <EmbeddedResource Include="../../linux/manage-tpm-oauth-key.py" LogicalName="LinuxMailRelay365.linux.tpm-oauth-provision.py" />
     <EmbeddedResource Include="../../linux/export-hardware-oauth-cert.py" LogicalName="LinuxMailRelay365.linux.entra-public-cert-export.py" />
     <EmbeddedResource Include="../../linux/probe-linux.sh" LogicalName="LinuxMailRelay365.linux.security-probe.sh" />
+    <EmbeddedResource Include="../../linux/prepare-clean-postfix.py" LogicalName="LinuxMailRelay365.linux.prepare-clean-postfix.py" />
     <EmbeddedResource Include="../../linux/mail-config-recovery.sh" LogicalName="LinuxMailRelay365.linux.recovery.sh" />
     <EmbeddedResource Include="../../linux/sidecar-config-recovery.py" LogicalName="LinuxMailRelay365.linux.sidecar-config-recovery.py" />
     <EmbeddedResource Include="../../linux/install-preserve-postfix-sidecar.sh" LogicalName="LinuxMailRelay365.linux.sidecar.sh" />
