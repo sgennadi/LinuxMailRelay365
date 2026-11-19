@@ -27,8 +27,25 @@ if command -v debconf-set-selections >/dev/null; then
     'postfix postfix/main_mailer_type select Local only' \
     'postfix postfix/mailname string ci.example.test' | sudo debconf-set-selections
 fi
-sudo apt-get update -qq
-sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postfix iproute2 openssl dovecot-core
+# Transient Ubuntu mirror outages must not be mistaken for a Postfix defect.
+# Fail after 3 bounded attempts; never continue with a missing Postfix binary.
+installed=no
+for attempt in 1 2 3; do
+  if sudo apt-get update -qq -o Acquire::Retries=2 &&
+     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+       -o Acquire::Retries=2 postfix iproute2 openssl dovecot-core; then
+    installed=yes
+    break
+  fi
+  if [ "$attempt" -lt 3 ]; then
+    echo "CI_APT_TRANSIENT_FAILURE_RETRY=$attempt"
+    sleep "$((attempt * 6))"
+  fi
+done
+if [ "$installed" != yes ] || ! command -v postconf >/dev/null 2>&1; then
+  echo 'CI_APT_POSTFIX_INSTALL_FAILED_AFTER_3_ATTEMPTS=yes' >&2
+  exit 100
+fi
 sudo postconf -e 'myhostname = relay-ci.example.test'
 sudo postfix check
 sudo systemctl start postfix
