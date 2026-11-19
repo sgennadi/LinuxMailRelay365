@@ -82,6 +82,8 @@ internal static class Program
                     "sidecar", "apply", approvalSha: new string('a', 64));
                 var rollback = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
                     "primary", "rollback", backupId: "20261119T100000Z-abcdef012345");
+                var preflight = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                    "sidecar", "token-preflight", approvalSha: new string('f', 64));
                 bool rejected;
                 try
                 {
@@ -94,6 +96,8 @@ internal static class Program
                        plan.Contains("--target sidecar --plan", StringComparison.Ordinal) &&
                        apply.Contains("--confirm ACTIVATE_HARDWARE_OAUTH", StringComparison.Ordinal) &&
                        rollback.Contains("--confirm ROLLBACK_HARDWARE_OAUTH", StringComparison.Ordinal) &&
+                       preflight.Contains("--token-preflight", StringComparison.Ordinal) &&
+                       preflight.Contains("--confirm VERIFY_STAGED_ENTRA_TOKEN", StringComparison.Ordinal) &&
                        rejected;
             }),
             ("Hardware OAuth diagnostics bundle", () =>
