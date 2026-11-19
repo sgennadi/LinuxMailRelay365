@@ -876,23 +876,23 @@ and Dovecot; never automate this manual command with live credentials.
 ### Verified isolated SMTP Relay configuration backup and offline recovery (Preview)
 
 **This is not the primary Postfix backup**. New
-\`linux/sidecar-config-recovery.py\` provides a separate root-only, SHA-verified
+`linux/sidecar-config-recovery.py` provides a separate root-only, SHA-verified
 snapshot of the LinuxMailRelay365 configuration, isolated systemd service/timer
 units, local transport and monitoring scripts, and owned recovery-state
 directories (if present). It also includes local SMTP AUTH credential hashes and
-sidecar-specific keys **under \`/etc/linuxmailrelay365\`**. Backups never leave
+sidecar-specific keys **under `/etc/linuxmailrelay365`**. Backups never leave
 Linux via the Wizard. They are sensitive and are stored under
-\`/var/backups/linuxmailrelay365-sidecar\` (0700), with archive files mode 0600.
+`/var/backups/linuxmailrelay365-sidecar` (0700), with archive files mode 0600.
 Backup reads fail closed on symlinks, untrusted ownership/permissions,
 oversized trees or concurrent writes. Verification checks the manifest,
 the archive checksum and **every** member SHA-256/type/path/ownership.
 
-\`\`\`bash
+```bash
 sudo python3 linux/sidecar-config-recovery.py --backup
 sudo python3 linux/sidecar-config-recovery.py --list
 sudo python3 linux/sidecar-config-recovery.py --verify BACKUP_ID
 sudo python3 linux/sidecar-config-recovery.py --preview-restore BACKUP_ID
-\`\`\`
+```
 
 The Wizard exposes the same actions separately from primary MTA Restore under
 **Advanced SMTP / Preserve Existing Mail**. Preview prints a hash of the
@@ -900,14 +900,14 @@ The Wizard exposes the same actions separately from primary MTA Restore under
 selected archive, the reviewed current SHA and both Windows and Linux typed
 confirmation:
 
-\`\`\`bash
+```bash
 # Only on an approved disposable test server with its own VM snapshot:
 # Manually STOP the isolated sidecar, SMTP AUTH, health service and timer.
 # Verify the independent queue is empty. Never purge a live mail queue.
 sudo python3 linux/sidecar-config-recovery.py --restore BACKUP_ID \
   --expect-current-sha256 REVIEWED_CURRENT_SHA256 \
   --confirm RESTORE_ISOLATED_RELAY_CONFIGURATION
-\`\`\`
+```
 
 Restore verifies a **stopped isolated stack**, an empty sidecar queue, an
 **unbound custom SMTP listener** (including manually started daemons) and
@@ -1328,3 +1328,31 @@ hardware key is generated, no OAuth signature is made and no mail or
 Entra request is sent. A provider being loadable is **not** proof that
 a configured key works: separate offline PS256 signing, tenant tests,
 SELinux Enforcing and reboot acceptance are required before Stable.
+
+
+## Manual Postfix pre-DATA SMTP envelope acceptance (Draft)
+
+`linux/verify-sidecar-envelope.py` is a separate, opt-in interactive CLI
+probe for an **installed isolated Postfix sidecar** (not the primary MTA).
+It connects only to local 127.0.0.1 at the chosen *custom inbound port*,
+verifies the configured TLS hostname and certificate CA, performs STARTTLS
+and SMTP AUTH PLAIN with an app-specific client password, then sends exactly
+MAIL FROM and RCPT TO before resetting the session (RSET) and quitting.
+**It never sends DATA or queues a message.** Sender, recipient and password
+are prompted on a terminal without echo and do not enter command arguments,
+stdout or diagnostic logs.
+
+    python3 linux/verify-sidecar-envelope.py --smtp-port 46500 \
+      --server-name relay.example.org --login smtp-app01 \
+      --ca-file /path/to/trusted-ca.pem
+
+Test the approved internal recipient first. In Direct Send mode, optionally
+run a second check with `--expect-reject` and a non-tenant recipient, to
+require a permanent SMTP 5xx refusal before DATA. Always use an approved
+disposable host and real trusted TLS identity. This proves only **local
+pre-DATA SMTP policy**, not successful delivery to Exchange Online, correct
+Postfix queue and retries, tenant Connector permissions or recipient inbox.
+
+The true end-to-end internal+external two-recipient acceptance using actual
+Postfix DATA/queue remains blocked until a real, approved test tenant, secure
+client credential handling and independently reviewed recipients are available.
