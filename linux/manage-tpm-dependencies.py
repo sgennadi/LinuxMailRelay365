@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import shutil
 import stat
@@ -187,6 +188,92 @@ def emit(plan, sha):
     print("TPM_DEPS_TPM_KEYS_CHANGED=no")
 
 
+def provider_doctor(plan, runner=subprocess.run, runuser=None):
+    """Explicit non-mutating OpenSSL provider and TPM access diagnosis.
+
+    Provider loading/getcap may open a TPM device. No key provisioning,
+    signature, SMTP, Entra or host configuration action is performed.
+    """
+    outcome = {"OPENSSL3": "not_verified",
+               "SERVICE_USER": "not_verified",
+               "TPM2_PROVIDER": "not_tested",
+               "PKCS11_PROVIDER": "not_tested",
+               "TPM2_DEVICE_AS_SERVICE": "not_tested"}
+    env = {"LC_ALL": "C", "PATH": "/usr/bin:/bin",
+           "HOME": "/nonexistent", "OPENSSL_CONF": "/dev/null",
+           "TPM2OPENSSL_TCTI": "device:/dev/tpmrm0",
+           "TPM2TOOLS_TCTI": "device:/dev/tpmrm0"}
+    try:
+        version = runner(["/usr/bin/openssl", "version"], env=env,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         timeout=10, check=False)
+        raw = version.stdout if isinstance(version.stdout, bytes) else b""
+        valid = re.match(br"^OpenSSL\s+([0-9]+)\.", raw[:512])
+        if version.returncode or not valid or int(valid.group(1)) < 3:
+            outcome["OPENSSL3"] = "missing_or_unsupported"
+            return outcome
+        outcome["OPENSSL3"] = "available"
+    except (OSError, subprocess.TimeoutExpired):
+        outcome["OPENSSL3"] = "missing_or_unavailable"
+        return outcome
+
+    try:
+        pwd.getpwnam("m365mailer")
+    except KeyError:
+        outcome["SERVICE_USER"] = "missing"
+        return outcome
+    if runuser is None:
+        runuser = ("/usr/sbin/runuser" if os.access("/usr/sbin/runuser", os.X_OK)
+                   else "/usr/bin/runuser" if os.access("/usr/bin/runuser", os.X_OK)
+                   else "")
+    if runuser not in ("/usr/sbin/runuser", "/usr/bin/runuser"):
+        outcome["SERVICE_USER"] = "runuser_unavailable"
+        return outcome
+    outcome["SERVICE_USER"] = "present"
+
+    prefix = [runuser, "-u", "m365mailer", "--"]
+    for provider, field in (("tpm2", "TPM2_PROVIDER"),
+                            ("pkcs11", "PKCS11_PROVIDER")):
+        if provider == "tpm2" and not plan["resource_manager"]:
+            outcome[field] = "resource_manager_missing"
+            continue
+        try:
+            result = runner(prefix + ["/usr/bin/openssl", "list", "-providers",
+                                     "-provider", "default", "-provider", provider],
+                            env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, timeout=15, check=False)
+            raw = result.stdout if isinstance(result.stdout, bytes) else b""
+            lines = [x.strip() for x in raw[:8192].decode(
+                "ascii", "replace").splitlines()]
+            outcome[field] = ("loaded_as_m365mailer"
+                              if result.returncode == 0 and provider in lines
+                              else "not_loadable")
+        except (OSError, subprocess.TimeoutExpired):
+            outcome[field] = "load_failed_or_timed_out"
+
+    if plan["resource_manager"] and plan["tpm2_getcap_present"]:
+        try:
+            result = runner(prefix + ["/usr/bin/tpm2_getcap", "properties-fixed"],
+                            env=env, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=15, check=False)
+            outcome["TPM2_DEVICE_AS_SERVICE"] = (
+                "read_verified" if result.returncode == 0 else "read_failed")
+        except (OSError, subprocess.TimeoutExpired):
+            outcome["TPM2_DEVICE_AS_SERVICE"] = "read_failed_or_timed_out"
+    return outcome
+
+
+def emit_provider_doctor(state):
+    print("TPM_DEPS_PROVIDER_DIAGNOSTIC=read_only")
+    for field in ("OPENSSL3", "SERVICE_USER", "TPM2_PROVIDER",
+                  "PKCS11_PROVIDER", "TPM2_DEVICE_AS_SERVICE"):
+        print("TPM_DEPS_DIAG_" + field + "=" + state[field])
+    print("TPM_DEPS_DIAG_PS256_SIGNATURE_VERIFIED=no")
+    print("TPM_DEPS_DIAG_ATTESTATION_VERIFIED=no")
+    print("TPM_DEPS_DIAG_ENTRA_CONTACTED=no")
+    print("TPM_DEPS_DIAG_KEY_OR_SERVICE_CHANGED=no")
+
+
 def install(plan, sha, confirm, approved_sha):
     if confirm != CONFIRM or approved_sha != sha:
         raise ValueError("typed_approval_or_reviewed_sha_mismatch")
@@ -230,10 +317,16 @@ def main(argv=None):
     p.add_argument("--profile", choices=PROFILES, default="auto")
     p.add_argument("--os-release-file", default="/etc/os-release")
     p.add_argument("--apply", action="store_true", help="Explicit guarded RPM installation")
+    p.add_argument("--inspect-provider", action="store_true",
+                   help="Read-only OpenSSL provider and service TPM access probe")
     p.add_argument("--approve-sha256", default="")
     p.add_argument("--confirm", default="")
     args = p.parse_args(argv)
     try:
+        if args.apply and args.inspect_provider:
+            raise ValueError("provider_diagnostic_and_package_apply_mutually_exclusive")
+        if args.inspect_provider and os.geteuid() != 0:
+            raise ValueError("root_required_for_provider_probe")
         if args.apply and args.os_release_file != "/etc/os-release":
             raise ValueError("custom_os_release_disallowed_for_apply")
         if not args.apply and (args.confirm or args.approve_sha256):
@@ -243,6 +336,8 @@ def main(argv=None):
         if args.apply:
             install(plan, sha, args.confirm, args.approve_sha256)
         else:
+            if args.inspect_provider:
+                emit_provider_doctor(provider_doctor(plan))
             print("TPM_DEPS_APPLIED=no")
             print("TPM_DEPS_NEXT=review_plan_before_approved_apply")
         return 0
