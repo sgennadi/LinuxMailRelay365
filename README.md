@@ -1457,3 +1457,18 @@ From Guard / SMTP account capacity. This does NOT verify that the Milter is
 actually running, bound to authenticated SMTP submissions or authorized in
 Exchange Online. Maps beyond that limit stay plan-only; the program never
 truncates sender mappings or silently changes to a less secure mode.
+
+## Live configuration comparison without activation (multi-mailbox XOAUTH2)
+
+On the XOAUTH2 sender-policy page the Wizard now has two independent
+read-only actions: **Audit sender/mailbox mapping** and **Compare against
+installed SMTP AUTH and From Guard**. The second check scans
+root-controlled login/From ownership files, Postfix configuration,
+Dovecot and From Guard service status, with sanitized results.
+
+Even a result labelled `ingress_config_consistent_not_live_verified`
+means only that a local ingress configuration appears consistent. It
+does NOT mean any real SMTP login, RFC5322 From filtering, Exchange
+Send As, multi-mailbox selection or external mail delivery is working.
+All multi-mailbox Apply/Send buttons remain disabled. See
+`docs/FINAL_ACCEPTANCE.md` for precise evidence and limitations.
