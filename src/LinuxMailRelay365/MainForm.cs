@@ -2984,9 +2984,9 @@ internal sealed class MainForm : Form
             T("Установка DNF будет выполнена только после подтверждения. Пакеты: ",
               "DNF will install packages only after your approval. Packages: ",
               "חבילות RPM יותקנו רק לאחר אישור: ") + packages + "\n" +
-            T("Подпись Microsoft 365, TPM-ключи, службы, firewall, SELinux и Postfix НЕ будут включены или изменены. Репозитории уже должны быть настроены и доверены.",
-              "No Microsoft 365 signer, TPM keys, services, firewall, SELinux or Postfix will be enabled or changed. Existing trusted repositories are required.",
-              "לא יתבצע שינוי במפתחות TPM, בדואר, בחומת האש או בשירותים."),
+            T("Приложение не включает TPM-подпись, не меняет ключи, firewall, SELinux и Postfix. Установка RPM может запускать сценарии пакетов и изменять зависимости; проверьте транзакцию DNF и состояние служб. Используются только уже настроенные доверенные репозитории.",
+              "The application does not activate hardware signing or directly modify TPM keys, firewall, SELinux or Postfix. RPM scriptlets/dependencies may affect services; review the DNF transaction and service state. Only existing trusted repositories are used.",
+              "התוכנה אינה מפעילה חתימה או משנה מפתחות TPM, חומת אש, SELinux או Postfix. התקנת RPM עשויה להשפיע על שירותים."),
             "INSTALL_TPM2_DEPENDENCIES")) return;
         var result = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildTpmDependenciesBundle(profile, sha), TimeSpan.FromMinutes(18));
