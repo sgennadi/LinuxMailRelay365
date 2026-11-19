@@ -46,6 +46,11 @@ internal static class Program
                 }
                 catch (ArgumentException) { return true; }
             }),
+            ("Responsive SSH layout breakpoints", () =>
+                MainForm.UseWideConnectionLayout(1050, 96) &&
+                !MainForm.UseWideConnectionLayout(760, 96) &&
+                !MainForm.UseWideConnectionLayout(1050, 192) &&
+                MainForm.UseWideConnectionLayout(1900, 192)),
             ("Security plans", SecurityOptionsSelfTest.Run),
             ("Entra public certificate bridge", () =>
             {

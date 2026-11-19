@@ -140,7 +140,25 @@ internal sealed class MainForm : Form
     private readonly Label headline = UiTheme.Text("", true);
     private readonly Label subheading = UiTheme.Text("");
     private readonly Panel pageHost = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = UiTheme.Canvas };
-    private readonly FlowLayoutPanel navigation = new() { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
+    private readonly FlowLayoutPanel navigation = new()
+    {
+        Dock = DockStyle.Fill, AutoSize = true,
+        WrapContents = false, FlowDirection = FlowDirection.RightToLeft
+    };
+    private readonly Panel activityPanel = new() { Dock = DockStyle.Fill, Height = 124, Visible = false };
+    private readonly LinkLabel activityToggle = new()
+    {
+        AutoSize = true, LinkColor = UiTheme.Navy,
+        Font = new Font("Segoe UI", 9f),
+        Margin = new Padding(10, 2, 0, 2)
+    };
+    private readonly CheckBox specifyHostKeyManually = new()
+    {
+        AutoSize = true, ForeColor = UiTheme.Navy,
+        Margin = new Padding(0, 5, 0, 6)
+    };
+    private bool connectionWideLayout;
+    private bool resizingConnectionLayout;
     private readonly DiagnosticJournal journal = new();
     private readonly TextBox activity = new()
     {
@@ -186,6 +204,17 @@ internal sealed class MainForm : Form
         Directory.CreateDirectory(dataDirectory);
         sshPassword.UseSystemPasswordChar = true;
         sudoPassword.UseSystemPasswordChar = true;
+        specifyHostKeyManually.CheckedChanged += (_, _) =>
+        {
+            if (step == 0 && !busy) RenderPage();
+        };
+        activityToggle.LinkClicked += (_, _) =>
+        {
+            activityPanel.Visible = !activityPanel.Visible;
+            activityToggle.Text = activityPanel.Visible
+                ? T("Скрыть журнал", "Hide activity", "הסתר יומן")
+                : T("Показать журнал", "Show activity", "הצג יומן");
+        };
         sshFingerprint.AccessibleDescription = "Optional SHA256 fingerprint. Leave blank to review the server key before sending the SSH password.";
         sshAuthMode.Items.AddRange(["SSH key / ssh-agent", "SSH username + password"]);
         mailTransport.Items.AddRange([
@@ -454,13 +483,22 @@ internal sealed class MainForm : Form
         header.Controls.Add(headline);
         header.Controls.Add(subheading);
 
-        var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(18, 2, 18, 12) };
+        // Keep navigation in reach; hide the full log until the operator asks.
+        var footerStatus = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2,
+            RowCount = 1, AutoSize = true };
+        footerStatus.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footerStatus.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        footerStatus.Controls.Add(status, 0, 0);
+        footerStatus.Controls.Add(activityToggle, 1, 0);
+        activityPanel.Controls.Add(activity);
+        var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3,
+            ColumnCount = 1, Padding = new Padding(18, 0, 18, 9) };
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        bottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 145));
+        bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         bottom.Controls.Add(navigation, 0, 0);
-        bottom.Controls.Add(activity, 0, 1);
-        bottom.Controls.Add(status, 0, 2);
+        bottom.Controls.Add(footerStatus, 0, 1);
+        bottom.Controls.Add(activityPanel, 0, 2);
 
         var shell = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1 };
         shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -472,7 +510,16 @@ internal sealed class MainForm : Form
         shell.Controls.Add(pageHost, 0, 2);
         shell.Controls.Add(bottom, 0, 3);
         Controls.Add(shell);
-        pageHost.SizeChanged += (_, _) => ResizePreserveFlowHelp();
+        pageHost.SizeChanged += (_, _) =>
+        {
+            ResizePreserveFlowHelp();
+            if (step != 0 || !IsHandleCreated || busy || resizingConnectionLayout ||
+                UseWideConnectionLayout(pageHost.Width, DeviceDpi) == connectionWideLayout)
+                return;
+            resizingConnectionLayout = true;
+            try { RenderPage(); }
+            finally { resizingConnectionLayout = false; }
+        };
         RenderPage();
         WriteLine("Ready. No user passwords, app secrets, or OAuth tokens are stored by this manager.");
     }
@@ -606,6 +653,187 @@ internal sealed class MainForm : Form
         return button;
     }
 
+
+    internal static bool UseWideConnectionLayout(int hostWidth, int dpi) =>
+        (long)hostWidth * 96 >= 900L * Math.Max(96, dpi);
+
+    private static TableLayoutPanel ConnectionCard(Color background)
+    {
+        var card = new TableLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1, RowCount = 0, Dock = DockStyle.Fill,
+            BackColor = background,
+            Margin = new Padding(0, 0, 10, 12),
+            Padding = new Padding(16, 12, 16, 16)
+        };
+        card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        return card;
+    }
+
+    private void AddConnectionField(TableLayoutPanel card, string caption, Control input)
+    {
+        var label = UiTheme.Text(caption);
+        label.ForeColor = UiTheme.Navy;
+        label.Margin = new Padding(0, 5, 0, 4);
+        input.AccessibleName = caption;
+        input.Dock = DockStyle.Fill;
+        input.Margin = new Padding(0, 0, 0, 10);
+        AddLine(card, label);
+        AddLine(card, input);
+    }
+
+    private void AddConnectionPair(TableLayoutPanel card, string leftCaption, Control left,
+        string rightCaption, Control right, float leftPercent = 60)
+    {
+        var pair = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2, RowCount = 2,
+            BackColor = card.BackColor, Margin = new Padding(0)
+        };
+        pair.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, leftPercent));
+        pair.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100 - leftPercent));
+        pair.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        pair.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var leftLabel = UiTheme.Text(leftCaption);
+        var rightLabel = UiTheme.Text(rightCaption);
+        leftLabel.ForeColor = rightLabel.ForeColor = UiTheme.Navy;
+        leftLabel.Margin = rightLabel.Margin = new Padding(0, 5, 0, 4);
+        left.AccessibleName = leftCaption;
+        right.AccessibleName = rightCaption;
+        left.Dock = right.Dock = DockStyle.Fill;
+        left.Margin = new Padding(0, 0, 10, 12);
+        right.Margin = new Padding(0, 0, 0, 12);
+        pair.Controls.Add(leftLabel, 0, 0);
+        pair.Controls.Add(rightLabel, 1, 0);
+        pair.Controls.Add(left, 0, 1);
+        pair.Controls.Add(right, 1, 1);
+        AddLine(card, pair);
+    }
+
+    private void AddConnectionHelp(TableLayoutPanel card, string text, int wrapWidth)
+    {
+        var label = new Label
+        {
+            Text = text,
+            AutoSize = true, MaximumSize = new Size(Math.Max(240, wrapWidth), 0),
+            Font = new Font("Segoe UI", 10f),
+            ForeColor = UiTheme.Muted, Margin = new Padding(0, 9, 0, 10)
+        };
+        AddLine(card, label);
+    }
+
+    private void RenderConnectionStep(TableLayoutPanel page)
+    {
+        connectionWideLayout = UseWideConnectionLayout(pageHost.Width, DeviceDpi);
+        page.MaximumSize = Size.Empty;
+        page.Dock = DockStyle.Top;
+        page.Padding = new Padding(18, 4, 8, 8);
+        var cards = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = connectionWideLayout ? 2 : 1,
+            RowCount = connectionWideLayout ? 1 : 2,
+            BackColor = UiTheme.Canvas,
+            Margin = new Padding(0)
+        };
+        if (connectionWideLayout)
+        {
+            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 63));
+            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 37));
+        }
+        else
+            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var form = ConnectionCard(Color.White);
+        var details = ConnectionCard(Color.FromArgb(238, 243, 248));
+        cards.Controls.Add(form, 0, 0);
+        cards.Controls.Add(details, connectionWideLayout ? 1 : 0,
+            connectionWideLayout ? 0 : 1);
+
+        var heading = UiTheme.Text(T("Данные сервера", "Server connection", "פרטי השרת"), true);
+        AddLine(form, heading);
+        AddConnectionPair(form,
+            T("Linux: DNS или IPv4", "Linux DNS or IPv4", "כתובת Linux"), host,
+            T("SSH-порт", "SSH port", "פורט SSH"), sshPort, 73);
+        if (connectionWideLayout)
+            AddConnectionPair(form,
+                T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser,
+                T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode, 43);
+        else
+        {
+            AddConnectionField(form, T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser);
+            AddConnectionField(form, T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode);
+        }
+        if (sshAuthMode.SelectedIndex == 1)
+        {
+            if (connectionWideLayout)
+                AddConnectionPair(form,
+                    T("SSH-пароль", "SSH password", "סיסמת SSH"), sshPassword,
+                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 54);
+            else
+            {
+                AddConnectionField(form, T("SSH-пароль (не сохраняется)",
+                    "SSH password (not saved)", "סיסמת SSH"), sshPassword);
+                AddConnectionField(form, T("Пароль sudo (если нужен)",
+                    "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
+            }
+            specifyHostKeyManually.Text = T(
+                "Указать SSH host key SHA256 вручную (необязательно)",
+                "Enter SSH host key SHA256 manually (optional)",
+                "הקלדת טביעת מפתח SSH ידנית (אופציונלי)");
+            AddLine(form, specifyHostKeyManually);
+            if (specifyHostKeyManually.Checked)
+            {
+                sshFingerprint.PlaceholderText = "SHA256:...";
+                AddConnectionField(form, T("Подтверждённый SSH SHA256", "Verified SSH SHA256",
+                    "טביעת SHA256 מאומתת"), sshFingerprint);
+            }
+        }
+        else
+        {
+            if (connectionWideLayout)
+                AddConnectionPair(form,
+                    T("SSH-ключ / ssh-agent", "SSH key / ssh-agent", "מפתח SSH"), sshKey,
+                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 60);
+            else
+            {
+                AddConnectionField(form, T("SSH-ключ / ssh-agent", "SSH key / ssh-agent", "מפתח SSH"), sshKey);
+                AddConnectionField(form, T("Пароль sudo (если нужен)",
+                    "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
+            }
+        }
+        var test = AddAction(form,
+            T("Проверить подключение и продолжить", "Check connection and continue",
+                "בדיקת חיבור והמשך"), CheckSshAndContinueAsync, true, "ssh", "ssh");
+        AcceptButton = test;
+        AddLine(details, UiTheme.Text(T("Как это работает", "What happens next", "כיצד זה עובד"), true));
+        AddConnectionHelp(details, sshAuthMode.SelectedIndex == 1
+            ? T("1. Введи SSH-пароль. SHA256 вводить необязательно.\n\n2. При первом соединении программа покажет отпечаток сервера. Подтверди его перед входом.\n\n3. После проверки откроется следующий шаг.",
+                "1. Enter your SSH password. SHA256 is optional.\n\n2. On first contact, verify and approve the server key before login.\n\n3. A successful check opens the next step.",
+                "יש להזין סיסמת SSH; טביעת SHA256 אופציונלית ודורשת אישור בחיבור ראשון.")
+            : T("1. Используется установленный Windows OpenSSH.\n\n2. SSH host key должен быть подтверждён в known_hosts.\n\n3. Успешная проверка откроет следующий шаг.",
+                "1. Uses Windows OpenSSH key or agent.\n\n2. The host key must already be trusted in known_hosts.\n\n3. A successful check opens the next step.",
+                "נעשה שימוש ב-Windows OpenSSH וב-known_hosts."),
+            connectionWideLayout ? (int)(pageHost.Width * .34) - 56 : pageHost.Width - 100);
+        AddLine(details, UiTheme.Text(T("Важно", "Security note", "הערת אבטחה"), true));
+        AddConnectionHelp(details,
+            T("При первом подключении сравни SHA256 с ключом на консоли Linux, если есть такая возможность. Пароли в настройках не сохраняются. Кнопка «Далее» пропускает проверку, но не подтверждает подключение.",
+              "When possible, compare the SHA256 with the Linux console. Passwords are not saved. The Next button skips this check; it does not verify connectivity.",
+              "רצוי להשוות את טביעת המפתח במסוף השרת. סיסמאות אינן נשמרות."),
+            connectionWideLayout ? (int)(pageHost.Width * .34) - 56 : pageHost.Width - 100);
+        AddLine(page, cards);
+    }
+
+    private async Task CheckSshAndContinueAsync()
+    {
+        await CheckSshAsync();
+        EnsureSecurityLoaded();
+        step = 1;
+    }
+
     private void RenderPage()
     {
         if (IsDisposed) return;
@@ -642,6 +870,7 @@ internal sealed class MainForm : Form
         };
         pageHost.SuspendLayout();
         pageHost.Controls.Clear();
+        AcceptButton = null;
         var page = NewPage();
         pageHost.Controls.Add(page);
         pageHost.AutoScrollPosition = Point.Empty;
@@ -649,33 +878,7 @@ internal sealed class MainForm : Form
         switch (step)
         {
             case 0:
-                AddField(page, T("Linux: DNS-имя или IPv4", "Linux host (DNS or IPv4)", "כתובת שרת Linux"), host);
-                AddField(page, T("SSH-порт", "SSH port", "פורט SSH"), sshPort);
-                AddField(page, T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser);
-                AddLine(page, UiTheme.Text(T("Способ входа по SSH", "SSH authentication", "שיטת SSH")));
-                AddLine(page, sshAuthMode);
-                if (sshAuthMode.SelectedIndex == 1)
-                {
-                    AddField(page, T("Пароль SSH (не сохраняется)", "SSH password (not saved)", "סיסמת SSH"), sshPassword);
-                    sshFingerprint.PlaceholderText = T(
-                        "Необязательно — предложить подтвердить при подключении",
-                        "Optional — confirm on first connection",
-                        "אופציונלי — אישור בחיבור ראשון");
-                    AddField(page, T("SSH host key SHA256 (необязательно)",
-                                     "SSH host key SHA256 (optional)",
-                                     "טביעת SHA256 של SSH (אופציונלי)"), sshFingerprint);
-                }
-                else
-                {
-                    AddField(page, T("Путь к SSH-ключу (или ssh-agent)", "SSH key path (or ssh-agent)", "מפתח SSH"), sshKey);
-                }
-                AddField(page, T("Пароль sudo (необязательно, не сохраняется)",
-                                 "sudo password (optional, not saved)", "סיסמת sudo"), sudoPassword);
-                AddAction(page, T("Проверить SSH и sudo", "Check SSH and sudo", "בדיקת SSH ו-sudo"), CheckSshAsync, true, "ssh", "ssh");
-                AddLine(page, UiTheme.Text(T(
-                    "Отпечаток SHA256 можно не вводить: при первом подключении покажем ключ сервера для явного подтверждения до отправки пароля. При возможности сверяйте его через консоль Linux. Режим SSH-ключа использует known_hosts. Пароли не сохраняются.",
-                    "SHA256 is optional: on first connection the server key is shown for explicit approval BEFORE password authentication. Verify it out of band when possible. SSH key mode uses known_hosts. Passwords are not stored.",
-                    "טביעת SHA256 אינה חובה; המפתח מוצג לאישור לפני שליחת הסיסמה. מומלץ לאמת בנפרד.")));
+                RenderConnectionStep(page);
                 break;
             case 1:
                 EnsureSecurityLoaded();
@@ -1454,7 +1657,6 @@ internal sealed class MainForm : Form
         var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
         back.Enabled = step > 0 && !busy;
         back.Click += (_, _) => { step--; RenderPage(); };
-        navigation.Controls.Add(back);
         var next = UiTheme.Action(T("Далее", "Next", "הבא"), primary: true, glyph: "next");
         next.Enabled = step < 4 && !busy;
         next.Click += (_, _) =>
@@ -1468,6 +1670,10 @@ internal sealed class MainForm : Form
             RenderPage();
         };
         navigation.Controls.Add(next);
+        navigation.Controls.Add(back);
+        activityToggle.Text = activityPanel.Visible
+            ? T("Скрыть журнал", "Hide activity", "הסתר יומן")
+            : T("Показать журнал", "Show activity", "הצג יומן");
         status.Text = lastStatus ?? T("Готов к работе · Пароли M365 не сохраняются",
             "Ready · M365 mailbox passwords are never stored", "מוכן · סיסמאות M365 אינן נשמרות");
         status.ForeColor = lastFailed ? Color.FromArgb(174, 40, 43) : UiTheme.Muted;
@@ -1575,6 +1781,12 @@ internal sealed class MainForm : Form
                 finally { routingLoading = false; }
             }
         }
+        // Verify the same connection form reflows at the compact window size.
+        Size = new Size(760, 700);
+        step = 0;
+        RenderPage();
+        Screenshot("01-linux-connection-compact.png");
+        Size = new Size(1050, 830);
         File.WriteAllText(Path.Combine(root, "README.txt"),
             "Actual WinForms Preview wizard screenshots from a disposable CI runner.\n" +
             "Factory defaults only; no real SSH, Microsoft 365 tenant, TPM or SMTP delivery.\n" +
@@ -1618,6 +1830,7 @@ internal sealed class MainForm : Form
             journal.Record(category, "failed");
             WriteLine("ERROR: " + ex.Message);
             lastFailed = true;
+            activityPanel.Visible = true;
             lastStatus = T("Ошибка — проверь журнал", "Error — review activity", "שגיאה — בדוק יומן");
         }
         finally { busy = false; RenderPage(); }
