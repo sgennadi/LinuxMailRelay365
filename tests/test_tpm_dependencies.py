@@ -24,6 +24,58 @@ def mock_plan(version="9", profile="runtime", installed=None, tpm=(" /dev/tpmrm0
 
 
 class TpmDependencyTests(unittest.TestCase):
+    def test_auto_profile_rhel10_prefers_vendor_native_provider(self):
+        plan, _ = mock_plan("10", "auto")
+        self.assertEqual(plan["selected_profile"], "native-provider")
+        self.assertEqual(plan["selection_reason"], "rhel10_native_tpm2_openssl")
+        self.assertIn("tpm2-openssl", plan["missing"])
+
+    def test_auto_profile_rhel9_requires_existing_openssl3_module(self):
+        runtime, runtime_sha = mock_plan("9", "auto")
+        self.assertEqual(runtime["selected_profile"], "runtime")
+        self.assertNotIn("pkcs11-provider", runtime["packages"])
+        pkcs, pkcs_sha = mock_plan("9", "auto", installed={"pkcs11-provider"})
+        self.assertEqual(pkcs["selected_profile"], "pkcs11")
+        self.assertIn("tpm2-pkcs11", pkcs["packages"])
+        self.assertNotEqual(runtime_sha, pkcs_sha)
+
+    def test_auto_profile_rhel8_only_offers_runtime(self):
+        plan, _ = mock_plan("8", "auto")
+        self.assertEqual(plan["selected_profile"], "runtime")
+        self.assertNotIn("tpm2-openssl", plan["packages"])
+
+    def test_plan_hash_includes_resource_manager_and_actual_tool(self):
+        def plan(device, utility):
+            return MANAGER.make_plan(
+                os_info("10"), "auto",
+                check_installed=lambda package: False,
+                tpm_probe=lambda: (device, "2"),
+                utility_probe=lambda: utility)
+        a, h1 = plan("/dev/tpmrm0", False)
+        b, h2 = plan("/dev/tpm0", False)
+        c, h3 = plan("/dev/tpmrm0", True)
+        self.assertTrue(a["resource_manager"])
+        self.assertFalse(b["resource_manager"])
+        self.assertFalse(a["tpm2_getcap_present"])
+        self.assertNotEqual(h1, h2)
+        self.assertNotEqual(h1, h3)
+
+    def test_auto_plan_reports_unverified_signer(self):
+        plan, digest = mock_plan("9", "auto")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            MANAGER.emit(plan, digest)
+        self.assertIn("TPM_DEPS_SELECTED_PROFILE=runtime", out.getvalue())
+        self.assertIn("TPM_DEPS_PROVIDER_NEXT=manual_vendor_review_no_auto_source_build",
+                      out.getvalue())
+        self.assertIn("TPM_DEPS_HARDWARE_KEY_READY=not_verified", out.getvalue())
+
+    def test_missing_getcap_after_rpm_reports_failure(self):
+        plan, digest = mock_plan("10", "runtime", installed=MANAGER.BASE)
+        with mock.patch.object(MANAGER.os, "geteuid", return_value=0), \
+                mock.patch.object(MANAGER, "tpm_getcap_ready", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "tpm2_getcap_missing"):
+                MANAGER.install(plan, digest, MANAGER.CONFIRM, digest)
+
     def test_rhel8_requested_runtime_and_build_headers(self):
         runtime, _ = mock_plan("8", "runtime")
         self.assertEqual(runtime["packages"],
@@ -90,6 +142,7 @@ class TpmDependencyTests(unittest.TestCase):
         with mock.patch.object(MANAGER.os, "geteuid", return_value=0), \
                 mock.patch.object(MANAGER.shutil, "which", return_value="/usr/bin/dnf"), \
                 mock.patch.object(MANAGER, "rpm_installed", fake_rpm), \
+                mock.patch.object(MANAGER, "tpm_getcap_ready", return_value=True), \
                 mock.patch.object(MANAGER.subprocess, "run", return_value=fake_result) as run, \
                 contextlib.redirect_stdout(io.StringIO()):
             MANAGER.install(plan, sha, MANAGER.CONFIRM, sha)
