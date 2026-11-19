@@ -2597,6 +2597,8 @@ internal sealed class MainForm : Form
             ["OAUTH_INGRESS_MAP_SHA256"] = @"\A[a-f0-9]{64}\z",
             ["OAUTH_INGRESS_AUTH_ACCOUNTS"] = @"\A(?:unavailable_or_unsafe|exact_match|different|over_64_account_limit)\z",
             ["OAUTH_INGRESS_FROM_GUARD_POLICY"] = @"\A(?:unavailable_or_unsafe|exact_match|different|over_64_account_limit)\z",
+            ["OAUTH_INGRESS_POSTFIX_OWNER_RULES"] = @"\A(?:unavailable_or_unsafe|exact_match|different|over_64_account_limit)\z",
+            ["OAUTH_INGRESS_FROM_GUARD_SHA_PIN"] = @"\A(?:not_verified|configured_pinned_only)\z",
             ["OAUTH_INGRESS_SASL_TLS_CONFIG"] = @"\A(?:not_verified|configured_only)\z",
             ["OAUTH_INGRESS_SENDER_LOGIN_CONFIG"] = @"\A(?:not_verified|configured_only)\z",
             ["OAUTH_INGRESS_FROM_GUARD_MILTER_CONFIG"] = @"\A(?:not_verified|configured_fail_closed_only)\z",
