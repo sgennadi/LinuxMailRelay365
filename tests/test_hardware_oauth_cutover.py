@@ -144,6 +144,55 @@ class HardwareOAuthCutoverTests(unittest.TestCase):
         self.assertEqual(self.calls, ["candidate_sign", "candidate_entra"])
         self.assertEqual(self.active, self.old)
 
+    def test_staged_exchange_smtp_auth_preflight_never_activates_mail(self):
+        with contextlib.ExitStack() as stack:
+            for patch in self._patch_apply():
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(
+                CUT, "checked_smtp_auth",
+                side_effect=lambda *_: self.calls.append("exchange_smtp_auth")))
+            with contextlib.redirect_stdout(io.StringIO()) as result:
+                CUT.smtp_auth_preflight(self.target, self.plan["sha"],
+                                         CUT.CONFIRM_SMTP_PREFLIGHT)
+        self.assertEqual(self.calls, ["candidate_sign", "exchange_smtp_auth"])
+        self.assertEqual(self.active, self.old)
+        text = result.getvalue()
+        self.assertIn("HARDWARE_CUTOVER_SMTP_AUTH_XOAUTH2_VERIFIED=yes", text)
+        self.assertIn("HARDWARE_CUTOVER_MAIL_FROM_RCPT_DATA_SENT=no", text)
+        self.assertIn("HARDWARE_CUTOVER_ACTIVE_OAUTH_CHANGED=no", text)
+        self.assertIn("HARDWARE_CUTOVER_TOKEN_PRINTED=no", text)
+        self.assertIn("HARDWARE_CUTOVER_APPLIED=no", text)
+
+    def test_staged_exchange_smtp_auth_must_have_exact_sha_and_approval(self):
+        with mock.patch.object(CUT, "ensure_root"), \
+             mock.patch.object(CUT, "lock") as lock:
+            with self.assertRaisesRegex(CUT.Refused, "consent_required"):
+                CUT.smtp_auth_preflight(self.target, self.plan["sha"], "WRONG")
+            lock.assert_not_called()
+        with contextlib.ExitStack() as stack:
+            for patch in self._patch_apply():
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(CUT, "checked_smtp_auth") as auth)
+            with self.assertRaisesRegex(CUT.Refused, "plan_changed_reapprove"):
+                CUT.smtp_auth_preflight(self.target, "e" * 64,
+                                         CUT.CONFIRM_SMTP_PREFLIGHT)
+            auth.assert_not_called()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.active, self.old)
+
+    def test_staged_exchange_smtp_auth_refusal_never_modifies_postfix(self):
+        with contextlib.ExitStack() as stack:
+            for patch in self._patch_apply():
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(
+                CUT, "checked_smtp_auth",
+                side_effect=CUT.Refused("staged_exchange_smtp_auth_failed")))
+            with self.assertRaisesRegex(CUT.Refused, "staged_exchange_smtp_auth_failed"):
+                CUT.smtp_auth_preflight(self.target, self.plan["sha"],
+                                         CUT.CONFIRM_SMTP_PREFLIGHT)
+        self.assertEqual(self.calls, ["candidate_sign"])
+        self.assertEqual(self.active, self.old)
+
     def test_candidate_offline_signing_then_entra_before_any_change(self):
         with contextlib.ExitStack() as stack:
             for patch in self._patch_apply():
