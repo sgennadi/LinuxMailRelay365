@@ -234,13 +234,13 @@ def select_planned_identity_offline(rows, authenticated_login, envelope_from,
 def simulate_policy(rows):
     """Deterministic positive and spoofing-negative tests, using no sockets."""
     tested = 0
-    for login, sender, mailbox, _ in rows:
+    for login, sender, mailbox, identity_path in rows:
         message = ("From: <" + sender + ">\r\n"
                    "To: fixture@ci.invalid\r\n"
                    "Subject: local policy test\r\n\r\n"
                    "This message is not transmitted.\r\n").encode("ascii")
         if select_planned_identity_offline(rows, login, sender, mailbox,
-                                           message) != _:
+                                           message) != identity_path:
             raise Refused("policy_simulation_wrong_oauth_identity")
         tested += 1
         invalid = (
