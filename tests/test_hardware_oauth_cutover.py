@@ -45,7 +45,7 @@ class HardwareOAuthCutoverTests(unittest.TestCase):
         with mock.patch.object(CUT, "read_checked", return_value=b"mock cert/key data"):
             CUT.check_candidate(self.identity, self.staged, self.directory, 30)
             changes = dict(self.staged, mailbox="attacker@example.org")
-            with self.assertRaisesRegex(CUT.Refused, "routing"):
+            with self.assertRaisesRegex(CUT.Refused, "tenant_client_or_sender_change_forbidden"):
                 CUT.check_candidate(self.identity, changes, self.directory, 30)
             changes = dict(self.staged, private_key=str(self.directory / "app.key"))
             with self.assertRaisesRegex(CUT.Refused, "pem_fallback"):
