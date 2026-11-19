@@ -16,6 +16,7 @@ internal static class EmbeddedAssets
 
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
+    internal static string OAuthSenderMapAudit => Text("LinuxMailRelay365.linux.oauth-sender-map-audit.py");
     internal static string HardwareSigner => Text("LinuxMailRelay365.linux.hardware-signer.py");
     internal static string TpmDependencies => Text("LinuxMailRelay365.linux.tpm-dependencies.py");
     internal static string HardwareOAuthDiagnostics => Text("LinuxMailRelay365.linux.hardware-oauth-diagnostics.py");
@@ -278,6 +279,23 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/manage-tpm-dependencies.py\" <<'LMR365_TPM_DEPENDENCIES'\n" +
                Encode(TpmDependencies) + "\nLMR365_TPM_DEPENDENCIES\n" +
                "python3 \"$work/manage-tpm-dependencies.py\" " + args + "\n";
+    }
+
+    internal static string BuildOAuthSenderMapAuditBundle(string mapPath)
+    {
+        // This is a read-only root-only audit. Do not pass sender address,
+        // OAuth token, certificate content or SMTP password in this bundle.
+        if (mapPath.Length > 256 ||
+            !Regex.IsMatch(mapPath, @"\A/etc/linuxmailrelay365/[A-Za-z0-9_./-]{1,240}\.tsv\z",
+                           RegexOptions.CultureInvariant) ||
+            mapPath.Split('/').Any(part => part is "." or ".." or ""))
+            throw new ArgumentException("Only an absolute /etc/linuxmailrelay365/ sender map TSV path is allowed.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-sender-audit.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/audit-oauth-sender-map.py\" <<'LMR365_OAUTH_MAP_AUDIT'\n" +
+               Encode(OAuthSenderMapAudit) + "\nLMR365_OAUTH_MAP_AUDIT\n" +
+               "python3 \"$work/audit-oauth-sender-map.py\" --map-path " + mapPath + "\n";
     }
 
     internal static string BuildLinuxBundle(string[] args)
