@@ -1439,3 +1439,13 @@ Send until SMTP AUTH login ownership, secure From header guard, per-mailbox
 OAuth and Exchange authorization, recovery and real delivery are verified.
 See `docs/FINAL_ACCEPTANCE.md` for the exact TSV column format and
 permission rules.
+
+## Read-only spoofing simulation for multi-mailbox XOAUTH2
+
+The sender map audit also runs offline positive/negative checks: it compares
+each configured SMTP login, envelope sender, intended Exchange Online mailbox,
+and single RFC5322 From/Sender, rejecting cross-account and duplicate-header
+spoof attempts. Only synthetic messages are parsed; no user mail or tokens are
+read, nothing is delivered. The GUI reports the number of tests and explicitly
+labels them **offline simulation only**. Live sender-ownership enforcement and
+multi-mailbox SMTP sending are still disabled.
