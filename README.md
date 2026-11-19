@@ -1361,7 +1361,7 @@ client credential handling and independently reviewed recipients are available.
 ## Full-message Postfix delivery on an offline CI fixture (Draft)
 
 Ubuntu 24.04 and ubuntu-latest CI now test more than SMTP EHLO/RCPT:
-after installing the independent private Connector fixture, the test sends
+after installing independent private Connector **and Direct Send** fixtures, the tests send
 one synthetic **DATA** message into its real Postfix inbound listener, which
 queues and forwards the message to a loopback-only SMTP sink. It asserts
 exact sender, recipient, headers and body, requires the independent queue
