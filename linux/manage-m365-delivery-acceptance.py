@@ -153,6 +153,19 @@ def prepare(target, request):
             signer.get("provider") not in ("tpm2", "pkcs11") or
             "private_key" in identity):
         raise Refused("active_hardware_oauth_identity_required")
+    certificate = identity.get("certificate")
+    provider_config = signer.get("provider_config")
+    if (not isinstance(certificate, str) or
+            Path(certificate).parent != directory or
+            not isinstance(provider_config, str) or
+            Path(provider_config).parent != directory):
+        raise Refused("active_certificate_or_provider_outside_identity")
+    certificate_sha = digest(checked_read(certificate, MAX_SOURCE,
+                             modes=(0o640, 0o644)))
+    provider_sha = digest(checked_read(provider_config, MAX_SOURCE, gid))
+    helper_sha = digest(checked_read(
+        Path("/usr/local/libexec/m365_hardware_signer.py"),
+        MAX_SOURCE, modes=(0o644, 0o755)))
     domain = sender.rsplit("@", 1)[1].lower()
     internal_domain = request["internal"].rsplit("@", 1)[1].lower()
     external_domain = request["external"].rsplit("@", 1)[1].lower()
@@ -163,8 +176,10 @@ def prepare(target, request):
     evidence = {"version": VERSION, "target": target,
                 "identity_sha": digest(identity_raw),
                 "transport_sha": digest(code), "run_id": request["run_id"],
-                "internal_sha": digest(request["internal"].lower().encode("ascii")),
-                "external_sha": digest(request["external"].lower().encode("ascii"))}
+                "public_certificate_sha": certificate_sha,
+                "provider_config_sha": provider_sha, "signer_helper_sha": helper_sha,
+                "internal_sha": digest(request["internal"].encode("ascii")),
+                "external_sha": digest(request["external"].encode("ascii"))}
     plan_sha = digest(json.dumps(evidence, sort_keys=True,
                      separators=(",", ":")).encode("ascii"))
     return {"sha": plan_sha, "target": target, "directory": directory,
