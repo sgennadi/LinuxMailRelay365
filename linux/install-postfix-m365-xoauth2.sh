@@ -267,8 +267,9 @@ else
   exit 1
 fi
 
-[ -f "$SCRIPT_DIR/m365_xoauth2_transport.py" ] || {
-  echo "Missing $SCRIPT_DIR/m365_xoauth2_transport.py" >&2; exit 1;
+[ -f "$SCRIPT_DIR/m365_xoauth2_transport.py" ] &&
+[ -f "$SCRIPT_DIR/m365_hardware_signer.py" ] || {
+  echo 'Bundled transport or hardware-signing helper missing; no changes.' >&2; exit 1;
 }
 
 if ! id m365mailer >/dev/null 2>&1; then
@@ -333,6 +334,9 @@ chmod 0640 "$CONF_DIR/app.json"
 install -D -o root -g root -m 0755 \
   "$SCRIPT_DIR/m365_xoauth2_transport.py" \
   /usr/local/libexec/m365_xoauth2_transport.py
+install -D -o root -g root -m 0644 \
+  "$SCRIPT_DIR/m365_hardware_signer.py" \
+  /usr/local/libexec/m365_hardware_signer.py
 
 STAMP="$(date -u +'%Y%m%dT%H%M%SZ')"
 cp -p /etc/postfix/main.cf "/etc/postfix/main.cf.pre-m365.$STAMP"
