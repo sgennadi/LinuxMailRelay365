@@ -457,6 +457,96 @@ internal sealed class MainForm : Form
     private string T(string russian, string english, string hebrew) =>
         language.SelectedIndex switch { 1 => english, 2 => hebrew, _ => russian };
 
+    private void LocalizeDeliveryChoices()
+    {
+        // Keep ComboBox selection/index identities stable across RU / EN / HE.
+        // No routing plans, credentials or approvals may be modified by a
+        // display-language change.
+        static void Relabel(ComboBox combo, string[] values)
+        {
+            int index = Math.Clamp(combo.SelectedIndex, 0, values.Length - 1);
+            combo.BeginUpdate();
+            try
+            {
+                combo.Items.Clear();
+                combo.Items.AddRange(values);
+                combo.SelectedIndex = index;
+            }
+            finally { combo.EndUpdate(); }
+        }
+
+        int lang = language.SelectedIndex;
+        var transportNames = lang switch
+        {
+            0 => new[]
+            {
+                "XOAUTH2 — ящик Microsoft 365, порт 587",
+                "SMTP Connector — IP/сертификат, внутренняя и внешняя почта, порт 25",
+                "Direct Send — только внутренние адресаты M365, порт 25"
+            },
+            2 => new[]
+            {
+                "XOAUTH2 — תיבת דואר Microsoft 365, יציאה 587",
+                "SMTP Connector — כתובת IP או אישור, יציאה 25",
+                "Direct Send — נמענים פנימיים בלבד, יציאה 25"
+            },
+            _ => new[]
+            {
+                "XOAUTH2 — authorized Microsoft 365 mailbox, port 587",
+                "SMTP Connector — approved IP/certificate, all recipients, port 25",
+                "Direct Send — internal Microsoft 365 recipients only, port 25"
+            }
+        };
+        var senderNames = lang switch
+        {
+            0 => new[]
+            {
+                "Один фиксированный адрес From",
+                "Сохранять From пользователей (SMTP AUTH и From Guard)",
+                "Маскировать отправителей из поддоменов (From Guard)"
+            },
+            2 => new[]
+            {
+                "כתובת From קבועה",
+                "שמירת From לכל משתמש (SMTP AUTH ו-From Guard)",
+                "שכתוב כתובת From מתתי-דומיין (From Guard)"
+            },
+            _ => new[]
+            {
+                "One fixed approved sender address",
+                "Preserve original From (SMTP AUTH and From Guard)",
+                "Masquerade approved subdomain From (From Guard)"
+            }
+        };
+        var oauthNames = lang switch
+        {
+            0 => new[]
+            {
+                "Один почтовый ящик для всех — From заменяется",
+                "Несколько почтовых ящиков — сохранить From (только план)"
+            },
+            2 => new[]
+            {
+                "תיבה אחת לכולם — כתובת From תוחלף",
+                "תיבות מרובות — שמירת From (תכנון בלבד)"
+            },
+            _ => new[]
+            {
+                "One mailbox for all messages — From rewritten",
+                "Multiple authorized mailboxes — preserve From (plan only)"
+            }
+        };
+        bool wasLoading = routingLoading;
+        routingLoading = true;
+        try
+        {
+            Relabel(mailTransport, transportNames);
+            Relabel(senderPolicy, senderNames);
+            Relabel(oauthSenderMode, oauthNames);
+        }
+        finally { routingLoading = wasLoading; }
+    }
+
     private static void AddLine(TableLayoutPanel table, Control control)
     {
         int row = table.RowCount++;
@@ -786,6 +876,7 @@ internal sealed class MainForm : Form
                 break;
             case 3:
                 EnsureRoutingLoaded();
+                LocalizeDeliveryChoices();
                 AddLine(page, UiTheme.Text(T("Отправка через Microsoft 365", "Microsoft 365 delivery method", "שיטת שליחה דרך Microsoft 365")));
                 AddLine(page, mailTransport);
                 if (mailTransport.SelectedIndex == 0)
