@@ -28,7 +28,8 @@ class DeliveryAcceptanceTests(unittest.TestCase):
             "tenant_id": "11111111-1111-1111-1111-111111111111",
             "client_id": "22222222-2222-2222-2222-222222222222",
             "certificate": "/etc/linuxmailrelay365/sidecar-identity/hardware-app.crt",
-            "signer": {"type": "openssl-provider", "provider": "tpm2"},
+            "signer": {"type": "openssl-provider", "provider": "tpm2",
+                       "provider_config": "/etc/linuxmailrelay365/sidecar-identity/tpm2.cnf"},
         }
         self.identity_bytes = json.dumps(self.identity).encode("ascii")
         self.stack = contextlib.ExitStack()
