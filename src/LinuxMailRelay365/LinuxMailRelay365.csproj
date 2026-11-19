@@ -11,6 +11,8 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <PublishTrimmed>false</PublishTrimmed>
+    <!-- Obsolete X.509 constructor regressions are build errors. -->
+    <WarningsAsErrors>$(WarningsAsErrors);SYSLIB0057</WarningsAsErrors>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <Version>0.1.0-preview.15</Version>
     <!-- Standalone builds work in a public repository. Reuse the user's private
