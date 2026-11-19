@@ -867,6 +867,94 @@ internal sealed class MainForm : Form
     }
 
 
+
+    internal static bool UseWideDeliveryChoices(int hostWidth, int dpi) =>
+        (long)hostWidth * 96 >= 660L * Math.Max(96, dpi);
+
+    private TableLayoutPanel BuildDeliveryModeChoices()
+    {
+        // Compact mode cards replace a long dropdown on the route-selection
+        // step. The existing ComboBox remains the single source of truth.
+        // The handler only changes a local plan, never installs any route.
+        bool horizontal = UseWideDeliveryChoices(pageHost.ClientSize.Width, DeviceDpi);
+        int width = Math.Max(325, pageHost.ClientSize.Width - 45);
+        var choices = new TableLayoutPanel
+        {
+            ColumnCount = horizontal ? 3 : 1,
+            RowCount = horizontal ? 1 : 3,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Width = width,
+            MaximumSize = new Size(width, 0),
+            BackColor = UiTheme.Canvas,
+            Margin = new Padding(0, 7, 0, 10),
+            Padding = Padding.Empty
+        };
+        for (int i = 0; i < choices.ColumnCount; ++i)
+            choices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / choices.ColumnCount));
+        for (int i = 0; i < choices.RowCount; ++i)
+            choices.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var labels = language.SelectedIndex switch
+        {
+            0 => new[]
+            {
+                "XOAUTH2 · порт 587\nСертификат Entra",
+                "SMTP Connector · порт 25\nIP или TLS-сертификат",
+                "Direct Send · порт 25\nТолько внутри M365"
+            },
+            2 => new[]
+            {
+                "XOAUTH2 · 587\nאישור Entra",
+                "SMTP Connector · 25\nIP או אישור TLS",
+                "Direct Send · 25\nלנמענים פנימיים בלבד"
+            },
+            _ => new[]
+            {
+                "XOAUTH2 · port 587\nEntra certificate",
+                "SMTP Connector · port 25\nApproved IP or TLS cert",
+                "Direct Send · port 25\nM365 internal only"
+            }
+        };
+        for (int mode = 0; mode < labels.Length; mode++)
+        {
+            int index = mode;
+            bool selected = mailTransport.SelectedIndex == mode;
+            var tile = new Button
+            {
+                Text = labels[mode],
+                Width = Math.Max(175, width / choices.ColumnCount - 15),
+                Height = 79,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 0, mode == 2 || !horizontal ? 0 : 9, 7),
+                Padding = new Padding(11, 5, 9, 5),
+                TextAlign = ContentAlignment.MiddleLeft,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = selected ? UiTheme.Teal : Color.White,
+                ForeColor = selected ? Color.White : UiTheme.Navy,
+                Font = new Font("Segoe UI", 9.5f,
+                    selected ? FontStyle.Bold : FontStyle.Regular),
+                Cursor = Cursors.Hand,
+                AccessibleName = labels[mode].Replace('\n', ' '),
+                AccessibleDescription = DeliveryModeOverview.Describe(mode,
+                    language.SelectedIndex, oauthSenderMode.SelectedIndex == 1).Safety,
+                TabStop = !busy,
+                Enabled = !busy
+            };
+            tile.FlatAppearance.BorderColor = selected
+                ? UiTheme.Teal : Color.FromArgb(205, 217, 230);
+            tile.FlatAppearance.BorderSize = selected ? 2 : 1;
+            tile.Click += (_, _) =>
+            {
+                if (busy || mailTransport.SelectedIndex == index) return;
+                mailTransport.SelectedIndex = index; // Re-renders from existing event.
+            };
+            choices.Controls.Add(tile, horizontal ? mode : 0, horizontal ? 0 : mode);
+        }
+        return choices;
+    }
+
     private TableLayoutPanel BuildDeliveryModeOverview()
     {
         var guide = DeliveryModeOverview.Describe(
@@ -1180,7 +1268,7 @@ internal sealed class MainForm : Form
                     "Выберите, КАК Linux будет отправлять почту через Microsoft 365",
                     "First select HOW Linux will deliver mail through Microsoft 365",
                     "בחרו כיצד Linux ישלח דואר דרך Microsoft 365")));
-                AddLine(page, mailTransport);
+                AddLine(page, BuildDeliveryModeChoices());
                 AddLine(page, BuildDeliveryModeOverview());
                 if (mailTransport.SelectedIndex is 1 or 2)
                 {
