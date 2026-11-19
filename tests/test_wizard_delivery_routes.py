@@ -70,6 +70,16 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
         self.assertIn('PreserveFlowSnapshot.SelfTest', self.program)
         self.assertIn('MailRoutingPlanStore.SelfTest', self.program)
 
+    def test_delivery_choice_before_necessary_entra_setup(self):
+        section = self.form.split("            case 2:", 1)[1].split("            case 3:", 1)[0]
+        self.assertIn("First select HOW Linux will deliver mail through Microsoft 365", section)
+        self.assertIn("AddLine(page, mailTransport);", section)
+        self.assertLess(section.index("AddLine(page, mailTransport);"),
+                        section.index("if (mailTransport.SelectedIndex is 1 or 2)"))
+        self.assertIn("Connector and Direct Send do NOT require an Entra application", section)
+        self.assertIn("Certificate", self.form)
+        self.assertIn("step is 2 or 3", self.form)
+
     def test_multi_mailbox_audit_is_exposed_without_enabling_transport(self):
         project = (ROOT/"src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
         assets = (ROOT/"src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
