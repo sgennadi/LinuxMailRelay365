@@ -252,7 +252,7 @@ jobs:
           foreach ($image in $images) {
             if ($image.Length -lt 3000) { throw "Empty or invalid screen PNG: $($image.Name)" }
           }
-          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=7'
+          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=9'
           Write-Host 'SMTP_TENANT_CONNECTIONS_ATTEMPTED=no'
       - name: Upload actual Wizard screenshots (no production host or tenant)
         uses: actions/upload-artifact@v6
