@@ -3318,7 +3318,12 @@ internal sealed class MainForm : Form
                 reviewedEntraCertObjectId, source.ActiveSha, source.StagedSha,
                 source.ActiveCertificateSha, source.CandidateCertificateSha),
             TimeSpan.FromSeconds(90));
-        proofRun.EnsureSuccess();
+        // IMPORTANT: a failed root shell cleanup can leave a signed proof in
+        // stdout. Never invoke RemoteResult.EnsureSuccess here: it includes
+        // stdout/stderr in its exception, which could expose an ephemeral JWT.
+        if (proofRun.ExitCode != 0)
+            throw new InvalidOperationException(
+                "Linux Graph proof signing failed; inspect local Linux status without exporting the proof.");
         // Never write proofRun.StdOut to any report or activity journal.
         string proof = EntraCertificateReview.ParseProof(proofRun.StdOut);
         string sha = reviewedEntraCertPlanSha;
