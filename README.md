@@ -1168,3 +1168,33 @@ CLI on the *approved test host* (does not accept arbitrary config paths):
 Use `--target primary` only when the installed primary Postfix uses the XOAUTH2 pipe transport and a separately approved maintenance window exists. Backups are kept under `/var/backups/linuxmailrelay365-hardware-oauth/{sidecar,primary}` with root-only directory/file permissions. Status output contains no tokens, PINs, private keys, assertions or mailbox addresses.
 
 **Safety limitation:** an atomic JSON switch protects against torn configuration writes, but simultaneous in-flight mail jobs may use either old or new identity until the switch is complete. Use an operator-approved maintenance window for production. A token check confirms Entra application token issuance, **not** Exchange Online SMTP authorization or delivered mail. Device attestation/provenance, real RHEL SELinux Enforcing, physical hardware signing, reboot recovery and signed Stable QA remain release gates.
+
+
+## Hardware OAuth candidate staging (Preview)
+
+The Wizard can now build `hardware-staged.json` without manual JSON editing. Select `sidecar` or `primary`, choose **TPM2** or **PKCS#11**, enter the reference for an **already provisioned** hardware key, review a read-only SHA256 plan and separately confirm creation. No TPM key, private PEM, HSM PIN, Entra app, Postfix service or message is created or modified.
+
+**Prerequisites on the selected Linux host:**
+
+- An existing `app.json` with a recoverable root-owned key and certificate, and an installed XOAUTH2 transport and signing helper.
+- A matching *public* `hardware-app.crt` inside the selected root-owned identity directory, with mode `0644` or `0640`, verified by the operator against the real hardware key.
+- A root-owned `tpm2.cnf` or `pkcs11.cnf` inside that same directory, group `m365mailer`, mode `0640`; the config is the approved place to load hardware provider modules. PINs and module paths must never be entered in the Wizard key reference.
+- A hardware key reference: `handle:0x81000001` or the fixed `/etc/.../tpm2-app.key` TSS2-wrapped blob for TPM2, or a PIN-free `pkcs11:object=...;type=private` / PKCS#11 `id=` URI.
+
+The output is a separate root-owned `hardware-staged.json`, group `m365mailer`, mode `0640`. The generator copies the *tenant ID, app client ID and mailbox* from the existing active identity, forbids PEM fallback, binds its plan SHA to the existing identity and the public certificate/provider/transport bytes, refuses any pre-existing staged file, and verifies offline PS256 signature matching the hardware public certificate. A failed signature or dependency check removes only the newly published candidate; unexpected external edits are fail-closed and reported. The active identity remains unchanged.
+
+### CLI for the same staging mechanism
+
+Preview (does not access Entra or sign):
+
+    sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --stage-plan --stage-provider tpm2 --stage-key-ref handle:0x81000001
+
+Apply the reviewed SHA256, then locally sign and verify without mail or Entra:
+
+    sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --stage-apply --stage-provider tpm2 --stage-key-ref handle:0x81000001 --approve-sha256 <exact-64-character-sha> --confirm STAGE_HARDWARE_OAUTH
+
+Alternatively an experienced Linux administrator can create a root-owned `hardware-request.json` containing exactly `provider`, `key_ref`, and `provider_config` under the identity directory; `--stage-plan` without `--stage-provider` will inspect that request. No arbitrary identity paths are accepted.
+
+**Then** register the candidate public certificate with the existing Entra application using a separately approved tenant workflow; only afterwards review the distinct **hardware cutover** SHA plan and explicitly approve its live token preflight and rollback-protected activation.
+
+**Not yet implemented:** automatic hardware RSA key provisioning, key attestation/provenance, provider-config generation and certificate registration. A successful test of a provider's PS256 signature does not itself prove TPM/HSM key origin or Exchange Online SMTP delivery.
