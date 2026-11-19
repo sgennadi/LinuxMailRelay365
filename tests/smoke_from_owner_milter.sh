@@ -44,6 +44,10 @@ sudo bash "$INSTALL" --apply --smtp-port "$PORT" \
   grep -Fx 'FROM_GUARD_SERVICE=active'
 sudo test -S "$SOCKET"
 sudo systemctl is-active --quiet linuxmailrelay365-from-guard.service
+sudo test -L /etc/systemd/system/linuxmailrelay365-sidecar.service.wants/linuxmailrelay365-from-guard.service || {
+  echo 'FROM_GUARD_ERROR=missing_automatic_sidecar_start_dependency' >&2
+  exit 2
+}
 test -z "$(sudo postconf -c "$CONF" -h smtpd_milters)"
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$PRIMARY"
 
