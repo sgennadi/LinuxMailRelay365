@@ -146,6 +146,21 @@ class SessionTests(unittest.TestCase):
             a.close()
             b.close()
 
+    def test_real_postfix_stage_only_helo_macro_packet_is_legal(self):
+        # Postfix may send 'D' with only the HELO stage byte when it has
+        # zero macro values to report. It must NOT abort the Milter before
+        # its SMFIC_HELO callback. MAIL FROM without login still rejects.
+        session = start()
+        self.assertEqual(guard.parse_macro_packet(b"H"), (b"H", {}))
+        self.assertIsNone(session.handle(b"D", b"H"))
+        self.assertEqual(session.handle(b"H", b"ci-helo.invalid\x00"), b"c")
+        self.assertIsNone(session.handle(b"D", b"M"))
+        self.assertEqual(session.handle(b"M", b"<alice@example.org>\x00"), b"r")
+        for value in (b"", b"X\x00name\x00", b"Mname\x00without_value"):
+            with self.subTest(value=value):
+                with self.assertRaises(guard.PolicyError):
+                    guard.parse_macro_packet(value)
+
     def test_valid_from_sender_login_and_end_of_message(self):
         session = start()
         self.assertEqual(mail(session), b"c")
