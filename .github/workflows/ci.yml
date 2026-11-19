@@ -32,6 +32,8 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_tpm_oauth_key.py
           python3 -m py_compile linux/export-hardware-oauth-cert.py
           python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
+          python3 -m py_compile linux/audit-oauth-sender-map.py
+          python3 -m unittest discover -v -s tests -p test_oauth_sender_map.py
           python3 -m py_compile linux/m365_xoauth2_transport.py linux/manage-m365-delivery-acceptance.py
           python3 -m unittest discover -v -s tests -p test_m365_delivery_acceptance.py
           python3 linux/sidecar-from-owner-milter.py --self-test
