@@ -97,6 +97,53 @@ class HardwareOAuthCutoverTests(unittest.TestCase):
                     CUT.apply("sidecar", "x" * 64, "wrong")
             lock.assert_not_called()
 
+    def test_staged_token_preflight_requires_exact_review_and_does_not_switch(self):
+        with contextlib.ExitStack() as stack:
+            for patch in self._patch_apply():
+                stack.enter_context(patch)
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                CUT.token_preflight(self.target, self.plan["sha"],
+                                    CUT.CONFIRM_TOKEN_PREFLIGHT)
+        self.assertEqual(self.calls, ["candidate_sign", "candidate_entra"])
+        self.assertEqual(self.active, self.old)
+        report = output.getvalue()
+        self.assertIn("HARDWARE_CUTOVER_STAGED_ONLY=yes", report)
+        self.assertIn("HARDWARE_CUTOVER_ENTRA_TOKEN_VERIFIED=yes", report)
+        self.assertIn("HARDWARE_CUTOVER_ACTIVE_OAUTH_CHANGED=no", report)
+        self.assertIn("HARDWARE_CUTOVER_TOKEN_PRINTED=no", report)
+        self.assertIn("HARDWARE_CUTOVER_MAIL_SENT=no", report)
+        self.assertIn("HARDWARE_CUTOVER_APPLIED=no", report)
+
+    def test_staged_token_preflight_cannot_sign_without_consent(self):
+        with mock.patch.object(CUT, "ensure_root"), \
+             mock.patch.object(CUT, "lock") as lock:
+            with self.assertRaisesRegex(CUT.Refused, "consent_required"):
+                CUT.token_preflight(self.target, self.plan["sha"], "NO")
+            lock.assert_not_called()
+
+    def test_staged_token_preflight_rejects_sha_drift_before_network(self):
+        with contextlib.ExitStack() as stack:
+            for patch in self._patch_apply():
+                stack.enter_context(patch)
+            with self.assertRaisesRegex(CUT.Refused, "plan_changed_reapprove"):
+                CUT.token_preflight(self.target, "a" * 64,
+                                    CUT.CONFIRM_TOKEN_PREFLIGHT)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.active, self.old)
+
+    def test_staged_token_preflight_failure_cannot_modify_active_config(self):
+        def fail(name):
+            if name == "candidate_entra":
+                raise CUT.Refused("token_preflight_failed")
+        with contextlib.ExitStack() as stack:
+            for patch in self._patch_apply(verifier=fail):
+                stack.enter_context(patch)
+            with self.assertRaisesRegex(CUT.Refused, "token_preflight_failed"):
+                CUT.token_preflight(self.target, self.plan["sha"],
+                                    CUT.CONFIRM_TOKEN_PREFLIGHT)
+        self.assertEqual(self.calls, ["candidate_sign", "candidate_entra"])
+        self.assertEqual(self.active, self.old)
+
     def test_candidate_offline_signing_then_entra_before_any_change(self):
         with contextlib.ExitStack() as stack:
             for patch in self._patch_apply():
