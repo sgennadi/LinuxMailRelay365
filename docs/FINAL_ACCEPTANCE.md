@@ -587,3 +587,25 @@ RFC5322 From / Sender validation without spoofable identity headers,
 per-mailbox OAuth token selection and verified Exchange app/Send As rights,
 alongside fallback/rollback, end-to-end tests, physical TPM acceptance,
 SELinux Enforcing checks and an explicit new approval gate.
+
+## Offline XOAUTH2 sender policy spoofing simulation (not a live SMTP gate)
+
+The read-only multi-mailbox authorization map audit now performs a deterministic
+in-memory sender policy simulation for each map entry before reporting success:
+it accepts a synthetic matching SMTP login, envelope sender, Microsoft 365
+mailbox and RFC5322 From. It refuses mismatched logins, envelope senders,
+mailboxes and From, forged Sender, duplicated From, ambiguous addresses,
+Resent-From and Return-Path. At most 64 KiB of synthetic headers are parsed;
+there are no network calls, no SMTP authentication, no mailbox token requests,
+no queue submission, and no certificate signing.
+
+The audit emits only `OAUTH_SENDER_MAP_POLICY_SIMULATION=passed_offline_only`
+and an integer `OAUTH_SENDER_MAP_POLICY_SIMULATION_TEST_CASES`. Windows
+Wizard displays these two allowlisted fields as well as the structural
+counts and hash. All live-evidence fields remain `no`: authentication of
+real SMTP logins, runtime authorization before accepting mail, installed
+Milter/header guard, Exchange Send As permissions and actual delivery.
+
+This **must not** be used to authorize an otherwise untrusted mail sender:
+the simulated login is a trusted test parameter, not an authenticated SMTP
+session identity. Normal multi-mailbox XOAUTH2 Apply/Test remain blocked.
