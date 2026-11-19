@@ -27,6 +27,7 @@ VERSION = "1"
 CONFIRM_APPLY = "ACTIVATE_HARDWARE_OAUTH"
 CONFIRM_ROLLBACK = "ROLLBACK_HARDWARE_OAUTH"
 CONFIRM_STAGE = "STAGE_HARDWARE_OAUTH"
+CONFIRM_TOKEN_PREFLIGHT = "VERIFY_STAGED_ENTRA_TOKEN"
 BACKUP_ROOT = Path("/var/backups/linuxmailrelay365-hardware-oauth")
 LOCK_FILE = Path("/run/linuxmailrelay365-hardware-oauth.lock")
 TRANSPORT_DIR = Path("/usr/local/libexec")
@@ -428,6 +429,40 @@ def replace_identity(path, raw, group):
             tmp.unlink()
 
 
+def token_preflight(target, approved_sha, confirmation, runner=subprocess.run):
+    """Check new staged TPM/HSM OAuth signing and real Entra token, no mail.
+
+    Uses only --candidate-config for the installed XOAUTH2 transport. Does not
+    activate staged identity, touch Postfix or store/display any issued token.
+    """
+    ensure_root()
+    if (confirmation != CONFIRM_TOKEN_PREFLIGHT or
+            not isinstance(approved_sha, str) or not SHA.fullmatch(approved_sha)):
+        raise Refused("token_preflight_reviewed_sha_and_consent_required")
+    fd = lock()
+    try:
+        plan = prepare(target)
+        if plan["sha"] != approved_sha:
+            raise Refused("token_preflight_plan_changed_reapprove")
+        checked_run(plan, True, False, runner)
+        checked_run(plan, True, True, runner)
+        if prepare(target)["sha"] != approved_sha:
+            raise Refused("token_preflight_identity_or_provider_changed")
+        say("VERSION", VERSION)
+        say("TARGET", target)
+        say("PLAN_SHA256", approved_sha)
+        say("STAGED_ONLY", "yes")
+        say("LOCAL_SIGNING_VERIFIED", "yes")
+        say("ENTRA_TOKEN_VERIFIED", "yes")
+        say("ACTIVE_OAUTH_CHANGED", "no")
+        say("PRIMARY_MTA_CHANGES", "no")
+        say("MAIL_SENT", "no")
+        say("TOKEN_PRINTED", "no")
+        say("APPLIED", "no")
+    finally:
+        os.close(fd)
+
+
 def apply(target, approved_sha, confirmation, runner=subprocess.run):
     ensure_root()
     if confirmation != CONFIRM_APPLY or not SHA.fullmatch(approved_sha):
@@ -758,6 +793,7 @@ def main(argv=None):
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("--stage-plan", action="store_true")
     parser.add_argument("--stage-apply", action="store_true")
+    parser.add_argument("--token-preflight", action="store_true")
     parser.add_argument("--stage-provider", choices=("tpm2", "pkcs11"))
     parser.add_argument("--stage-key-ref")
     parser.add_argument("--apply", action="store_true")
@@ -769,9 +805,9 @@ def main(argv=None):
     try:
         ensure_root()
         if sum((args.plan, args.apply, bool(args.rollback), args.list,
-                args.stage_plan, args.stage_apply)) != 1:
+                args.stage_plan, args.stage_apply, args.token_preflight)) != 1:
             raise Refused("select_exactly_one_operation")
-        if not args.apply and not args.rollback and not args.stage_apply and (args.confirm or args.approve_sha256):
+        if not args.apply and not args.rollback and not args.stage_apply and not args.token_preflight and (args.confirm or args.approve_sha256):
             raise Refused("approval_not_allowed_in_readonly_mode")
         if (args.stage_provider is None) != (args.stage_key_ref is None) or \
                 (args.stage_provider is not None and not
@@ -786,6 +822,8 @@ def main(argv=None):
             report_plan(prepare(args.target))
         elif args.apply:
             apply(args.target, args.approve_sha256, args.confirm)
+        elif args.token_preflight:
+            token_preflight(args.target, args.approve_sha256, args.confirm)
         elif args.rollback:
             if args.approve_sha256:
                 raise Refused("approval_sha_not_used_for_rollback")
