@@ -546,6 +546,10 @@ internal sealed class MainForm : Form
                                       "Preview required RPM packages (read-only)",
                                       "בדיקת חבילות RPM ללא שינויים"),
                                       PreviewTpmDependenciesAsync, false, "check", "tpm-deps-preview");
+                    AddAction(page, T("Проверить OpenSSL 3 и доступ m365mailer к TPM (без изменений)",
+                                      "Inspect OpenSSL 3 and m365mailer TPM access (read-only)",
+                                      "בדיקת גישת TPM וספק OpenSSL ללא שינוי"),
+                                      InspectTpmProviderAsync, false, "check", "tpm-provider-diagnostic");
                     AddLine(page, UiTheme.Text(tpmPlanSummary));
                     if (reviewedTpmPlanSha is not null)
                         AddAction(page, T("Установить недостающие TPM2 пакеты...",
@@ -3953,6 +3957,31 @@ internal sealed class MainForm : Form
         RenderPage();
     }
 
+    private async Task InspectTpmProviderAsync()
+    {
+        var endpoint = Endpoint();
+        if (linuxSecurity?.HasTpm2 != true)
+            throw new InvalidOperationException("Detect a Linux TPM 2.0 device first.");
+        if (linuxSecurity.Get("OS_ID") is not ("rhel" or "ol" or "rocky" or "almalinux"))
+            throw new InvalidOperationException("Provider diagnosis currently supports RHEL-family 8-10.");
+        string profile = SelectedTpmDependencyProfile();
+        reviewedTpmPlanSha = null;
+        reviewedTpmPlanContext = null;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildTpmDependenciesBundle(profile, inspectProvider: true),
+            TimeSpan.FromMinutes(2));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("TPM_DEPS_PROVIDER_DIAGNOSTIC=read_only", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("TPM_DEPS_DIAG_PS256_SIGNATURE_VERIFIED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("TPM_DEPS_DIAG_ENTRA_CONTACTED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("TPM_DEPS_APPLIED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("TPM provider diagnostic report was incomplete.");
+        tpmPlanSummary = result.StdOut.Trim();
+        WriteLine(tpmPlanSummary);
+        WriteLine("Provider loading is not PS256 proof. Use the separate offline existing-key signature test if configured.");
+        RenderPage();
+    }
+
     private async Task InstallTpmDependenciesAsync()
     {
         var endpoint = Endpoint();
@@ -3999,7 +4028,24 @@ internal sealed class MainForm : Form
         rescanned.EnsureSuccess();
         linuxSecurity = LinuxSecurityInventory.Parse(rescanned.StdOut);
         WriteLine(linuxSecurity.SummaryRu());
-        WriteLine("TPM2 RPM installation verified; non-exportable OAuth signing is NOT automatically configured.");
+        try
+        {
+            var providerCheck = await SshRemote.RunRootScriptAsync(endpoint,
+                EmbeddedAssets.BuildTpmDependenciesBundle(profile, inspectProvider: true),
+                TimeSpan.FromMinutes(2));
+            providerCheck.EnsureSuccess();
+            if (!providerCheck.StdOut.Contains("TPM_DEPS_PROVIDER_DIAGNOSTIC=read_only", StringComparison.Ordinal) ||
+                !providerCheck.StdOut.Contains("TPM_DEPS_DIAG_PS256_SIGNATURE_VERIFIED=no", StringComparison.Ordinal) ||
+                !providerCheck.StdOut.Contains("TPM_DEPS_APPLIED=no", StringComparison.Ordinal))
+                throw new InvalidDataException("Provider diagnostic report was incomplete.");
+            tpmPlanSummary = providerCheck.StdOut.Trim();
+            WriteLine(tpmPlanSummary);
+        }
+        catch (Exception)
+        {
+            WriteLine("TPM packages were installed, but follow-up provider diagnostics did not complete; use the separate read-only check.");
+        }
+        WriteLine("TPM2 RPM installation verified; provider load and a hardware PS256 signature require independent acceptance.");
         RenderPage();
     }
 
