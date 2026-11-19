@@ -924,14 +924,14 @@ internal sealed class MainForm : Form
             {
                 Text = labels[mode],
                 Width = Math.Max(175, width / choices.ColumnCount - 15),
-                Height = 79,
+                Height = Math.Max(79, (int)Math.Ceiling(79f * DeviceDpi / 96f)),
                 AutoSize = false,
                 Dock = DockStyle.Fill,
                 Margin = new Padding(0, 0, mode == 2 || !horizontal ? 0 : 9, 7),
                 Padding = new Padding(11, 5, 9, 5),
                 TextAlign = ContentAlignment.MiddleLeft,
                 FlatStyle = FlatStyle.Flat,
-                BackColor = selected ? UiTheme.Teal : Color.White,
+                BackColor = selected ? UiTheme.Accent : Color.White,
                 ForeColor = selected ? Color.White : UiTheme.Navy,
                 Font = new Font("Segoe UI", 9.5f,
                     selected ? FontStyle.Bold : FontStyle.Regular),
@@ -943,7 +943,7 @@ internal sealed class MainForm : Form
                 Enabled = !busy
             };
             tile.FlatAppearance.BorderColor = selected
-                ? UiTheme.Teal : Color.FromArgb(205, 217, 230);
+                ? UiTheme.Accent : Color.FromArgb(205, 217, 230);
             tile.FlatAppearance.BorderSize = selected ? 2 : 1;
             tile.Click += (_, _) =>
             {
