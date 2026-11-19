@@ -29,6 +29,8 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_hardware_oauth_stage.py
           python3 -m py_compile linux/manage-tpm-oauth-key.py
           python3 -m unittest discover -v -s tests -p test_tpm_oauth_key.py
+          python3 -m py_compile linux/export-hardware-oauth-cert.py
+          python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
           python3 linux/sidecar-from-owner-milter.py --self-test
           python3 -m unittest discover -v -s tests -p test_sidecar_from_owner_milter.py
           python3 -m unittest discover -v -s tests
@@ -121,6 +123,8 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_hardware_oauth_stage.py
           python3 -m py_compile linux/manage-tpm-oauth-key.py
           python3 -m unittest discover -v -s tests -p test_tpm_oauth_key.py
+          python3 -m py_compile linux/export-hardware-oauth-cert.py
+          python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
           grep -Fx 'OS_FAMILY=rhel' /tmp/lmr365-platform.log
           grep -Fx 'SMTP_PORT=2526' /tmp/lmr365-platform.log
           grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-platform.log
@@ -203,6 +207,7 @@ jobs:
         run: |
           ./windows/Test-LinuxMailRelay365OutboundMode.ps1 -SelfTest
           ./windows/Manage-LinuxMailRelay365Connector.ps1 -SelfTest
+          ./windows/Manage-LinuxMailRelay365EntraCertificate.ps1 -SelfTest
           ./scripts/Test-LinuxMailRelay365SignedRelease.ps1 -SelfTest
       - name: Build portable single EXE x64
         shell: pwsh
