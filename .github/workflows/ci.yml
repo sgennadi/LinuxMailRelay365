@@ -238,7 +238,7 @@ jobs:
           if ($testProcess.ExitCode -ne 0) { throw "Windows self-test failed with exit code $($testProcess.ExitCode)." }
           $files = @(Get-ChildItem ./out/win-x64 -Filter '*.exe')
           if ($files.Count -ne 1) { throw 'Expected exactly one EXE in publish output.' }
-      - name: Capture actual five-step Windows Wizard screens (CI-only, no credentials)
+      - name: Capture actual Windows Wizard and early-route screens (CI-only)
         shell: pwsh
         timeout-minutes: 3
         run: |
