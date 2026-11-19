@@ -23,9 +23,14 @@ from email import policy
 from email.parser import BytesParser
 from email.utils import formatdate, make_msgid
 from pathlib import Path
+from m365_hardware_signer import HardwareSignerError, validate_spec, sign_ps256
 
 CONF_FILE = Path('/etc/postfix/m365-oauth/app.json')
 SIDECAR_CONF_FILE = Path('/etc/linuxmailrelay365/sidecar-identity/app.json')
+STAGED_CONF_FILES = (
+    Path('/etc/postfix/m365-oauth/hardware-staged.json'),
+    Path('/etc/linuxmailrelay365/sidecar-identity/hardware-staged.json'),
+)
 EX_TEMPFAIL = 75
 EX_OK = 0
 MAX_MESSAGE_BYTES = 25 * 1024 * 1024
@@ -60,19 +65,26 @@ def validate_guid(value):
 
 def load_config(path=None):
     path = CONF_FILE if path is None else Path(path)
-    if path not in (CONF_FILE, SIDECAR_CONF_FILE):
+    if path not in (CONF_FILE, SIDECAR_CONF_FILE) + STAGED_CONF_FILES:
         raise ValueError('Unsupported XOAUTH2 configuration path')
     data = json.loads(path.read_text(encoding='utf-8'))
-    for required in ('tenant_id', 'client_id', 'mailbox', 'certificate', 'private_key'):
+    if not isinstance(data, dict):
+        raise ValueError('Invalid XOAUTH2 JSON identity')
+    for required in ('tenant_id', 'client_id', 'mailbox', 'certificate'):
         if not data.get(required):
             raise ValueError('Missing configuration entry: ' + required)
     data['tenant_id'] = validate_guid(data['tenant_id'])
     data['client_id'] = validate_guid(data['client_id'])
     if not EMAIL_RE.fullmatch(data['mailbox']):
         raise ValueError('Invalid configured mailbox')
-    for path in (data['certificate'], data['private_key']):
-        if not Path(path).is_file():
-            raise ValueError('Certificate or private key is missing')
+    if not Path(data['certificate']).is_file():
+        raise ValueError('Certificate file is missing')
+    if 'signer' in data:
+        validate_spec(data, path)
+        data['_identity_path'] = str(path)
+    else:
+        if not data.get('private_key') or not Path(data['private_key']).is_file():
+            raise ValueError('PEM private key file is missing')
     return data
 
 
@@ -95,11 +107,14 @@ def make_client_assertion(config, now=None):
     def enc(obj):
         return base64url(json.dumps(obj, separators=(',', ':')).encode('utf-8'))
     unsigned = f'{enc(header)}.{enc(claims)}'.encode('ascii')
-    signature = run_openssl(
-        'dgst', '-sha256', '-sign', config['private_key'],
-        '-sigopt', 'rsa_padding_mode:pss',
-        '-sigopt', 'rsa_pss_saltlen:32', data=unsigned,
-    )
+    if 'signer' in config:
+        signature = sign_ps256(config, unsigned)
+    else:
+        signature = run_openssl(
+            'dgst', '-sha256', '-sign', config['private_key'],
+            '-sigopt', 'rsa_padding_mode:pss',
+            '-sigopt', 'rsa_pss_saltlen:32', data=unsigned,
+        )
     return endpoint, unsigned.decode('ascii') + '.' + base64url(signature)
 
 
@@ -190,14 +205,30 @@ def run(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--recipient', help='Single envelope recipient from Postfix')
     ap.add_argument('--token-check', action='store_true', help='Check Entra token acquisition without printing token')
+    ap.add_argument('--signing-check', action='store_true', help='Verify local PS256 signing without Entra traffic')
     ap.add_argument('--config-check', action='store_true', help='Check local configuration only')
     ap.add_argument('--config', choices=[str(CONF_FILE), str(SIDECAR_CONF_FILE)],
-                    default=str(CONF_FILE), help='Explicit instance identity configuration')
+                    default=str(CONF_FILE), help='Explicit installed identity configuration')
+    ap.add_argument('--candidate-config', choices=[str(x) for x in STAGED_CONF_FILES],
+                    help='Root-staged hardware identity, usable only for signing/token checks')
     args = ap.parse_args(argv)
     try:
-        config = load_config(args.config)
+        if sum((bool(args.token_check), bool(args.signing_check), bool(args.config_check))) > 1:
+            ap.error('Select only one non-delivery diagnostic action')
+        if args.candidate_config is not None:
+            if not (args.token_check or args.signing_check or args.config_check) or args.recipient:
+                ap.error('Candidate identity cannot send mail or accept a recipient')
+            config = load_config(args.candidate_config)
+            if 'signer' not in config:
+                raise ValueError('Candidate hardware identity missing signer')
+        else:
+            config = load_config(args.config)
         if args.config_check:
             print('Local configuration OK (no network connection attempted)')
+            return EX_OK
+        if args.signing_check:
+            make_client_assertion(config)
+            print('Local PS256 signing and certificate match verified; no token requested')
             return EX_OK
         if args.token_check:
             acquire_token(config)
@@ -219,7 +250,7 @@ def run(argv=None):
     except PermanentError as exc:
         print('5.0.0 ' + str(exc), file=sys.stderr)
         return 69
-    except (TransientError, OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired,
+    except (TransientError, HardwareSignerError, OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired,
             smtplib.SMTPException, ssl.SSLError) as exc:
         if isinstance(exc, smtplib.SMTPResponseException):
             text = f'Exchange SMTP error {exc.smtp_code}'
