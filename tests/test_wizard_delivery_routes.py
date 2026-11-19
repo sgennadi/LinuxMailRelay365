@@ -91,6 +91,13 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
         self.assertIn("OAUTH_SENDER_MAP_EXCHANGE_SENDAS_VERIFIED", self.form)
         self.assertIn("OAUTH_SENDER_MAP_MESSAGES_SENT", self.form)
         self.assertIn("No route was enabled.", self.form)
+        self.assertIn('OAUTH_SENDER_MAP_POLICY_SIMULATION=passed_offline_only', 
+                      (ROOT/"linux/audit-oauth-sender-map.py").read_text(encoding="utf-8"))
+        self.assertIn("oauthSenderAuditSummary", self.form)
+        self.assertIn("synthetic policy cases. PLAN ONLY.", self.form)
+        self.assertIn("sender map, or delivery mode changed during audit", self.form)
+        self.assertIn('oauthSenderMapPath.Text.Trim() != auditedPath', self.form)
+
         self.assertIn("LinuxMailRelay365.linux.oauth-sender-map-audit.py", project)
         self.assertIn("LMR365_OAUTH_MAP_AUDIT", assets)
         self.assertIn("Only an absolute /etc/linuxmailrelay365/", assets)
