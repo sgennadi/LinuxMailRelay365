@@ -52,7 +52,7 @@ class CleanPostfixTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.verify_prepared(25)
         with patch.object(module.os, "geteuid", return_value=0), \
-             patch.object(module.MARKER, "lstat", side_effect=FileNotFoundError):
+             patch.object(module.pathlib.Path, "lstat", side_effect=FileNotFoundError):
             with self.assertRaises(FileNotFoundError):
                 module.verify_prepared(2525)
 

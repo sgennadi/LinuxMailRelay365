@@ -1540,6 +1540,8 @@ internal sealed class MainForm : Form
                                       "Check Direct Send / Connector, outbound TCP 25 (read-only)",
                                       "בדיקת Direct Send ו-Connector"),
                                       CheckOutboundModeAsync, false, "check", "outbound-mode");
+                    if (!string.IsNullOrWhiteSpace(cleanBootstrapSummary))
+                        AddLine(page, UiTheme.Text(cleanBootstrapSummary));
                     if (inspectedMail?.Mta == "none")
                     {
                         AddLine(page, UiTheme.Text(T(
@@ -1555,8 +1557,6 @@ internal sealed class MainForm : Form
                                               "Confirm Postfix PACKAGE installation...",
                                               "אישור התקנת חבילות Postfix"),
                                 ApplyCleanPostfixAsync, false, "shield", "clean-postfix-apply");
-                        if (!string.IsNullOrWhiteSpace(cleanBootstrapSummary))
-                            AddLine(page, UiTheme.Text(cleanBootstrapSummary));
                     }
                     AddLine(page, UiTheme.Text(T(
                         "Создание нового отдельного SMTP Relay (требуется проверка существующего MTA, домена и разрешений)",
