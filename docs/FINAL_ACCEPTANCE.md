@@ -621,3 +621,40 @@ proof that the Milter is installed, connected to Postfix or protecting SMTP
 messages. An audit with more than 64 entries may be reviewed but cannot
 be activated through the existing From Guard without a separately tested
 scaling change. No automatic truncation or silent fallback is permitted.
+
+## Read-only installed SMTP ingress comparison for planned multi-mailbox XOAUTH2
+
+The operator can now run a **second** non-deploying Wizard diagnostic:
+**Compare sender map with installed SMTP AUTH and From Guard (read-only)**.
+It is not a setup action and does not enable multi-mailbox mail routing.
+
+The Linux helper `linux/audit-oauth-ingress.py` imports the earlier
+`audit-oauth-sender-map.py` only from the same bounded, private temporary
+folder on the Linux server. It repeats the strict root-owned map and
+identity structural review, checks the map SHA has not changed between
+reads, and inspects local Dovecot/SMTP account names, From Guard owner
+policy, `postconf` SASL/STARTTLS and sender restrictions, fail-closed
+Milter settings, systemd status and private Unix socket metadata.
+These checks expose **coded states only**. SMTP password hashes, account
+names, sender addresses, mailbox names, key material and raw Postfix
+stdout/stderr do not appear in Wizard logs. Fixed argv with bounded
+timeouts are used for read-only `postconf` and systemd status.
+
+    sudo python3 linux/audit-oauth-ingress.py --map-path /etc/linuxmailrelay365/oauth-senders.tsv
+
+Possible outcomes are `OAUTH_INGRESS_OVERALL=not_ready` or
+`ingress_config_consistent_not_live_verified`. The latter only confirms
+static alignment with an existing **EOP Connector** style From Guard;
+it is NOT a working multi-mailbox XOAUTH2 transport. The helper never
+proves `master.cf` override safety, a real client SMTP AUTH session,
+rejection of a spoofed live message, per-user queue identity provenance,
+Entra Send As permission, or Exchange delivery. All these remain explicit
+`no` flags. No service restart, package install, account creation,
+SMTP submission, token request or Postfix edit occurs.
+
+The default previous XOAUTH2 relay still rewrites From to one mailbox.
+Do not apply the reviewed mapping to an active queue or claim that a
+correctly formatted sender map is an authorization for real SMTP mail.
+Future work must establish an authenticated identity and envelope owner
+binding BEFORE queue acceptance, a trustworthy identity in the Postfix
+transport, least-privileged per-mailbox OAuth and real tenant acceptance.
