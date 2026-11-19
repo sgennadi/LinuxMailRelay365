@@ -441,7 +441,8 @@ internal sealed class MainForm : Form
                         "TPM 2.0 обнаружен. Проверьте зависимости RHEL-совместимой ОС перед отдельной установкой; установка не включает аппаратное подписание ключей.",
                         "TPM 2.0 detected. Review RHEL-family dependencies before a separate approved installation; packages do not activate hardware signing.",
                         "זוהה TPM 2.0. יש לבדוק חבילות לפני התקנה מאושרת. ההתקנה אינה מפעילה חתימה חומרתית.")));
-                    AddField(page, T("Профиль TPM2", "TPM2 dependency profile", "פרופיל TPM2"), tpmDependencyProfile);
+                    AddLine(page, UiTheme.Text(T("Профиль TPM2", "TPM2 dependency profile", "פרופיל TPM2")));
+                    AddLine(page, tpmDependencyProfile);
                     AddAction(page, T("Проверить необходимые RPM (без изменений)",
                                       "Preview required RPM packages (read-only)",
                                       "בדיקת חבילות RPM ללא שינויים"),
