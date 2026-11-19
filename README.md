@@ -1290,3 +1290,24 @@ Order under the cross-workflow hardware OAuth lock:
 5. If any post-activation verification fails, restore the exact previous identity by SHA under the same lock. If a third party changed active identity unexpectedly, refuse to overwrite it and report manual recovery from the root-only backup.
 
 Success requires `HARDWARE_CUTOVER_SMTP_STARTTLS_VERIFIED=yes`, `HARDWARE_CUTOVER_SMTP_AUTH_XOAUTH2_VERIFIED=yes`, `HARDWARE_CUTOVER_MAIL_FROM_RCPT_DATA_SENT=no`, and `HARDWARE_CUTOVER_APPLIED=yes`. This does NOT verify recipients, queues, actual delivered mail, host-reboot continuity, TPM hardware provenance or real production tenant policy; those need separately approved acceptance tests. The GUI uses a longer bounded timeout because each Exchange authentication check may need a fresh Entra token.
+
+
+## Two-recipient Microsoft 365 OAuth SMTP delivery acceptance (Preview)
+
+The Windows Wizard now offers a separate **operator-approved test of two real SMTP messages** after the TPM2/PKCS#11 identity is already active. This is not part of automatic hardware cutover. It does not create new tenants, register certificates, alter Postfix, or bypass SMTP AUTH.
+
+**Review-only step:** choose the installed active sidecar/primary OAuth transport and specify two consented test inboxes. For the initial guarded acceptance, the internal recipient must have the same domain as the fixed active sender, and the external recipient a different domain; this is a **simple domain comparison**, not authoritative proof of Exchange accepted-domain membership. The Wizard allocates a unique 128-bit trace ID and reads the active root-managed hardware identity and installed transport. It returns a SHA256 plan with recipient hashes, identity/transport fingerprints and explicit `MAIL_SENT=no`. No mailbox addresses are emitted into the diagnostic status.
+
+**Explicit apply:** a separate typed confirmation `SEND_TWO_ACCEPTANCE_TESTS` is required. The Linux script takes the same exclusive hardware OAuth lock as cutover, rechecks the plan and reserves the trace ID in a root-only single-use ledger (`/var/lib/linuxmailrelay365-acceptance/<trace>.jsonl`, mode 0600). The script invokes the installed active transport as `m365mailer` for a fixed short ASCII message to the internal address and then the external address. Neither recipient is passed as an OS command argument; addresses travel only on encrypted SSH stdin into the authorized delivery process. The signed hardware assertion obtains the Entra token; Exchange Online STARTTLS + XOAUTH2, SMTP RCPT and DATA are then used for actual submission.
+
+The manager writes an attempt record and fsyncs it **before** each SMTP operation, and records `smtp_accepted_not_inbox_verified` only after a successful SMTP submission. If SSH disconnects, transport times out or only one message succeeds, this trace ID can **never be reused for automatic retry**. Inspect the ledger, Exchange Message Trace and both destination mailboxes before deciding whether to initiate another separately reviewed test with a new ID. No original key, Postfix configuration, mail queue or Entra certificate is modified.
+
+The Wizard reports `SMTP_ACCEPTANCE_TWO_SMTP_SUBMISSIONS_ACCEPTED=yes` only when both SMTP submissions succeeded; it always reports `SMTP_ACCEPTANCE_RECIPIENT_INBOX_VERIFIED=no` because SMTP 250 acceptance does not prove final inbox arrival. The operator must inspect both test inboxes/Message Trace using the trace ID and confirm or investigate independently. Bounces, security filtering, throttling, transport rules, quarantine and end-user delivery still need separate acceptance evidence.
+
+CLI for an **authorized disposable test host**, with a JSON request provided through standard input rather than command arguments:
+
+    printf '%s' '{"internal":"internal@example.org","external":"external@outside.net","run_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' | sudo python3 linux/manage-m365-delivery-acceptance.py --target sidecar --plan
+
+    printf '%s' '{"internal":"internal@example.org","external":"external@outside.net","run_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' | sudo python3 linux/manage-m365-delivery-acceptance.py --target sidecar --apply --approve-sha256 <exact-reviewed-64hex-sha> --confirm SEND_TWO_ACCEPTANCE_TESTS
+
+**Important:** these CLI commands use illustrative addresses only. Replace them with operator-controlled, authorized inboxes. The delivered test is direct from the installed XOAUTH2 transport to Exchange Online and **does not yet validate the local Postfix inbound listener, SASL, queue or application-to-relay mail path**. That full-system delivery acceptance and physical TPM/SELinux Enforcing deployment remain pending before Stable.
