@@ -169,6 +169,47 @@ class HardwareStageTests(unittest.TestCase):
                 "--stage-key-ref", "handle:0x81000001"]), 0)
             preview.assert_called_once()
 
+    def test_partial_publish_fsync_failure_removes_our_candidate(self):
+        import errno
+        with tempfile.TemporaryDirectory() as work:
+            directory = Path(work)
+            (directory / "app.json").write_text("{}")
+            raw = b'{"candidate":"one"}\n'
+            plan = {"directory": directory, "gid": 31,
+                    "candidate_raw": raw, "candidate_sha": STAGE.digest(raw)}
+            with mock.patch.object(STAGE.os, "fchown"), \
+                 mock.patch.object(STAGE, "checked_file"), \
+                 mock.patch.object(STAGE.os, "getxattr",
+                                   side_effect=OSError(errno.ENODATA, "no label")), \
+                 mock.patch.object(STAGE, "fsync_dir",
+                                   side_effect=[OSError("disk flush failure"), None]), \
+                 mock.patch.object(STAGE, "read_checked", return_value=raw):
+                with self.assertRaisesRegex(STAGE.Refused,
+                                            "stage_publish_refused_without_live_change"):
+                    STAGE.stage_identity(plan)
+            self.assertFalse((directory / "hardware-staged.json").exists())
+            self.assertEqual(list(directory.glob(".hardware-staged-*")), [])
+
+    def test_existing_candidate_never_replaced_on_exclusive_link_failure(self):
+        import errno
+        with tempfile.TemporaryDirectory() as work:
+            directory = Path(work)
+            (directory / "app.json").write_text("{}")
+            existing = directory / "hardware-staged.json"
+            existing.write_bytes(b"existing identity")
+            raw = b'{"candidate":"new"}\n'
+            plan = {"directory": directory, "gid": 31,
+                    "candidate_raw": raw, "candidate_sha": STAGE.digest(raw)}
+            with mock.patch.object(STAGE.os, "fchown"), \
+                 mock.patch.object(STAGE, "checked_file"), \
+                 mock.patch.object(STAGE.os, "getxattr",
+                                   side_effect=OSError(errno.ENODATA, "no label")):
+                with self.assertRaisesRegex(STAGE.Refused,
+                                            "stage_publish_refused_without_live_change"):
+                    STAGE.stage_identity(plan)
+            self.assertEqual(existing.read_bytes(), b"existing identity")
+            self.assertEqual(list(directory.glob(".hardware-staged-*")), [])
+
     def test_no_key_generation_or_mta_commands_in_stage_path(self):
         text = SOURCE.read_text(encoding="utf-8")
         for bad in ("tpm2_clear", "tpm2_create", "openssl genpkey",
