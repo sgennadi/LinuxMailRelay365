@@ -18,7 +18,7 @@ GUARD_UNIT=linuxmailrelay365-from-guard.service
 DOVECOT_UNIT=linuxmailrelay365-smtp-auth.service
 PRIMARY=/etc/postfix
 CA=/etc/linuxmailrelay365-ci-smtp/next-cert.pem
-[ -f "$CA" ] || exit 2
+sudo test -f "$CA" || exit 2
 sudo systemctl is-active --quiet postfix
 sudo systemctl is-active --quiet "$UNIT"
 sudo systemctl is-active --quiet "$DOVECOT_UNIT"
@@ -112,7 +112,7 @@ sudo postfix -c "$CONF" check
 sudo systemctl start "$UNIT"
 
 echo "=== Real SMTP AUTH STARTTLS + Postfix From Guard, loopback-only DATA ==="
-python3 tests/smoke_authenticated_from_guard_loopback.py "$PORT" "$CA"
+sudo env GITHUB_ACTIONS=true RUNNER_TEMP="$RUNNER_TEMP" python3 tests/smoke_authenticated_from_guard_loopback.py "$PORT" "$CA"
 
 for attempt in $(seq 1 60); do
   if test -z "$(sudo postqueue -c "$CONF" -j)"; then
