@@ -71,6 +71,12 @@ test -z "$(sudo postconf -c "$CONF" -h authorized_submit_users)"
 sudo systemctl is-active --quiet linuxmailrelay365-from-guard.service
 test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$PRIMARY"
 
+echo '=== Real SMTP AUTH + STARTTLS + Postfix From Guard; DATA only to loopback sink ==='
+bash tests/smoke_authenticated_from_guard_loopback.sh "$PORT"
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$PRIMARY"
+test "$(sudo sha256sum "$CONF/main.cf" | awk '{print $1}')" != "$MAIN"
+test "$(sudo postconf -c "$CONF" -h smtpd_milters)" = "unix:$SOCKET"
+
 echo '=== Verify independent root-only DR archive includes service, script, owner policy ==='
 backup="$(sudo python3 linux/sidecar-config-recovery.py --backup)"
 printf '%s\n' "$backup" | grep -Fx 'SIDECAR_BACKUP_STATUS=verified_config_only_no_queue'
