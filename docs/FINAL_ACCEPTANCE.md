@@ -20,6 +20,8 @@
 | Root-only real reboot baseline and verification | Implemented | Controlled actual Linux reboot |
 | RHEL 8/9/10, Oracle, Rocky, Alma SELinux port/file/process context audit | Read-only | Real Enforcing process AVC allow/deny integration |
 | RHEL SELinux custom smtp_port_t label preparation and rollback | Implemented with reviewed SHA and explicit confirmation | Verify `semanage port` change/rollback on a real disposable enforcing host; not a full service acceptance |
+| RHEL-family TPM2 dependency preparation | Read-only RPM preview and SHA-approved DNF install, separate native-provider vs PKCS#11 profiles | Verified real RHEL/Rocky host package transactions and provider availability; RPM scriptlet/service review |
+| Offline TPM/HSM OAuth signing diagnostics | Fixed root-owned active/staged identity audit and optional PS256 provider signature check as `m365mailer`; no mail or Entra traffic | Physical hardware key provenance, nonexportability, reboot continuity, staged-to-active approval/rollback and tenant test are NOT proven |
 | Microsoft 365 XOAUTH2 sender transport | Preview | Live Entra tenant + Exchange scoped mailbox + delivered test |
 | Microsoft 365 Direct Send | Fresh isolated installation without Entra/OAuth, or guarded route switch of an existing XOAUTH2 sidecar; exact fixed MAIL FROM required | Approved accepted domain, root-owned map/postmap negative tests, real internal recipient receipt |
 | Microsoft 365 Connector | New isolated fixed-sender sidecar with exact fixed MAIL FROM or guarded switch of existing XOAUTH2 route | Verified tenant Connector authorization, exact-sender negative tests, real host install, external recipient receipt |
@@ -284,3 +286,12 @@ Do not release Stable until a real SELinux Enforcing target, real OS reboot, rec
 
 Repository: https://github.com/sgennadi/LinuxMailRelay365
 Draft PR: https://github.com/sgennadi/LinuxMailRelay365/pull/1
+
+## Offline TPM2/PKCS#11 signing acceptance
+
+These tests do not provision TPM keys, install providers, alter an active identity or contact Microsoft 365. After configuring a disposable host, inspect fixed root-owned identities and perform a separate local PS256 signature check:
+
+    sudo python3 linux/verify-hardware-oauth.py --inventory-only
+    sudo python3 linux/verify-hardware-oauth.py
+
+An unconfigured or PEM-only identity remains `not_configured` or `software_signer_or_unconfigured`. Signed results report `provider_ps256_certificate_match_verified` only for successful OpenSSL provider signing and certificate verification; hardware provenance is separately marked NOT verified. Inspect system SELinux AVCs, TPM provider, module path and service-user access separately, without leaking keys or device PINs. This is **not** an end-to-end acceptance test.
