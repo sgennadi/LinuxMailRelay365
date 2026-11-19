@@ -3695,8 +3695,8 @@ internal sealed class MainForm : Form
             throw new InvalidOperationException("Hardware OAuth plan, key reference or certificate changed. Review again before activation.");
         }
         if (!ConfirmDestructive("LinuxMailRelay365 | Activate hardware OAuth",
-            T("Будет запрошен РЕАЛЬНЫЙ токен Entra до изменения app.json и после изменения. Письма не отправляются. Предварительно добавьте публичный сертификат аппаратного ключа в Entra. В случае сбоя программа вернёт прежнюю конфигурацию. Исходный ключ удаляться не будет. Цель: ",
-              "A REAL Entra token is requested before and after the atomic app.json switch (no mail sent). Register the hardware certificate in Entra first. Failed postcheck restores the original identity. No original key is deleted. Target: ",
+            T("Перед изменением app.json и после него будут выполнены РЕАЛЬНЫЕ проверки подписи, токена Entra и SMTP AUTH XOAUTH2 через STARTTLS. Письма не отправляются. Сертификат аппаратного ключа должен уже быть зарегистрирован в Entra. При неудачной проверке после переключения прежняя конфигурация восстанавливается. Исходный ключ не удаляется. Цель: ",
+              "REAL signing, Entra token and Exchange Online STARTTLS/XOAUTH2 AUTH checks will run both before and after the atomic app.json switch, without sending mail. The hardware public certificate must already be registered in Entra. Failed postcheck restores the old identity, without deleting the old key. Target: ",
               "מתבצעת בדיקת אסימון אמיתית מול Entra לפני ואחרי ההחלפה, עם שחזור אוטומטי במקרה כשל. יעד: ") + target + "\n" +
             T("ВНИМАНИЕ: сервер может временно использовать новый ключ для параллельной отправки. Для production необходимо отдельное окно обслуживания.",
               "CAUTION: concurrent mail delivery may briefly see the new identity. Production requires a separately approved maintenance window.",
@@ -3704,12 +3704,16 @@ internal sealed class MainForm : Form
             "ACTIVATE_HARDWARE_OAUTH")) return;
         var response = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildHardwareOAuthCutoverBundle(target, "apply", approvalSha: sha),
-            TimeSpan.FromMinutes(5));
+            TimeSpan.FromMinutes(12));
         response.EnsureSuccess();
         if (!response.StdOut.Contains("HARDWARE_CUTOVER_APPLIED=yes", StringComparison.Ordinal) ||
             !response.StdOut.Contains("HARDWARE_CUTOVER_ENTRA_TOKEN_VERIFIED=yes", StringComparison.Ordinal) ||
-            !response.StdOut.Contains("HARDWARE_CUTOVER_LOCAL_SIGNING_VERIFIED=yes", StringComparison.Ordinal))
-            throw new InvalidDataException("Hardware identity cutover did not return verified success. Inspect the Linux backup state.");
+            !response.StdOut.Contains("HARDWARE_CUTOVER_LOCAL_SIGNING_VERIFIED=yes", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("HARDWARE_CUTOVER_SMTP_STARTTLS_VERIFIED=yes", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("HARDWARE_CUTOVER_SMTP_AUTH_XOAUTH2_VERIFIED=yes", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("HARDWARE_CUTOVER_MAIL_FROM_RCPT_DATA_SENT=no", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("HARDWARE_CUTOVER_TOKEN_PRINTED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Hardware identity cutover did not confirm signed Entra and Exchange SMTP AUTH acceptance. Inspect the Linux backup state.");
         reviewedHardwareCutoverSha = null;
         reviewedHardwareCutoverContext = null;
         verifiedHardwarePreflightSha = null;
@@ -3718,7 +3722,7 @@ internal sealed class MainForm : Form
         verifiedHardwareSmtpAuthContext = null;
         hardwareCutoverSummary = response.StdOut.Trim();
         WriteLine(hardwareCutoverSummary);
-        WriteLine("Hardware OAuth identity activated. MTA, certificate and TPM key files were NOT restarted, replaced or deleted. Check the live mail path separately.");
+        WriteLine("Hardware OAuth activated after pre/post signing, Entra token and Exchange SMTP AUTH checks. No message was sent or key removed. Real recipient delivery remains unverified.");
         await ListHardwareCutoverBackupsAsync();
     }
 
