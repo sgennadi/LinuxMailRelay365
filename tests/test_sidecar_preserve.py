@@ -62,7 +62,8 @@ class IsolatedSidecarTests(unittest.TestCase):
     def test_transport_allowlisted_identity_per_instance(self):
         t = (ROOT/'linux/m365_xoauth2_transport.py').read_text()
         self.assertIn('SIDECAR_CONF_FILE',t)
-        self.assertIn('if path not in (CONF_FILE, SIDECAR_CONF_FILE):',t)
+        self.assertIn('if path not in (CONF_FILE, SIDECAR_CONF_FILE) + STAGED_CONF_FILES:', t)
+        self.assertIn("if not (args.token_check or args.signing_check or args.config_check) or args.recipient:", t)
         self.assertIn("ap.add_argument('--config', choices=", t)
         m = (ROOT/'src/LinuxMailRelay365/MainForm.cs').read_text()
         for token in ('BuildSidecarBundle', 'HasIsolatedSidecarAsync',
