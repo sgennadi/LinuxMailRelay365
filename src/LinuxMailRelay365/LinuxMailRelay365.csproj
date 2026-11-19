@@ -34,6 +34,7 @@
     <EmbeddedResource Include="../../linux/verify-hardware-oauth.py" LogicalName="LinuxMailRelay365.linux.hardware-oauth-diagnostics.py" />
     <EmbeddedResource Include="../../linux/manage-hardware-oauth-cutover.py" LogicalName="LinuxMailRelay365.linux.hardware-oauth-cutover.py" />
     <EmbeddedResource Include="../../linux/manage-tpm-oauth-key.py" LogicalName="LinuxMailRelay365.linux.tpm-oauth-provision.py" />
+    <EmbeddedResource Include="../../linux/export-hardware-oauth-cert.py" LogicalName="LinuxMailRelay365.linux.entra-public-cert-export.py" />
     <EmbeddedResource Include="../../linux/probe-linux.sh" LogicalName="LinuxMailRelay365.linux.security-probe.sh" />
     <EmbeddedResource Include="../../linux/mail-config-recovery.sh" LogicalName="LinuxMailRelay365.linux.recovery.sh" />
     <EmbeddedResource Include="../../linux/sidecar-config-recovery.py" LogicalName="LinuxMailRelay365.linux.sidecar-config-recovery.py" />
@@ -70,5 +71,6 @@
     <EmbeddedResource Include="../../windows/Initialize-LinuxMailRelay365.ps1" LogicalName="LinuxMailRelay365.windows.provision.ps1" />
     <EmbeddedResource Include="../../windows/Discover-LinuxMailRelay365Tenants.ps1" LogicalName="LinuxMailRelay365.windows.tenant-discovery.ps1" />
     <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365Connector.ps1" LogicalName="LinuxMailRelay365.windows.tenant-connector-manager.ps1" />
+    <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365EntraCertificate.ps1" LogicalName="LinuxMailRelay365.windows.entra-oauth-cert-manager.ps1" />
   </ItemGroup>
 </Project>
