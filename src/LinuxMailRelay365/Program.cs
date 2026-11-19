@@ -84,6 +84,8 @@ internal static class Program
                     "primary", "rollback", backupId: "20261119T100000Z-abcdef012345");
                 var preflight = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
                     "sidecar", "token-preflight", approvalSha: new string('f', 64));
+                var smtpAuth = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                    "sidecar", "smtp-auth-preflight", approvalSha: new string('a', 64));
                 bool rejected;
                 try
                 {
@@ -98,6 +100,8 @@ internal static class Program
                        rollback.Contains("--confirm ROLLBACK_HARDWARE_OAUTH", StringComparison.Ordinal) &&
                        preflight.Contains("--token-preflight", StringComparison.Ordinal) &&
                        preflight.Contains("--confirm VERIFY_STAGED_ENTRA_TOKEN", StringComparison.Ordinal) &&
+                       smtpAuth.Contains("--smtp-auth-preflight", StringComparison.Ordinal) &&
+                       smtpAuth.Contains("--confirm VERIFY_STAGED_SMTP_AUTH", StringComparison.Ordinal) &&
                        rejected;
             }),
             ("Hardware OAuth diagnostics bundle", () =>
