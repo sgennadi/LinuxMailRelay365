@@ -75,6 +75,29 @@ internal static class Program
                        pkcs11.Contains("'pkcs11:object=smtp;type=private'", StringComparison.Ordinal) &&
                        rejected;
             }),
+            ("Microsoft 365 reviewed delivery acceptance bundle", () =>
+            {
+                var preview = EmbeddedAssets.BuildDeliveryAcceptanceBundle(
+                    "sidecar", new string('a', 32), "internal@example.org", "external@outside.net");
+                var approved = EmbeddedAssets.BuildDeliveryAcceptanceBundle(
+                    "primary", new string('b', 32), "internal@example.org", "external@outside.net",
+                    new string('c', 64));
+                bool rejected;
+                try
+                {
+                    EmbeddedAssets.BuildDeliveryAcceptanceBundle(
+                        "sidecar", new string('a', 32), "internal@example.org",
+                        "attacker@outside.net\r\nBcc:secret@outside.net");
+                    rejected = false;
+                }
+                catch (ArgumentException) { rejected = true; }
+                return preview.Contains("--target sidecar --plan", StringComparison.Ordinal) &&
+                       approved.Contains("--target primary --apply", StringComparison.Ordinal) &&
+                       approved.Contains("--confirm SEND_TWO_ACCEPTANCE_TESTS", StringComparison.Ordinal) &&
+                       !preview.Contains("internal@example.org", StringComparison.Ordinal) &&
+                       !approved.Contains("external@outside.net", StringComparison.Ordinal) &&
+                       rejected;
+            }),
             ("Hardware OAuth reviewed cutover bundle", () =>
             {
                 var plan = EmbeddedAssets.BuildHardwareOAuthCutoverBundle("sidecar", "plan");
