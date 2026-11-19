@@ -490,3 +490,50 @@ successful acceptance and queue drain. **It does not prove** Exchange Online
 SMTP, actual tenant Connector, XOAUTH2, mailbox delivery, TLS enforcement to
 Microsoft 365, hardware key provenance, real reboot persistence or SELinux
 Enforcing. These remain independent acceptance requirements before Stable.
+
+## Universal three-mode GUI and authenticated multi-sender acceptance
+
+The Windows Wizard exposes three delivery modes (XOAUTH2, SMTP Connector,
+Direct Send), while keeping the inbound custom TCP port independent from
+outbound Microsoft 365 TCP 587 or TCP 25. The live diagram uses the entered
+Linux host, listen IP, SMTP port, tenant MX and sender address. A separate
+text explanation identifies sender rewriting/preservation, restrictions
+on external recipients and service/tenant prerequisites. RU/EN/HE labels
+for delivery and sender mode are present.
+
+Initial private fixed-sender Connector and Direct Send preflight/install
+actions are visible without Advanced. The selected mode controls outbound
+preflight (XOAUTH2 uses 443/587; Connector/Direct Send use the tenant
+MX/25 readiness audit). Entra app/SMTP mailbox configuration is not a
+prerequisite in the Wizard for Connector or Direct Send. Existing EOP
+sidecar rerouting, sender Milter management and restore remain guarded
+Advanced operations.
+
+Existing `mailTransport == oauth2` is a **single SMTP mailbox** identity
+and the Python transport rewrites RFC5322 From and SMTP envelope sender.
+The GUI can now save `OAuthSenderMode=authorized-multiple-mailboxes`
+and an allowlisted, nonsecret Linux map **path only**, but does not read
+the map, provision identities, enable mail submission or grant Exchange
+Send As rights. Ordinary `ApplyAsync` and `SendTestAsync` explicitly
+reject this planned mode. There is no unattended migration from the
+single-mailbox transport.
+
+A future multi-mailbox rollout is blocked until:
+- each local SMTP login is authenticated and cryptographically bound to
+  permitted SMTP envelope senders;
+- RFC5322 From and Sender are checked against the authenticated login via
+  fail-closed guard, including forged or nested headers;
+- each selected mailbox and Microsoft 365 service principal has the
+  intended Exchange Online Send As/app permission, verified in the exact
+  tenant, and a safe denial test demonstrates least privilege;
+- unique mailbox/account mapping and tenant/TPM certificate selection are
+  reviewed; token and private-key contents never appear in GUI logs;
+- a real Linux Postfix queue -> XOAUTH2 -> Microsoft 365 -> internal and
+  external inbox acceptance is completed with recipient authorization;
+- a reboot test, RHEL 8/9/10 SELinux Enforcing matrix and rollback
+  are verified, with signed x64/ARM64 stable package acceptance.
+
+CI screenshot capture exports seven real WinForms PNGs with synthetic
+defaults and no live tenants: five wizard steps and three transport
+variants in step 4. It is only a visual reference and not a DPI/RTL
+accessibility certification.
