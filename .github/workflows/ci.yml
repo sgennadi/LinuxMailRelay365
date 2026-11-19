@@ -236,6 +236,28 @@ jobs:
           if ($testProcess.ExitCode -ne 0) { throw "Windows self-test failed with exit code $($testProcess.ExitCode)." }
           $files = @(Get-ChildItem ./out/win-x64 -Filter '*.exe')
           if ($files.Count -ne 1) { throw 'Expected exactly one EXE in publish output.' }
+      - name: Capture actual five-step Windows Wizard screens (CI-only, no credentials)
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $exe = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
+          $folder = Join-Path (Get-Location) 'out/wizard-screenshots'
+          New-Item -ItemType Directory -Force -Path $folder | Out-Null
+          $result = Start-Process -FilePath $exe -ArgumentList @('--capture-wizard-screens', ('"{0}"' -f $folder)) -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Wizard screenshot capture failed: exit $($result.ExitCode)" }
+          $images = @(Get-ChildItem -LiteralPath $folder -Filter '*.png')
+          if ($images.Count -ne 7) { throw "Expected 7 real Wizard PNG screens; found $($images.Count)" }
+          foreach ($image in $images) {
+            if ($image.Length -lt 3000) { throw "Empty or invalid screen PNG: $($image.Name)" }
+          }
+          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=7'
+          Write-Host 'SMTP_TENANT_CONNECTIONS_ATTEMPTED=no'
+      - name: Upload actual Wizard screenshots (no production host or tenant)
+        uses: actions/upload-artifact@v6
+        with:
+          name: LinuxMailRelay365-actual-wizard-screenshots
+          path: out/wizard-screenshots/
+          if-no-files-found: error
       - name: Build portable single EXE ARM64
         shell: pwsh
         run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-arm64 --self-contained true -p:UseSharedUpdater=false -o out/win-arm64
