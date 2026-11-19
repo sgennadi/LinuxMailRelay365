@@ -212,6 +212,9 @@ def prepare(target):
     active_raw, active = read_identity(active_path, group)
     staged_raw, staged = read_identity(staged_path, group)
     check_candidate(active, staged, directory, group)
+    # Recovery must be demonstrably possible BEFORE the first write. An
+    # identity JSON backup is insufficient if its prior key/cert is missing.
+    original_preflight(active_raw, staged, group, directory)
     if active_raw == staged_raw:
         raise Refused("staged_identity_already_active")
     runuser = ensure_runtime(transport)
@@ -285,7 +288,13 @@ def lock():
 
 
 def checked_backup_root(target):
-    checked_directory(BACKUP_ROOT.parent)
+    # /var/backups exists on many Ubuntu systems but is absent by default
+    # on some RHEL-family images. Only create this fixed root-owned parent.
+    checked_directory(Path("/var"))
+    parent = BACKUP_ROOT.parent
+    if not parent.exists() and not parent.is_symlink():
+        parent.mkdir(mode=0o700)
+    checked_directory(parent)
     for item in (BACKUP_ROOT, BACKUP_ROOT / target):
         if not item.exists() and not item.is_symlink():
             item.mkdir(mode=0o700)
