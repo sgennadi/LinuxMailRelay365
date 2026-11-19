@@ -1197,7 +1197,7 @@ Alternatively an experienced Linux administrator can create a root-owned `hardwa
 
 **Then** register the candidate public certificate with the existing Entra application using a separately approved tenant workflow; only afterwards review the distinct **hardware cutover** SHA plan and explicitly approve its live token preflight and rollback-protected activation.
 
-**Not yet implemented:** automatic hardware RSA key provisioning, key attestation/provenance, provider-config generation and certificate registration. A successful test of a provider's PS256 signature does not itself prove TPM/HSM key origin or Exchange Online SMTP delivery.
+**Scope updated in later Preview sections:** guarded TPM2 RSA key creation, provider-config generation, certificate staging and Entra Graph addKey registration now have separate review/approval flows. Physical TPM provenance, Entra authorization and Exchange Online SMTP delivery are still NOT proven by CI.
 
 
 ## TPM2 RSA OAuth key provisioning (Preview)
@@ -1219,3 +1219,27 @@ Approved/test-host CLI:
 Both `sidecar` and `primary` targets are supported but the primary identity requires an explicit change window and separate approval. File ownership is root:m365mailer; the provider config is mode `0640` and public certificate mode `0644`. All SHA manifests and console status are secretless.
 
 **Recovery/safety:** TPM key persistence consumes scarce TPM NV resources. A failure **after** key creation may leave a persistent handle or partial certificate/configuration; the tool refuses to delete TPM objects or overwrite any pre-existing key/cert/config. Inspect and resolve the partial state manually. This provisioning is supported only for owner hierarchies that do not require an interactive/secret owner authorization; otherwise it fails closed. No TPM provenance attestation, reboot-continuity evidence, actual Microsoft 365 delivery, or runtime SELinux Enforcing acceptance is claimed by mocked CI. Live disposable host testing remains required before Stable.
+
+
+## Entra add-only public hardware OAuth certificate registration (Preview)
+
+The Wizard now supports public TPM2/PKCS#11 X.509 registration in the **existing** Entra app, using the Microsoft Graph v1.0 **application addKey** endpoint. It never calls PATCH keyCredentials, removeKey, changes the app's permissions, creates a new app, or deletes any previous certificate. The Linux TPM/HSM key and existing software PEM private key remain only on the Linux machine.
+
+### Preparation and identity limits
+
+- Stage a verified `hardware-staged.json` identity with a matching root-managed public `hardware-app.crt`; keep the active `app.json` and its existing PEM private key/certificate untouched.
+- In the Wizard, select the exact tenant GUID and enter the installed existing **Application (Client) ID**. The same tenant/client/mailbox must be present in both installed Linux identities. A Graph application lookup must return precisely that client and at least one valid current certificate with the SHA-1 public thumbprint of the active Linux certificate.
+- Requires PowerShell 7 and official `Microsoft.Graph.Authentication`; no automatic module installation, silent login, tenant credential capture or persistence. Preview signs in using delegated `Application.Read.All` and `-ContextScope Process`; Apply requires delegated `Application.ReadWrite.All` and an account authorized to manage this application. The account and tenant are verified in each session.
+- Apply works only when the **active identity uses the existing root-managed PEM key** for the Graph addKey proof-of-possession signature. A hardware-only active signer, an expired/missing Entra certificate, or a mismatched tenant/client/credential is refused (no automatic fallback to PATCH).
+
+### Read-only Preview
+
+The Wizard obtains the two **public DER certificates only** through SSH, verifies their SHA256 fingerprints and current/staged identity hashes, checks the live Graph app, existing credential IDs, certificate dates and that the candidate is not yet registered, then returns a review SHA256 and the exact Entra Application Object ID. The public certificate is not activated and no Graph tenant change is made.
+
+### Explicit Apply
+
+After typed confirmation, the Wizard re-reads Linux identity/certificate evidence. Linux generates a fresh short-lived RS256 JWT proof-of-possession signed by its **existing** private key, bound to the reviewed active/staged hashes and Graph Object ID. The private key never leaves Linux. Windows creates a per-user ACL-restricted temporary input and deletes it at the start of the Graph operation. The proof is never printed, logged, or passed on command-line arguments. Graph revalidates the application inventory SHA and the proof's audience, issuer, 10-minute lifetime, active certificate thumbprint and RSA signature.
+
+The only Graph write is POST to `/v1.0/applications/{objectId}/addKey` containing `AsymmetricX509Cert` / `Verify` and the candidate public DER. Afterward the Wizard checks that the new credential appears and **every existing key ID, type, usage, fingerprint and validity window is unchanged**. If Graph does not return a verified result, inspect the app's certificates before retrying: the addKey request may already have completed, and the tool never auto-removes keys.
+
+**After success** perform a separate reviewed Linux staged-to-active cutover, which checks real Entra OAuth token acquisition before and after switching and can roll back `app.json`. Public certificate registration **does not prove** that Exchange Online accepts SMTP XOAUTH2 or delivered a test message. Do not merge Stable until tested on an authorized tenant/physical TPM.
