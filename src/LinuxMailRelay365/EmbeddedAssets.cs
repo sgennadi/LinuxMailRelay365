@@ -19,6 +19,7 @@ internal static class EmbeddedAssets
     internal static string HardwareSigner => Text("LinuxMailRelay365.linux.hardware-signer.py");
     internal static string TpmDependencies => Text("LinuxMailRelay365.linux.tpm-dependencies.py");
     internal static string HardwareOAuthDiagnostics => Text("LinuxMailRelay365.linux.hardware-oauth-diagnostics.py");
+    internal static string HardwareOAuthCutover => Text("LinuxMailRelay365.linux.hardware-oauth-cutover.py");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarConfigRecovery => Text("LinuxMailRelay365.linux.sidecar-config-recovery.py");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
@@ -57,6 +58,43 @@ internal static class EmbeddedAssets
     internal static string TenantConnectorManager => Text("LinuxMailRelay365.windows.tenant-connector-manager.ps1");
 
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+
+    internal static string BuildHardwareOAuthCutoverBundle(
+        string target, string operation, string? approvalSha = null, string? backupId = null)
+    {
+        if (target is not ("sidecar" or "primary"))
+            throw new ArgumentException("Unsupported hardware OAuth target.");
+        string args = "--target " + target;
+        switch (operation)
+        {
+            case "plan" when approvalSha is null && backupId is null:
+                args += " --plan";
+                break;
+            case "list" when approvalSha is null && backupId is null:
+                args += " --list";
+                break;
+            case "apply" when backupId is null && approvalSha is not null &&
+                              Regex.IsMatch(approvalSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant):
+                args += " --apply --approve-sha256 " + approvalSha +
+                        " --confirm ACTIVATE_HARDWARE_OAUTH";
+                break;
+            case "rollback" when approvalSha is null && backupId is not null &&
+                                 Regex.IsMatch(backupId, @"\A[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\z",
+                                               RegexOptions.CultureInvariant):
+                args += " --rollback " + backupId + " --confirm ROLLBACK_HARDWARE_OAUTH";
+                break;
+            default:
+                throw new ArgumentException("Invalid hardware OAuth cutover operation or reviewed inputs.");
+        }
+        // Protected temp code only; the current/previous identity, public
+        // certificate and TPM references never leave the Linux machine.
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-hwoauth-switch.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/manage-hardware-oauth-cutover.py\" <<'LMR365_HWOAUTH_CUTOVER'\n" +
+               Encode(HardwareOAuthCutover) + "\nLMR365_HWOAUTH_CUTOVER\n" +
+               "python3 \"$work/manage-hardware-oauth-cutover.py\" " + args + "\n";
+    }
 
     internal static string BuildHardwareOAuthDiagnosticBundle(bool verifySigning)
     {
