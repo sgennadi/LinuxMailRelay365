@@ -110,6 +110,12 @@ internal sealed class MainForm : Form
     private readonly ComboBox hardwareCutoverTarget = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 560 };
     private readonly ComboBox hardwareCutoverBackup = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 560 };
     private string hardwareCutoverSummary = "";
+    private readonly TextBox acceptanceInternalRecipient = Field("");
+    private readonly TextBox acceptanceExternalRecipient = Field("");
+    private string? acceptanceRunId;
+    private string? reviewedAcceptanceSha;
+    private string? reviewedAcceptanceContext;
+    private string acceptanceSummary = "";
     private string? verifiedHardwarePreflightSha;
     private string? verifiedHardwarePreflightContext;
     private string? verifiedHardwareSmtpAuthSha;
@@ -211,6 +217,15 @@ internal sealed class MainForm : Form
             reviewedHardwareStageContext = null;
             hardwareStageSummary = "";
         };
+        void ResetDeliveryAcceptance()
+        {
+            acceptanceRunId = null;
+            reviewedAcceptanceSha = null;
+            reviewedAcceptanceContext = null;
+            acceptanceSummary = "";
+        }
+        acceptanceInternalRecipient.TextChanged += (_, _) => ResetDeliveryAcceptance();
+        acceptanceExternalRecipient.TextChanged += (_, _) => ResetDeliveryAcceptance();
         hardwareCutoverTarget.Items.AddRange([
             "Isolated sidecar (existing primary Postfix untouched)",
             "Primary Postfix XOAUTH2 transport (advanced)"
@@ -234,6 +249,7 @@ internal sealed class MainForm : Form
             reviewedTpmKeyPlanSha = null;
             reviewedTpmKeyPlanContext = null;
             tpmKeySummary = "";
+            ResetDeliveryAcceptance();
             reviewedEntraPublicCertificates = null;
             reviewedEntraCertPlanSha = null;
             reviewedEntraCertContext = null;
@@ -657,6 +673,28 @@ internal sealed class MainForm : Form
                                           "שחזור מגיבוי OAuth"),
                                           RollbackHardwareCutoverAsync, false, "shield", "hardware-cutover-rollback");
                     }
+                    AddLine(page, UiTheme.Text(T(
+                        "Проверка РЕАЛЬНОЙ отправки после активации TPM/HSM. Введите два согласованных тестовых адреса: внутренний — в домене активного отправителя, внешний — в другом домене. Preview ничего не отправляет. Отправка создаёт максимум два письма и отмечает SMTP-приём; наличие письма в почтовом ящике подтверждается отдельно.",
+                        "REAL post-cutover SMTP delivery acceptance. Enter two consented test inboxes: internal in the active sender domain, external in a different domain. Preview sends nothing. Apply submits at most two fixed short messages. Inbox receipt must be verified independently.",
+                        "בדיקת משלוח אמיתי לאחר הפעלת TPM: שתי כתובות מורשות, פנימית וחיצונית. תצוגה מקדימה אינה שולחת דואר. קבלה בתיבה דורשת אימות נפרד.")));
+                    AddField(page, T("Внутренний тестовый получатель (тот же домен)",
+                                     "Internal test recipient (same sender domain)",
+                                     "נמען פנימי לבדיקה"), acceptanceInternalRecipient);
+                    AddField(page, T("Внешний тестовый получатель (другой домен)",
+                                     "External test recipient (different domain)",
+                                     "נמען חיצוני לבדיקה"), acceptanceExternalRecipient);
+                    AddAction(page, T("Проверить план отправки двух тестовых писем...",
+                                      "Preview two test deliveries (no mail sent)",
+                                      "תצוגה מקדימה למשלוח שתי הודעות"),
+                                      PreviewDeliveryAcceptanceAsync, false, "check", "delivery-acceptance-preview");
+                    if (!string.IsNullOrEmpty(acceptanceSummary))
+                        AddLine(page, UiTheme.Text(acceptanceSummary));
+                    if (reviewedAcceptanceSha is not null)
+                        AddAction(page, T("Подтвердить отправку двух РЕАЛЬНЫХ тестовых писем...",
+                                          "Confirm sending TWO real test messages...",
+                                          "אישור שליחת שתי הודעות בדיקה אמיתיות"),
+                                          ApplyDeliveryAcceptanceAsync, false, "shield", "delivery-acceptance-apply");
+
                 }
                 hardwareRequest.Text = T("Запланировать аппаратную защиту ключа (TPM/HSM) — не активировано",
                                          "Plan TPM/HSM-backed key — NOT active",
@@ -3535,6 +3573,105 @@ internal sealed class MainForm : Form
         hardwareStageSummary = result.StdOut.Trim();
         WriteLine(hardwareStageSummary);
         WriteLine("Staged hardware OAuth validated. Register the PUBLIC hardware-app.crt in Entra before a separate cutover review and approval.");
+        RenderPage();
+    }
+
+    private string CurrentDeliveryAcceptanceContext(
+        SshEndpoint endpoint, string target, string runId)
+    {
+        return SecurityOptionsStore.Identity(endpoint) + "|" + target + "|" +
+               runId + "|" + acceptanceInternalRecipient.Text.Trim() + "|" +
+               acceptanceExternalRecipient.Text.Trim();
+    }
+
+    private async Task PreviewDeliveryAcceptanceAsync()
+    {
+        if (linuxSecurity is null)
+            throw new InvalidOperationException("Run Linux security discovery first.");
+        var endpoint = Endpoint();
+        string target = SelectedHardwareCutoverTarget();
+        string internalAddress = acceptanceInternalRecipient.Text.Trim();
+        string externalAddress = acceptanceExternalRecipient.Text.Trim();
+        reviewedAcceptanceSha = null;
+        reviewedAcceptanceContext = null;
+        acceptanceRunId = Guid.NewGuid().ToString("N");
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildDeliveryAcceptanceBundle(
+                target, acceptanceRunId, internalAddress, externalAddress),
+            TimeSpan.FromSeconds(100));
+        response.EnsureSuccess();
+        var match = System.Text.RegularExpressions.Regex.Match(response.StdOut,
+            @"(?m)^SMTP_ACCEPTANCE_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        if (!match.Success ||
+            !response.StdOut.Contains("SMTP_ACCEPTANCE_RUN_ID=" + acceptanceRunId, StringComparison.Ordinal) ||
+            !response.StdOut.Contains("SMTP_ACCEPTANCE_READY_FOR_APPROVED_TEST=yes", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("SMTP_ACCEPTANCE_ACTIVE_HARDWARE_IDENTITY=yes", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("SMTP_ACCEPTANCE_MAIL_SENT=no", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("SMTP_ACCEPTANCE_RECIPIENT_INBOX_VERIFIED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Delivery test Preview is not complete or was not read-only.");
+        reviewedAcceptanceSha = match.Groups[1].Value;
+        reviewedAcceptanceContext = CurrentDeliveryAcceptanceContext(endpoint, target, acceptanceRunId);
+        acceptanceSummary = response.StdOut.Trim();
+        WriteLine(acceptanceSummary);
+        WriteLine("The acceptance preview did not send any email. Inbound accepted-domain membership and recipient inbox access must be verified by the operator.");
+        RenderPage();
+    }
+
+    private async Task ApplyDeliveryAcceptanceAsync()
+    {
+        if (linuxSecurity is null || reviewedAcceptanceSha is null || acceptanceRunId is null)
+            throw new InvalidOperationException("Review two exact delivery acceptance recipients first.");
+        var endpoint = Endpoint();
+        string target = SelectedHardwareCutoverTarget();
+        string runId = acceptanceRunId;
+        string sha = reviewedAcceptanceSha;
+        string internalAddress = acceptanceInternalRecipient.Text.Trim();
+        string externalAddress = acceptanceExternalRecipient.Text.Trim();
+        if (reviewedAcceptanceContext != CurrentDeliveryAcceptanceContext(endpoint, target, runId))
+            throw new InvalidOperationException("Test host, recipients or run identifier changed. Review again.");
+        var fresh = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildDeliveryAcceptanceBundle(
+                target, runId, internalAddress, externalAddress),
+            TimeSpan.FromSeconds(100));
+        fresh.EnsureSuccess();
+        var match = System.Text.RegularExpressions.Regex.Match(fresh.StdOut,
+            @"(?m)^SMTP_ACCEPTANCE_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        if (!match.Success || match.Groups[1].Value != sha ||
+            !fresh.StdOut.Contains("SMTP_ACCEPTANCE_MAIL_SENT=no", StringComparison.Ordinal))
+        {
+            reviewedAcceptanceSha = null;
+            reviewedAcceptanceContext = null;
+            throw new InvalidOperationException("Active hardware identity, test recipients or SMTP binary changed. Review again.");
+        }
+        if (!ConfirmDestructive("LinuxMailRelay365 | Microsoft 365 acceptance delivery",
+            T("Это ОТПРАВИТ два РЕАЛЬНЫХ письма через активный TPM/HSM OAuth: ",
+              "This will SEND TWO REAL short messages using the active TPM/HSM OAuth: ",
+              "יישלחו שתי הודעות אמיתיות באמצעות OAuth חומרה פעיל: ") +
+            "\nInternal: " + internalAddress + "\nExternal: " + externalAddress + "\n" +
+            T("Повторение того же теста блокируется, даже если SSH оборвётся. Принятие SMTP не доказывает доставку в Inbox; проверьте оба ящика или Message Trace. Продолжить?",
+              "The same run cannot be retried even if SSH fails. SMTP acceptance does not prove Inbox delivery; check both mailboxes or Message Trace. Continue?",
+              "אין שליחה חוזרת אוטומטית. יש לאמת את קבלת הדואר בתיבות."),
+            "SEND_TWO_ACCEPTANCE_TESTS")) return;
+        reviewedAcceptanceSha = null;
+        reviewedAcceptanceContext = null;
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildDeliveryAcceptanceBundle(
+                target, runId, internalAddress, externalAddress, sha),
+            TimeSpan.FromMinutes(7));
+        if (response.ExitCode != 0)
+            throw new InvalidOperationException(
+                "One or both acceptance submissions failed or their result is unknown. " +
+                "Do NOT retry the same trace ID. Inspect the Linux acceptance ledger and recipient mailboxes. " +
+                "No token or mailbox address is included in this error.");
+        if (!response.StdOut.Contains("SMTP_ACCEPTANCE_TWO_SMTP_SUBMISSIONS_ACCEPTED=yes", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("SMTP_ACCEPTANCE_RECIPIENT_INBOX_VERIFIED=no", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("SMTP_ACCEPTANCE_AUTOMATIC_RETRY=no", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("SMTP_ACCEPTANCE_PRIMARY_MTA_CHANGED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("SMTP acceptance evidence missing. Inspect recipient mailboxes and do not repeat this run.");
+        acceptanceSummary = response.StdOut.Trim();
+        WriteLine(acceptanceSummary);
+        WriteLine("Exchange accepted TWO test submissions. Trace ID " + runId +
+                  ". Recipients must independently confirm actual mailbox delivery; this does NOT prove local Postfix ingress/queue processing.");
         RenderPage();
     }
 
