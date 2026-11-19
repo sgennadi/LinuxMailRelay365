@@ -1124,3 +1124,22 @@ enables tpm2-abrmd, modifies a mail service or provisions a TPM key.
 RHEL 8 uses an older default OpenSSL API; its TPM packages alone do not make
 OpenSSL 3-provider signing available. Provider loading and offline signing
 must be separately verified before any real Microsoft 365 tenant test.
+
+
+## Offline hardware OAuth signing diagnostics (Preview)
+
+Windows Wizard / Optional security checks now has two separate actions:
+
+- **Inspect hardware OAuth configuration (read-only)**: checks the four fixed root-managed active/staged identity paths, file permissions and provider selection. No signing, key creation, Entra or SMTP calls.
+- **Verify existing TPM/HSM PS256 signing offline**: after operator approval, invokes the installed transport's `--signing-check` as the restricted `m365mailer` account. Verifies signature against the public certificate. No mail, token or tenant change.
+
+On a disposable Linux test host use:
+
+    sudo python3 linux/verify-hardware-oauth.py --inventory-only
+    sudo python3 linux/verify-hardware-oauth.py
+
+The Windows executable embeds the same diagnostic script and stages it in a root-only temporary directory, removing it after use. The diagnostic checks only fixed installed paths; it accepts no custom identity, private key or module path. Results include only non-secret status codes.
+
+**Interpretation:** `provider_ps256_certificate_match_verified` proves that the configured provider produced a signature matching the certificate. It does **not** independently prove hardware provenance, nonexportability, persistence over reboot, device attestation, Entra acceptance or Microsoft 365 mail delivery. A staged identity never becomes active through the diagnostic. Existing PEM identities remain unchanged.
+
+**Remaining for Stable:** guarded key provisioning and key-origin verification, actual TPM/HSM signing on a target RHEL/Ubuntu host, restart continuity, stage-to-active approval and rollback, authorized Microsoft 365 tenant test and final signed desktop build.
