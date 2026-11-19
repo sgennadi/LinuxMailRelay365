@@ -17,6 +17,9 @@ class SecurityProbeTests(unittest.TestCase):
         self.assertIn(values['TPM_VERSION'], {'unknown', '1', '2'})
         self.assertIn(values['MTA'], {'postfix', 'sendmail', 'exim', 'none'})
         self.assertIn('PKCS11_TOKENS', values)
+        self.assertIn(values['OPENSSL_TPM2_PROVIDER'], {'loadable_unverified', 'not_available'})
+        self.assertIn(values['OPENSSL_PKCS11_PROVIDER'], {'loadable_unverified', 'not_available'})
+        self.assertIn(values['TPM2_ABRMD_SERVICE'], {'not_verified', 'active', 'inactive_or_unavailable'})
 
     def test_probe_contains_no_mutating_commands(self):
         text = PROBE.read_text(encoding='utf8')
