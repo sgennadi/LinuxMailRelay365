@@ -222,6 +222,32 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.SetDefaultFont(new Font("Segoe UI", 10));
+        if (args.Length > 0 && args[0] == "--capture-wizard-screens")
+        {
+            if (args.Length != 2 ||
+                Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
+                string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("RUNNER_TEMP")))
+                return 2;
+            int result = 0;
+            using var form = new MainForm();
+            form.Shown += (_, _) => form.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    if (form.CaptureWizardScreens(args[1]) != 7)
+                        result = 1;
+                }
+                catch (Exception)
+                {
+                    // No credential, path, tenant, or confidential exception
+                    // material is written to the artifacts.
+                    result = 1;
+                }
+                finally { form.Close(); }
+            }));
+            Application.Run(form);
+            return result;
+        }
         Application.Run(new MainForm());
         return 0;
     }
