@@ -90,6 +90,11 @@ internal sealed class MainForm : Form
     private string? reviewedTpmPlanContext;
     private string tpmPlanSummary = "";
     private string hardwareOAuthSummary = "";
+    private readonly ComboBox hardwareStageProvider = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 560 };
+    private readonly TextBox hardwareStageKeyRef = Field("");
+    private string hardwareStageSummary = "";
+    private string? reviewedHardwareStageSha;
+    private string? reviewedHardwareStageContext;
     private readonly ComboBox hardwareCutoverTarget = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 560 };
     private readonly ComboBox hardwareCutoverBackup = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 560 };
     private string hardwareCutoverSummary = "";
@@ -166,6 +171,24 @@ internal sealed class MainForm : Form
             "Native TPM2 OpenSSL provider (RHEL 10 only)"
         ]);
         tpmDependencyProfile.SelectedIndex = 0;
+        hardwareStageProvider.Items.AddRange([
+            "TPM2 OpenSSL provider (existing TPM2 key)",
+            "PKCS#11 OpenSSL provider (existing HSM/TPM key)"
+        ]);
+        hardwareStageProvider.SelectedIndex = 0;
+        hardwareStageProvider.SelectedIndexChanged += (_, _) =>
+        {
+            reviewedHardwareStageSha = null;
+            reviewedHardwareStageContext = null;
+            hardwareStageSummary = "";
+            if (step == 1 && !busy) RenderPage();
+        };
+        hardwareStageKeyRef.TextChanged += (_, _) =>
+        {
+            reviewedHardwareStageSha = null;
+            reviewedHardwareStageContext = null;
+            hardwareStageSummary = "";
+        };
         hardwareCutoverTarget.Items.AddRange([
             "Isolated sidecar (existing primary Postfix untouched)",
             "Primary Postfix XOAUTH2 transport (advanced)"
@@ -178,6 +201,10 @@ internal sealed class MainForm : Form
             hardwareCutoverSummary = "";
             listedHardwareBackupsContext = null;
             hardwareCutoverBackup.Items.Clear();
+            reviewedHardwareStageSha = null;
+            reviewedHardwareStageContext = null;
+            hardwareStageSummary = "";
+            hardwareStageKeyRef.Text = "";
             if (step == 1 && !busy) RenderPage();
         };
         tpmDependencyProfile.SelectedIndexChanged += (_, _) =>
@@ -491,6 +518,25 @@ internal sealed class MainForm : Form
                                       VerifyOfflineHardwareOAuthAsync, false, "shield", "hardware-oauth-signing");
                     if (!string.IsNullOrEmpty(hardwareOAuthSummary))
                         AddLine(page, UiTheme.Text(hardwareOAuthSummary));
+                    AddLine(page, UiTheme.Text(T(
+                        "Подготовка hardware-staged.json: на Linux должны уже существовать защищённый TPM2/PKCS#11 провайдер (tpm2.cnf или pkcs11.cnf) и открытый сертификат hardware-app.crt. Ключ не создаётся, программный PEM-ключ не копируется. Для TPM2 введите handle:0x81...... или путь к tpm2-app.key; для PKCS#11 — URI без PIN.",
+                        "Prepare hardware-staged.json: the Linux host must already have a protected provider configuration (tpm2.cnf or pkcs11.cnf) and matching public hardware-app.crt. No key is created or copied. Enter a TPM2 persistent handle/TSS2 blob path, or a PIN-free PKCS#11 URI.",
+                        "להכנת זהות חומרה דרושים אישור ציבורי והגדרות ספק מאובטחות בשרת. לא נוצר מפתח חדש.")));
+                    AddLine(page, hardwareStageProvider);
+                    AddField(page, T("Ссылка на аппаратный ключ (без PIN и секретов)",
+                                     "Existing hardware key reference (never enter PIN/secrets)",
+                                     "הפניה למפתח חומרה קיים"), hardwareStageKeyRef);
+                    AddAction(page, T("Проверить подготовку аппаратного OAuth (без изменений)",
+                                      "Preview hardware OAuth candidate (read-only)",
+                                      "תצוגה מקדימה של זהות חומרה"),
+                                      PreviewHardwareStageAsync, false, "check", "hardware-stage-preview");
+                    if (!string.IsNullOrEmpty(hardwareStageSummary))
+                        AddLine(page, UiTheme.Text(hardwareStageSummary));
+                    if (reviewedHardwareStageSha is not null)
+                        AddAction(page, T("Подготовить и проверить hardware-staged.json...",
+                                          "Create and verify hardware-staged.json...",
+                                          "יצירה ואימות של זהות חומרה"),
+                                          ApplyHardwareStageAsync, false, "shield", "hardware-stage-apply");
                     AddLine(page, UiTheme.Text(T(
                         "Активация TPM/HSM — только для заранее подготовленного hardware-staged.json. Требует успешной подписи и получения токена Entra до переключения; выполняет резервное копирование и откат при ошибке.",
                         "TPM/HSM cutover requires an existing hardware-staged.json, successful offline signature and Entra token BEFORE activation, with backup and automatic rollback on failure.",
@@ -2962,6 +3008,10 @@ internal sealed class MainForm : Form
             reviewedTpmPlanContext = null;
             tpmPlanSummary = "";
             hardwareOAuthSummary = "";
+            hardwareStageSummary = "";
+            reviewedHardwareStageSha = null;
+            reviewedHardwareStageContext = null;
+            hardwareStageKeyRef.Text = "";
             hardwareCutoverSummary = "";
             reviewedHardwareCutoverSha = null;
             reviewedHardwareCutoverContext = null;
@@ -3032,6 +3082,97 @@ internal sealed class MainForm : Form
         hardwareOAuthSummary = result.StdOut.Trim();
         WriteLine(hardwareOAuthSummary);
         WriteLine("Provider PS256 signature check is local only. TPM provenance, restart continuity and Microsoft 365 acceptance require independent evidence.");
+        RenderPage();
+    }
+
+    private string SelectedHardwareStageProvider() => hardwareStageProvider.SelectedIndex switch
+    {
+        0 => "tpm2",
+        1 => "pkcs11",
+        _ => throw new InvalidOperationException("Select TPM2 or PKCS#11 provider.")
+    };
+
+    private string CurrentHardwareStageContext(SshEndpoint endpoint, string target,
+                                               string provider, string keyRef) =>
+        SecurityOptionsStore.Identity(endpoint) + "|" + target + "|" + provider + "|" + keyRef;
+
+    private async Task PreviewHardwareStageAsync()
+    {
+        if (linuxSecurity is null)
+            throw new InvalidOperationException("Run Linux security discovery first.");
+        var endpoint = Endpoint();
+        string target = SelectedHardwareCutoverTarget();
+        string provider = SelectedHardwareStageProvider();
+        string keyRef = hardwareStageKeyRef.Text.Trim();
+        reviewedHardwareStageSha = null;
+        reviewedHardwareStageContext = null;
+        var bundle = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+            target, "stage-plan", stageProvider: provider, stageKeyRef: keyRef);
+        var result = await SshRemote.RunRootScriptAsync(endpoint, bundle,
+            TimeSpan.FromSeconds(90));
+        result.EnsureSuccess();
+        var hash = System.Text.RegularExpressions.Regex.Match(result.StdOut,
+            @"(?m)^HARDWARE_STAGE_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        if (!hash.Success ||
+            !result.StdOut.Contains("HARDWARE_STAGE_STAGED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_STAGE_ROUTING_IDENTITY_UNCHANGED=yes", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_STAGE_ENTRA_CONTACTED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Hardware OAuth candidate review report was incomplete.");
+        reviewedHardwareStageSha = hash.Groups[1].Value;
+        reviewedHardwareStageContext = CurrentHardwareStageContext(endpoint, target, provider, keyRef);
+        hardwareStageSummary = result.StdOut.Trim();
+        WriteLine(hardwareStageSummary);
+        WriteLine("TPM/HSM candidate preview completed; no key was created, no file or mail service changed.");
+        RenderPage();
+    }
+
+    private async Task ApplyHardwareStageAsync()
+    {
+        if (linuxSecurity is null)
+            throw new InvalidOperationException("Run Linux security discovery first.");
+        var endpoint = Endpoint();
+        string target = SelectedHardwareCutoverTarget();
+        string provider = SelectedHardwareStageProvider();
+        string keyRef = hardwareStageKeyRef.Text.Trim();
+        if (reviewedHardwareStageSha is null ||
+            reviewedHardwareStageContext != CurrentHardwareStageContext(endpoint, target, provider, keyRef))
+            throw new InvalidOperationException("Review the exact hardware provider/key reference first.");
+        string sha = reviewedHardwareStageSha;
+        var fresh = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                target, "stage-plan", stageProvider: provider, stageKeyRef: keyRef),
+            TimeSpan.FromSeconds(90));
+        fresh.EnsureSuccess();
+        var digest = System.Text.RegularExpressions.Regex.Match(fresh.StdOut,
+            @"(?m)^HARDWARE_STAGE_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        if (!digest.Success || digest.Groups[1].Value != sha ||
+            !fresh.StdOut.Contains("HARDWARE_STAGE_STAGED=no", StringComparison.Ordinal))
+        {
+            reviewedHardwareStageSha = null;
+            reviewedHardwareStageContext = null;
+            throw new InvalidOperationException("The hardware certificate/provider or key plan changed. Review again.");
+        }
+        if (!ConfirmDestructive("LinuxMailRelay365 | Stage TPM/HSM OAuth candidate",
+            T("Создаётся только отдельный hardware-staged.json. Сертификат и ключ уже должны существовать на Linux. Будет выполнена локальная PS256-подпись; при ошибке новый кандидат удаляется. Никаких запросов в Entra, смены app.json или отправки писем. Цель: ",
+              "Only a separate hardware-staged.json is created. The certificate and key must already be present on Linux. Local PS256 signing is required; on failure the new candidate is removed. No Entra call, active app.json change or mail sent. Target: ",
+              "נוצר רק קובץ זהות חומרה נפרד לאחר בדיקת חתימה מקומית, ללא שינוי בדואר או ב-Entra. יעד: ") + target,
+            "STAGE_HARDWARE_OAUTH")) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                target, "stage-apply", approvalSha: sha,
+                stageProvider: provider, stageKeyRef: keyRef),
+            TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("HARDWARE_STAGE_STAGED=yes", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_STAGE_LOCAL_PS256_VERIFIED=yes", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_STAGE_KEY_CREATED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_STAGE_ENTRA_CONTACTED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Hardware staging did not confirm a verified, non-invasive candidate.");
+        reviewedHardwareStageSha = null;
+        reviewedHardwareStageContext = null;
+        hardwareStageSummary = result.StdOut.Trim();
+        WriteLine(hardwareStageSummary);
+        WriteLine("Staged hardware OAuth validated. Register the PUBLIC hardware-app.crt in Entra before a separate cutover review and approval.");
         RenderPage();
     }
 
