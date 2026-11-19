@@ -72,7 +72,20 @@ class AuthFromGuardLoopbackFixtureTests(unittest.TestCase):
         self.assertIn("smtp_fallback_relay =", source)
         self.assertNotIn("sendmail -f", source)
         self.assertNotIn("smtp.office365.com", source)
+        self.assertNotIn('sudo systemctl start "$GUARD_UNIT"', source)
+        self.assertIn("missing_sidecar_guard_autostart_link", source)
+        self.assertIn("SOCKET_RECREATED_AUTOMATICALLY_AFTER_SIDECAR_STOP=yes", source)
         self.assertNotIn("postconf -e", source.replace('postconf -c "$CONF" -e', ""))
+
+    def test_systemd_guard_autorestarts_with_isolated_postfix(self):
+        source = (ROOT / "linux" / "install-sidecar-from-guard.sh").read_text(encoding="utf-8")
+        smoke = (ROOT / "tests" / "smoke_from_owner_milter.sh").read_text(encoding="utf-8")
+        self.assertIn("Requires=linuxmailrelay365-sidecar.service", source)
+        self.assertIn("After=linuxmailrelay365-sidecar.service", source)
+        self.assertIn("WantedBy=multi-user.target linuxmailrelay365-sidecar.service", source)
+        self.assertIn("systemctl enable --now", source)
+        self.assertIn("missing_automatic_sidecar_start_dependency", smoke)
+        self.assertIn("linuxmailrelay365-sidecar.service.wants/linuxmailrelay365-from-guard.service", smoke)
 
     def test_real_ubuntu_smoke_wires_the_guarded_fixture(self):
         primary = (ROOT / "tests" / "smoke_isolated_postfix.sh").read_text("utf-8")
