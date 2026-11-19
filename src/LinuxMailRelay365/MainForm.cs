@@ -194,12 +194,6 @@ internal sealed class MainForm : Form
             "Native TPM2 OpenSSL provider (RHEL 10 only)"
         ]);
         tpmDependencyProfile.SelectedIndex = 0;
-        tpmDependencyProfile.SelectedIndexChanged += (_, _) =>
-        {
-            reviewedTpmPlanSha = null;
-            reviewedTpmPlanContext = null;
-            tpmPlanSummary = "";
-        };
         tpmKeyHandle.TextChanged += (_, _) =>
         {
             reviewedTpmKeyPlanSha = null;
