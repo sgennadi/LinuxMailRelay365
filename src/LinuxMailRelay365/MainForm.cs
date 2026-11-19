@@ -136,6 +136,8 @@ internal sealed class MainForm : Form
     private string? listedHardwareBackupsContext;
     private string cloudSecuritySummary = "Не проверено";
     private readonly CheckBox previewUpdates = new() { AutoSize = true, Checked = true };
+    private readonly CheckBox advancedSecurityTools = new() { AutoSize = true, Checked = false,
+        ForeColor = UiTheme.Navy, Margin = new Padding(0, 12, 0, 12) };
     private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
     private readonly Label headline = UiTheme.Text("", true);
     private readonly Label subheading = UiTheme.Text("");
@@ -221,6 +223,10 @@ internal sealed class MainForm : Form
                 : T("Показать журнал", "Show activity", "הצג יומן");
         };
         sshFingerprint.AccessibleDescription = "Optional SHA256 fingerprint. Leave blank to review the server key before sending the SSH password.";
+        advancedSecurityTools.CheckedChanged += (_, _) =>
+        {
+            if (step == 1 && !busy && !securityLoading) RenderPage();
+        };
         sshAuthMode.Items.AddRange(["SSH key / ssh-agent", "SSH username + password"]);
         mailTransport.Items.AddRange([
             "XOAUTH2 · sender mailbox (available)",
@@ -860,6 +866,52 @@ internal sealed class MainForm : Form
         step = 1;
     }
 
+
+    private TableLayoutPanel BuildDeliveryModeOverview()
+    {
+        var guide = DeliveryModeOverview.Describe(
+            Math.Clamp(mailTransport.SelectedIndex, 0, 2), language.SelectedIndex,
+            oauthSenderMode.SelectedIndex == 1);
+        var panel = new TableLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1, RowCount = 0, BackColor = Color.White,
+            Margin = new Padding(0, 13, 0, 16),
+            Padding = new Padding(14, 10, 14, 13),
+            MaximumSize = new Size(920, 0)
+        };
+        var headline = UiTheme.Text(T("Выбранный маршрут", "Selected mail route", "מסלול הדואר שנבחר") +
+            " · " + guide.Name, true);
+        headline.ForeColor = UiTheme.Navy;
+        AddLine(panel, headline);
+        void Detail(string caption, string value, bool alert = false)
+        {
+            int maxWidth = Math.Max(330, Math.Min(885, pageHost.ClientSize.Width - 80));
+            var label = new Label
+            {
+                Text = caption + ": " + value,
+                AutoSize = true, MaximumSize = new Size(maxWidth, 0),
+                Font = new Font("Segoe UI", 10f),
+                ForeColor = alert ? Color.FromArgb(142, 76, 19) : UiTheme.Muted,
+                Margin = new Padding(0, 5, 0, 5)
+            };
+            AddLine(panel, label);
+        }
+        Detail(T("Схема", "Flow", "זרימה"),
+            T("Программы", "Applications", "יישומים") + " → Linux SMTP:" +
+            isolatedSmtpPort.Text.Trim() + " → " + guide.Target);
+        Detail(T("Получатели", "Recipients", "נמענים"), guide.Audience);
+        Detail(T("Авторизация", "Authentication", "אימות"), guide.Authorization);
+        Detail(T("Отправитель", "Sender", "שולח"), guide.Sender);
+        Detail(T("Что потребуется", "Requirements", "דרישות"), guide.Requirements);
+        Detail(T("Важно", "Important", "חשוב"), guide.Safety, true);
+        AddLine(panel, UiTheme.Text(T(
+            "Это схема выбора, а не подтверждение настройки. Ничего не отправлено и не изменено.",
+            "This is a selection preview, not proof of configuration. Nothing was sent or changed.",
+            "תצוגה מקדימה בלבד; לא נשלחו הודעות ולא שונו הגדרות.")));
+        return panel;
+    }
+
     private void RenderPage()
     {
         if (IsDisposed) return;
@@ -917,6 +969,19 @@ internal sealed class MainForm : Form
                                   "בדוק TPM/HSM לקריאה בלבד"), CheckLinuxSecurityAsync, true, "shield", "linux-security");
                 AddLine(page, UiTheme.Text(linuxSecurity?.SummaryRu() ??
                     T("Linux: проверка ещё не запускалась.", "Linux: not inspected yet.", "Linux: טרם נבדק.")));
+                advancedSecurityTools.Text = T(
+                    "Показать расширенные действия TPM/HSM, сертификаты и Entra",
+                    "Show advanced TPM/HSM, certificate and Entra actions",
+                    "הצגת פעולות מתקדמות עבור TPM/HSM ו-Entra");
+                AddLine(page, advancedSecurityTools);
+                if (!advancedSecurityTools.Checked)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "Дополнительные действия скрыты. Можно перейти далее: TPM и настройка Entra необязательны на этом шаге.",
+                        "Advanced actions are hidden. Continue when ready: TPM and Entra security work is optional at this step.",
+                        "אפשר להמשיך; הגדרות TPM ו-Entra מתקדמות הן אופציונליות.")));
+                    break;
+                }
                 if (linuxSecurity?.HasTpm2 == true)
                 {
                     AddLine(page, UiTheme.Text(T(
@@ -1116,6 +1181,7 @@ internal sealed class MainForm : Form
                     "First select HOW Linux will deliver mail through Microsoft 365",
                     "בחרו כיצד Linux ישלח דואר דרך Microsoft 365")));
                 AddLine(page, mailTransport);
+                AddLine(page, BuildDeliveryModeOverview());
                 if (mailTransport.SelectedIndex is 1 or 2)
                 {
                     AddLine(page, UiTheme.Text(T(
@@ -1128,16 +1194,23 @@ internal sealed class MainForm : Form
                         "בשלב הבא בחרו יציאה, MX, דומיין, שולח ושמירת שרת הדואר הקיים.")));
                     break;
                 }
-                AddAction(page, "Connect to Microsoft 365 and discover tenants", DiscoverTenantsAsync, true, "cloud", "tenant-discovery");
+                AddAction(page, T("Подключиться к Microsoft 365 и найти организации",
+                                  "Connect to Microsoft 365 and discover tenants",
+                                  "התחברות ל-Microsoft 365 וגילוי ארגונים"),
+                    DiscoverTenantsAsync, true, "cloud", "tenant-discovery");
                 if (discoveredTenants.Count > 0)
                 {
                     AddLine(page, UiTheme.Text(discoveredTenants.Count == 1
                         ? "One Entra tenant discovered and selected automatically."
                         : "Multiple Entra tenants detected. Select the correct organization before configuring anything."));
                     AddLine(page, tenantSelector);
-                    AddAction(page, "Use manual Tenant ID instead", UseManualTenantAsync, false, "gear");
+                    AddAction(page, T("Ввести Tenant ID вручную", "Use manual Tenant ID instead",
+                                      "הזנה ידנית של Tenant ID"),
+                        UseManualTenantAsync, false, "gear");
                 }
-                AddField(page, "Selected Tenant ID (auto-filled or manual GUID)", tenant);
+                AddField(page, T("Tenant ID (автоматически или вручную)",
+                                 "Selected Tenant ID (auto-filled or manual GUID)",
+                                 "Tenant ID נבחר"), tenant);
                 AddField(page, T("Почтовый ящик отправителя", "Sender mailbox", "תיבת דואר שולח"), mailbox);
                 AddField(page, T("Имя приложения Entra (можно изменить)", "Entra application display name", "שם האפליקציה"), applicationName);
                 AddField(page, T("Client ID существующего приложения (необязательно — общий для нескольких Linux)",
@@ -1683,7 +1756,9 @@ internal sealed class MainForm : Form
         var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
         back.Enabled = step > 0 && !busy;
         back.Click += (_, _) => { step--; RenderPage(); };
-        var next = UiTheme.Action(T("Далее", "Next", "הבא"), primary: true, glyph: "next");
+        var next = UiTheme.Action(step == 0
+            ? T("Пропустить проверку", "Skip connection check", "דלג על בדיקת החיבור")
+            : T("Далее", "Next", "הבא"), primary: step != 0, glyph: "next");
         next.Enabled = step < 4 && !busy;
         next.Click += (_, _) =>
         {

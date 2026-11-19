@@ -51,6 +51,7 @@ internal static class Program
                 !MainForm.UseWideConnectionLayout(760, 96) &&
                 !MainForm.UseWideConnectionLayout(1050, 192) &&
                 MainForm.UseWideConnectionLayout(1900, 192)),
+            ("Delivery route chooser guidance", DeliveryModeOverview.SelfTest),
             ("Security plans", SecurityOptionsSelfTest.Run),
             ("Entra public certificate bridge", () =>
             {
