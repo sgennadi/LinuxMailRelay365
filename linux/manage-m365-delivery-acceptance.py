@@ -28,7 +28,7 @@ CONFIRM = "SEND_TWO_ACCEPTANCE_TESTS"
 SHA = re.compile(r"\A[a-f0-9]{64}\Z")
 RUN_ID = re.compile(r"\A[a-f0-9]{32}\Z")
 MAILBOX = re.compile(
-    r"\A[A-Za-z0-9][A-Za-z0-9._+-]{0,63}@[A-Za-z0-9]"
+    r"\A(?![^@]*\.\.)(?:[A-Za-z0-9](?:[A-Za-z0-9._+-]{0,62}[A-Za-z0-9_+-])?)@[A-Za-z0-9]"
     r"(?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\Z")
 ROOTS = {
