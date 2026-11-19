@@ -67,6 +67,9 @@ class AuthFromGuardLoopbackFixtureTests(unittest.TestCase):
                 expected = "smoke_authenticated_from_guard_loopback.py"
             with self.subTest(needle=expected):
                 self.assertIn(expected, source)
+        self.assertIn("require_setting fallback_relay", source)
+        self.assertIn("unsafe_fallback_relay", source)
+        self.assertIn("smtp_fallback_relay =", source)
         self.assertNotIn("sendmail -f", source)
         self.assertNotIn("smtp.office365.com", source)
         self.assertNotIn("postconf -e", source.replace('postconf -c "$CONF" -e', ""))
