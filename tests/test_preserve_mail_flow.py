@@ -9,9 +9,13 @@ class PreserveMailLiveDiagramContract(unittest.TestCase):
     def test_two_separate_mail_routes(self):
         source = FLOW.read_text(encoding='utf-8')
         for marker in ('EXISTING APPLICATIONS', 'NEW APPLICATIONS',
-                       'PRIMARY MAIL SERVER', 'ISOLATED POSTFIX', 'MICROSOFT 365',
+                       'PRIMARY MAIL SERVER', 'ISOLATED POSTFIX', 'MailRouteTitle',
                        'Existing SMTP settings'):
             self.assertIn(marker, source)
+        for mode in ('XOAUTH2 · TCP 587', 'M365 CONNECTOR · TCP 25',
+                     'DIRECT SEND · INTERNAL'):
+            self.assertIn(mode, source)
+        self.assertIn('MailRoutingGuidance.Outbound(TransportMode, OutboundMx)', source)
         self.assertIn('UpdateData(PreserveFlowSnapshot snapshot', source)
         self.assertIn('publicInternetRequested', GUI.read_text())
 
