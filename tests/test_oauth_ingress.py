@@ -108,6 +108,8 @@ class IngressAuditTests(unittest.TestCase):
             ("smtpd_tls_security_level", "may", "SASL_TLS_CONFIG"),
             ("smtpd_tls_auth_only", "no", "SASL_TLS_CONFIG"),
             ("smtpd_relay_restrictions", "permit_mynetworks, reject", "SASL_TLS_CONFIG"),
+            ("smtpd_client_restrictions", "permit", "SASL_TLS_CONFIG"),
+            ("smtpd_recipient_restrictions", "permit", "SASL_TLS_CONFIG"),
             ("smtpd_sender_login_maps", "", "SENDER_LOGIN_CONFIG"),
             ("smtpd_sender_restrictions", "permit_mynetworks", "SENDER_LOGIN_CONFIG"),
             ("smtpd_milters", "", "FROM_GUARD_MILTER_CONFIG"),
