@@ -26,7 +26,7 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
                        'LocalizeDeliveryChoices();',
                        'XOAUTH2 sender policy',
                        'Connector sender policy',
-                       'senderPolicy.SelectedIndex == 1'):
+                       'senderPolicy.SelectedIndex != 0'):
             self.assertIn(needle, self.form)
 
     def test_live_diagram_and_help_from_entered_values(self):
