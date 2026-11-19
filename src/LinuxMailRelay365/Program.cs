@@ -12,6 +12,28 @@ internal static class Program
         var checks = new List<(string Name, Func<bool> Run)>
         {
             ("Security plans", SecurityOptionsSelfTest.Run),
+            ("Entra public certificate bridge", () =>
+            {
+                var preview = EmbeddedAssets.BuildEntraPublicCertificateBundle("sidecar");
+                var proof = EmbeddedAssets.BuildEntraPublicCertificateBundle(
+                    "primary", "11111111-1111-1111-1111-111111111111",
+                    new string('a', 64), new string('b', 64),
+                    new string('c', 64), new string('d', 64));
+                bool rejected;
+                try
+                {
+                    EmbeddedAssets.BuildEntraPublicCertificateBundle("sidecar",
+                        "11111111-1111-1111-1111-111111111111", "../invalid", null, null, null);
+                    rejected = false;
+                }
+                catch (ArgumentException) { rejected = true; }
+                return EntraCertificateReview.SelfTest() &&
+                       preview.Contains("--target sidecar --inventory", StringComparison.Ordinal) &&
+                       proof.Contains("--target primary --proof", StringComparison.Ordinal) &&
+                       proof.Contains("--expected-candidate-cert-sha", StringComparison.Ordinal) &&
+                       EmbeddedAssets.EntraCertificateManager.Contains("Invoke-MgGraphRequest", StringComparison.Ordinal) &&
+                       rejected;
+            }),
             ("TPM2 OAuth provisioning bundle", () =>
             {
                 var plan = EmbeddedAssets.BuildTpmOauthProvisionBundle("sidecar", "0x81010001");
