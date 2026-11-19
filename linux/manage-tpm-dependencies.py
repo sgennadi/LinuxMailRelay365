@@ -131,6 +131,8 @@ def emit(plan, sha):
         print("TPM_DEPS_RHEL9_NOTE=no_native_tpm2_openssl_rpm;use_reviewed_pkcs11_or_source_build")
     if plan["os_major"] == 8:
         print("TPM_DEPS_RHEL8_NOTE=openssl3_provider_not_in_base_openssl")
+        if plan["os_id"] == "rocky":
+            print("TPM_DEPS_REPO_HINT=rocky8_baseos_tpm2_tools;devel_not_required")
     print("TPM_DEPS_HARDWARE_SIGNING_ACTIVE=not_verified")
     print("TPM_DEPS_REPOSITORIES_CHANGED=no")
     print("TPM_DEPS_TPM_KEYS_CHANGED=no")
