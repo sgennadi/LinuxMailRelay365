@@ -74,6 +74,8 @@ class AuthFromGuardLoopbackFixtureTests(unittest.TestCase):
         self.assertNotIn("smtp.office365.com", source)
         self.assertNotIn('sudo systemctl start "$GUARD_UNIT"', source)
         self.assertIn("missing_sidecar_guard_autostart_link", source)
+        self.assertIn('require_setting header_checks "regexp:$CONF/eop-reject-trace-header.regexp"', source)
+        self.assertIn("return_path_header_check_missing", source)
         self.assertIn("SOCKET_RECREATED_AUTOMATICALLY_AFTER_SIDECAR_STOP=yes", source)
         self.assertNotIn("postconf -e", source.replace('postconf -c "$CONF" -e', ""))
 

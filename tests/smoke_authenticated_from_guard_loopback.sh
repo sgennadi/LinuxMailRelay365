@@ -55,6 +55,16 @@ require_setting smtpd_tls_security_level encrypt
 require_setting smtpd_milters \
   unix:/run/linuxmailrelay365-from-guard/from-guard.sock
 require_setting milter_default_action tempfail
+require_setting header_checks "regexp:$CONF/eop-reject-trace-header.regexp"
+require_setting mime_header_checks ""
+require_setting nested_header_checks ""
+# Postfix drops Return-Path before Milter; reject it first in cleanup.
+trace_rule="$(sudo postmap -q 'Return-Path: <spoof@example.org>' \
+  "regexp:$CONF/eop-reject-trace-header.regexp")" || exit 2
+if [ "$trace_rule" != "REJECT client_supplied_return_path_denied" ]; then
+  echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=return_path_header_check_missing" >&2
+  exit 2
+fi
 # An empty sender_canonical_classes can pass postfix check, but cleanup
 # terminates when the first authenticated SMTP DATA reaches the queue.
 require_setting sender_canonical_maps ""

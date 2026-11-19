@@ -704,7 +704,11 @@ The Python client uses the disposable TLS CA and local SMTP AUTH account,
 checks no AUTH before STARTTLS, refuses anonymous or wrong-password access,
 checks refusal of another account's envelope sender, and submits synthetic
 DATA containing mismatched or duplicate From/Sender and forged Return-Path
-and Resent-From. It requires server-side refusal; it also verifies one
+and Resent-From. Postfix drops Return-Path before Milter callbacks, so the
+Connector now installs a separate root-owned header_checks REJECT regexp
+for top-level client-supplied Return-Path before cleanup removes it. The CI
+fixture verifies the map with postmap and requires real SMTP rejection.
+It also verifies one
 positive, correctly matched RFC5322 From and MAIL FROM is accepted into
 the real Postfix queue and arrives at exactly one loopback-only SMTP sink.
 An existing separate TLS identity test checks DNS/certificate hostname;

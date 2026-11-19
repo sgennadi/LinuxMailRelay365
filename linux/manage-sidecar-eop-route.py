@@ -27,7 +27,7 @@ RECOVERY = Path("/var/lib/linuxmailrelay365-eop-route-recovery")
 ACTIVE = RECOVERY / "active.json"
 LOCK = Path("/run/linuxmailrelay365-sidecar-auth.lock")
 MAPS = ("eop-fixed-sender.regexp", "eop-sender-canonical.regexp", "eop-recipients.regexp",
-        "eop-sender-owners.regexp")
+        "eop-sender-owners.regexp", "eop-reject-trace-header.regexp")
 AUTH_USERS = Path("/etc/linuxmailrelay365/smtp-auth/passwd")
 FROM_GUARD_POLICY = CONF / "eop-from-owners.tsv"
 FROM_GUARD_ENGINE = Path("/usr/local/libexec/linuxmailrelay365-from-owner-milter.py")
@@ -192,6 +192,17 @@ def policy_maps(args):
     return sender, canonical, recipients
 
 
+def trace_header_rules(args):
+    """Reject spoofed Return-Path before Postfix strips it for the Milter.
+
+    cleanup applies header_checks before message_drop_headers and Milter.
+    This rule is limited to authenticated multi-sender Connector routes.
+    """
+    if args.mode == "connector" and args.sender_policy != "fixed-mailbox":
+        return "/^Return-Path:/ REJECT client_supplied_return_path_denied\n"
+    return "# Not active for fixed-sender routes\n"
+
+
 def policy_changes(args, ca, auth_enabled):
     mx = args.mx_host.lower()
     rewriting = args.sender_policy != "preserve-domain"
@@ -235,6 +246,10 @@ def policy_changes(args, ca, auth_enabled):
         # This changes only the isolated Postfix config, never /etc/postfix.
         policy.update({
             "smtpd_milters": "unix:{}".format(FROM_GUARD_SOCKET),
+            "header_checks": "regexp:{}".format(CONF / MAPS[4]),
+            # Limit trace-header filtering to the top-level SMTP message.
+            "mime_header_checks": "",
+            "nested_header_checks": "",
             "milter_protocol": "6",
             "milter_default_action": "tempfail",
             "milter_mail_macros": "i {mail_addr} {auth_authen} {auth_type}",
@@ -498,6 +513,7 @@ def runtime_checks(allow_active_route=False):
                     "transport_maps", "smtp_tls_policy_maps", "relayhost",
                     "smtpd_sender_login_maps",
                     "smtpd_sender_restrictions", "smtpd_milters",
+                    "header_checks",
                     "non_smtpd_milters", "smtpd_milter_maps"):
             if postconf(key):
                 raise Refused("existing_routing_override_requires_manual_review")
@@ -584,6 +600,8 @@ def post_reload(main, master, rules=None):
     # Prepare policy maps first. Main/master are installed only after
     # rule files exist; each file update is atomic.
     if rules is not None:
+        if len(rules) != len(MAPS):
+            raise Refused("incomplete_eop_policy_maps")
         for name, data in zip(MAPS, rules):
             write_atomic(CONF / name, data.encode("ascii"))
     write_atomic(CONF / "master.cf", master)
@@ -635,7 +653,8 @@ def deploy(args):
     changed = False
     try:
         changed = True
-        post_reload(main, newmaster, policy_maps(args) + (sender_owner_map(args),))
+        post_reload(main, newmaster, policy_maps(args) +
+                    (sender_owner_map(args), trace_header_rules(args)))
         if digest((CONF / "main.cf").read_bytes()) != digest(main) or \
                 digest((CONF / "master.cf").read_bytes()) != digest(newmaster):
             raise Refused("post_reload_fingerprint_mismatch")

@@ -1489,6 +1489,9 @@ SMTP AUTH, sender ownership and before-queue From Guard** test. A synthetic
 message from a permitted identity passes through Postfix's queue to a fixed
 `127.0.0.1:46601` SMTP sink. Unauthorized envelope From, forged/duplicate
 headers, anonymous SMTP and invalid credentials are expected to be rejected.
+Postfix removes Return-Path before Milter inspection; the guarded Connector
+uses a top-level header_checks REJECT rule to deny client-supplied Return-Path
+before cleanup strips it. CI checks the real postmap lookup and SMTP DATA.
 
 The fixture checks an empty queue before/after, freezes every outbound
 transport to loopback **before** sending any DATA, preserves the primary

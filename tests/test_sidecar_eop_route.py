@@ -108,6 +108,11 @@ class EopRouteContracts(unittest.TestCase):
         self.assertEqual(policy["sender_canonical_maps"], "")
         self.assertEqual(policy["sender_canonical_classes"], "envelope_sender, header_sender")
         self.assertEqual(policy["local_header_rewrite_clients"], "")
+        self.assertEqual(policy["header_checks"], "regexp:" + str(eop.CONF / eop.MAPS[4]))
+        self.assertEqual(policy["mime_header_checks"], "")
+        self.assertEqual(policy["nested_header_checks"], "")
+        self.assertEqual(eop.trace_header_rules(a),
+                         "/^Return-Path:/ REJECT client_supplied_return_path_denied\n")
         self.assertIn("reject_authenticated_sender_login_mismatch", policy["smtpd_sender_restrictions"])
         self.assertIn("eop-sender-owners.regexp", policy["smtpd_sender_login_maps"])
         apply_args = opts(mode="connector", public_ip="8.8.8.8", apply=True,
@@ -164,6 +169,8 @@ class EopRouteContracts(unittest.TestCase):
             self.assertNotIn("smtpd_milters", settings)
             self.assertNotIn("authorized_submit_users", settings)
             self.assertNotIn("milter_mail_macros", settings)
+            self.assertNotIn("header_checks", settings)
+            self.assertIn("Not active", eop.trace_header_rules(a))
 
     def test_multi_sender_route_cannot_apply_without_owner_guard(self):
         a = opts(mode="connector", public_ip="8.8.8.8")
@@ -278,6 +285,7 @@ class EopRouteContracts(unittest.TestCase):
         self.assertIn("senderPolicy: opt.SenderPolicy", ui)
         self.assertIn("preserve-domain", ui)
         self.assertIn("manage-sidecar-eop-route.py", project)
+        self.assertIn("eop-reject-trace-header.regexp", SCRIPT.read_text(encoding="utf-8"))
         self.assertIn("PreviewEopRouteAsync", ui)
         self.assertIn("ApplyEopRouteAsync", ui)
         self.assertIn("RestoreEopRouteAsync", ui)
