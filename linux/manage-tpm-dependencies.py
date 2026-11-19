@@ -203,7 +203,7 @@ def install(plan, sha, confirm, approved_sha):
     dnf = shutil.which("dnf")
     if not dnf:
         raise RuntimeError("dnf_not_available")
-    if any(p not in packages(plan["os_major"], plan["profile"]) or
+    if any(p not in packages(plan["os_major"], plan["selected_profile"]) or
            not PKG_PATTERN.fullmatch(p) for p in missing):
         raise ValueError("unsafe_package_plan")
     # No --enablerepo, --nogpgcheck, third-party RPM or unattended build.
