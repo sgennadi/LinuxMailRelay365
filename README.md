@@ -1481,3 +1481,21 @@ Extra/wildcard map rules, wrong owners or a mismatched service pin are
 reported as **not ready**. These are still only static checks: real
 SMTP login/From rejection, multi-mailbox XOAUTH2 and tenant delivery
 remain disabled until live tests and operator approval.
+
+## Real Postfix SMTP AUTH and From Guard end-to-end local CI test
+
+The Ubuntu isolated-Postfix CI smoke now includes a **real STARTTLS, Dovecot
+SMTP AUTH, sender ownership and before-queue From Guard** test. A synthetic
+message from a permitted identity passes through Postfix's queue to a fixed
+`127.0.0.1:46601` SMTP sink. Unauthorized envelope From, forged/duplicate
+headers, anonymous SMTP and invalid credentials are expected to be rejected.
+
+The fixture checks an empty queue before/after, freezes every outbound
+transport to loopback **before** sending any DATA, preserves the primary
+MTA and restores the byte-identical isolated Postfix config. Failure with
+queued mail leaves the isolated service stopped and loopback routing intact.
+
+These results prove only local ingress policy and queue acceptance on
+disposable CI hosts. They **do not** enable or prove multi-mailbox XOAUTH2,
+real Microsoft 365 Connector, Exchange Send As, remote tenant delivery or
+physical host acceptance. See `docs/FINAL_ACCEPTANCE.md`.
