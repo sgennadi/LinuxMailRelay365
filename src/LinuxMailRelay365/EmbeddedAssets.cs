@@ -259,7 +259,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildTpmDependenciesBundle(string profile, string? reviewedSha = null)
     {
-        if (profile is not ("runtime" or "build-prereqs" or "pkcs11" or "native-provider"))
+        if (profile is not ("auto" or "runtime" or "build-prereqs" or "pkcs11" or "native-provider"))
             throw new ArgumentException("Unsupported TPM dependency profile.");
         if (reviewedSha is not null &&
             !Regex.IsMatch(reviewedSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
