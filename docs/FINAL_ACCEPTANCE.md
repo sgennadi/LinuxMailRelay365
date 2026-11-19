@@ -424,3 +424,30 @@ are returned:
 To test an existing hardware OAuth key, run the **separate**, explicitly
 confirmed offline PS256 signing action (`verify-hardware-oauth.py`).
 It still does not prove Entra authorization or Microsoft 365 SMTP delivery.
+
+
+## Local Postfix envelope preflight (manual; does NOT send mail)
+
+`linux/verify-sidecar-envelope.py` adds a separate Python3.6+ operator-only
+session to test an installed independent Postfix listener over validated local
+STARTTLS and an app-specific SMTP AUTH credential. It does not alter existing
+`verify-sidecar-auth-client.py` (which still sends only EHLO/AUTH/QUIT).
+Sender, recipient and password must be supplied via hidden interactive TTY
+prompts; missing TTY, malformed addresses, invalid TLS trust, authentication
+failure, unexpected RCPT response or port outside 1024–65535 fail closed.
+
+    python3 linux/verify-sidecar-envelope.py --smtp-port 46500 \
+      --server-name relay.example.org --login smtp-app01 \
+      --ca-file /path/to/trusted-ca.pem
+
+Require positive RCPT response for a permitted internal mailbox or add
+`--expect-reject` to require a permanent 5xx response for a disallowed
+recipient. The tool sends MAIL FROM/RCPT TO **only after** successful TLS and
+AUTH, and always sends RSET before QUIT on successful checks. It **never
+sends SMTP DATA**; therefore it cannot prove mail queue hand-off, XOAUTH2
+delivery, Exchange Message Trace, actual tenant permissions or inbox arrival.
+
+A separate future acceptance needs two explicitly consented recipients,
+a short real message through the installed custom-port Postfix SMTP path,
+queue and retry observation, Exchange Message Trace plus recipient evidence,
+and signed deployment. Do not treat the envelope preflight as Stable evidence.
