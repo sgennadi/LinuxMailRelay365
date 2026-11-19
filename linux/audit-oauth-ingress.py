@@ -239,13 +239,13 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
         result["AUTH_ACCOUNTS"] = "over_64_account_limit"
     if len(rows) <= 64 and gids[1] is not None:
         try:
+            guard_raw = read_file(GUARD, MAX_OWNERS, 0o640, gids[1])
             actual_owners = parse_guard_owners(
-                read_file(GUARD, MAX_OWNERS, 0o640, gids[1]),
-                auditor.EMAIL, auditor.LOGIN)
+                guard_raw, auditor.EMAIL, auditor.LOGIN)
             result["FROM_GUARD_POLICY"] = (
                 "exact_match" if actual_owners == expected_owners else "different")
             if result["FROM_GUARD_POLICY"] == "exact_match" and \
-                    guard_pin(hashlib.sha256(read_file(GUARD, MAX_OWNERS, 0o640, gids[1])).hexdigest()):
+                    guard_pin(hashlib.sha256(guard_raw).hexdigest()):
                 result["FROM_GUARD_SHA_PIN"] = "configured_pinned_only"
         except (OSError, ValueError, AuditRefused, auditor.Refused):
             pass
