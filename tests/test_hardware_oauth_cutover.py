@@ -88,7 +88,13 @@ class HardwareOAuthCutoverTests(unittest.TestCase):
             if verifier:
                 verifier(name)
         checked = mock.patch.object(CUT, "checked_run", side_effect=fake_run)
-        return (lock, close, prepare, backup, exists, root, replacement, checked)
+        def fake_smtp(_plan, candidate=True, runner=None):
+            name = ("candidate" if candidate else "active") + "_smtp_auth"
+            self.calls.append(name)
+            if verifier:
+                verifier(name)
+        checked_smtp = mock.patch.object(CUT, "checked_smtp_auth", side_effect=fake_smtp)
+        return (lock, close, prepare, backup, exists, root, replacement, checked, checked_smtp)
 
     def test_typed_approval_prevents_mutation(self):
         with mock.patch.object(CUT, "lock") as lock:
@@ -200,10 +206,13 @@ class HardwareOAuthCutoverTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()) as log:
                 CUT.apply(self.target, self.plan["sha"], CUT.CONFIRM_APPLY)
         self.assertEqual(self.calls, ["candidate_sign", "candidate_entra",
-                                      "replace_hardware", "active_sign", "active_entra"])
+                                      "candidate_smtp_auth", "replace_hardware",
+                                      "active_sign", "active_entra", "active_smtp_auth"])
         self.assertEqual(self.active, self.new)
         self.assertIn("HARDWARE_CUTOVER_APPLIED=yes", log.getvalue())
         self.assertIn("HARDWARE_CUTOVER_MAIL_SENT=no", log.getvalue())
+        self.assertIn("HARDWARE_CUTOVER_SMTP_AUTH_XOAUTH2_VERIFIED=yes", log.getvalue())
+        self.assertIn("HARDWARE_CUTOVER_MAIL_FROM_RCPT_DATA_SENT=no", log.getvalue())
 
     def test_entra_preflight_failure_must_not_change_live_identity(self):
         def fail(name):
@@ -227,8 +236,59 @@ class HardwareOAuthCutoverTests(unittest.TestCase):
             with self.assertRaisesRegex(CUT.Refused, "cutover_failed_original_restored"):
                 CUT.apply(self.target, self.plan["sha"], CUT.CONFIRM_APPLY)
         self.assertEqual(self.active, self.old)
-        self.assertEqual(self.calls, ["candidate_sign", "candidate_entra",
+        self.assertEqual(self.calls, ["candidate_sign", "candidate_entra", "candidate_smtp_auth",
                                       "replace_hardware", "active_sign", "active_entra", "restore_old"])
+
+    def test_exchange_auth_denied_before_cutover_cannot_replace_active(self):
+        def fail(name):
+            if name == "candidate_smtp_auth":
+                raise CUT.Refused("staged_exchange_smtp_auth_failed")
+        with contextlib.ExitStack() as stack:
+            for patch in self._patch_apply(verifier=fail):
+                stack.enter_context(patch)
+            with self.assertRaisesRegex(CUT.Refused, "staged_exchange_smtp_auth_failed"):
+                CUT.apply(self.target, self.plan["sha"], CUT.CONFIRM_APPLY)
+        self.assertEqual(self.active, self.old)
+        self.assertEqual(self.calls, ["candidate_sign", "candidate_entra",
+                                      "candidate_smtp_auth"])
+
+    def test_exchange_auth_denied_after_cutover_restores_previous_identity(self):
+        def fail(name):
+            if name == "active_smtp_auth":
+                raise CUT.Refused("active_exchange_smtp_auth_failed")
+        with contextlib.ExitStack() as stack:
+            for patch in self._patch_apply(verifier=fail):
+                stack.enter_context(patch)
+            with self.assertRaisesRegex(CUT.Refused, "cutover_failed_original_restored"):
+                CUT.apply(self.target, self.plan["sha"], CUT.CONFIRM_APPLY)
+        self.assertEqual(self.active, self.old)
+        self.assertEqual(self.calls, ["candidate_sign", "candidate_entra",
+                                      "candidate_smtp_auth", "replace_hardware",
+                                      "active_sign", "active_entra",
+                                      "active_smtp_auth", "restore_old"])
+
+    def test_smtp_auth_checker_chooses_only_whitelisted_candidate_or_active(self):
+        commands = []
+        def fake_runner(args, **kwargs):
+            commands.append((args, kwargs))
+            return SimpleNamespace(returncode=0)
+        CUT.checked_smtp_auth(self.plan, True, runner=fake_runner)
+        CUT.checked_smtp_auth(self.plan, False, runner=fake_runner)
+        self.assertEqual(len(commands), 2)
+        candidate, options = commands[0]
+        active, options_active = commands[1]
+        self.assertIn("--smtp-auth-check", candidate)
+        self.assertIn("--candidate-config", candidate)
+        self.assertNotIn("--config", candidate)
+        self.assertNotIn("--recipient", candidate)
+        self.assertEqual(candidate[-1], str(self.directory / "hardware-staged.json"))
+        self.assertIn("--config", active)
+        self.assertNotIn("--candidate-config", active)
+        self.assertNotIn("--recipient", active)
+        self.assertEqual(active[-1], str(self.directory / "app.json"))
+        self.assertEqual(options["stdout"], CUT.subprocess.DEVNULL)
+        self.assertEqual(options["stderr"], CUT.subprocess.DEVNULL)
+        self.assertEqual(options_active["timeout"], 120)
 
     def test_plan_drift_refuses_change(self):
         with contextlib.ExitStack() as stack:
