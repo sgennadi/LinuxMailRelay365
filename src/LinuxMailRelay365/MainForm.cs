@@ -41,6 +41,15 @@ internal sealed class MainForm : Form
     private string? existingSmtpAuditIdentity;
     private readonly ComboBox mailTransport = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
+    private readonly ComboBox oauthSenderMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
+    private readonly TextBox oauthSenderMapPath = Field("");
+    private readonly TextBox deliveryModeExplanation = new()
+    {
+        Width = 890, Height = 185, Multiline = true, ReadOnly = true,
+        ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.FixedSingle,
+        BackColor = Color.White, Font = new Font("Segoe UI", 9.5f),
+        AccessibleName = "Selected Microsoft 365 delivery method, sender rights and routing explanation"
+    };
     private readonly CheckBox preserveExistingMail = new() { AutoSize = true, Checked = true };
     private readonly TextBox acceptedDomain = Field("");
     private readonly TextBox outboundMxHost = Field("");
@@ -182,10 +191,15 @@ internal sealed class MainForm : Form
             "Direct Send · internal recipients only (Advanced apply)"
         ]);
         senderPolicy.Items.AddRange([
-            "Fixed Microsoft 365 sender mailbox (available)",
-            "Preserve sender within verified domain (Connector only)",
-            "Masquerade subdomain sender into accepted domain (Connector only)"
+            "One fixed approved sender address",
+            "Preserve original sender (Connector; SMTP AUTH + From Guard required)",
+            "Masquerade verified subdomain (Connector; From Guard required)"
         ]);
+        oauthSenderMode.Items.AddRange([
+            "One M365 mailbox for all local mail (current implementation; rewrites From)",
+            "Preserve multiple users' From with authorized mailbox mapping (plan only)"
+        ]);
+        oauthSenderMode.SelectedIndex = 0;
         tpmDependencyProfile.Items.AddRange([
             "Automatic TPM2 RPM profile (no third-party repositories)",
             "TPM2 utilities (RHEL/Oracle/Rocky/Alma 8-10)",
@@ -269,10 +283,28 @@ internal sealed class MainForm : Form
         smtpAccountOperation.SelectedIndex = 0;
         mailTransport.SelectedIndex = 0;
         senderPolicy.SelectedIndex = 0;
+        oauthSenderMode.SelectedIndexChanged += (_, _) =>
+        {
+            SaveRoutingChoices();
+            UpdatePreserveFlowPreview();
+            if (step == 3 && !routingLoading && !busy)
+            {
+                int scroll = -pageHost.AutoScrollPosition.Y;
+                RenderPage();
+                pageHost.AutoScrollPosition = new Point(0, scroll);
+            }
+        };
+        oauthSenderMapPath.TextChanged += (_, _) =>
+        {
+            SaveRoutingChoices();
+            UpdatePreserveFlowPreview();
+        };
         mailTransport.SelectedIndexChanged += (_, _) => {
             if (!routingLoading) {
                 acceptedDomainApproved.Checked = false;
                 connectorApproved.Checked = false;
+                if (mailTransport.SelectedIndex != 1)
+                    senderPolicy.SelectedIndex = 0;
             }
             SaveRoutingChoices(); UpdatePreserveFlowPreview();
             if (step == 3 && !routingLoading && !busy)
@@ -335,7 +367,8 @@ internal sealed class MainForm : Form
             pageHost.AutoScrollPosition = new Point(0, scroll);
         };
         foreach (TextBox item in new[] { host, mailbox, tenant, smtpListenIp,
-                                         isolatedSmtpPort, smtpTrustedCidrs, acceptedDomain })
+                                         isolatedSmtpPort, smtpTrustedCidrs, acceptedDomain,
+                                         outboundMxHost, outboundFixedSender })
             item.TextChanged += (_, _) => UpdatePreserveFlowPreview();
         publicInternetRequested.CheckedChanged += (_, _) =>
         {
@@ -755,8 +788,33 @@ internal sealed class MainForm : Form
                 EnsureRoutingLoaded();
                 AddLine(page, UiTheme.Text(T("Отправка через Microsoft 365", "Microsoft 365 delivery method", "שיטת שליחה דרך Microsoft 365")));
                 AddLine(page, mailTransport);
-                AddLine(page, UiTheme.Text(T("Обработка адреса отправителя", "Sender address handling", "טיפול בכתובת השולח")));
-                AddLine(page, senderPolicy);
+                if (mailTransport.SelectedIndex == 0)
+                {
+                    AddLine(page, UiTheme.Text(T("Как обрабатывать отправителей при XOAUTH2",
+                        "XOAUTH2 sender policy", "מדיניות שולחים ב-XOAUTH2")));
+                    AddLine(page, oauthSenderMode);
+                    if (oauthSenderMode.SelectedIndex == 1)
+                    {
+                        AddField(page, T("Путь к защищённой карте отправителей Linux (только план)",
+                            "Linux sender/mailbox authorization map path (plan only)",
+                            "נתיב למיפוי שולחים בלינוקס - תכנון בלבד"), oauthSenderMapPath);
+                        AddLine(page, UiTheme.Text(T(
+                            "Этот режим НЕ УСТАНАВЛИВАЕТСЯ. Для каждого локального отправителя понадобятся проверка SMTP-логина, владения From и разрешений Exchange. Не меняйте сервер до появления проверенной реализации.",
+                            "PLAN ONLY, NOT DEPLOYABLE: each local sender must have a verified SMTP login, RFC5322 From ownership and Exchange mailbox permission. The current XOAUTH2 transport always rewrites From.",
+                            "תכנון בלבד: לא ניתן להפעיל עד לאימות זהות והרשאות שולחים.")));
+                    }
+                }
+                else if (mailTransport.SelectedIndex == 1)
+                {
+                    AddLine(page, UiTheme.Text(T("Политика отправителя Connector",
+                        "Connector sender policy", "מדיניות שולחים של Connector")));
+                    AddLine(page, senderPolicy);
+                }
+                AddLine(page, UiTheme.Text(T("Как будет работать выбранный режим (схема из ваших полей)",
+                    "How this route works (live preview from your fields)",
+                    "כיצד יעבוד המסלול שנבחר")));
+                UpdatePreserveFlowPreview();
+                AddLine(page, deliveryModeExplanation);
                 AddField(page, T("Подтверждённый домен (необязательно для XOAUTH2)",
                                  "Verified accepted domain (not needed for XOAUTH2)",
                                  "דומיין מאומת (לא נדרש ל-XOAUTH2)"), acceptedDomain);
@@ -975,27 +1033,27 @@ internal sealed class MainForm : Form
                     "Preserve existing MTA and routes (safe default)",
                     "שמירה על שרת דואר קיים והניתוב שלו");
                 AddLine(page, preserveExistingMail);
+                UpdatePreserveFlowPreview();
+                ResizePreserveFlowHelp();
+                AddLine(page, preserveFlowPreview);
+                AddLine(page, UiTheme.Text(T(
+                    "Инструкции для новых SMTP-клиентов — только план, до проверки установленного сервера",
+                    "Proposed SMTP client instructions — verify installed server first",
+                    "הוראות SMTP מוצעות — יש לאמת את השרת")));
+                AddLine(page, preserveMailInstructions);
+                var copyInstructions = UiTheme.Action(
+                    T("Копировать параметры SMTP",
+                      "Copy proposed SMTP client settings",
+                      "העתקת הגדרות SMTP"), false, "copy");
+                copyInstructions.Enabled = !busy;
+                copyInstructions.Click += (_, _) => CopyPreserveInstructions();
+                AddLine(page, copyInstructions);
                 if (preserveExistingMail.Checked)
                 {
                     AddLine(page, UiTheme.Text(T(
-                        "Как это работает: старые приложения остаются на текущем SMTP. Для новых указывайте отдельный адрес и порт из схемы. Письма уйдут через Microsoft 365 от выбранного mailbox; адреса получателей не меняются.",
-                        "How it works: existing apps keep their current SMTP. Configure NEW apps with the separate server/port shown below. Microsoft 365 sends using the chosen mailbox; recipients are unchanged.",
-                        "יישומים קיימים נשארים בשרת הקודם. ליישומים חדשים מגדירים שרת ויציאת SMTP נפרדים.")));
-                    UpdatePreserveFlowPreview();
-                    ResizePreserveFlowHelp();
-                    AddLine(page, preserveFlowPreview);
-                    AddLine(page, UiTheme.Text(T(
-                        "Готовые настройки для конечного пользователя (из заполненных полей)",
-                        "Ready-to-copy client setup (actual entered field values)",
-                        "הגדרות ליישומי לקוח לפי הערכים שהוזנו")));
-                    AddLine(page, preserveMailInstructions);
-                    var copyInstructions = UiTheme.Action(
-                        T("Копировать инструкции для приложений",
-                          "Copy SMTP client setup instructions",
-                          "העתקת הוראות הגדרת SMTP"), false, "copy");
-                    copyInstructions.Enabled = !busy;
-                    copyInstructions.Click += (_, _) => CopyPreserveInstructions();
-                    AddLine(page, copyInstructions);
+                        "Старые приложения сохраняют прежний SMTP. Новые можно переключать на выбранный отдельный Postfix только после подтверждения действующей конфигурации и реальной доставки.",
+                        "Existing applications keep their current SMTP. New clients may use the isolated Postfix only after installed route and real delivery are verified.",
+                        "יישומים קיימים נשארים במסלול הקודם; יש לאמת מסירה לפני שינוי.")));
                     if (advancedSmtpTools.Checked)
                     {
                     AddLine(page, UiTheme.Text(T(
@@ -1444,6 +1502,8 @@ internal sealed class MainForm : Form
             {
                 "preserve-domain" => 1, "masquerade" => 2, _ => 0
             };
+            oauthSenderMode.SelectedIndex = routingPlan.OAuthSenderMode == "authorized-multiple-mailboxes" ? 1 : 0;
+            oauthSenderMapPath.Text = routingPlan.OAuthSenderMapPath;
             preserveExistingMail.Checked = routingPlan.PreserveExistingMail;
             acceptedDomain.Text = routingPlan.VerifiedDomain;
             outboundMxHost.Text = routingPlan.EopMxHost;
@@ -1489,6 +1549,9 @@ internal sealed class MainForm : Form
         {
             1 => "preserve-domain", 2 => "masquerade", _ => "fixed-mailbox"
         };
+        routingPlan.OAuthSenderMode = oauthSenderMode.SelectedIndex == 1
+            ? "authorized-multiple-mailboxes" : "fixed-mailbox";
+        routingPlan.OAuthSenderMapPath = oauthSenderMapPath.Text.Trim();
         routingPlan.PreserveExistingMail = preserveExistingMail.Checked;
         routingPlan.VerifiedDomain = acceptedDomain.Text.Trim().ToLowerInvariant();
         routingPlan.EopMxHost = outboundMxHost.Text.Trim().ToLowerInvariant();
@@ -1522,7 +1585,12 @@ internal sealed class MainForm : Form
             publicInternetRequested.Checked,
             mailTransport.SelectedIndex != 0,
             senderPolicy.SelectedIndex != 0,
-            acceptedDomain.Text.Trim());
+            acceptedDomain.Text.Trim(),
+            mailTransport.SelectedIndex switch { 1 => "connector", 2 => "direct-send", _ => "oauth2" },
+            oauthSenderMode.SelectedIndex == 1 ? "authorized-multiple-mailboxes" : "fixed-mailbox",
+            outboundMxHost.Text.Trim(), outboundFixedSender.Text.Trim(),
+            preserveExistingMail.Checked,
+            senderPolicy.SelectedIndex switch { 1 => "preserve-domain", 2 => "masquerade", _ => "fixed-mailbox" });
     }
 
     private void ResizePreserveFlowHelp()
@@ -1539,6 +1607,11 @@ internal sealed class MainForm : Form
         var snapshot = CurrentPreserveFlowSnapshot();
         preserveFlowPreview.UpdateData(snapshot, language.SelectedIndex);
         preserveMailInstructions.Text = snapshot.ClientInstructions(language.SelectedIndex);
+        deliveryModeExplanation.Text = MailRoutingGuidance.Explain(
+            snapshot.TransportMode, snapshot.SenderPolicy, snapshot.OAuthSenderMode,
+            snapshot.Mailbox, snapshot.OutboundMx, snapshot.EopFixedSender,
+            snapshot.VerifiedDomain, snapshot.SmtpPort, snapshot.KeepExisting,
+            language.SelectedIndex);
     }
 
     private void CopyPreserveInstructions()
@@ -4392,6 +4465,9 @@ internal sealed class MainForm : Form
     private async Task ApplyAsync()
     {
         EnsureRoutingLoaded();
+        if (mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 1)
+            throw new NotSupportedException(
+                "Multi-mailbox XOAUTH2 is an unimplemented planning option. The active transport rewrites all From addresses to one mailbox. Do not deploy until sender ownership and Exchange grants are verified.");
         routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
         routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort))
