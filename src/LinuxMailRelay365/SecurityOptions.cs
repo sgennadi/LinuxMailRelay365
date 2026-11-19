@@ -90,6 +90,8 @@ internal sealed class LinuxSecurityInventory
         $"TPM2 tools: {Get("TPM2_TOOLS")}; проверка ответа: {Get("TPM2_COMMAND_PROBE")}\n" +
         $"PKCS#11 tools: {Get("PKCS11_TOOL")}; токены: {Get("PKCS11_TOKENS")}\n" +
         $"TPM2 PKCS#11: {Get("TPM2_PKCS11_TOOL")}; p11-kit: {Get("PKCS11_MIDDLEWARE")}\n" +
+        $"OpenSSL TPM2 provider: {Get("OPENSSL_TPM2_PROVIDER")}; PKCS#11 provider: {Get("OPENSSL_PKCS11_PROVIDER")}\n" +
+        $"TPM resource manager: {Get("TPM2_ABRMD_SERVICE")}\n" +
         "Аппаратная подпись: не подтверждена; автоматически не включалась. Совместимость транспорта ещё не проверена.";
 }
 
