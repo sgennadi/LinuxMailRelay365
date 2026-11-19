@@ -70,6 +70,21 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
         self.assertIn('PreserveFlowSnapshot.SelfTest', self.program)
         self.assertIn('MailRoutingPlanStore.SelfTest', self.program)
 
+    def test_multi_mailbox_audit_is_exposed_without_enabling_transport(self):
+        project = (ROOT/"src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+        assets = (ROOT/"src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
+        self.assertIn("Audit SMTP login → sender → M365 mailbox map (read-only)", self.form)
+        self.assertIn("InspectOAuthSenderMapAsync, false", self.form)
+        self.assertIn("private async Task InspectOAuthSenderMapAsync()", self.form)
+        self.assertIn("BuildOAuthSenderMapAuditBundle(", self.form)
+        self.assertIn("BuildOAuthSenderMapAuditBundle(string mapPath)", assets)
+        self.assertIn("OAUTH_SENDER_MAP_EXCHANGE_SENDAS_VERIFIED", self.form)
+        self.assertIn("OAUTH_SENDER_MAP_MESSAGES_SENT", self.form)
+        self.assertIn("No route was enabled.", self.form)
+        self.assertIn("LinuxMailRelay365.linux.oauth-sender-map-audit.py", project)
+        self.assertIn("LMR365_OAUTH_MAP_AUDIT", assets)
+        self.assertIn("Only an absolute /etc/linuxmailrelay365/", assets)
+
     def test_previous_mail_not_silently_reconfigured(self):
         self.assertIn('KeepExisting', self.flow)
         self.assertIn('mailTransport.SelectedIndex != 1', self.form)
