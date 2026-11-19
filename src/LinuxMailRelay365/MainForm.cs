@@ -677,6 +677,10 @@ internal sealed class MainForm : Form
         label.ForeColor = UiTheme.Navy;
         label.Margin = new Padding(0, 5, 0, 4);
         input.AccessibleName = caption;
+        // Do not let global 690px TextBox preferred widths force the card
+        // beyond its table column. Dock=Fill will stretch to available space.
+        input.Width = 180;
+        input.MinimumSize = Size.Empty;
         input.Dock = DockStyle.Fill;
         input.Margin = new Padding(0, 0, 0, 10);
         AddLine(card, label);
@@ -703,6 +707,12 @@ internal sealed class MainForm : Form
         leftLabel.Margin = rightLabel.Margin = new Padding(0, 5, 0, 4);
         left.AccessibleName = leftCaption;
         right.AccessibleName = rightCaption;
+        // WinForms AutoSize TableLayoutPanel uses child preferred widths;
+        // shrink old fixed-width fields BEFORE docking so percent columns
+        // (server + port; username + auth mode) remain responsive.
+        left.Width = 150;
+        right.Width = 120;
+        left.MinimumSize = right.MinimumSize = Size.Empty;
         left.Dock = right.Dock = DockStyle.Fill;
         left.Margin = new Padding(0, 0, 10, 12);
         right.Margin = new Padding(0, 0, 0, 12);
@@ -731,6 +741,7 @@ internal sealed class MainForm : Form
         page.MaximumSize = Size.Empty;
         page.Dock = DockStyle.Top;
         page.Padding = new Padding(18, 4, 8, 8);
+        int availableWidth = Math.Max(340, pageHost.ClientSize.Width - 38);
         var cards = new TableLayoutPanel
         {
             Dock = DockStyle.Top, AutoSize = true,
@@ -738,7 +749,9 @@ internal sealed class MainForm : Form
             ColumnCount = connectionWideLayout ? 2 : 1,
             RowCount = connectionWideLayout ? 1 : 2,
             BackColor = UiTheme.Canvas,
-            Margin = new Padding(0)
+            Margin = new Padding(0),
+            Width = availableWidth,
+            MaximumSize = new Size(availableWidth, 0)
         };
         if (connectionWideLayout)
         {
@@ -749,6 +762,10 @@ internal sealed class MainForm : Form
             cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var form = ConnectionCard(Color.White);
         var details = ConnectionCard(Color.FromArgb(238, 243, 248));
+        form.MaximumSize = new Size(connectionWideLayout
+            ? Math.Max(340, availableWidth * 63 / 100 - 12) : availableWidth, 0);
+        details.MaximumSize = new Size(connectionWideLayout
+            ? Math.Max(260, availableWidth * 37 / 100 - 12) : availableWidth, 0);
         cards.Controls.Add(form, 0, 0);
         cards.Controls.Add(details, connectionWideLayout ? 1 : 0,
             connectionWideLayout ? 0 : 1);
@@ -1786,7 +1803,18 @@ internal sealed class MainForm : Form
         step = 0;
         RenderPage();
         Screenshot("01-linux-connection-compact.png");
+        // Password mode is the operator's deployment path: capture both
+        // responsive widths with the optional host-key checkbox visible.
         Size = new Size(1050, 830);
+        sshAuthMode.SelectedIndex = 1;
+        RenderPage();
+        Screenshot("01-linux-password.png");
+        Size = new Size(760, 700);
+        RenderPage();
+        Screenshot("01-linux-password-compact.png");
+        Size = new Size(1050, 830);
+        sshAuthMode.SelectedIndex = 0;
+        RenderPage();
         File.WriteAllText(Path.Combine(root, "README.txt"),
             "Actual WinForms Preview wizard screenshots from a disposable CI runner.\n" +
             "Factory defaults only; no real SSH, Microsoft 365 tenant, TPM or SMTP delivery.\n" +

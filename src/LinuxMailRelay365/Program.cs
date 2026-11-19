@@ -322,7 +322,7 @@ internal static class Program
             {
                 try
                 {
-                    if (form.CaptureWizardScreens(args[1]) != 11)
+                    if (form.CaptureWizardScreens(args[1]) != 13)
                         result = 1;
                 }
                 catch (Exception)
