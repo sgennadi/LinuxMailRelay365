@@ -36,6 +36,13 @@ require_setting() {
   fi
 }
 sudo test -f "$CA" || { echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=missing_CA" >&2; exit 2; }
+# Enabling the guard must create a dependency from the isolated Postfix
+# unit, so a later sidecar restart cannot leave a live SMTP listener
+# with a missing From Guard Unix socket.
+sudo test -L /etc/systemd/system/linuxmailrelay365-sidecar.service.wants/linuxmailrelay365-from-guard.service || {
+  echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=missing_sidecar_guard_autostart_link" >&2
+  exit 2
+}
 require_unit postfix
 require_unit "$UNIT"
 require_unit "$DOVECOT_UNIT"
@@ -111,15 +118,21 @@ finish() {
   if [ "$rc" -eq 0 ]; then
     sudo postfix -c "$CONF" check || rc=1
     sudo systemctl start "$UNIT" || rc=1
-    # The From Guard's Requires= sidecar relationship can stop the guard
-    # when this independently managed Postfix service is stopped. Restore
-    # both dependencies explicitly after the isolated MTA is back.
+    # The independent Postfix must PULL IN From Guard automatically.
+    # Starting the guard manually here would mask a production regression.
     sudo systemctl start "$DOVECOT_UNIT" || rc=1
-    sudo systemctl start "$GUARD_UNIT" || rc=1
     sudo systemctl is-active --quiet "$UNIT" || rc=1
     sudo systemctl is-active --quiet "$DOVECOT_UNIT" || rc=1
-    sudo systemctl is-active --quiet "$GUARD_UNIT" || rc=1
-    sudo test -S /run/linuxmailrelay365-from-guard/from-guard.sock || rc=1
+    local recovery_ready=no
+    for attempt in $(seq 1 40); do
+      if sudo systemctl is-active --quiet "$GUARD_UNIT" &&
+         sudo test -S /run/linuxmailrelay365-from-guard/from-guard.sock; then
+        recovery_ready=yes
+        break
+      fi
+      sleep 0.25
+    done
+    [ "$recovery_ready" = yes ] || rc=1
   fi
   if [ "$rc" -eq 0 ]; then
     echo "SMTP_AUTH_GUARD_LOOPBACK_QUEUE_DRAINED=yes"
@@ -154,9 +167,9 @@ test "$(sudo sha256sum "$PRIMARY/main.cf" "$PRIMARY/master.cf")" = "$primary_sha
 sudo postfix -c "$CONF" check
 sudo systemctl start "$UNIT"
 sudo systemctl start "$DOVECOT_UNIT"
-sudo systemctl start "$GUARD_UNIT"
-# Prevent false passes based only on a unit's transient "active" status.
-# The Milter socket must be recreated after the sidecar stop/start.
+# The guard is never started explicitly. The sidecar's Wants= dependency,
+# installed by the guard service's WantedBy= link, must start it.
+# Prevent false passes based only on a unit's transient active status.
 socket_ready=no
 for attempt in $(seq 1 40); do
   if sudo systemctl is-active --quiet "$GUARD_UNIT" &&
@@ -168,7 +181,7 @@ for attempt in $(seq 1 40); do
 done
 test "$socket_ready" = yes
 sudo systemctl is-active --quiet "$DOVECOT_UNIT"
-echo "SMTP_AUTH_GUARD_SOCKET_RECREATED_AFTER_SIDECAR_STOP=yes"
+echo "SMTP_AUTH_GUARD_SOCKET_RECREATED_AUTOMATICALLY_AFTER_SIDECAR_STOP=yes"
 
 echo "=== Real SMTP AUTH STARTTLS + Postfix From Guard, loopback-only DATA ==="
 sudo env GITHUB_ACTIONS=true RUNNER_TEMP="$RUNNER_TEMP" python3 tests/smoke_authenticated_from_guard_loopback.py "$PORT" "$CA"
