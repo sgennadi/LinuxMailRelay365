@@ -180,6 +180,30 @@ class HardwareOAuthCutoverTests(unittest.TestCase):
         with self.assertRaisesRegex(CUT.Refused, "invalid_backup_id"):
             CUT.read_backup("sidecar", "../etc/passwd")
 
+    def test_existing_signer_must_be_recoverable_before_activation(self):
+        previous = json.dumps(self.identity).encode("utf-8")
+        with mock.patch.object(CUT, "read_checked", return_value=b"existing") as open_file:
+            CUT.original_preflight(previous, self.staged, 30, self.directory)
+        checked = [str(x.args[0]) for x in open_file.call_args_list]
+        self.assertIn(str(self.directory / "app.key"), checked)
+        self.assertIn(str(self.directory / "app.crt"), checked)
+        with mock.patch.object(CUT, "read_checked",
+                               side_effect=CUT.Refused("required_root_file_missing")):
+            with self.assertRaisesRegex(CUT.Refused, "required_root_file_missing"):
+                CUT.original_preflight(previous, self.staged, 30, self.directory)
+
+    def test_missing_var_backups_parent_can_be_created_on_rhel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backup = Path(tmp) / "var" / "backups" / "linuxmailrelay365-hardware-oauth"
+            backup.parent.parent.mkdir()
+            with mock.patch.object(CUT, "BACKUP_ROOT", backup), \
+                 mock.patch.object(CUT, "checked_directory", return_value=None):
+                path = CUT.checked_backup_root("sidecar")
+            self.assertEqual(path, backup / "sidecar")
+            self.assertEqual(stat.S_IMODE(backup.parent.stat().st_mode), 0o700)
+            self.assertTrue(path.is_dir())
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+
     def test_no_service_restart_or_tpm_key_generation_in_script(self):
         text = SOURCE.read_text(encoding="utf-8")
         for prohibited in ("systemctl restart", "systemctl stop", "dnf install",
