@@ -128,7 +128,7 @@ class EopRouteContracts(unittest.TestCase):
         eop.validate(a)
         sender, canonical, _ = eop.policy_maps(a)
         self.assertIn("A-Za-z0-9-", sender)
-        self.assertIn("\${1}@example.org".replace("\\", ""), canonical)
+        self.assertIn("${1}@example.org", canonical)
         self.assertEqual(
             eop.policy_changes(a, "/etc/ssl/testca.pem", True)["sender_canonical_classes"],
             "envelope_sender, header_sender")

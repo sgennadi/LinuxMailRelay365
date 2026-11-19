@@ -72,7 +72,7 @@ internal sealed record EntraCertificateReview(
                 !string.Equals(Convert.ToHexString(SHA256.HashData(der)).ToLowerInvariant(),
                                sha, StringComparison.Ordinal))
                 throw new InvalidDataException("Public certificate SHA256 does not match Linux inventory.");
-            using var cert = new X509Certificate2(der);
+            using var cert = X509CertificateLoader.LoadCertificate(der);
             using var rsa = cert.GetRSAPublicKey();
             if (rsa is null || rsa.KeySize < 2048)
                 throw new InvalidDataException("Entra public certificate must contain RSA2048+ key.");

@@ -431,7 +431,7 @@ def backup():
 def make_snapshot():
     before, entries = current_state()
     units = service_state()
-    snapshot_id = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ-") + \
+    snapshot_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + \
         secrets.token_hex(6)
     temp = Path(tempfile.mkdtemp(prefix=".pending-", dir=str(BASE)))
     os.chmod(str(temp), 0o700)
