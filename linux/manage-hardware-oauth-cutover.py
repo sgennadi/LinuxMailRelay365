@@ -28,6 +28,7 @@ CONFIRM_APPLY = "ACTIVATE_HARDWARE_OAUTH"
 CONFIRM_ROLLBACK = "ROLLBACK_HARDWARE_OAUTH"
 CONFIRM_STAGE = "STAGE_HARDWARE_OAUTH"
 CONFIRM_TOKEN_PREFLIGHT = "VERIFY_STAGED_ENTRA_TOKEN"
+CONFIRM_SMTP_PREFLIGHT = "VERIFY_STAGED_SMTP_AUTH"
 BACKUP_ROOT = Path("/var/backups/linuxmailrelay365-hardware-oauth")
 LOCK_FILE = Path("/run/linuxmailrelay365-hardware-oauth.lock")
 TRANSPORT_DIR = Path("/usr/local/libexec")
@@ -273,6 +274,22 @@ def checked_run(plan, candidate, token_check, runner=subprocess.run):
         raise Refused("token_preflight_failed" if token_check else "ps256_preflight_failed")
 
 
+def checked_smtp_auth(plan, runner=subprocess.run):
+    # Only a signed/staged identity may attempt the SMTP AUTH handshake.
+    # No --recipient and no SMTP DATA: the installed transport enforces this.
+    command = [plan["runuser"], "-u", "m365mailer", "--", "/usr/bin/python3",
+               str(plan["transport"]), "--smtp-auth-check",
+               "--candidate-config",
+               str(plan["directory"] / "hardware-staged.json")]
+    try:
+        result = runner(command, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, check=False, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Refused("staged_exchange_smtp_auth_failed")
+    if result.returncode:
+        raise Refused("staged_exchange_smtp_auth_failed")
+
+
 def lock():
     checked_directory(LOCK_FILE.parent)
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
@@ -457,6 +474,45 @@ def token_preflight(target, approved_sha, confirmation, runner=subprocess.run):
         say("ACTIVE_OAUTH_CHANGED", "no")
         say("PRIMARY_MTA_CHANGES", "no")
         say("MAIL_SENT", "no")
+        say("TOKEN_PRINTED", "no")
+        say("APPLIED", "no")
+    finally:
+        os.close(fd)
+
+
+def smtp_auth_preflight(target, approved_sha, confirmation,
+                        runner=subprocess.run):
+    """Live STARTTLS+AUTH XOAUTH2 to Exchange, no MAIL FROM/RCPT/DATA.
+
+    Entra token issuance alone cannot prove the target mailbox has Exchange
+    service-principal mapping or SMTP AUTH enabled. This checks that gap
+    against a staged hardware identity, never changing app.json or queue.
+    """
+    ensure_root()
+    if (confirmation != CONFIRM_SMTP_PREFLIGHT or
+            not isinstance(approved_sha, str) or not SHA.fullmatch(approved_sha)):
+        raise Refused("smtp_auth_reviewed_sha_and_consent_required")
+    fd = lock()
+    try:
+        plan = prepare(target)
+        if plan["sha"] != approved_sha:
+            raise Refused("smtp_auth_plan_changed_reapprove")
+        checked_run(plan, True, False, runner)
+        checked_smtp_auth(plan, runner)
+        if prepare(target)["sha"] != approved_sha:
+            raise Refused("smtp_auth_plan_changed_after_network")
+        say("VERSION", VERSION)
+        say("TARGET", target)
+        say("PLAN_SHA256", approved_sha)
+        say("STAGED_ONLY", "yes")
+        say("LOCAL_SIGNING_VERIFIED", "yes")
+        say("ENTRA_TOKEN_VERIFIED", "yes")
+        say("SMTP_STARTTLS_VERIFIED", "yes")
+        say("SMTP_AUTH_XOAUTH2_VERIFIED", "yes")
+        say("ACTIVE_OAUTH_CHANGED", "no")
+        say("PRIMARY_MTA_CHANGES", "no")
+        say("MAIL_SENT", "no")
+        say("MAIL_FROM_RCPT_DATA_SENT", "no")
         say("TOKEN_PRINTED", "no")
         say("APPLIED", "no")
     finally:
@@ -794,6 +850,7 @@ def main(argv=None):
     parser.add_argument("--stage-plan", action="store_true")
     parser.add_argument("--stage-apply", action="store_true")
     parser.add_argument("--token-preflight", action="store_true")
+    parser.add_argument("--smtp-auth-preflight", action="store_true")
     parser.add_argument("--stage-provider", choices=("tpm2", "pkcs11"))
     parser.add_argument("--stage-key-ref")
     parser.add_argument("--apply", action="store_true")
@@ -805,9 +862,10 @@ def main(argv=None):
     try:
         ensure_root()
         if sum((args.plan, args.apply, bool(args.rollback), args.list,
-                args.stage_plan, args.stage_apply, args.token_preflight)) != 1:
+                args.stage_plan, args.stage_apply, args.token_preflight,
+                args.smtp_auth_preflight)) != 1:
             raise Refused("select_exactly_one_operation")
-        if not args.apply and not args.rollback and not args.stage_apply and not args.token_preflight and (args.confirm or args.approve_sha256):
+        if not args.apply and not args.rollback and not args.stage_apply and not args.token_preflight and not args.smtp_auth_preflight and (args.confirm or args.approve_sha256):
             raise Refused("approval_not_allowed_in_readonly_mode")
         if (args.stage_provider is None) != (args.stage_key_ref is None) or \
                 (args.stage_provider is not None and not
@@ -824,6 +882,8 @@ def main(argv=None):
             apply(args.target, args.approve_sha256, args.confirm)
         elif args.token_preflight:
             token_preflight(args.target, args.approve_sha256, args.confirm)
+        elif args.smtp_auth_preflight:
+            smtp_auth_preflight(args.target, args.approve_sha256, args.confirm)
         elif args.rollback:
             if args.approve_sha256:
                 raise Refused("approval_sha_not_used_for_rollback")
