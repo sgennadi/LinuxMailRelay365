@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
@@ -90,6 +92,11 @@ internal sealed class MainForm : Form
     private string? reviewedTpmPlanContext;
     private string tpmPlanSummary = "";
     private string hardwareOAuthSummary = "";
+    private EntraCertificateReview? reviewedEntraPublicCertificates;
+    private string? reviewedEntraCertPlanSha;
+    private string? reviewedEntraCertContext;
+    private string? reviewedEntraCertObjectId;
+    private string entraCertificateSummary = "";
     private readonly TextBox tpmKeyHandle = Field("0x81010001");
     private string tpmKeySummary = "";
     private string? reviewedTpmKeyPlanSha;
@@ -218,6 +225,11 @@ internal sealed class MainForm : Form
             reviewedTpmKeyPlanSha = null;
             reviewedTpmKeyPlanContext = null;
             tpmKeySummary = "";
+            reviewedEntraPublicCertificates = null;
+            reviewedEntraCertPlanSha = null;
+            reviewedEntraCertContext = null;
+            reviewedEntraCertObjectId = null;
+            entraCertificateSummary = "";
             if (step == 1 && !busy) RenderPage();
         };
         tpmDependencyProfile.SelectedIndexChanged += (_, _) =>
@@ -576,6 +588,21 @@ internal sealed class MainForm : Form
                         "Активация TPM/HSM — только для заранее подготовленного hardware-staged.json. Требует успешной подписи и получения токена Entra до переключения; выполняет резервное копирование и откат при ошибке.",
                         "TPM/HSM cutover requires an existing hardware-staged.json, successful offline signature and Entra token BEFORE activation, with backup and automatic rollback on failure.",
                         "הפעלה דורשת זהות חומרה מוכנה, חתימה תקינה, אימות Entra וגיבוי עם שחזור במקרה כשל.")));
+                    AddLine(page, UiTheme.Text(T(
+                        "Entra OAuth certificate: новый PUBLIC X.509 добавляется через Microsoft Graph addKey, без удаления существующих ключей. Preview требует Application.Read.All, Apply — Application.ReadWrite.All + подтверждение и подпись действующим Linux-ключом. Сначала подготовьте hardware-staged.json.",
+                        "Register the NEW PUBLIC X.509 certificate via Microsoft Graph addKey only. Existing credentials stay untouched. Preview needs Application.Read.All; Apply needs Application.ReadWrite.All and fresh proof from the EXISTING Linux key. Stage the hardware identity first.",
+                        "רישום אישור ציבורי חדש בלבד ב-Entra; אישורים קיימים נשמרים.")));
+                    AddAction(page, T("Проверить сертификат TPM/HSM в Entra (без изменений)",
+                                      "Preview TPM/HSM certificate registration in Entra",
+                                      "בדיקת אישור Entra ללא שינוי"),
+                                      PreviewEntraCertificateAsync, false, "check", "entra-cert-preview");
+                    if (!string.IsNullOrEmpty(entraCertificateSummary))
+                        AddLine(page, UiTheme.Text(entraCertificateSummary));
+                    if (reviewedEntraCertPlanSha is not null)
+                        AddAction(page, T("Подтвердить добавление публичного сертификата в Entra...",
+                                          "Approve adding public certificate to Entra...",
+                                          "אישור הוספת אישור ציבורי ל-Entra"),
+                                          AddEntraCertificateAsync, false, "shield", "entra-cert-add");
                     AddAction(page, T("Предпросмотр переключения TPM/HSM (без изменений)",
                                       "Review hardware OAuth cutover (read-only)",
                                       "תצוגה מקדימה של מעבר חומרה"),
@@ -3042,6 +3069,11 @@ internal sealed class MainForm : Form
             reviewedTpmPlanContext = null;
             tpmPlanSummary = "";
             hardwareOAuthSummary = "";
+            reviewedEntraPublicCertificates = null;
+            reviewedEntraCertPlanSha = null;
+            reviewedEntraCertContext = null;
+            reviewedEntraCertObjectId = null;
+            entraCertificateSummary = "";
             reviewedTpmKeyPlanSha = null;
             reviewedTpmKeyPlanContext = null;
             tpmKeySummary = "";
@@ -3119,6 +3151,176 @@ internal sealed class MainForm : Form
         hardwareOAuthSummary = result.StdOut.Trim();
         WriteLine(hardwareOAuthSummary);
         WriteLine("Provider PS256 signature check is local only. TPM provenance, restart continuity and Microsoft 365 acceptance require independent evidence.");
+        RenderPage();
+    }
+
+    private void VerifySelectedEntraApplication(EntraCertificateReview source)
+    {
+        if (discoveredTenants.Count > 1 && tenantSelector.SelectedItem is not TenantOption)
+            throw new InvalidOperationException("Select the exact Microsoft Entra tenant first.");
+        if (!Guid.TryParse(tenant.Text.Trim(), out var selectedTenant) ||
+            selectedTenant != source.TenantId ||
+            (tenantSelector.SelectedItem is TenantOption chosen && chosen.Id != selectedTenant))
+            throw new InvalidOperationException("Wizard tenant does not match the installed Linux OAuth identity.");
+        if (!Guid.TryParse(existingAppId.Text.Trim(), out var selectedClient) ||
+            selectedClient != source.ClientId)
+            throw new InvalidOperationException("Enter the exact existing Entra application Client ID installed on Linux.");
+    }
+
+    private async Task<EntraCertificateReview> ReadEntraPublicCertificateAsync(SshEndpoint endpoint, string target)
+    {
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildEntraPublicCertificateBundle(target), TimeSpan.FromSeconds(90));
+        result.EnsureSuccess();
+        return EntraCertificateReview.Parse(result.StdOut);
+    }
+
+    private static void WriteRestrictedGraphPayload(string path, string payload)
+    {
+        var sid = WindowsIdentity.GetCurrent().User ??
+            throw new InvalidOperationException("An identifiable Windows account is required for temporary Graph proof.");
+        var security = new FileSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
+                                                        AccessControlType.Allow));
+        // Set a private Windows DACL BEFORE writing the short-lived PoP JWT.
+        using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        System.IO.FileSystemAclExtensions.SetAccessControl(file, security);
+        byte[] bytes = Encoding.UTF8.GetBytes(payload);
+        file.Write(bytes);
+        file.Flush(flushToDisk: true);
+        CryptographicOperations.ZeroMemory(bytes);
+    }
+
+    private async Task<string> RunGraphEntraCertificateManagerAsync(
+        EntraCertificateReview source, string action, string? reviewedSha = null,
+        string? ephemeralProof = null)
+    {
+        if (action is not ("Preview" or "Apply") ||
+            (action == "Apply" && (reviewedSha is null || ephemeralProof is null)) ||
+            (action == "Preview" && (reviewedSha is not null || ephemeralProof is not null)))
+            throw new ArgumentException("Unsupported Entra certificate action or approval.");
+        Directory.CreateDirectory(dataDirectory);
+        var script = Path.Combine(dataDirectory, "Manage-LinuxMailRelay365EntraCertificate.ps1");
+        var input = Path.Combine(dataDirectory, "entra-public-input-" + Guid.NewGuid().ToString("N") + ".json");
+        var report = Path.Combine(dataDirectory, "entra-public-report-" + Guid.NewGuid().ToString("N") + ".txt");
+        File.WriteAllText(script, EmbeddedAssets.EntraCertificateManager, new UTF8Encoding(false));
+        try
+        {
+            WriteRestrictedGraphPayload(input, source.PayloadJson(ephemeralProof));
+            var psi = new ProcessStartInfo("pwsh.exe")
+            {
+                UseShellExecute = true,
+                WorkingDirectory = dataDirectory
+            };
+            foreach (string arg in new[]
+            {
+                "-NoLogo", "-NoProfile", "-File", script,
+                "-Action", action, "-InputPath", input, "-ResultPath", report
+            }) psi.ArgumentList.Add(arg);
+            if (action == "Apply")
+            {
+                psi.ArgumentList.Add("-ExpectedSha256");
+                psi.ArgumentList.Add(reviewedSha!);
+                psi.ArgumentList.Add("-TypedConfirmation");
+                psi.ArgumentList.Add("ADD_REVIEWED_ENTRA_OAUTH_CERT");
+            }
+            using var process = Process.Start(psi) ??
+                throw new InvalidOperationException("PowerShell 7 Graph process did not start.");
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException(
+                    "Entra certificate operation refused or failed. Inspect the PowerShell 7 console. " +
+                    "If Graph may have accepted addKey, inspect existing app certificates before retrying.");
+            var statusText = await File.ReadAllTextAsync(report);
+            if (statusText.Length > 4096 || statusText.Contains('\0') ||
+                !statusText.Contains("ENTRA_CERT_TENANT=exact_match", StringComparison.Ordinal) ||
+                !statusText.Contains("ENTRA_CERT_APP=exact_client_id", StringComparison.Ordinal) ||
+                !statusText.Contains("ENTRA_CERT_PRIVATE_KEY_EXPORTED=no", StringComparison.Ordinal))
+                throw new InvalidDataException("Graph certificate result was incomplete.");
+            return statusText.Trim();
+        }
+        finally
+        {
+            if (File.Exists(input)) File.Delete(input);
+            if (File.Exists(report)) File.Delete(report);
+        }
+    }
+
+    private async Task PreviewEntraCertificateAsync()
+    {
+        if (linuxSecurity is null)
+            throw new InvalidOperationException("Run Linux security discovery first.");
+        var endpoint = Endpoint();
+        string target = SelectedHardwareCutoverTarget();
+        reviewedEntraPublicCertificates = null;
+        reviewedEntraCertPlanSha = null;
+        reviewedEntraCertContext = null;
+        reviewedEntraCertObjectId = null;
+        var source = await ReadEntraPublicCertificateAsync(endpoint, target);
+        VerifySelectedEntraApplication(source);
+        string output = await RunGraphEntraCertificateManagerAsync(source, "Preview");
+        var sha = System.Text.RegularExpressions.Regex.Match(output,
+            @"(?m)^ENTRA_CERT_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        var obj = System.Text.RegularExpressions.Regex.Match(output,
+            @"(?m)^ENTRA_CERT_OBJECT_ID=([a-f0-9-]{36})\r?$");
+        if (!sha.Success || !obj.Success || !Guid.TryParse(obj.Groups[1].Value, out var graphId) ||
+            graphId == Guid.Empty ||
+            !output.Contains("ENTRA_CERT_ACTIVE_KEY=valid", StringComparison.Ordinal) ||
+            !output.Contains("ENTRA_CERT_CANDIDATE=not_registered", StringComparison.Ordinal) ||
+            !output.Contains("CHANGES_APPLIED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Graph certificate Preview is incomplete or not read-only.");
+        reviewedEntraPublicCertificates = source;
+        reviewedEntraCertPlanSha = sha.Groups[1].Value;
+        reviewedEntraCertObjectId = graphId.ToString("D");
+        reviewedEntraCertContext = source.Context(SecurityOptionsStore.Identity(endpoint), target);
+        entraCertificateSummary = output;
+        WriteLine(output);
+        WriteLine("Entra certificate review: no tenant mutation. Existing app certificates are preserved.");
+        RenderPage();
+    }
+
+    private async Task AddEntraCertificateAsync()
+    {
+        if (linuxSecurity is null || reviewedEntraPublicCertificates is null ||
+            reviewedEntraCertPlanSha is null || reviewedEntraCertObjectId is null ||
+            reviewedEntraCertContext is null)
+            throw new InvalidOperationException("Review the exact application and public certificate first.");
+        var endpoint = Endpoint();
+        string target = SelectedHardwareCutoverTarget();
+        var source = await ReadEntraPublicCertificateAsync(endpoint, target);
+        VerifySelectedEntraApplication(source);
+        if (reviewedEntraCertContext != source.Context(SecurityOptionsStore.Identity(endpoint), target))
+        {
+            reviewedEntraCertPlanSha = null;
+            throw new InvalidOperationException("Linux active/staged identity or certificate changed. Run Entra Preview again.");
+        }
+        if (!ConfirmDestructive("LinuxMailRelay365 | Register TPM/HSM public certificate in Entra",
+            T("ИЗМЕНЕНИЕ MICROSOFT ENTRA. Будет ДОБАВЛЕН только публичный сертификат существующего приложения. Другие сертификаты, права и настройки останутся прежними. Требуются Application.ReadWrite.All, подтверждение действующим ключом на Linux и соответствие SHA256-плану. Закрытый ключ не передаётся в Entra. Подтвердить?",
+              "MICROSOFT ENTRA CHANGE: add ONLY the new public certificate to the exact existing app. Existing keys and permissions are not replaced. Requires delegated Application.ReadWrite.All, an ephemeral proof signed by the current Linux key and an unchanged SHA256 plan. No private key is sent. Continue?",
+              "שינוי ב-Entra: רק אישור ציבורי חדש מתווסף; מפתחות קיימים נשמרים. לא מועבר מפתח פרטי."),
+            "ADD_REVIEWED_ENTRA_OAUTH_CERT")) return;
+        var proofRun = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildEntraPublicCertificateBundle(target,
+                reviewedEntraCertObjectId, source.ActiveSha, source.StagedSha,
+                source.ActiveCertificateSha, source.CandidateCertificateSha),
+            TimeSpan.FromSeconds(90));
+        proofRun.EnsureSuccess();
+        // Never write proofRun.StdOut to any report or activity journal.
+        string proof = EntraCertificateReview.ParseProof(proofRun.StdOut);
+        string sha = reviewedEntraCertPlanSha;
+        reviewedEntraCertPlanSha = null;
+        reviewedEntraCertContext = null;
+        reviewedEntraCertObjectId = null;
+        reviewedEntraPublicCertificates = null;
+        string output = await RunGraphEntraCertificateManagerAsync(source, "Apply", sha, proof);
+        if (!output.Contains("ENTRA_CERT_ADDED=yes", StringComparison.Ordinal) ||
+            !output.Contains("ENTRA_CERT_EXISTING_KEYS_PRESERVED=yes", StringComparison.Ordinal) ||
+            !output.Contains("CHANGES_APPLIED=entra_addkey_only", StringComparison.Ordinal))
+            throw new InvalidDataException("Microsoft Graph did not verify safe addKey completion.");
+        entraCertificateSummary = output;
+        WriteLine(output);
+        WriteLine("Public TPM/HSM certificate added to existing Entra app. Next: separate Linux staged OAuth token verification and rollback-protected cutover; mail delivery is NOT proven.");
         RenderPage();
     }
 
