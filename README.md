@@ -1112,8 +1112,8 @@ profile**. This can install or update RPM dependencies, but does not activate
 hardware-based OAuth or change keys:
 
 ```bash
-sudo python3 linux/manage-tpm-dependencies.py --profile runtime \\
-  --apply --approve-sha256 <SHA_FROM_PREVIEW> \\
+sudo python3 linux/manage-tpm-dependencies.py --profile runtime \
+  --apply --approve-sha256 <SHA_FROM_PREVIEW> \
   --confirm INSTALL_TPM2_DEPENDENCIES
 ```
 
