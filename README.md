@@ -1420,3 +1420,22 @@ gate. Preserve-multiple-mailbox XOAUTH2 cannot be installed or used yet;
 a future implementation must verify the incoming authenticated SMTP login,
 both envelope and RFC5322 From ownership, the chosen M365 mailbox mapping,
 and Exchange Online app Send As permissions before enabling delivery.
+
+## Multi-sender XOAUTH2 planning audit (read-only)
+
+The Windows Wizard now lets you choose the outgoing method on the Microsoft
+365 step, **before** any Entra app setup. Connector and Direct Send skip
+OAuth-related prompts. XOAUTH2 still supports only one approved mailbox
+for live sending; it rewrites the sender as that mailbox.
+
+Selecting *Multiple authorized mailboxes — preserve From (plan only)*
+exposes a root-controlled Linux TSV map path and a separate **read-only**
+permission-structure audit. It checks distinct login/envelope/mailbox
+entries and associated root-owned OAuth identity JSON, returning anonymous
+counts and a SHA256. It neither enables a transport nor grants access.
+
+The planned multi-mailbox mode remains blocked in Postfix Apply and Test
+Send until SMTP AUTH login ownership, secure From header guard, per-mailbox
+OAuth and Exchange authorization, recovery and real delivery are verified.
+See `docs/FINAL_ACCEPTANCE.md` for the exact TSV column format and
+permission rules.
