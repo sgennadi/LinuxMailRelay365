@@ -849,6 +849,19 @@ internal sealed class MainForm : Form
                                   "פתח את Microsoft Entra"), () => OpenSecurityUrlAsync("https://entra.microsoft.com/"), false, "cloud");
                 break;
             case 2:
+                EnsureRoutingLoaded();
+                if (mailTransport.SelectedIndex is 1 or 2)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "Для Connector и Direct Send приложение Entra ID, OAuth-токен и почтовый ящик НЕ требуются. Перейдите Далее, укажите принятый домен и MX и проверьте полномочия Connector или ограничение внутренних получателей. Публичный IP либо TLS-сертификат проверяется отдельно.",
+                        "Connector and Direct Send do NOT require an Entra application, OAuth token or licensed mailbox. Click Next to enter the tenant-accepted domain and MX. Review Connector authority or internal-only delivery. Public IP or TLS identity is checked separately.",
+                        "ב-Connector ו-Direct Send אין צורך ביישום Entra או תיבת דואר. המשיכו להגדרת דומיין ו-MX.")));
+                    AddLine(page, UiTheme.Text(T(
+                        "Режим можно изменить на следующем экране. Для XOAUTH2 вернитесь сюда и настройте разрешённый mailbox.",
+                        "Switch delivery mode on the next step. To use XOAUTH2, return here to configure the authorized mailbox.",
+                        "ניתן לשנות מצב בשלב הבא.")));
+                    break;
+                }
                 AddAction(page, "Connect to Microsoft 365 and discover tenants", DiscoverTenantsAsync, true, "cloud", "tenant-discovery");
                 if (discoveredTenants.Count > 0)
                 {
@@ -989,34 +1002,38 @@ internal sealed class MainForm : Form
                                       "Check Direct Send / Connector, outbound TCP 25 (read-only)",
                                       "בדיקת Direct Send ו-Connector"),
                                       CheckOutboundModeAsync, false, "check", "outbound-mode");
+                    AddLine(page, UiTheme.Text(T(
+                        "Создание нового отдельного SMTP Relay (требуется проверка существующего MTA, домена и разрешений)",
+                        "Install a new isolated SMTP relay (existing MTA, tenant domain and permissions are checked first)",
+                        "התקנת ממסר SMTP נפרד לאחר בדיקות")));
+                    if (mailTransport.SelectedIndex == 1 && senderPolicy.SelectedIndex == 0)
+                    {
+                        AddAction(page, T("Проверить новый Connector Relay без OAuth",
+                                          "Preview NEW private Connector gateway (no OAuth)",
+                                          "בדיקת Connector חדש ללא OAuth"),
+                                          PreviewFreshConnectorAsync, false, "check", "connector-new-preview");
+                        AddAction(page, T("Установить отдельный Connector Relay без OAuth...",
+                                          "Install NEW isolated Connector Relay without OAuth...",
+                                          "התקנת Connector נפרד ללא OAuth"),
+                                          InstallFreshConnectorAsync, false, "shield", "connector-new-install");
+                    }
+                    if (mailTransport.SelectedIndex == 2)
+                    {
+                        AddAction(page, T("Проверить новую установку Direct Send без OAuth",
+                                          "Preview NEW private Direct Send (no OAuth application)",
+                                          "בדיקת Direct Send חדש ללא OAuth"),
+                                          PreviewFreshDirectSendAsync, false, "check", "directsend-new-preview");
+                        AddAction(page, T("Установить отдельный Direct Send без Entra...",
+                                          "Install NEW isolated Direct Send without Entra...",
+                                          "התקנת Direct Send נפרד ללא Entra"),
+                                          InstallFreshDirectSendAsync, false, "shield", "directsend-new-install");
+                    }
                     if (advancedSmtpTools.Checked)
                     {
                         AddLine(page, UiTheme.Text(T(
-                            "Продвинутый маршрут применяется только к установленному отдельному Postfix. Direct Send блокирует внешних получателей. Используется один фиксированный отправитель; Connector в Tenant должен существовать до применения. Все изменения обратимы через отдельный Restore.",
-                            "Advanced EOP routing applies only to isolated Postfix. NEW fixed-sender Connector and Direct Send can be installed without a prior XOAUTH2 sidecar, but an authorized tenant Connector must already exist for Connector delivery. Domain-preserving Connector policies require a reviewed existing sidecar.",
-                            "ניתוב מתקדם למופע Postfix נפרד בלבד; Direct Send מוגבל לנמענים פנימיים.")));
-                        if (mailTransport.SelectedIndex == 1 && senderPolicy.SelectedIndex == 0)
-                        {
-                            AddAction(page, T("Проверить новый Connector Relay без OAuth",
-                                              "Preview NEW private Connector gateway (no OAuth)",
-                                              "בדיקת Connector חדש ללא OAuth"),
-                                              PreviewFreshConnectorAsync, false, "check", "connector-new-preview");
-                            AddAction(page, T("Установить отдельный Connector Relay без OAuth...",
-                                              "Install NEW isolated Connector Relay without OAuth...",
-                                              "התקנת Connector נפרד ללא OAuth"),
-                                              InstallFreshConnectorAsync, false, "shield", "connector-new-install");
-                        }
-                        if (mailTransport.SelectedIndex == 2)
-                        {
-                            AddAction(page, T("Проверить новую установку Direct Send без OAuth",
-                                              "Preview NEW private Direct Send (no OAuth application)",
-                                              "בדיקת Direct Send חדש ללא OAuth"),
-                                              PreviewFreshDirectSendAsync, false, "check", "directsend-new-preview");
-                            AddAction(page, T("Установить отдельный Direct Send без Entra...",
-                                              "Install NEW isolated Direct Send without Entra...",
-                                              "התקנת Direct Send נפרד ללא Entra"),
-                                              InstallFreshDirectSendAsync, false, "shield", "directsend-new-install");
-                        }
+                            "Продвинутые действия для уже установленного отдельного Postfix: предварительная проверка EOP-маршрута, применение с SHA-256 и восстановление предыдущего XOAUTH2-маршрута.",
+                            "Existing sidecar only: read-only EOP route preview, SHA256-approved apply and restore of its previous XOAUTH2 route.",
+                            "אפשרויות מתקדמות עבור שרת Postfix נפרד קיים.")));
                         AddAction(page, T("Проверить применение EOP-маршрута (без изменений)",
                                           "Preview isolated EOP route changes (read-only)",
                                           "בדיקת ניתוב EOP"),
@@ -4546,6 +4563,12 @@ internal sealed class MainForm : Form
 
     private async Task PreflightAsync()
     {
+        EnsureRoutingLoaded();
+        if (mailTransport.SelectedIndex is 1 or 2)
+        {
+            await CheckOutboundModeAsync();
+            return;
+        }
         var result = await SshRemote.ExecuteAsync(Endpoint(),
             "echo '=== identity ==='; id; echo '=== OS ==='; cat /etc/os-release; " +
             "echo '=== Postfix ==='; command -v postconf && postconf -h relayhost && postconf -h default_transport || true; " +
@@ -4699,6 +4722,10 @@ internal sealed class MainForm : Form
 
     private async Task SendTestAsync()
     {
+        EnsureRoutingLoaded();
+        if (mailTransport.SelectedIndex is 1 or 2)
+            throw new NotSupportedException(
+                "The standard test email button is XOAUTH2-only. For Connector or Direct Send first verify the active EOP route and use the separately approved private SMTP acceptance workflow. This button will not send with unrelated XOAUTH2 credentials.");
         if (mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 1)
             throw new NotSupportedException(
                 "Multi-mailbox XOAUTH2 has not been installed or verified. The current transport uses one fixed mailbox; no test email was sent.");
