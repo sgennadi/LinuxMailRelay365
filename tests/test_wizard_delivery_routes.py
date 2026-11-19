@@ -73,9 +73,16 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
     def test_delivery_choice_before_necessary_entra_setup(self):
         section = self.form.split("            case 2:", 1)[1].split("            case 3:", 1)[0]
         self.assertIn("First select HOW Linux will deliver mail through Microsoft 365", section)
-        self.assertIn("AddLine(page, mailTransport);", section)
-        self.assertLess(section.index("AddLine(page, mailTransport);"),
+        self.assertIn("AddLine(page, BuildDeliveryModeChoices());", section)
+        self.assertLess(section.index("AddLine(page, BuildDeliveryModeChoices());"),
                         section.index("if (mailTransport.SelectedIndex is 1 or 2)"))
+        # One source of truth: changing a tile updates the mode ComboBox and
+        # its existing plan-only event, without creating a delivery route.
+        self.assertIn("mailTransport.SelectedIndex = index;", self.form)
+        self.assertIn("selected ? UiTheme.Accent : Color.White", self.form)
+        self.assertIn("UseWideDeliveryChoices(", self.form)
+        self.assertIn("DeliveryModeOverview.Describe(mode,", self.form)
+        self.assertNotIn("AddLine(page, mailTransport);", section)
         self.assertIn("Connector and Direct Send do NOT require an Entra application", section)
         self.assertIn("Certificate", self.form)
         self.assertIn("step is 2 or 3", self.form)
