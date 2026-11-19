@@ -172,7 +172,7 @@ class HardwareOAuthCutoverTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             for patch in self._patch_apply():
                 stack.enter_context(patch)
-            stack.enter_context(mock.patch.object(CUT, "checked_smtp_auth") as auth)
+            auth = stack.enter_context(mock.patch.object(CUT, "checked_smtp_auth"))
             with self.assertRaisesRegex(CUT.Refused, "plan_changed_reapprove"):
                 CUT.smtp_auth_preflight(self.target, "e" * 64,
                                          CUT.CONFIRM_SMTP_PREFLIGHT)
