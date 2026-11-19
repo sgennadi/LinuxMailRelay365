@@ -69,7 +69,7 @@ internal sealed record PreserveFlowSnapshot(
             });
         if (TransportMode is "connector" or "direct-send")
         {
-            string host = ServerForClient;
+            string proposedClientHost = ServerForClient;
             string scope = TransportMode == "direct-send"
                 ? (lang == 0 ? "Только внутренние получатели Microsoft 365.\r\n"
                     : lang == 2 ? "רק נמענים פנימיים ב-Microsoft 365.\r\n"
@@ -80,17 +80,17 @@ internal sealed record PreserveFlowSnapshot(
             return route + "\r\n" + (lang switch
             {
                 0 => "ПАРАМЕТРЫ ДЛЯ ПРИЛОЖЕНИЙ (план; установка ещё не проверена):\r\n" +
-                     "  SMTP Linux: " + host + ":" + DisplayPort + "\r\n" +
+                     "  SMTP Linux: " + proposedClientHost + ":" + DisplayPort + "\r\n" +
                      "  Исходящий Microsoft 365: " + OutboundDescription + "\r\n" +
                      "  Отправитель: " + MailRoutingGuidance.SenderResult(
                          TransportMode, SenderPolicy, OAuthSenderMode, Mailbox, EopFixedSender, lang) + "\r\n" +
                      "  Отдельная очередь: /var/spool/linuxmailrelay365-sidecar\r\n" +
                      "  SMTP AUTH/STARTTLS: включить и проверить отдельно; не предполагать их наличие.\r\n",
-                2 => "הגדרות SMTP מוצעות: " + host + ":" + DisplayPort +
+                2 => "הגדרות SMTP מוצעות: " + proposedClientHost + ":" + DisplayPort +
                      "\r\nיעד Microsoft 365: " + OutboundDescription +
                      "\r\nיש לבדוק SMTP AUTH/STARTTLS לפני השימוש.\r\n",
                 _ => "PROPOSED CLIENT SETTINGS (not verified installed):\r\n" +
-                     "  Linux SMTP: " + host + ":" + DisplayPort + "\r\n" +
+                     "  Linux SMTP: " + proposedClientHost + ":" + DisplayPort + "\r\n" +
                      "  Outbound Microsoft 365: " + OutboundDescription + "\r\n" +
                      "  Sender: " + MailRoutingGuidance.SenderResult(
                          TransportMode, SenderPolicy, OAuthSenderMode, Mailbox, EopFixedSender, lang) + "\r\n" +
