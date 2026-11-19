@@ -122,6 +122,8 @@ def inspect(port):
         reasons.append("selinux_enforcing_requires_separate_acceptance")
     if manager == "apt-get" and os.path.lexists("/usr/sbin/policy-rc.d"):
         reasons.append("existing_service_start_policy")
+    if not pathlib.Path("/run/systemd/system").is_dir():
+        reasons.append("live_systemd_required")
     evidence = {"os": os_id, "major": major, "manager": manager,
                 "mta_units": states, "mta_packages": packages,
                 "busy_smtp_ports": occupied, "selected_port": port, "revision": 1}
@@ -236,9 +238,20 @@ def apply(port, expected, confirm):
         config = ("/etc/postfix/main.cf", "/etc/postfix/master.cf")
         if not all(pathlib.Path(x).is_file() for x in config):
             raise RuntimeError("postfix_config_missing_after_package_install")
+        # Package postinst hooks have completed. Drop the temporary mask,
+        # then disable only units actually installed by the package. A
+        # non-existent instance must NOT make RHEL package setup fail.
+        for unit in reversed(masked_units):
+            if run(["systemctl", "unmask", "--runtime", unit]).returncode:
+                raise RuntimeError("temporary_postfix_mask_restore_failed")
+        masked_units.clear()
         for unit in ("postfix.service", "postfix@-.service"):
-            if run(["systemctl", "disable", unit]).returncode:
-                raise RuntimeError("could_not_disable_primary_postfix")
+            if unit_load(unit) != "not-found":
+                if run(["systemctl", "disable", unit]).returncode:
+                    raise RuntimeError("could_not_disable_primary_postfix")
+                current = run(["systemctl", "is-active", unit])
+                if current.stdout.strip() == "active":
+                    raise RuntimeError("primary_postfix_running_unsafe")
         if sockets().intersection((25, 465, 587, port)):
             raise RuntimeError("unexpected_primary_smtp_listener")
         for unit in ("exim.service", "exim4.service", "sendmail.service"):
