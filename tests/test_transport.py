@@ -120,6 +120,43 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(mailcalls[0][1:3], ('alerts@example.com', ['to@example.net']))
         self.assertIn(b'From: alerts@example.com', mailcalls[0][3])
 
+    def test_staged_smtp_auth_only_never_sends_mail(self):
+        FakeSMTP.calls = []
+        FakeSMTP.refuse_auth = False
+        with mock.patch.object(mt.smtplib, 'SMTP', FakeSMTP):
+            mt.check_smtp_auth(self.cfg, 'test-token')
+        self.assertIn(('starttls',), FakeSMTP.calls)
+        self.assertIn(('auth', 'XOAUTH2'), FakeSMTP.calls)
+        self.assertNotIn('sendmail', [entry[0] for entry in FakeSMTP.calls])
+        self.assertNotIn('mail', [entry[0] for entry in FakeSMTP.calls])
+
+    def test_staged_smtp_auth_rejects_token_and_never_sends_mail(self):
+        FakeSMTP.calls = []
+        FakeSMTP.refuse_auth = True
+        with mock.patch.object(mt.smtplib, 'SMTP', FakeSMTP):
+            with self.assertRaisesRegex(mt.TransientError, 'XOAUTH2'):
+                mt.check_smtp_auth(self.cfg, 'test-token')
+        self.assertNotIn('sendmail', [entry[0] for entry in FakeSMTP.calls])
+
+    def test_staged_smtp_auth_cli_uses_only_candidate_config(self):
+        config = dict(self.cfg, signer={'type': 'openssl-provider'})
+        path = str(mt.STAGED_CONF_FILES[1])
+        with mock.patch.object(mt, 'load_config', return_value=config) as loaded, \
+             mock.patch.object(mt, 'acquire_token', return_value='test-token') as acquire, \
+             mock.patch.object(mt, 'check_smtp_auth') as auth, \
+             mock.patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(mt.run(['--candidate-config', path, '--smtp-auth-check']), 0)
+        loaded.assert_called_once_with(path)
+        acquire.assert_called_once_with(config)
+        auth.assert_called_once_with(config, 'test-token')
+        self.assertIn('no message submitted', output.getvalue())
+        self.assertNotIn('test-token', output.getvalue())
+
+    def test_candidate_must_not_use_smtp_auth_check_with_recipient(self):
+        with self.assertRaises(SystemExit):
+            mt.run(['--candidate-config', str(mt.STAGED_CONF_FILES[0]),
+                    '--smtp-auth-check', '--recipient', 'recipient@example.org'])
+
     def test_auth_failure_is_temporary(self):
         FakeSMTP.calls = []
         FakeSMTP.refuse_auth = True
