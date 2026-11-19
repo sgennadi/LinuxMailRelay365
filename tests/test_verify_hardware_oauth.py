@@ -34,29 +34,42 @@ class HardwareOAuthDiagnosticsTests(unittest.TestCase):
 
     def test_offline_inventory_and_unsafe_permissions(self):
         self.write()
-        self.assertEqual(V.read_configuration(self.path, self.group)[0],
-                         "hardware_configured_unverified")
-        self.path.chmod(0o666)
-        self.assertEqual(V.read_configuration(self.path, self.group)[0],
-                         "unsafe_identity_file")
-        self.path.unlink()
-        self.path.symlink_to("/etc/passwd")
-        self.assertEqual(V.read_configuration(self.path, self.group)[0],
-                         "unsafe_identity_file")
+        with mock.patch.object(V, "secure_path", return_value=True):
+            self.assertEqual(V.read_configuration(self.path, self.group)[0],
+                             "hardware_configured_unverified")
+        # Validate the actual path gate using representative metadata so
+        # these tests pass without root on GitHub Actions runners.
+        from types import SimpleNamespace
+        import stat
+        def meta(mode, owner=0, gid=None, links=1):
+            return SimpleNamespace(st_mode=mode, st_uid=owner,
+                                   st_gid=self.group if gid is None else gid,
+                                   st_nlink=links)
+        with mock.patch.object(V.Path, "lstat", return_value=meta(stat.S_IFREG | 0o640)):
+            self.assertTrue(V.secure_path(self.path, group=self.group, mode=0o640))
+        with mock.patch.object(V.Path, "lstat", return_value=meta(stat.S_IFREG | 0o666)):
+            self.assertFalse(V.secure_path(self.path, group=self.group, mode=0o640))
+        with mock.patch.object(V.Path, "lstat", return_value=meta(stat.S_IFLNK | 0o777)):
+            self.assertFalse(V.secure_path(self.path, group=self.group, mode=0o640))
+        with mock.patch.object(V.Path, "lstat", return_value=meta(stat.S_IFREG | 0o640, links=2)):
+            self.assertFalse(V.secure_path(self.path, group=self.group, mode=0o640))
+        with mock.patch.object(V.Path, "lstat", return_value=meta(stat.S_IFREG | 0o640, owner=1000)):
+            self.assertFalse(V.secure_path(self.path, group=self.group, mode=0o640))
 
     def test_software_or_invalid_hardware_identity(self):
-        self.write({"private_key": "/root/key.pem", "certificate": "/root/cert.pem"})
-        self.assertEqual(V.read_configuration(self.path, self.group)[0],
-                         "software_signer_or_unconfigured")
-        self.write(dict(self.identity, private_key="/root/key.pem"))
-        self.assertEqual(V.read_configuration(self.path, self.group)[0],
-                         "invalid_hardware_identity")
-        self.write({"signer": {"provider": "invalid", "type": "openssl-provider"}})
-        self.assertEqual(V.read_configuration(self.path, self.group)[0],
-                         "invalid_hardware_identity")
-        self.path.write_text("{invalid")
-        self.assertEqual(V.read_configuration(self.path, self.group)[0],
-                         "invalid_identity_json")
+        with mock.patch.object(V, "secure_path", return_value=True):
+            self.write({"private_key": "/root/key.pem", "certificate": "/root/cert.pem"})
+            self.assertEqual(V.read_configuration(self.path, self.group)[0],
+                             "software_signer_or_unconfigured")
+            self.write(dict(self.identity, private_key="/root/key.pem"))
+            self.assertEqual(V.read_configuration(self.path, self.group)[0],
+                             "invalid_hardware_identity")
+            self.write({"signer": {"provider": "invalid", "type": "openssl-provider"}})
+            self.assertEqual(V.read_configuration(self.path, self.group)[0],
+                             "invalid_hardware_identity")
+            self.path.write_text("{invalid")
+            self.assertEqual(V.read_configuration(self.path, self.group)[0],
+                             "invalid_identity_json")
 
     def test_fixed_command_suppresses_assertions_and_secrets(self):
         self.write()
