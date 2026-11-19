@@ -97,7 +97,9 @@ def read_checked(path, size, group=None, modes=(0o640,)):
         with os.fdopen(fd, "rb") as stream:
             opened = os.fstat(stream.fileno())
             if (opened.st_ino != before.st_ino or opened.st_dev != before.st_dev or
-                    opened.st_size != before.st_size or
+                    opened.st_size != before.st_size or opened.st_uid != 0 or
+                    opened.st_nlink != 1 or opened.st_gid != before.st_gid or
+                    stat.S_IMODE(opened.st_mode) != stat.S_IMODE(before.st_mode) or
                     not stat.S_ISREG(opened.st_mode)):
                 raise Refused("root_file_changed")
             data = stream.read(size + 1)
@@ -194,7 +196,13 @@ def ensure_runtime(transport):
 
 def prepare(target):
     directory, transport = TARGETS[target]
-    checked_directory(directory)
+    # The fixed identity location must not be reached through a parent
+    # symlink or writable ancestor, even when the leaf looks trusted.
+    current = directory
+    while current != current.parent:
+        checked_directory(current)
+        current = current.parent
+    checked_directory(current)
     try:
         group = grp.getgrnam("m365mailer").gr_gid
     except KeyError:
@@ -204,6 +212,8 @@ def prepare(target):
     active_raw, active = read_identity(active_path, group)
     staged_raw, staged = read_identity(staged_path, group)
     check_candidate(active, staged, directory, group)
+    if active_raw == staged_raw:
+        raise Refused("staged_identity_already_active")
     runuser = ensure_runtime(transport)
     dependencies = reference_hashes(staged, directory, group)
     dependencies["transport"] = digest(read_checked(transport, MAX_REF,
@@ -344,7 +354,7 @@ def read_backup(target, backup_id):
     return raw, manifest
 
 
-def original_preflight(previous, current, group):
+def original_preflight(previous, current, group, directory):
     # Restore to the same tenant/client/mailbox; never cross-account.
     try:
         data = json.loads(previous.decode("utf-8"))
@@ -354,15 +364,17 @@ def original_preflight(previous, current, group):
         raise Refused("backup_routing_identity_changed")
     if "private_key" in data:
         key = data["private_key"]
-        if (not isinstance(key, str) or Path(key).parent not in
-                [item[0] for item in TARGETS.values()]):
+        if not isinstance(key, str) or Path(key).parent != directory:
             raise Refused("previous_key_outside_identity")
         read_checked(key, MAX_REF, group)
-    elif "signer" not in data:
+    elif "signer" in data:
+        # Restoring a former hardware signer is supported only if its
+        # provider config, wrapped key and cert are still present.
+        check_candidate(data, data, directory, group)
+    else:
         raise Refused("previous_signer_missing")
     cert = data.get("certificate")
-    if (not isinstance(cert, str) or Path(cert).parent not in
-            [item[0] for item in TARGETS.values()]):
+    if not isinstance(cert, str) or Path(cert).parent != directory:
         raise Refused("previous_cert_outside_identity")
     read_checked(cert, MAX_REF, modes=(0o640, 0o644))
 
@@ -424,20 +436,29 @@ def apply(target, approved_sha, confirmation, runner=subprocess.run):
             raise Refused("plan_changed_during_live_preflight")
         backup_id = new_backup(plan)
         active = plan["directory"] / "app.json"
-        # Atomic replace: Postfix pipe jobs see either the original or the
-        # staged identity, never a half-written JSON document.
-        replace_identity(active, plan["staged_raw"], plan["gid"])
+        # Atomic replace: each SMTP pipe invocation sees one complete JSON.
+        # Guard the replace and postcheck as one failure zone, including
+        # SELinux/fsync or other filesystem errors after os.replace.
         try:
+            if digest(read_checked(active, MAX_IDENTITY, plan["gid"])) != plan["active_sha"]:
+                raise Refused("active_identity_changed_during_cutover")
+            replace_identity(active, plan["staged_raw"], plan["gid"])
             checked_run(plan, False, False, runner)
             checked_run(plan, False, True, runner)
-        except Refused:
+        except Exception:
+            # Never overwrite changes by another administrator. An
+            # unexpected identity requires explicit manual recovery.
             try:
-                replace_identity(active, plan["active_raw"], plan["gid"])
+                current = digest(read_checked(active, MAX_IDENTITY, plan["gid"]))
+                if current == plan["staged_sha"]:
+                    replace_identity(active, plan["active_raw"], plan["gid"])
+                elif current != plan["active_sha"]:
+                    raise Refused("active_identity_changed_during_cutover")
                 if digest(read_checked(active, MAX_IDENTITY, plan["gid"])) != plan["active_sha"]:
                     raise Refused("automatic_rollback_integrity_failed")
-            except (Refused, OSError):
+            except Exception:
                 raise Refused("critical_manual_rollback_from_backup_required")
-            raise Refused("postcheck_failed_original_restored")
+            raise Refused("cutover_failed_original_restored")
         say("BACKUP_ID", backup_id)
         say("APPLIED", "yes")
         say("LOCAL_SIGNING_VERIFIED", "yes")
@@ -464,7 +485,7 @@ def rollback(target, backup_id, confirmation):
             raise Refused("active_identity_changed_rollback_refused")
         # Validate that key files needed by the previous identity still exist
         # before overwriting the active configuration.
-        original_preflight(previous, current, gid)
+        original_preflight(previous, current, gid, directory)
         replace_identity(directory / "app.json", previous, gid)
         say("ROLLBACK_ID", backup_id)
         say("RESTORED_PREVIOUS_IDENTITY", "yes")
