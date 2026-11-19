@@ -42,7 +42,8 @@ for setting in transport_maps sender_dependent_relayhost_maps \
   smtp_fallback_relay smtp_tls_policy_maps; do
   test -z "$(sudo postconf -c "$CONF" -h "$setting")"
 done
-test -z "$(sudo postqueue -c "$CONF" -j)"
+initial_queue="$(sudo postqueue -c "$CONF" -j)"
+test -z "$initial_queue"
 primary_sha="$(sudo sha256sum "$PRIMARY/main.cf" "$PRIMARY/master.cf")"
 primary_queue="$(sudo postconf -h queue_directory)"
 main_sha="$(sudo sha256sum "$CONF/main.cf" | awk '{print $1}')"
@@ -115,10 +116,12 @@ echo "=== Real SMTP AUTH STARTTLS + Postfix From Guard, loopback-only DATA ==="
 sudo env GITHUB_ACTIONS=true RUNNER_TEMP="$RUNNER_TEMP" python3 tests/smoke_authenticated_from_guard_loopback.py "$PORT" "$CA"
 
 for attempt in $(seq 1 60); do
-  if test -z "$(sudo postqueue -c "$CONF" -j)"; then
+  remaining="$(sudo postqueue -c "$CONF" -j)"
+  if test -z "$remaining"; then
     break
   fi
   sleep 0.25
 done
-test -z "$(sudo postqueue -c "$CONF" -j)"
+remaining="$(sudo postqueue -c "$CONF" -j)"
+test -z "$remaining"
 echo "SMTP_AUTH_FROM_GUARD_REAL_POSTFIX_LOOPBACK_SMOKE=PASS"
