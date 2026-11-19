@@ -184,6 +184,19 @@ class OAuthSenderMapTests(unittest.TestCase):
                   "/etc/linuxmailrelay365/oauth-identities/not-selected.json")
         self.assertEqual(AUDIT.simulate_policy(bad), len(rows) * 7)
 
+    def test_synthetic_spoof_probes_remain_negative_for_reserved_looking_identities(self):
+        rows = AUDIT.parse_map(records([
+            ("not-authorized-user", "other@invalid.example",
+             "other@invalid.example", IDENTITY_A),
+            ("denied-account", "different@invalid.example",
+             "different@invalid.example", IDENTITY_B),
+        ]))
+        self.assertEqual(AUDIT.simulate_policy(rows), 14)
+        message = b"From: other@invalid.example\r\n\r\nSynthetic test.\r\n"
+        self.assertEqual(AUDIT.select_planned_identity_offline(
+            rows, "not-authorized-user", "other@invalid.example",
+            "other@invalid.example", message), IDENTITY_A)
+
     def test_refuses_missing_root_without_revealing_map(self):
         with mock.patch.object(AUDIT.os, "geteuid", return_value=1000), \
              contextlib.redirect_stderr(io.StringIO()) as err:
