@@ -311,11 +311,14 @@ internal sealed class MainForm : Form
             SaveRoutingChoices();
             UpdatePreserveFlowPreview();
         };
-        host.TextChanged += (_, _) =>
+        foreach (var endpointField in new[] { host, sshPort, sshUser })
         {
-            oauthSenderAuditSummary = "";
-            oauthIngressAuditSummary = "";
-        };
+            endpointField.TextChanged += (_, _) =>
+            {
+                oauthSenderAuditSummary = "";
+                oauthIngressAuditSummary = "";
+            };
+        }
         mailTransport.SelectedIndexChanged += (_, _) => {
             if (!routingLoading) {
                 oauthSenderAuditSummary = "";
