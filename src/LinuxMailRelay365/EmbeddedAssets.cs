@@ -20,6 +20,7 @@ internal static class EmbeddedAssets
     internal static string TpmDependencies => Text("LinuxMailRelay365.linux.tpm-dependencies.py");
     internal static string HardwareOAuthDiagnostics => Text("LinuxMailRelay365.linux.hardware-oauth-diagnostics.py");
     internal static string HardwareOAuthCutover => Text("LinuxMailRelay365.linux.hardware-oauth-cutover.py");
+    internal static string TpmOauthProvision => Text("LinuxMailRelay365.linux.tpm-oauth-provision.py");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarConfigRecovery => Text("LinuxMailRelay365.linux.sidecar-config-recovery.py");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
@@ -58,6 +59,30 @@ internal static class EmbeddedAssets
     internal static string TenantConnectorManager => Text("LinuxMailRelay365.windows.tenant-connector-manager.ps1");
 
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+
+    internal static string BuildTpmOauthProvisionBundle(string target, string handle,
+        string? approvedSha = null)
+    {
+        if (target is not ("sidecar" or "primary"))
+            throw new ArgumentException("Unsupported TPM2 provisioning target.");
+        if (!Regex.IsMatch(handle, @"\A0x8101[a-f0-9]{4}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("TPM2 owner persistent handle must be 0x8101xxxx.");
+        string args = "--target " + target + " --handle " + handle + " --plan";
+        if (approvedSha is not null)
+        {
+            if (!Regex.IsMatch(approvedSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+                throw new ArgumentException("TPM2 provisioning requires the exact reviewed SHA256.");
+            args = "--target " + target + " --handle " + handle + " --apply" +
+                   " --approve-sha256 " + approvedSha +
+                   " --confirm CREATE_TPM2_OAUTH_KEY";
+        }
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-tpm-key.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/manage-tpm-oauth-key.py\" <<'LMR365_TPM_PROVISION'\n" +
+               Encode(TpmOauthProvision) + "\nLMR365_TPM_PROVISION\n" +
+               "python3 \"$work/manage-tpm-oauth-key.py\" " + args + "\n";
+    }
 
     internal static string BuildHardwareOAuthCutoverBundle(
         string target, string operation, string? approvalSha = null, string? backupId = null,
