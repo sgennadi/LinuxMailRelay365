@@ -206,7 +206,11 @@ ProtectHome=yes
 PrivateTmp=yes
 RestrictAddressFamilies=AF_UNIX
 [Install]
-WantedBy=multi-user.target
+# When the independent Postfix unit is stopped/restarted, systemd can
+# stop its dependent guard. Pull it back in every time the isolated
+# Postfix service starts; keep the SMTP listener in its existing chroot
+# configuration and retain fail-closed Milter handling.
+WantedBy=multi-user.target linuxmailrelay365-sidecar.service
 EOF
 chmod 0644 "$UNIT"
 chown root:root "$UNIT"
