@@ -57,6 +57,7 @@ class OAuthSenderMapTests(unittest.TestCase):
         self.assertEqual(report["IDENTITIES"], 2)
         self.assertEqual(report["TENANTS"], 1)
         self.assertEqual(report["SENDAS_DIFFERENT_FROM"], 1)
+        self.assertEqual(report["POLICY_SIMULATION_TEST_CASES"], 14)
         self.assertEqual(calls[0], (MAP, AUDIT.MAX_MAP, 0o600, None))
         self.assertEqual(calls[1], (IDENTITY_A, AUDIT.MAX_IDENTITY, 0o640, 333))
         self.assertNotIn("alice@example.org", str(report))
@@ -117,6 +118,55 @@ class OAuthSenderMapTests(unittest.TestCase):
             with self.subTest(blob=blob[:16]), self.assertRaises(AUDIT.Refused):
                 AUDIT.validate_identity(blob, "alice@example.org")
 
+    def test_offline_policy_checks_exact_login_envelope_mailbox_and_from(self):
+        rows = AUDIT.parse_map(records(self.rows))
+        from_header = (b"From: Alice <alice@example.org>\r\n"
+                       b"To: synthetic@example.net\r\n\r\nBody\r\n")
+        self.assertTrue(AUDIT.authorize_offline(
+            rows, "alice", "alice@example.org", "alice@example.org", from_header))
+        self.assertEqual(AUDIT.simulate_policy(rows), 14)
+        for login, envelope, mailbox, headers in (
+            ("bob", "alice@example.org", "alice@example.org", from_header),
+            ("alice", "other@example.org", "alice@example.org", from_header),
+            ("alice", "alice@example.org", "service@example.org", from_header),
+            ("alice", "alice@example.org", "alice@example.org",
+             b"From: alice@other.example\r\n\r\n"),
+            ("alice", "alice@example.org", "alice@example.org",
+             b"From: alice@example.org\r\n"
+             b"From: alice@example.org\r\n\r\n"),
+            ("alice", "alice@example.org", "alice@example.org",
+             b"From: alice@example.org, hacker@example.org\r\n\r\n"),
+            ("alice", "alice@example.org", "alice@example.org",
+             b"From: alice@example.org\r\n"
+             b"Sender: hacker@example.org\r\n\r\n"),
+            ("alice", "alice@example.org", "alice@example.org",
+             b"From: alice@example.org\r\n"
+             b"Resent-From: hacker@example.org\r\n\r\n"),
+            ("alice", "alice@example.org", "alice@example.org",
+             b"From: alice@example.org\r\n"
+             b"Return-Path: <hacker@example.org>\r\n\r\n"),
+            ("alice", "alice@example.org", "alice@example.org",
+             b"From: alice@example.org\r\n"
+             b"Sender: alice@example.org\r\n"
+             b"Sender: alice@example.org\r\n\r\n"),
+            ("alice", "alice@example.org", "alice@example.org",
+             b"From: Team: alice@example.org;\r\n\r\n"),
+            ("alice", "alice@example.org", "alice@example.org",
+             b"From: alice@example.org\r\n\r\n" + b"A" * (AUDIT.MAX_OFFLINE_MESSAGE + 1)),
+        ):
+            with self.subTest(login=login, env=envelope, mailbox=mailbox,
+                              raw=headers[:65]):
+                with self.assertRaises(AUDIT.Refused):
+                    AUDIT.authorize_offline(rows, login, envelope, mailbox, headers)
+
+    def test_simulation_does_not_parse_real_mail_or_contact_tenant(self):
+        rows = AUDIT.parse_map(records(self.rows))
+        self.assertEqual(AUDIT.simulate_policy(rows), len(rows) * 7)
+        bad = list(rows)
+        bad[0] = (bad[0][0], bad[0][1], bad[0][2],
+                  "/etc/linuxmailrelay365/oauth-identities/not-selected.json")
+        self.assertEqual(AUDIT.simulate_policy(bad), len(rows) * 7)
+
     def test_refuses_missing_root_without_revealing_map(self):
         with mock.patch.object(AUDIT.os, "geteuid", return_value=1000), \
              contextlib.redirect_stderr(io.StringIO()) as err:
@@ -127,7 +177,8 @@ class OAuthSenderMapTests(unittest.TestCase):
     def test_cli_reports_no_activation_and_no_sent_mail(self):
         report = {"MAP_SHA256": "a" * 64, "ENTRIES": 2, "LOCAL_LOGINS": 2,
                   "MAILBOXES": 2, "IDENTITIES": 2, "TENANTS": 1,
-                  "SENDAS_DIFFERENT_FROM": 1}
+                  "SENDAS_DIFFERENT_FROM": 1,
+                  "POLICY_SIMULATION_TEST_CASES": 14}
         with mock.patch.object(AUDIT.os, "geteuid", return_value=0), \
              mock.patch.object(AUDIT, "audit", return_value=report) as audited, \
              contextlib.redirect_stdout(io.StringIO()) as out:
@@ -136,6 +187,8 @@ class OAuthSenderMapTests(unittest.TestCase):
         result = out.getvalue()
         self.assertIn("OAUTH_SENDER_MAP_RESULT=structural_review_only", result)
         self.assertIn("OAUTH_SENDER_MAP_EXCHANGE_SENDAS_VERIFIED=no", result)
+        self.assertIn("OAUTH_SENDER_MAP_POLICY_SIMULATION=passed_offline_only", result)
+        self.assertIn("OAUTH_SENDER_MAP_POLICY_SIMULATION_TEST_CASES=14", result)
         self.assertIn("OAUTH_SENDER_MAP_HEADER_FROM_GUARD_ACTIVE=no", result)
         self.assertIn("OAUTH_SENDER_MAP_MESSAGES_SENT=no", result)
         self.assertIn("OAUTH_SENDER_MAP_POSTFIX_CHANGED=no", result)
