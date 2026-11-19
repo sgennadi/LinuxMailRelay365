@@ -13,6 +13,7 @@ than downgrading OpenSSL, installing a provider or bypassing authorization.
 Python 3.6+ so the preflight works on RHEL/Oracle/Rocky/Alma 8 as well.
 """
 import argparse
+import errno
 import fcntl
 import grp
 import hashlib
@@ -113,6 +114,26 @@ def checked_file(path, gid=None):
     return info
 
 
+def read_checked(path, gid=None):
+    before = checked_file(path, gid)
+    try:
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as stream:
+            actual = os.fstat(stream.fileno())
+            if (actual.st_ino != before.st_ino or actual.st_dev != before.st_dev or
+                    actual.st_uid != before.st_uid or actual.st_gid != before.st_gid or
+                    actual.st_size != before.st_size or
+                    stat.S_IMODE(actual.st_mode) != stat.S_IMODE(before.st_mode) or
+                    actual.st_nlink != 1):
+                raise Refused("active_oauth_changed_during_review")
+            raw = stream.read(MAX_IDENTITY + 1)
+    except OSError:
+        raise Refused("active_oauth_read_failed")
+    if len(raw) != before.st_size:
+        raise Refused("active_oauth_changed_during_review")
+    return raw
+
+
 def command_env(conf=None):
     env = {"LC_ALL": "C", "PATH": "/usr/bin:/bin",
            "HOME": "/nonexistent", "TPM2TOOLS_TCTI": "device:/dev/tpmrm0",
@@ -206,11 +227,9 @@ def prepare(target, handle):
     except KeyError:
         raise Refused("m365mailer_service_account_missing")
     existing = directory / "app.json"
-    checked_file(existing, gid)
-    # Never read private keys from the active software identity.
-    active_raw = existing.read_bytes()
-    if not 0 < len(active_raw) <= MAX_IDENTITY:
-        raise Refused("invalid_installed_identity_size")
+    # Never read private key material, and never follow a substituted
+    # app.json symlink between lstat() and opening the reviewed identity.
+    active_raw = read_checked(existing, gid)
     try:
         active = json.loads(active_raw.decode("utf-8"))
     except (UnicodeError, ValueError):
@@ -287,8 +306,7 @@ def set_label_like_active(path, active):
                               follow_symlinks=False)
     except OSError as exc:
         # Non-SELinux filesystem; on Enforcing hosts preserve label.
-        if exc.errno in (getattr(__import__("errno"), "ENODATA"),
-                         getattr(__import__("errno"), "ENOTSUP")):
+        if exc.errno in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
             return
         raise Refused("selinux_label_read_failed")
     try:
@@ -390,11 +408,19 @@ def apply(target, handle, approved_sha, confirmation):
         with tempfile.TemporaryDirectory(prefix="lmr365-tpm2-", dir="/tmp") as work:
             scratch = Path(work)
             ctx = scratch / "primary.ctx"
+            # TPM primary keys are deterministic for the same seed/template.
+            # Mix fresh uniqueness into TPMT_PUBLIC.unique to obtain a new
+            # cryptographic identity without exporting any TPM private key.
+            # TPM2B_PUBLIC_KEY_RSA: 16-bit LE length + 32 random bytes.
+            unique = scratch / "primary-unique.bin"
+            unique.write_bytes(b"\x20\x00" + os.urandom(32))
+            unique.chmod(0o600)
             pub1 = scratch / "new-public.pem"
             pub2 = scratch / "persistent-public.pem"
             env = command_env()
             run_command([str(COMMANDS["createprimary"]), "-C", "o",
-                         "-G", "rsa2048", "-g", "sha256", "-a", KEY_ATTRS,
+                         "-G", "rsa2048:null:null", "-g", "sha256",
+                         "-a", KEY_ATTRS, "-u", str(unique),
                          "-c", str(ctx)], env=env, timeout=150,
                         operation="tpm_primary_key_creation_failed")
             # Two checks before persistence, with the cross-component lock.
