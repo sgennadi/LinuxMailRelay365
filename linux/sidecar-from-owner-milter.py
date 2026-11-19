@@ -119,10 +119,18 @@ def safe_from(value):
 
 
 def parse_macro_packet(raw):
-    """D stage followed by NUL-delimited macro names and values, no reply."""
-    if len(raw) < 2:
+    """D stage followed by zero or more NUL-delimited macro pairs, no reply.
+
+    Postfix may legally send only the stage byte when no macros are
+    available for HELO or another event. Never treat an empty HELO macro
+    set as an application error; MAIL FROM still requires authenticated
+    login/type macros and fails closed if those are absent.
+    """
+    if not isinstance(raw, bytes) or len(raw) < 1:
         raise PolicyError("malformed_milter_macros")
     stage = raw[:1]
+    if len(raw) == 1:
+        return stage, {}
     pieces = raw[1:].split(b"\x00")
     if pieces[-1:] == [b""]:
         pieces.pop()
