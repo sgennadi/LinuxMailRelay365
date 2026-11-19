@@ -1143,3 +1143,28 @@ The Windows executable embeds the same diagnostic script and stages it in a root
 **Interpretation:** `provider_ps256_certificate_match_verified` proves that the configured provider produced a signature matching the certificate. It does **not** independently prove hardware provenance, nonexportability, persistence over reboot, device attestation, Entra acceptance or Microsoft 365 mail delivery. A staged identity never becomes active through the diagnostic. Existing PEM identities remain unchanged.
 
 **Remaining for Stable:** guarded key provisioning and key-origin verification, actual TPM/HSM signing on a target RHEL/Ubuntu host, restart continuity, stage-to-active approval and rollback, authorized Microsoft 365 tenant test and final signed desktop build.
+
+
+## Guarded staged hardware OAuth cutover (Draft / Preview)
+
+An installed XOAUTH2 transport can switch from its existing OAuth signing identity to an **already prepared** TPM2/PKCS#11 identity without replacing the primary MTA, changing SMTP routes, downloading private keys or restarting Postfix. The implementation is deliberately separate from package installation and TPM key provisioning.
+
+**Prerequisites:** provision a hardware-backed RSA key through a locally approved provider; prepare a matching certificate and register its public certificate on the existing Entra application; configure a root-owned `hardware-staged.json` in the same identity directory; keep the previous PEM key/certificate and service user access intact. The staged identity may only change the signing provider, key reference and certificate: tenant ID, client ID and sender mailbox must match the active identity. The staged JSON must be mode `0640`, owner `root:m365mailer`, and provider configuration/key blobs must meet the same root-only policy. The software transport already supports `--candidate-config` for signing/token checks but never for mail delivery.
+
+Wizard / Optional security checks:
+
+1. Choose **Isolated sidecar** (recommended) or **Primary Postfix**.
+2. **Review hardware OAuth cutover**: read-only SHA256 plan includes the two identity contents, public certificate, provider configuration, TSS2 blob where used, installed transport and signing helper. There are no mail, token, Entra or MTA changes in preview.
+3. **Approve and activate hardware OAuth**: a separate typed confirmation is required. The manager revalidates the exact SHA plan, locally verifies PS256 signature with the staged key and obtains an application token from **real Entra**, before changing `app.json`. It writes a root-only integrity-checked snapshot of the prior identity, atomically replaces `app.json` and repeats signing + token verification against the active config. If post-validation fails, it attempts an automatic restoration of the original identity and returns failure. The old private key and certificates remain on disk for rollback.
+4. **List hardware OAuth rollback snapshots** and **Restore selected backup** are separate explicitly approved actions. Restore refuses if the active identity does not match the recorded deployed SHA (to avoid overwriting unrelated changes). Rollback restores only `app.json`; it does not undo changes in Entra or delete other keys.
+
+CLI on the *approved test host* (does not accept arbitrary config paths):
+
+    sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --plan
+    sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --apply --approve-sha256 <reviewed-64hex-plan> --confirm ACTIVATE_HARDWARE_OAUTH
+    sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --list
+    sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --rollback <backup-ID> --confirm ROLLBACK_HARDWARE_OAUTH
+
+Use `--target primary` only when the installed primary Postfix uses the XOAUTH2 pipe transport and a separately approved maintenance window exists. Backups are kept under `/var/backups/linuxmailrelay365-hardware-oauth/{sidecar,primary}` with root-only directory/file permissions. Status output contains no tokens, PINs, private keys, assertions or mailbox addresses.
+
+**Safety limitation:** an atomic JSON switch protects against torn configuration writes, but simultaneous in-flight mail jobs may use either old or new identity until the switch is complete. Use an operator-approved maintenance window for production. A token check confirms Entra application token issuance, **not** Exchange Online SMTP authorization or delivered mail. Device attestation/provenance, real RHEL SELinux Enforcing, physical hardware signing, reboot recovery and signed Stable QA remain release gates.
