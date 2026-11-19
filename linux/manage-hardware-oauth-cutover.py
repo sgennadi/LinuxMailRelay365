@@ -528,7 +528,7 @@ def list_backups(target):
     say("BACKUP_COUNT", str(len(ids)))
 
 
-def stage_prepare(target):
+def stage_prepare(target, provider=None, key_ref=None):
     """Read-only plan for a pre-provisioned hardware signing key.
 
     An operator must first place two trusted files on the Linux host:
@@ -552,14 +552,29 @@ def stage_prepare(target):
     active_raw, active = read_identity(directory / "app.json", gid)
     # The current PEM key/cert must exist for a future rollback.
     original_preflight(active_raw, active, gid, directory)
-    request_raw = read_checked(directory / "hardware-request.json", MAX_IDENTITY, gid)
-    try:
-        request = json.loads(request_raw.decode("utf-8"))
-    except (ValueError, UnicodeError):
-        raise Refused("invalid_hardware_request_json")
-    if not isinstance(request, dict) or set(request) != {
-            "provider", "key_ref", "provider_config"}:
-        raise Refused("invalid_hardware_request_fields")
+    if (provider is None) != (key_ref is None):
+        raise Refused("stage_provider_and_key_ref_required_together")
+    if provider is None:
+        request_raw = read_checked(directory / "hardware-request.json", MAX_IDENTITY, gid)
+        try:
+            request = json.loads(request_raw.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            raise Refused("invalid_hardware_request_json")
+        if not isinstance(request, dict) or set(request) != {
+                "provider", "key_ref", "provider_config"}:
+            raise Refused("invalid_hardware_request_fields")
+        request_source = "root_request_file"
+    else:
+        if provider not in ("tpm2", "pkcs11") or not isinstance(key_ref, str):
+            raise Refused("invalid_stage_provider_or_key_reference")
+        # Never accept arbitrary certificate/provider-config paths from the
+        # desktop. Only an operator-installed, root-managed config file may
+        # name the TPM/HSM module. No PIN/secret may be embedded in the URI.
+        request = {"provider": provider, "key_ref": key_ref,
+                   "provider_config": str(directory / (provider + ".cnf"))}
+        request_raw = (json.dumps(request, sort_keys=True,
+                                  separators=(",", ":")) + "\n").encode("utf-8")
+        request_source = "reviewed_wizard_arguments"
     signer = dict(request, type="openssl-provider")
     candidate = {"tenant_id": active["tenant_id"],
                  "client_id": active["client_id"],
@@ -590,6 +605,7 @@ def stage_prepare(target):
             "runuser": runuser, "gid": gid, "sha": sha,
             "candidate_raw": raw, "candidate_sha": digest(raw),
             "current_sha": digest(active_raw), "request_sha": digest(request_raw),
+            "request_source": request_source,
             "references": refs, "candidate": candidate}
 
 
@@ -598,6 +614,7 @@ def stage_report(plan):
     print("HARDWARE_STAGE_TARGET=" + plan["target"])
     print("HARDWARE_STAGE_PLAN_SHA256=" + plan["sha"])
     print("HARDWARE_STAGE_PROVIDER=" + plan["candidate"]["signer"]["provider"])
+    print("HARDWARE_STAGE_REQUEST_SOURCE=" + plan["request_source"])
     print("HARDWARE_STAGE_CURRENT_SHA256=" + plan["current_sha"])
     print("HARDWARE_STAGE_CANDIDATE_SHA256=" + plan["candidate_sha"])
     print("HARDWARE_STAGE_ROUTING_IDENTITY_UNCHANGED=yes")
@@ -651,18 +668,19 @@ def stage_identity(plan):
             temp.unlink()
 
 
-def stage_apply(target, approved_sha, confirmation, runner=subprocess.run):
+def stage_apply(target, approved_sha, confirmation, provider=None,
+                key_ref=None, runner=subprocess.run):
     ensure_root()
     if confirmation != CONFIRM_STAGE or not SHA.fullmatch(approved_sha):
         raise Refused("stage_typed_confirmation_or_sha_required")
     fd = lock()
     try:
-        plan = stage_prepare(target)
+        plan = stage_prepare(target, provider, key_ref)
         if plan["sha"] != approved_sha:
             raise Refused("stage_plan_changed_review_again")
         # Input and certificate/provider bytes must be stable all the way
         # through signing. The plan cannot be recreated after staging.
-        if stage_prepare(target)["sha"] != approved_sha:
+        if stage_prepare(target, provider, key_ref)["sha"] != approved_sha:
             raise Refused("stage_inputs_changed_before_write")
         stage_path = plan["directory"] / "hardware-staged.json"
         stage_identity(plan)
@@ -679,9 +697,16 @@ def stage_apply(target, approved_sha, confirmation, runner=subprocess.run):
                                                         modes=(0o644, 0o755)))
             new_refs["signer_module"] = digest(read_checked(HELPER, MAX_REF,
                                                             modes=(0o644, 0o755)))
+            if plan["request_source"] == "root_request_file":
+                fresh_request = read_checked(plan["directory"] / "hardware-request.json",
+                                             MAX_IDENTITY, plan["gid"])
+            else:
+                fresh_request = (json.dumps({
+                    "provider": provider, "key_ref": key_ref,
+                    "provider_config": str(plan["directory"] / (provider + ".cnf"))},
+                    sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
             if new_refs != plan["references"] or \
-                    digest(read_checked(plan["directory"] / "hardware-request.json",
-                                        MAX_IDENTITY, plan["gid"])) != plan["request_sha"] or \
+                    digest(fresh_request) != plan["request_sha"] or \
                     digest(read_checked(plan["directory"] / "app.json",
                                         MAX_IDENTITY, plan["gid"])) != plan["current_sha"]:
                 raise Refused("stage_dependencies_changed_during_signature")
@@ -716,6 +741,8 @@ def main(argv=None):
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("--stage-plan", action="store_true")
     parser.add_argument("--stage-apply", action="store_true")
+    parser.add_argument("--stage-provider", choices=("tpm2", "pkcs11"))
+    parser.add_argument("--stage-key-ref")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--rollback", metavar="BACKUP_ID")
     parser.add_argument("--list", action="store_true")
@@ -729,10 +756,15 @@ def main(argv=None):
             raise Refused("select_exactly_one_operation")
         if not args.apply and not args.rollback and not args.stage_apply and (args.confirm or args.approve_sha256):
             raise Refused("approval_not_allowed_in_readonly_mode")
+        if (args.stage_provider is None) != (args.stage_key_ref is None) or \
+                (args.stage_provider is not None and not
+                 (args.stage_plan or args.stage_apply)):
+            raise Refused("stage_reference_arguments_invalid")
         if args.stage_plan:
-            stage_report(stage_prepare(args.target))
+            stage_report(stage_prepare(args.target, args.stage_provider, args.stage_key_ref))
         elif args.stage_apply:
-            stage_apply(args.target, args.approve_sha256, args.confirm)
+            stage_apply(args.target, args.approve_sha256, args.confirm,
+                        args.stage_provider, args.stage_key_ref)
         elif args.plan:
             report_plan(prepare(args.target))
         elif args.apply:
