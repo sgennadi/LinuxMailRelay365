@@ -56,9 +56,21 @@ require_setting relay_transport \
 require_setting relayhost \
   "[example-org.mail.protection.outlook.com]:25"
 for setting in transport_maps sender_dependent_relayhost_maps \
-  smtp_fallback_relay smtp_tls_policy_maps; do
+  smtp_tls_policy_maps; do
   require_setting "$setting" ""
 done
+# Postfix's documented default is smtp_fallback_relay=$fallback_relay,
+# even when fallback_relay itself is empty. Treat ONLY that exact alias
+# with an empty underlying value as safe; block any actual fallback host.
+fallback="$(sudo postconf -c "$CONF" -h smtp_fallback_relay)" || {
+  echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=fallback_read_failed" >&2; exit 2;
+}
+if [ "$fallback" = '$fallback_relay' ]; then
+  require_setting fallback_relay ""
+elif [ -n "$fallback" ]; then
+  echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=unsafe_fallback_relay" >&2
+  exit 2
+fi
 echo "SMTP_AUTH_GUARD_PRECHECK_OUTBOUND=pass"
 initial_queue="$(sudo postqueue -c "$CONF" -j)" || {
   echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=unreadable_queue" >&2; exit 2;
