@@ -201,10 +201,41 @@ def send_smtp(config, recipient, raw_message, token):
             raise PermanentError(f'SMTP recipient rejected: {code}')
 
 
+def check_smtp_auth(config, token):
+    """Complete real Exchange Online SMTP STARTTLS/XOAUTH2 authentication only.
+
+    Never issues MAIL FROM, RCPT TO or DATA, never submits a message, and
+    never prints the bearer token, SASL exchange or server's challenge.
+    """
+    mailbox = config['mailbox']
+    if not EMAIL_RE.fullmatch(mailbox):
+        raise PermanentError('Invalid configured sender mailbox')
+    sasl = ('user=' + mailbox + '\x01auth=Bearer ' + token + '\x01\x01')
+    encoded = base64.b64encode(sasl.encode('utf-8')).decode('ascii')
+    with smtplib.SMTP('smtp.office365.com', 587, timeout=45) as client:
+        client.ehlo()
+        if not client.has_extn('starttls'):
+            raise TransientError('Microsoft 365 did not offer STARTTLS')
+        client.starttls(context=ssl.create_default_context())
+        client.ehlo()
+        offered = client.esmtp_features.get('auth', '').upper().split()
+        if 'XOAUTH2' not in offered:
+            raise TransientError('Microsoft 365 did not advertise AUTH XOAUTH2')
+        code, _ = client.docmd('AUTH', 'XOAUTH2 ' + encoded)
+        if code == 334:
+            # Consume an RFC 7628 error challenge without exposing its body.
+            client.docmd('')
+            raise TransientError('Microsoft 365 rejected staged XOAUTH2 token (334)')
+        if code != 235:
+            raise TransientError('Microsoft 365 staged XOAUTH2 authentication failed (SMTP {})'.format(code))
+    # Closing authenticated session sends QUIT only. No sendmail(), no DATA.
+
+
 def run(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--recipient', help='Single envelope recipient from Postfix')
     ap.add_argument('--token-check', action='store_true', help='Check Entra token acquisition without printing token')
+    ap.add_argument('--smtp-auth-check', action='store_true', help='Verify real Microsoft 365 XOAUTH2 AUTH without MAIL/RCPT/DATA')
     ap.add_argument('--signing-check', action='store_true', help='Verify local PS256 signing without Entra traffic')
     ap.add_argument('--config-check', action='store_true', help='Check local configuration only')
     ap.add_argument('--config', choices=[str(CONF_FILE), str(SIDECAR_CONF_FILE)],
@@ -213,10 +244,11 @@ def run(argv=None):
                     help='Root-staged hardware identity, usable only for signing/token checks')
     args = ap.parse_args(argv)
     try:
-        if sum((bool(args.token_check), bool(args.signing_check), bool(args.config_check))) > 1:
+        if sum((bool(args.token_check), bool(args.signing_check), bool(args.config_check),
+                bool(args.smtp_auth_check))) > 1:
             ap.error('Select only one non-delivery diagnostic action')
         if args.candidate_config is not None:
-            if not (args.token_check or args.signing_check or args.config_check) or args.recipient:
+            if not (args.token_check or args.signing_check or args.config_check or args.smtp_auth_check) or args.recipient:
                 ap.error('Candidate identity cannot send mail or accept a recipient')
             config = load_config(args.candidate_config)
             if 'signer' not in config:
@@ -233,6 +265,11 @@ def run(argv=None):
         if args.token_check:
             acquire_token(config)
             print('Entra application token acquired (token not displayed)')
+            return EX_OK
+        if args.smtp_auth_check:
+            token = acquire_token(config)
+            check_smtp_auth(config, token)
+            print('Microsoft 365 STARTTLS and SMTP AUTH XOAUTH2 verified; no message submitted')
             return EX_OK
         if not args.recipient:
             ap.error('--recipient is required for delivery')
