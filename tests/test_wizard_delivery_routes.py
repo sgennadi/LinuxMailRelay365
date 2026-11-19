@@ -167,6 +167,18 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
         self.assertIn("MailServerDiscoveryDecision.SelfTest", self.program)
         self.assertIn("Do not assume an empty mail server", advisor)
         self.assertIn("No changes were made", advisor)
+        self.assertIn("ConfirmCurrentActiveMtaForInstallationAsync", self.form)
+        self.assertGreaterEqual(
+            self.form.count("await ConfirmCurrentActiveMtaForInstallationAsync(endpoint, inventory);"), 3)
+        self.assertIn("Postconf binary presence is NOT evidence", self.form)
+        self.assertIn("InstallationSafetyStatus(", advisor)
+        self.assertIn("unattributed_smtp_listener_or_unknown", advisor)
+        audit = (project / "ExistingSmtpAudit.cs").read_text(encoding="utf-8")
+        self.assertIn("StandardPortSockets =>", audit)
+        probe = (ROOT / "linux" / "probe-linux.sh").read_text(encoding="utf-8")
+        self.assertIn("active_exim", probe)
+        self.assertIn("active_sendmail", probe)
+        self.assertLess(probe.index("elif (( active_exim == 1 ))"), probe.index("elif has postconf; then"))
 
     def test_previous_mail_not_silently_reconfigured(self):
         self.assertIn('KeepExisting', self.flow)

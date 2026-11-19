@@ -15,6 +15,7 @@ internal sealed class ExistingSmtpAudit
     internal string PublicBind => Value("SMTP_PUBLIC_BIND");
     internal string RelayRisk => Value("SMTP_RELAY_POLICY_RISK");
     internal string Mta => Value("SMTP_AUDIT_MTA");
+    internal string StandardPortSockets => Value("SMTP_STANDARD_PORT_SOCKETS");
     internal bool PotentiallyPublic => PublicBind == "potentially_public";
     internal bool SuspectedUnsafeRelay => RelayRisk == "suspected_unsafe_relay";
 

@@ -34,6 +34,25 @@ internal sealed record MailServerDiscoveryDecision(
         return new("conflicting_or_unknown_mta", true, true);
     }
 
+    // This is a pre-APPLY gate, independent of the informative wizard advice.
+    // A fresh live audit must agree with the inspected installed MTA.
+    internal static string InstallationSafetyStatus(
+        MailRoutingInventory inventory, ExistingSmtpAudit current)
+    {
+        if (current.SuspectedUnsafeRelay)
+            return "unsafe_relay_policy";
+        if (inventory.Mta == "postfix" && current.Mta == "postfix")
+            return "ready";
+        if (inventory.Mta == "exim" && current.Mta == "exim_manual_review")
+            return "ready";
+        if (inventory.Mta == "sendmail" && current.Mta == "sendmail_manual_review")
+            return "ready";
+        if (inventory.Mta == "none" && current.Mta == "no_active_mta_verified")
+            return current.StandardPortSockets == "no_standard_smtp_listeners_observed"
+                ? "ready" : "unattributed_smtp_listener_or_unknown";
+        return "installed_and_active_mta_disagree";
+    }
+
     internal string Explain(int language, MailRoutingInventory? inventory,
         ExistingSmtpAudit? audit, bool? isolatedDetected)
     {
@@ -134,7 +153,29 @@ internal sealed record MailServerDiscoveryDecision(
         var uninstalled = Assess(none, Audit("no_active_mta_verified"), false);
         var conflicting = Assess(postfix, Audit("multiple_active_mta_manual_review"), true);
         var unverified = Assess(postfix, null, false);
-        return ready.Code == "postfix_active" && ready.PreserveRecommended &&
+        var emptyPorts = Audit("no_active_mta_verified");
+        var socketEvidence = ExistingSmtpAudit.Parse(
+            "SMTP_AUDIT_VERSION=1\nSMTP_AUDIT_MTA=no_active_mta_verified\n" +
+            "SMTP_PUBLIC_BIND=unknown\nSMTP_RELAY_POLICY_RISK=unknown\n" +
+            "SMTP_STANDARD_PORT_SOCKETS=potentially_public_unattributed\n" +
+            "SMTP_EXTERNAL_REACHABILITY=not_tested_from_internet\n" +
+            "SMTP_OPEN_RELAY_PROVEN=no_active_probe_performed\n");
+        var cleanEmpty = ExistingSmtpAudit.Parse(
+            "SMTP_AUDIT_VERSION=1\nSMTP_AUDIT_MTA=no_active_mta_verified\n" +
+            "SMTP_PUBLIC_BIND=unknown\nSMTP_RELAY_POLICY_RISK=unknown\n" +
+            "SMTP_STANDARD_PORT_SOCKETS=no_standard_smtp_listeners_observed\n" +
+            "SMTP_EXTERNAL_REACHABILITY=not_tested_from_internet\n" +
+            "SMTP_OPEN_RELAY_PROVEN=no_active_probe_performed\n");
+        return InstallationSafetyStatus(postfix, Audit("postfix")) == "ready" &&
+            InstallationSafetyStatus(postfix, Audit("exim_manual_review")) != "ready" &&
+            InstallationSafetyStatus(new MailRoutingInventory("sendmail", "", "", "unavailable"),
+                Audit("sendmail_manual_review")) == "ready" &&
+            InstallationSafetyStatus(none, cleanEmpty) == "ready" &&
+            InstallationSafetyStatus(none, socketEvidence) != "ready" &&
+            InstallationSafetyStatus(postfix, Audit("postfix", "potentially_public",
+                "suspected_unsafe_relay")) != "ready" &&
+            InstallationSafetyStatus(postfix, emptyPorts) != "ready" &&
+            ready.Code == "postfix_active" && ready.PreserveRecommended &&
             !ready.ManualReviewRequired &&
             sidecar.Code == "existing_isolated_relay" &&
             unsafePolicy.Code == "suspected_unsafe_relay" && unsafePolicy.ManualReviewRequired &&

@@ -12,7 +12,25 @@ val OS_ID "${ID:-unknown}"
 val OS_LIKE "${ID_LIKE:-}"
 val OS_VERSION "${VERSION_ID:-unknown}"
 val ARCH "$(uname -m)"
-if has postconf; then
+# Installed Postfix utilities are not evidence that Postfix owns SMTP.
+# When systemd is available, prefer an active Exim/Sendmail over an unused
+# postconf binary. Multiple active MTAs remain UNKNOWN for manual review.
+active_postfix=0
+active_exim=0
+active_sendmail=0
+if has systemctl; then
+  systemctl -q is-active postfix.service 2>/dev/null && active_postfix=1
+  { systemctl -q is-active exim.service 2>/dev/null || \
+    systemctl -q is-active exim4.service 2>/dev/null; } && active_exim=1
+  systemctl -q is-active sendmail.service 2>/dev/null && active_sendmail=1
+fi
+if (( active_postfix + active_exim + active_sendmail > 1 )); then
+  val MTA unknown
+elif (( active_exim == 1 )); then
+  val MTA exim
+elif (( active_sendmail == 1 )); then
+  val MTA sendmail
+elif has postconf; then
   val MTA postfix
   val POSTFIX_RELAY "$(postconf -h relayhost 2>/dev/null || true)"
   val POSTFIX_TRANSPORT "$(postconf -h default_transport 2>/dev/null || true)"

@@ -3341,6 +3341,7 @@ internal sealed class MainForm : Form
         if (inventory.Mta is not ("postfix" or "exim" or "sendmail") ||
             !preserveExistingMail.Checked || allowExisting.Checked)
             throw new InvalidOperationException("Fresh Connector requires Preserve Existing Mail and a known existing primary MTA.");
+        await ConfirmCurrentActiveMtaForInstallationAsync(endpoint, inventory);
         var foreign = ForeignMtaOptions();
         if (inventory.Mta != "postfix" && foreign.Mta != inventory.Mta)
             throw new InvalidOperationException("The selected foreign MTA is not the inspected primary service.");
@@ -3426,6 +3427,7 @@ internal sealed class MainForm : Form
         if (inventory.Mta is not ("postfix" or "exim" or "sendmail") ||
             !preserveExistingMail.Checked || allowExisting.Checked)
             throw new InvalidOperationException("Fresh Direct Send requires Preserve Existing Mail with a known primary MTA.");
+        await ConfirmCurrentActiveMtaForInstallationAsync(endpoint, inventory);
         var foreign = ForeignMtaOptions();
         if (inventory.Mta != "postfix" && foreign.Mta != inventory.Mta)
             throw new InvalidOperationException("The existing Exim/Sendmail inventory has changed.");
@@ -5475,6 +5477,28 @@ internal sealed class MainForm : Form
         WriteLine(result.StdOut);
     }
 
+
+    private async Task ConfirmCurrentActiveMtaForInstallationAsync(
+        SshEndpoint endpoint, MailRoutingInventory installed)
+    {
+        // Postconf binary presence is NOT evidence that Postfix is running.
+        // Re-read services and standard SMTP sockets immediately before any
+        // package install, Postfix restart or route modification.
+        var probe = await SshRemote.ExecuteAsync(endpoint, "bash -s",
+            EmbeddedAssets.BuildExistingSmtpAuditBundle(),
+            timeout: TimeSpan.FromSeconds(100));
+        probe.EnsureSuccess();
+        var liveAudit = ExistingSmtpAudit.Parse(probe.StdOut);
+        string safety = MailServerDiscoveryDecision.InstallationSafetyStatus(
+            installed, liveAudit);
+        if (safety != "ready")
+            throw new InvalidOperationException(
+                "Current active MTA does not safely match the inspected Linux configuration: " +
+                safety + ". No installation performed. Run read-only MTA discovery again.");
+        WriteLine("Active MTA rechecked immediately before Apply; type matches installed MTA. " +
+                  "This is not proof of an Internet-safe relay or Microsoft 365 delivery.");
+    }
+
     private async Task ApplyAsync()
     {
         EnsureRoutingLoaded();
@@ -5505,6 +5529,7 @@ internal sealed class MainForm : Form
             throw new InvalidOperationException("First inspect the existing Linux mail server. No changes made.");
         if (inspectedMail != inventory)
             throw new InvalidOperationException("Postfix configuration changed since inspection, including main.cf/master.cf fingerprint. Inspect again.");
+        await ConfirmCurrentActiveMtaForInstallationAsync(endpoint, inventory);
         if (inventory.Mta is "sendmail" or "exim")
             throw new NotSupportedException("Sendmail/Exim are protected. Isolated gateway for these MTAs is planned but not implemented.");
         if (inventory.Mta == "postfix" && preserveExistingMail.Checked)

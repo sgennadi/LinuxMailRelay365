@@ -1551,3 +1551,19 @@ A service-status probe can be incomplete (e.g. inaccessible systemd or root-only
 Relay files). A missing accessible Relay file is NOT proof of absence. The
 installer still requires its separate up-to-date inventory, backup/approval
 and read-only preflight; no discovery advice bypasses safety gates.
+
+
+### Fail-closed active-MTA recheck immediately before installation
+
+The initial read-only MTA recommendation is **not** permission to install.
+XOAUTH2, fresh Connector and fresh Direct Send installs now independently
+reinspect the active mail services and standard SMTP sockets just before Apply.
+If actual active Postfix/Exim/Sendmail disagrees with the inspected installed
+MTA, or multiple/unknown services are reported, the installer refuses with no
+changes. A suspicion of unsafe relay policy also blocks installation until
+investigated. On a host with no recognized MTA, unexplained SMTP listeners or
+unavailable socket inventory block the fresh primary install.
+
+The lightweight read-only Linux inventory now prioritizes active Exim/Sendmail
+over an unused installed postconf utility when identifying a primary MTA.
+The active-service audit remains authoritative for the final install gate.
