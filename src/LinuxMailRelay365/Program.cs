@@ -12,6 +12,27 @@ internal static class Program
         var checks = new List<(string Name, Func<bool> Run)>
         {
             ("Security plans", SecurityOptionsSelfTest.Run),
+            ("Hardware OAuth reviewed cutover bundle", () =>
+            {
+                var plan = EmbeddedAssets.BuildHardwareOAuthCutoverBundle("sidecar", "plan");
+                var apply = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                    "sidecar", "apply", approvalSha: new string('a', 64));
+                var rollback = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                    "primary", "rollback", backupId: "20261119T100000Z-abcdef012345");
+                bool rejected;
+                try
+                {
+                    EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                        "primary;echo unsafe", "rollback", backupId: "../etc/passwd");
+                    rejected = false;
+                }
+                catch (ArgumentException) { rejected = true; }
+                return plan.Contains("LMR365_HWOAUTH_CUTOVER", StringComparison.Ordinal) &&
+                       plan.Contains("--target sidecar --plan", StringComparison.Ordinal) &&
+                       apply.Contains("--confirm ACTIVATE_HARDWARE_OAUTH", StringComparison.Ordinal) &&
+                       rollback.Contains("--confirm ROLLBACK_HARDWARE_OAUTH", StringComparison.Ordinal) &&
+                       rejected;
+            }),
             ("Hardware OAuth diagnostics bundle", () =>
             {
                 var inventory = EmbeddedAssets.BuildHardwareOAuthDiagnosticBundle(false);
