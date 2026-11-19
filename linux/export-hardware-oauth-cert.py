@@ -166,6 +166,7 @@ def print_inventory(x):
     emit("ACTIVE_SHA256", x["active_sha"])
     emit("STAGED_SHA256", x["stage_sha"])
     emit("ACTIVE_CERT_SHA256", x["active_cert_sha"])
+    emit("ACTIVE_CERT_DER_BASE64", base64.b64encode(x["active_der"]).decode("ascii"))
     emit("CANDIDATE_CERT_SHA256", x["candidate_cert_sha"])
     emit("CANDIDATE_CERT_DER_BASE64", base64.b64encode(x["candidate_der"]).decode("ascii"))
     emit("ACTIVE_SIGNER", "software_pem" if "private_key" in x["active"] else "hardware_other")
@@ -201,7 +202,7 @@ def make_proof(x, object_id, expected_active, expected_stage,
     header = {"typ": "JWT", "alg": "RS256",
               "x5t": b64url(hashlib.sha1(x["active_der"]).digest())}
     payload = {"aud": POP_AUDIENCE, "iss": object_id,
-               "nbf": current - 30, "exp": current + 540}
+               "nbf": current - 30, "exp": current + 570}
     signing_input = (b64url(json.dumps(header, separators=(",", ":")).encode("ascii")) +
                      "." + b64url(json.dumps(payload, separators=(",", ":")).encode("ascii")))
     try:
