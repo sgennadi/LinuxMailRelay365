@@ -58,6 +58,7 @@ class OAuthSenderMapTests(unittest.TestCase):
         self.assertEqual(report["TENANTS"], 1)
         self.assertEqual(report["SENDAS_DIFFERENT_FROM"], 1)
         self.assertEqual(report["POLICY_SIMULATION_TEST_CASES"], 14)
+        self.assertEqual(report["EXISTING_FROM_GUARD_CAPACITY_COMPATIBLE"], "yes")
         self.assertEqual(calls[0], (MAP, AUDIT.MAX_MAP, 0o600, None))
         self.assertEqual(calls[1], (IDENTITY_A, AUDIT.MAX_IDENTITY, 0o640, 333))
         self.assertNotIn("alice@example.org", str(report))
@@ -194,7 +195,8 @@ class OAuthSenderMapTests(unittest.TestCase):
         report = {"MAP_SHA256": "a" * 64, "ENTRIES": 2, "LOCAL_LOGINS": 2,
                   "MAILBOXES": 2, "IDENTITIES": 2, "TENANTS": 1,
                   "SENDAS_DIFFERENT_FROM": 1,
-                  "POLICY_SIMULATION_TEST_CASES": 14}
+                  "POLICY_SIMULATION_TEST_CASES": 14,
+                  "EXISTING_FROM_GUARD_CAPACITY_COMPATIBLE": "yes"
         with mock.patch.object(AUDIT.os, "geteuid", return_value=0), \
              mock.patch.object(AUDIT, "audit", return_value=report) as audited, \
              contextlib.redirect_stdout(io.StringIO()) as out:
@@ -205,6 +207,7 @@ class OAuthSenderMapTests(unittest.TestCase):
         self.assertIn("OAUTH_SENDER_MAP_EXCHANGE_SENDAS_VERIFIED=no", result)
         self.assertIn("OAUTH_SENDER_MAP_POLICY_SIMULATION=passed_offline_only", result)
         self.assertIn("OAUTH_SENDER_MAP_POLICY_SIMULATION_TEST_CASES=14", result)
+        self.assertIn("OAUTH_SENDER_MAP_EXISTING_FROM_GUARD_CAPACITY_COMPATIBLE=yes", result)
         self.assertIn("OAUTH_SENDER_MAP_HEADER_FROM_GUARD_ACTIVE=no", result)
         self.assertIn("OAUTH_SENDER_MAP_MESSAGES_SENT=no", result)
         self.assertIn("OAUTH_SENDER_MAP_POSTFIX_CHANGED=no", result)
