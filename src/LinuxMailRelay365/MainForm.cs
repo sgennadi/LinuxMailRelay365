@@ -1007,7 +1007,7 @@ internal sealed class MainForm : Form
         {
             T("1 · Подключение к Linux", "1 · Linux connection", "1 · חיבור ל-Linux"),
             T("2 · Проверка защиты (необязательно)", "2 · Optional security checks", "2 · בדיקות אבטחה אופציונליות"),
-            T("3 · Microsoft 365", "3 · Microsoft 365", "3 · Microsoft 365"),
+            T("3 · Способ отправки", "3 · Choose delivery method", "3 · בחירת שיטת שליחה"),
             T("4 · Настройка Postfix", "4 · Configure Postfix", "4 · הגדרת Postfix"),
             T("5 · Проверка и обслуживание", "5 · Diagnostics and updates", "5 · אבחון ועדכונים")
         };
@@ -1030,9 +1030,17 @@ internal sealed class MainForm : Form
             3 => T("Перед изменением Postfix создаются резервные копии конфигурации.",
                    "Backups are created before Postfix configuration is changed.",
                    "גיבוי תצורת Postfix נוצר לפני כל שינוי."),
-            _ => T("Тест токена, SMTP, очереди и проверка GitHub Stable/Preview.",
-                   "Token, SMTP, queue, and GitHub Stable/Preview checks.",
-                   "בדיקת אסימון, SMTP, תור ועדכוני GitHub.")
+            _ => mailTransport.SelectedIndex is 1 or 2
+                ? T("Проверка EOP/MX, отдельного SMTP, очереди и обновлений. Без отправки писем.",
+                    "Check EOP/MX, isolated SMTP, queue and updates. No email is sent.",
+                    "בדיקת EOP, שרת SMTP והתור ללא שליחת הודעות.")
+                : oauthSenderMode.SelectedIndex == 1
+                    ? T("XOAUTH2 с несколькими ящиками — только план; отправка заблокирована.",
+                        "Multi-mailbox XOAUTH2 is a blocked planning mode, not an active delivery route.",
+                        "ריבוי תיבות XOAUTH2 הוא תכנון בלבד; המשלוח חסום.")
+                    : T("Проверка OAuth-токена, SMTP, очереди и обновлений.",
+                        "Check OAuth token, SMTP, queue and updates.",
+                        "בדיקת OAuth, SMTP, תור ועדכונים.")
         };
         pageHost.SuspendLayout();
         pageHost.Controls.Clear();
@@ -1766,7 +1774,15 @@ internal sealed class MainForm : Form
                                   "בדיקת שרת הדואר והניתוב"),
                     InspectMailRoutingAsync, false, "check", "preflight");
                 AddAction(page, T("Проверка перед установкой", "Preflight read-only check", "בדיקה לפני התקנה"), PreflightAsync, false, "check", "preflight");
-                AddAction(page, T("Установить и настроить Linux", "Install and configure Linux", "התקנה והגדרה ב-Linux"), ApplyAsync, true, "download", "postfix");
+                if (mailTransport.SelectedIndex == 0)
+                    AddAction(page, T("Установить и настроить XOAUTH2 Postfix",
+                                      "Install and configure XOAUTH2 Postfix",
+                                      "התקנת Postfix עם XOAUTH2"), ApplyAsync, true, "download", "postfix");
+                else
+                    AddLine(page, UiTheme.Text(T(
+                        "Для Connector/Direct Send используйте выше кнопки проверки и установки отдельного Relay. Общая установка XOAUTH2 здесь не предлагается; существующий Relay изменяется только через расширенный EOP Preview/Apply.",
+                        "Connector/Direct Send uses the dedicated NEW isolated gateway Preview/Install actions above. The XOAUTH2 installer is not offered; changes to an existing sidecar require advanced EOP Preview/Apply.",
+                        "עבור Connector/Direct Send יש להשתמש בבדיקות ובהתקנה הייעודיות של הממסר.")));
                 AddAction(page, T("Создать проверенную резервную копию сейчас", "Create verified backup now", "יצירת גיבוי מאומת"),
                     BackupNowAsync, false, "shield", "backup");
                 AddAction(page, T("Показать доступные резервные копии", "List verified backups", "רשימת גיבויים"),
@@ -1815,8 +1831,56 @@ internal sealed class MainForm : Form
                     "Postfix ישלח דואר מקומי דרך XOAUTH2. יש לבדוק תצורה קיימת.")));
                 break;
             case 4:
-                AddField(page, T("Кому отправить тестовое письмо", "Test recipient", "נמען בדיקה"), testRecipient);
-                AddAction(page, T("Проверить токен и очередь", "Check OAuth token and mail queue", "בדיקת אסימון ותור"), DiagnosticsAsync, true, "check", "token");
+                EnsureRoutingLoaded();
+                if (mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 0)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "XOAUTH2: проверка токена не подтверждает доставку письма получателю. После теста проверьте Exchange Online и почтовый ящик.",
+                        "XOAUTH2: a valid token does NOT prove message delivery. Independently verify Exchange Online and the recipient mailbox.",
+                        "אימות OAuth אינו הוכחה למסירת דואר לנמען.")));
+                    AddField(page, T("Кому отправить тестовое письмо", "Test recipient", "נמען בדיקה"), testRecipient);
+                    AddAction(page, T("Проверить OAuth-токен и очередь",
+                                      "Check OAuth token and mail queue",
+                                      "בדיקת אסימון OAuth ותור הדואר"),
+                        DiagnosticsAsync, true, "check", "token");
+                    AddAction(page, T("Отправить тестовое письмо (XOAUTH2)",
+                                      "Send test email (XOAUTH2)",
+                                      "שליחת הודעת בדיקה (XOAUTH2)"),
+                        SendTestAsync, false, "send", "smtp-test");
+                }
+                else if (mailTransport.SelectedIndex == 0)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "Несколько XOAUTH2 mailbox: это только план. Проверка токена и тестовая отправка скрыты, чтобы не отправить письмо от чужого фиксированного ящика. Применение запрещено.",
+                        "Multi-mailbox XOAUTH2 is PLAN ONLY. Token/test-mail actions are hidden to avoid sending through the unrelated fixed mailbox. Deployment remains blocked.",
+                        "ריבוי תיבות XOAUTH2 הוא תכנון בלבד; לא תישלח הודעה.")));
+                    AddAction(page, T("Проверить состояние локального SMTP и очереди (без отправки)",
+                                      "Inspect local SMTP and queue (no mail sent)",
+                                      "בדיקת SMTP ותור ללא שליחה"),
+                        InspectRelayHealthAsync, true, "check", "smtp-health");
+                }
+                else
+                {
+                    AddLine(page, UiTheme.Text(mailTransport.SelectedIndex == 2
+                        ? T("Direct Send: проверьте MX, принятый домен, доступность TCP 25 и очередь. Внешние адресаты не поддерживаются. Проверка не отправляет письма.",
+                            "Direct Send: review MX, accepted domain, outbound TCP 25 and queue. External recipients are blocked. This check sends no mail.",
+                            "Direct Send: בדיקת MX, תחום ופורט 25; שליחה רק לנמענים פנימיים.")
+                        : T("Connector: проверьте MX и TCP 25, действующий Inbound Connector и очередь. Права реального Connector проверяются отдельно. Проверка не отправляет письма.",
+                            "Connector: review MX, TCP 25, authorized tenant Inbound Connector and queue. This does not verify tenant rights or send mail.",
+                            "Connector: בדיקת MX, פורט 25 ומצב המחבר; ללא שליחה.")));
+                    AddAction(page, T("Проверить EOP/MX и соединение TCP 25 (без отправки)",
+                                      "Inspect EOP/MX and outbound TCP 25 (no mail)",
+                                      "בדיקת EOP ופורט 25 ללא שליחה"),
+                        CheckOutboundModeAsync, false, "check", "outbound-mode");
+                    AddAction(page, T("Проверить отдельный SMTP и очередь (без отправки)",
+                                      "Inspect isolated SMTP and queue (no mail)",
+                                      "בדיקת SMTP נפרד ותור ללא שליחה"),
+                        InspectRelayHealthAsync, true, "check", "smtp-health");
+                    AddLine(page, UiTheme.Text(T(
+                        "Для реальной проверки отправьте согласованное тестовое письмо из настроенного SMTP-клиента и подтвердите получение. Мастер не будет подменять этот тест XOAUTH2-письмом.",
+                        "For real delivery acceptance, send an approved test from a configured SMTP client and confirm receipt. The Wizard never substitutes a misleading XOAUTH2 test.",
+                        "יש לשלוח בדיקה מלקוח SMTP מאושר ולאמת קבלה.")));
+                }
                 AddAction(page, T("Сохранить проверочное состояние перед перезагрузкой Linux",
                                   "Record server continuity baseline before Linux reboot",
                                   "שמירת מצב לפני הפעלה מחדש של Linux"),
@@ -1825,7 +1889,6 @@ internal sealed class MainForm : Form
                                   "Verify services and config after a real Linux reboot",
                                   "בדיקת Postfix אחרי אתחול Linux"),
                                   VerifyRebootContinuityAsync, false, "check", "reboot-verify");
-                AddAction(page, T("Отправить тестовое письмо", "Send test email", "שלח הודעת בדיקה"), SendTestAsync, false, "send", "smtp-test");
                 AddAction(page, T("Резервные копии и Restore", "Backup & Restore", "גיבוי ושחזור"),
                     OpenBackupStepAsync, false, "shield", "backup");
                 previewUpdates.Text = T("Включая Preview/RC", "Include Preview/RC", "כולל גרסאות ניסיון");
@@ -5420,6 +5483,11 @@ internal sealed class MainForm : Form
 
     private async Task DiagnosticsAsync()
     {
+        EnsureRoutingLoaded();
+        if (mailTransport.SelectedIndex != 0 || oauthSenderMode.SelectedIndex != 0)
+            throw new NotSupportedException(
+                "OAuth token diagnostics require the active single-mailbox XOAUTH2 route. " +
+                "For EOP or planned multi-mailbox routes, use read-only SMTP health and route checks.");
         var endpoint = Endpoint();
         bool isolated = await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None);
         var result = isolated

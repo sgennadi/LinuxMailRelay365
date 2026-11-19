@@ -129,6 +129,21 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
         self.assertIn("LinuxMailRelay365.linux.oauth-ingress-audit.py", project)
         self.assertIn("Read-only XOAUTH2 ingress comparison bundle", self.program)
 
+    def test_mode_specific_final_step_and_installer_do_not_offer_wrong_route(self):
+        section = self.form.split("            case 4:", 1)[1].split(
+            "        pageHost.ResumeLayout();", 1)[0]
+        self.assertIn("EnsureRoutingLoaded();", section)
+        self.assertIn("mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 0", section)
+        self.assertIn("InspectRelayHealthAsync, true", section)
+        self.assertIn("CheckOutboundModeAsync, false", section)
+        self.assertIn("SendTestAsync, false", section)
+        self.assertIn("Multi-mailbox XOAUTH2 is PLAN ONLY", section)
+        self.assertIn("a valid token does NOT prove message delivery", section)
+        self.assertIn("For real delivery acceptance", section)
+        self.assertIn("OAuth token diagnostics require the active single-mailbox XOAUTH2 route.", self.form)
+        self.assertIn("Install and configure XOAUTH2 Postfix", self.form)
+        self.assertIn("The XOAUTH2 installer is not offered", self.form)
+
     def test_previous_mail_not_silently_reconfigured(self):
         self.assertIn('KeepExisting', self.flow)
         self.assertIn('mailTransport.SelectedIndex != 1', self.form)

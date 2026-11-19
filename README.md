@@ -1507,3 +1507,21 @@ physical host acceptance. See `docs/FINAL_ACCEPTANCE.md`.
 ### Optional SSH host-key fingerprint in password mode
 
 With SSH password authentication, the host-key SHA256 input is **optional**: when blank, the wizard displays the server's presented fingerprint and requires the operator to explicitly approve it before password authentication. Trust is session-only and pins the SHA256 for later connections in the same application session. A manually entered fingerprint is checked strictly with no fallback on mismatch. When possible, independently verify the fingerprint on the Linux console; first-use approval does not itself prevent a first-connection MITM attack. SSH key/agent mode still requires an existing trusted entry in OpenSSH `known_hosts`.
+
+
+### Route-aware Wizard diagnostics and install actions (Preview)
+
+On the final Wizard step, **single-mailbox XOAUTH2** exposes the OAuth token,
+queue and an explicitly requested XOAUTH2 test email. Token validity or local
+SMTP acceptance alone does not verify Microsoft 365 recipient delivery.
+
+For **Connector** and **Direct Send**, the final step instead offers read-only
+EOP MX / outbound TCP 25 connectivity and isolated SMTP health/queue checks.
+No XOAUTH2 test email is offered. Prove delivery separately with an approved
+client SMTP test and recipient confirmation. For **multi-mailbox XOAUTH2**,
+the final step labels the sender mapping PLAN ONLY and never offers test mail.
+
+The main Postfix install button is XOAUTH2-specific. New Connector and
+Direct Send installations use their existing guarded independent-gateway
+Preview/Install actions. Changing an installed EOP route requires Advanced
+SMTP Preview/Apply and its explicit approval path.
