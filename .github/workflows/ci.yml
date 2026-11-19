@@ -60,6 +60,35 @@ jobs:
           python3 -m py_compile linux/verify-sidecar-envelope.py
           python3 linux/verify-sidecar-envelope.py --self-test
           python3 -m unittest discover -v -s tests -p test_sidecar_envelope.py
+  ubuntu-clean-postfix-bootstrap:
+    # Disposable runner: exercises real apt/dpkg/systemd, but never sends mail
+    # and never runs against a user-managed Linux server.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Postfix packages on pristine Ubuntu with primary MTA disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 linux/prepare-clean-postfix.py --check-only --smtp-port 2525 > /tmp/lmr365-clean-preview
+          cat /tmp/lmr365-clean-preview
+          grep -Fxq 'CLEAN_POSTFIX_BOOTSTRAP_READY=yes' /tmp/lmr365-clean-preview
+          plan="$(sed -n 's/^CLEAN_POSTFIX_PLAN_SHA256=//p' /tmp/lmr365-clean-preview)"
+          [[ "$plan" =~ ^[a-f0-9]{64}$ ]]
+          sudo python3 linux/prepare-clean-postfix.py --apply --smtp-port 2525 \
+            --expected-plan-sha256 "$plan" --confirm INSTALL_CLEAN_POSTFIX_PACKAGES \
+            > /tmp/lmr365-clean-result
+          grep -Fxq 'CLEAN_POSTFIX_PACKAGES_PREPARED=yes' /tmp/lmr365-clean-result
+          grep -Fxq 'PRIMARY_POSTFIX_SERVICE=disabled' /tmp/lmr365-clean-result
+          sudo python3 linux/prepare-clean-postfix.py --verify-prepared --smtp-port 2525 \
+            > /tmp/lmr365-clean-verify
+          grep -Fxq 'CLEAN_POSTFIX_PREPARED_VERIFIED=yes' /tmp/lmr365-clean-verify
+          grep -Fxq 'POSTFIX_PRIMARY_STARTED=no' /tmp/lmr365-clean-verify
+          test "$(systemctl is-active postfix.service 2>/dev/null || true)" != active
+          ! ss -H -lnt | grep -E ':(25|465|587|2525)[[:space:]]'
+          echo 'CLEAN_POSTFIX_UBUNTU_PACKAGE_BOOTSTRAP=passed_real_systemd'
+  
   ubuntu-postfix-smoke:
     # Test both production LTS Dovecot 2.3 and updated Dovecot 2.4 grammar.
     strategy:
