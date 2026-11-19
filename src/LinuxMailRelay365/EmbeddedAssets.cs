@@ -165,6 +165,11 @@ internal static class EmbeddedAssets
                 args += " --stage-apply" + stageArgs + " --approve-sha256 " +
                         approvalSha + " --confirm STAGE_HARDWARE_OAUTH";
                 break;
+            case "token-preflight" when backupId is null && approvalSha is not null &&
+                                          Regex.IsMatch(approvalSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant):
+                args += " --token-preflight --approve-sha256 " + approvalSha +
+                        " --confirm VERIFY_STAGED_ENTRA_TOKEN";
+                break;
             case "plan" when approvalSha is null && backupId is null:
                 args += " --plan";
                 break;
