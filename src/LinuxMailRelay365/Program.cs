@@ -12,6 +12,22 @@ internal static class Program
         var checks = new List<(string Name, Func<bool> Run)>
         {
             ("Security plans", SecurityOptionsSelfTest.Run),
+            ("TPM2 OAuth provisioning bundle", () =>
+            {
+                var plan = EmbeddedAssets.BuildTpmOauthProvisionBundle("sidecar", "0x81010001");
+                var apply = EmbeddedAssets.BuildTpmOauthProvisionBundle("primary", "0x8101a001", new string('b', 64));
+                bool invalidRejected;
+                try
+                {
+                    EmbeddedAssets.BuildTpmOauthProvisionBundle("sidecar", "0x81010001;rm -rf /");
+                    invalidRejected = false;
+                }
+                catch (ArgumentException) { invalidRejected = true; }
+                return plan.Contains("LMR365_TPM_PROVISION", StringComparison.Ordinal) &&
+                       plan.Contains("--handle 0x81010001 --plan", StringComparison.Ordinal) &&
+                       apply.Contains("--confirm CREATE_TPM2_OAUTH_KEY", StringComparison.Ordinal) &&
+                       invalidRejected;
+            }),
             ("Hardware OAuth candidate stage bundle", () =>
             {
                 var preview = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
