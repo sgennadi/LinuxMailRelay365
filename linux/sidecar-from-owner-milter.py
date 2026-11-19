@@ -129,11 +129,12 @@ def parse_macro_packet(raw):
     if not isinstance(raw, bytes) or len(raw) < 1:
         raise PolicyError("malformed_milter_macros")
     stage = raw[:1]
-    if len(raw) == 1:
+    if len(raw) == 1 or raw[1:] == b"\x00":
         return stage, {}
+    if not raw.endswith(b"\x00"):
+        raise PolicyError("malformed_milter_macros")
     pieces = raw[1:].split(b"\x00")
-    if pieces[-1:] == [b""]:
-        pieces.pop()
+    pieces.pop()  # The final NUL terminates the final macro value.
     if len(pieces) % 2 or len(pieces) > 96:
         raise PolicyError("malformed_milter_macros")
     result = {}
@@ -143,6 +144,8 @@ def parse_macro_packet(raw):
             value = pieces[i+1].decode("ascii")
         except UnicodeError:
             raise PolicyError("malformed_milter_macro_encoding")
+        if not name or len(name) > 128:
+            raise PolicyError("malformed_milter_macro_name")
         if name in result:
             raise PolicyError("duplicate_milter_macro")
         result[name] = value
