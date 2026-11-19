@@ -12,6 +12,31 @@ internal static class Program
         var checks = new List<(string Name, Func<bool> Run)>
         {
             ("Security plans", SecurityOptionsSelfTest.Run),
+            ("Hardware OAuth candidate stage bundle", () =>
+            {
+                var preview = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                    "sidecar", "stage-plan", stageProvider: "tpm2", stageKeyRef: "handle:0x81000001");
+                var apply = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                    "sidecar", "stage-apply", approvalSha: new string('a', 64),
+                    stageProvider: "tpm2", stageKeyRef: "handle:0x81000001");
+                var pkcs11 = EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                    "primary", "stage-plan", stageProvider: "pkcs11",
+                    stageKeyRef: "pkcs11:object=smtp;type=private");
+                bool rejected;
+                try
+                {
+                    EmbeddedAssets.BuildHardwareOAuthCutoverBundle(
+                        "sidecar", "stage-plan", stageProvider: "pkcs11",
+                        stageKeyRef: "pkcs11:object=smtp;pin-value=123;type=private");
+                    rejected = false;
+                }
+                catch (ArgumentException) { rejected = true; }
+                return preview.Contains("--stage-plan", StringComparison.Ordinal) &&
+                       preview.Contains("--stage-provider tpm2", StringComparison.Ordinal) &&
+                       apply.Contains("--confirm STAGE_HARDWARE_OAUTH", StringComparison.Ordinal) &&
+                       pkcs11.Contains("'pkcs11:object=smtp;type=private'", StringComparison.Ordinal) &&
+                       rejected;
+            }),
             ("Hardware OAuth reviewed cutover bundle", () =>
             {
                 var plan = EmbeddedAssets.BuildHardwareOAuthCutoverBundle("sidecar", "plan");
