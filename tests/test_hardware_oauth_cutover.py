@@ -184,7 +184,7 @@ class HardwareOAuthCutoverTests(unittest.TestCase):
         previous = json.dumps(self.identity).encode("utf-8")
         with mock.patch.object(CUT, "read_checked", return_value=b"existing") as open_file:
             CUT.original_preflight(previous, self.staged, 30, self.directory)
-        checked = [str(x.args[0]) for x in open_file.call_args_list]
+        checked = [str(x[0][0]) for x in open_file.call_args_list]
         self.assertIn(str(self.directory / "app.key"), checked)
         self.assertIn(str(self.directory / "app.crt"), checked)
         with mock.patch.object(CUT, "read_checked",
