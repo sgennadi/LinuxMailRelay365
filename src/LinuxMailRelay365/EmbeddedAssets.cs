@@ -288,7 +288,7 @@ internal static class EmbeddedAssets
         if (mapPath.Length > 256 ||
             !Regex.IsMatch(mapPath, @"\A/etc/linuxmailrelay365/[A-Za-z0-9_./-]{1,240}\.tsv\z",
                            RegexOptions.CultureInvariant) ||
-            mapPath.Split('/').Any(part => part is "." or ".." or ""))
+            mapPath.Split('/').Skip(1).Any(part => part is "." or ".." or ""))
             throw new ArgumentException("Only an absolute /etc/linuxmailrelay365/ sender map TSV path is allowed.");
         return "set -Eeuo pipefail\numask 077\n" +
                "work=$(mktemp -d /tmp/lmr365-sender-audit.XXXXXXXX)\n" +
