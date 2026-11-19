@@ -90,8 +90,9 @@ id postfix >/dev/null 2>&1 && id m365mailer >/dev/null 2>&1 || {
 [ -f "$SOURCE_CERT/app.key" ] && [ -f "$SOURCE_CERT/app.crt" ] || {
   echo 'Prepare and register the Linux certificate first.' >&2; exit 1;
 }
-[ -f "$SCRIPT_DIR/m365_xoauth2_transport.py" ] || {
-  echo 'Bundled XOAUTH2 transport missing.' >&2; exit 1;
+[ -f "$SCRIPT_DIR/m365_xoauth2_transport.py" ] &&
+[ -f "$SCRIPT_DIR/m365_hardware_signer.py" ] || {
+  echo 'Bundled XOAUTH2 transport/hardware helper missing.' >&2; exit 1;
 }
 for target in "$CONF" "$IDENTITY" "$UNIT" "$TRANSPORT"; do
   if [ -e "$target" ] || [ -L "$target" ]; then
@@ -135,6 +136,8 @@ created=1
 install -o root -g m365mailer -m 0640 "$SOURCE_CERT/app.key" "$IDENTITY/app.key"
 install -o root -g m365mailer -m 0644 "$SOURCE_CERT/app.crt" "$IDENTITY/app.crt"
 install -o root -g root -m 0755 "$SCRIPT_DIR/m365_xoauth2_transport.py" "$TRANSPORT"
+install -o root -g root -m 0644 "$SCRIPT_DIR/m365_hardware_signer.py" \
+  /usr/local/libexec/m365_hardware_signer.py
 python3 - "$TENANT" "$CLIENT" "$MAILBOX" "$IDENTITY/app.json" <<'PY'
 import json, sys
 with open(sys.argv[4], 'w', encoding='utf-8') as out:
