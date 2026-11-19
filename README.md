@@ -1311,3 +1311,20 @@ CLI for an **authorized disposable test host**, with a JSON request provided thr
     printf '%s' '{"internal":"internal@example.org","external":"external@outside.net","run_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' | sudo python3 linux/manage-m365-delivery-acceptance.py --target sidecar --apply --approve-sha256 <exact-reviewed-64hex-sha> --confirm SEND_TWO_ACCEPTANCE_TESTS
 
 **Important:** these CLI commands use illustrative addresses only. Replace them with operator-controlled, authorized inboxes. The delivered test is direct from the installed XOAUTH2 transport to Exchange Online and **does not yet validate the local Postfix inbound listener, SASL, queue or application-to-relay mail path**. That full-system delivery acceptance and physical TPM/SELinux Enforcing deployment remain pending before Stable.
+
+
+## TPM2 package and provider diagnostics (Draft)
+
+On RHEL/Oracle/Rocky/Alma 8–10, the Windows Wizard offers a default
+read-only **Automatic TPM2 RPM profile** and a separately approved DNF
+installation from already-configured repositories. It now also offers
+**Inspect OpenSSL 3 and m365mailer TPM access**. This second step loads
+the OpenSSL \`tpm2\` and \`pkcs11\` providers in a restricted environment and
+checks the existing TPM resource manager with a read-only
+\`tpm2_getcap properties-fixed\` command under the service account.
+
+Provider inspection cannot run together with package installation. No
+hardware key is generated, no OAuth signature is made and no mail or
+Entra request is sent. A provider being loadable is **not** proof that
+a configured key works: separate offline PS256 signing, tenant tests,
+SELinux Enforcing and reboot acceptance are required before Stable.
