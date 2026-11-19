@@ -1319,9 +1319,9 @@ On RHEL/Oracle/Rocky/Alma 8–10, the Windows Wizard offers a default
 read-only **Automatic TPM2 RPM profile** and a separately approved DNF
 installation from already-configured repositories. It now also offers
 **Inspect OpenSSL 3 and m365mailer TPM access**. This second step loads
-the OpenSSL \`tpm2\` and \`pkcs11\` providers in a restricted environment and
+the OpenSSL `tpm2` and `pkcs11` providers in a restricted environment and
 checks the existing TPM resource manager with a read-only
-\`tpm2_getcap properties-fixed\` command under the service account.
+`tpm2_getcap properties-fixed` command under the service account.
 
 Provider inspection cannot run together with package installation. No
 hardware key is generated, no OAuth signature is made and no mail or
