@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Security.Cryptography;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Security.Cryptography.X509Certificates;
