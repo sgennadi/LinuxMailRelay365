@@ -102,7 +102,7 @@ class IngressAuditTests(unittest.TestCase):
             ("46500 inet n - n - - smtpd\n", "46500/inet/smtpd_sasl_auth_enable = no\n",
              "per_service_overrides_present"),
             ("46500/inet = 46500 inet n - n - - smtpd\n", "", "unexpected_inet_service"),
-            ("46500 inet n - n - - smtpd\\x00\n", "", "unavailable_or_unsafe"),
+            ("46500 inet n - n - - smtpd\x00\n", "", "unavailable_or_unsafe"),
         )
         for master, overrides, status in scenarios:
             with self.subTest(status=status):
