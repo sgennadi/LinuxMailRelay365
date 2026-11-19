@@ -1275,3 +1275,18 @@ Equivalent CLI, on a separately approved test host:
 Success returns `HARDWARE_CUTOVER_SMTP_STARTTLS_VERIFIED=yes`, `HARDWARE_CUTOVER_SMTP_AUTH_XOAUTH2_VERIFIED=yes`, `HARDWARE_CUTOVER_MAIL_FROM_RCPT_DATA_SENT=no`, `HARDWARE_CUTOVER_ACTIVE_OAUTH_CHANGED=no`, `HARDWARE_CUTOVER_TOKEN_PRINTED=no` and `HARDWARE_CUTOVER_APPLIED=no`. The manager rechecks the exact SHA plan after network validation and refuses any drift.
 
 This preflight establishes a real authenticated SMTP session, **not** the ability to send or deliver mail to a specific internal/external recipient. SMTP RCPT/DATA, queue processing, Exchange policy and recipient acceptance still require a separately approved end-to-end delivery acceptance test. Real tenant and TPM tests remain prerequisites for Stable.
+
+
+## Mandatory Exchange SMTP AUTH gates during TPM/HSM activation
+
+The approved hardware-OAuth **activation** step now repeats the Exchange Online SMTP STARTTLS/XOAUTH2 check **twice**: once using `hardware-staged.json` *before touching* active `app.json`, and once using newly activated `app.json` *after* the atomic swap. The earlier independent SMTP AUTH preflight remains available for troubleshooting and is not trusted as a permanent authorization grant.
+
+Order under the cross-workflow hardware OAuth lock:
+
+1. Recompute reviewed SHA256 plan and validate current/staged identity, signer, public cert, package and runtime dependencies.
+2. Sign with staged TPM/HSM key and obtain a real Entra access token; authenticate to Exchange Online with STARTTLS + XOAUTH2 as the staged sender. No MAIL FROM, RCPT TO, DATA, message or queue mutation.
+3. Recompute SHA256 plan; keep root-only original identity backup; atomically publish the staged identity to active `app.json`.
+4. Re-run signing + Entra token + Exchange SMTP AUTH using the **new active configuration**.
+5. If any post-activation verification fails, restore the exact previous identity by SHA under the same lock. If a third party changed active identity unexpectedly, refuse to overwrite it and report manual recovery from the root-only backup.
+
+Success requires `HARDWARE_CUTOVER_SMTP_STARTTLS_VERIFIED=yes`, `HARDWARE_CUTOVER_SMTP_AUTH_XOAUTH2_VERIFIED=yes`, `HARDWARE_CUTOVER_MAIL_FROM_RCPT_DATA_SENT=no`, and `HARDWARE_CUTOVER_APPLIED=yes`. This does NOT verify recipients, queues, actual delivered mail, host-reboot continuity, TPM hardware provenance or real production tenant policy; those need separately approved acceptance tests. The GUI uses a longer bounded timeout because each Exchange authentication check may need a fresh Entra token.
