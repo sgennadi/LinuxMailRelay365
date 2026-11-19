@@ -89,6 +89,7 @@ internal sealed class MainForm : Form
     private string? reviewedTpmPlanSha;
     private string? reviewedTpmPlanContext;
     private string tpmPlanSummary = "";
+    private string hardwareOAuthSummary = "";
     private string cloudSecuritySummary = "Не проверено";
     private readonly CheckBox previewUpdates = new() { AutoSize = true, Checked = true };
     private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
@@ -453,6 +454,23 @@ internal sealed class MainForm : Form
                                           "Install reviewed missing TPM2 packages...",
                                           "התקנת חבילות TPM2 לאחר אישור"),
                                           InstallTpmDependenciesAsync, false, "shield", "tpm-deps-apply");
+                }
+                if (linuxSecurity is not null)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "OAuth: проверка конфигурации и отдельная офлайн-подпись уже установленным TPM/HSM-ключом. Никаких писем и запросов в Entra.",
+                        "OAuth: inspect installed identity, then optionally test offline signing with an existing TPM/HSM key. No mail or Entra requests.",
+                        "בדיקת זהות OAuth וחתימה מקומית במפתח קיים ללא שליחת דואר.")));
+                    AddAction(page, T("Проверить аппаратную конфигурацию OAuth",
+                                      "Inspect hardware OAuth configuration (read-only)",
+                                      "בדיקת תצורת OAuth ללא שינוי"),
+                                      InspectHardwareOAuthAsync, false, "check", "hardware-oauth-inventory");
+                    AddAction(page, T("Проверить PS256-подпись существующим TPM/HSM...",
+                                      "Verify existing TPM/HSM PS256 signing offline...",
+                                      "בדיקת חתימת TPM/HSM מקומית"),
+                                      VerifyOfflineHardwareOAuthAsync, false, "shield", "hardware-oauth-signing");
+                    if (!string.IsNullOrEmpty(hardwareOAuthSummary))
+                        AddLine(page, UiTheme.Text(hardwareOAuthSummary));
                 }
                 hardwareRequest.Text = T("Запланировать аппаратную защиту ключа (TPM/HSM) — не активировано",
                                          "Plan TPM/HSM-backed key — NOT active",
@@ -2895,6 +2913,7 @@ internal sealed class MainForm : Form
             reviewedTpmPlanSha = null;
             reviewedTpmPlanContext = null;
             tpmPlanSummary = "";
+            hardwareOAuthSummary = "";
             cloudSecuritySummary = "Microsoft 365: не проверено. Проверка выполняется только по запросу.";
         }
         finally { securityLoading = false; }
@@ -2919,6 +2938,47 @@ internal sealed class MainForm : Form
         linuxSecurity = LinuxSecurityInventory.Parse(result.StdOut);
         WriteLine(linuxSecurity.SummaryRu());
         WriteLine("Presence of TPM/HSM is NOT proof that the key is nonexportable or supported by OAuth transport.");
+        RenderPage();
+    }
+
+    private async Task InspectHardwareOAuthAsync()
+    {
+        if (linuxSecurity is null)
+            throw new InvalidOperationException("Run Linux security discovery first.");
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildHardwareOAuthDiagnosticBundle(false), TimeSpan.FromSeconds(90));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("HARDWARE_OAUTH_INSPECTION_VERSION=1", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_OAUTH_MODE=inventory_only", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_OAUTH_ENTRA_CONTACTED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_OAUTH_MAIL_CONFIG_CHANGED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Hardware identity inventory returned an incomplete report.");
+        hardwareOAuthSummary = result.StdOut.Trim();
+        WriteLine(hardwareOAuthSummary);
+        RenderPage();
+    }
+
+    private async Task VerifyOfflineHardwareOAuthAsync()
+    {
+        if (linuxSecurity is null)
+            throw new InvalidOperationException("Run Linux security discovery first.");
+        if (MessageBox.Show(this, T(
+            "Проверка использует уже подготовленный ключ TPM/HSM для локальной PS256-подписи. Может потребоваться доступ к аппаратному устройству или PIN, но существующий ключ, почта, Postfix и Entra не изменяются. Выполнить?",
+            "This test uses an existing TPM/HSM key for offline PS256 signing. Device/PIN access may be required, but no new key is created and no mail, Postfix or Entra change is made. Continue?",
+            "הבדיקה משתמשת במפתח קיים לחתימה מקומית, ללא שינוי בדואר או ב-Entra. להמשיך?"),
+            "LinuxMailRelay365 | Offline TPM/HSM signing",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildHardwareOAuthDiagnosticBundle(true), TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("HARDWARE_OAUTH_INSPECTION_VERSION=1", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_OAUTH_MODE=offline_signing", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_OAUTH_ENTRA_CONTACTED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_OAUTH_MAIL_CONFIG_CHANGED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Hardware OAuth signing probe returned an incomplete report.");
+        hardwareOAuthSummary = result.StdOut.Trim();
+        WriteLine(hardwareOAuthSummary);
+        WriteLine("Provider PS256 signature check is local only. TPM provenance, restart continuity and Microsoft 365 acceptance require independent evidence.");
         RenderPage();
     }
 
