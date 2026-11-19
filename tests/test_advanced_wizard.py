@@ -30,6 +30,18 @@ class AdvancedWizardTests(unittest.TestCase):
         self.assertIn("ApplyAsync, true",gui)
         self.assertIn("CheckNetworkFirewallAsync, false",gui)
 
+    def test_tpm_provider_diagnostics_are_read_only_and_separate(self):
+        gui = (ROOT/"src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
+        bundle = (ROOT/"src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
+        self.assertIn("InspectTpmProviderAsync, false", gui)
+        self.assertIn("Inspect OpenSSL 3 and m365mailer TPM access (read-only)", gui)
+        self.assertIn("BuildTpmDependenciesBundle(profile, inspectProvider: true)", gui)
+        self.assertIn("TPM_DEPS_DIAG_PS256_SIGNATURE_VERIFIED=no", gui)
+        self.assertIn("Provider loading is not PS256 proof.", gui)
+        self.assertIn("bool inspectProvider = false", bundle)
+        self.assertIn('args += " --inspect-provider"', bundle)
+        self.assertIn("TPM provider inspection cannot apply packages.", bundle)
+
     def test_no_hardcoded_2525_for_existing_hebrew_postfix_summary(self):
         gui=(ROOT/"src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
         self.assertNotIn("בפורט 2525 ללא שינוי בתצורה הקיימת",gui)
