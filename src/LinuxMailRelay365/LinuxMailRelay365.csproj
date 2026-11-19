@@ -32,6 +32,7 @@
     <EmbeddedResource Include="../../linux/m365_hardware_signer.py" LogicalName="LinuxMailRelay365.linux.hardware-signer.py" />
     <EmbeddedResource Include="../../linux/manage-tpm-dependencies.py" LogicalName="LinuxMailRelay365.linux.tpm-dependencies.py" />
     <EmbeddedResource Include="../../linux/verify-hardware-oauth.py" LogicalName="LinuxMailRelay365.linux.hardware-oauth-diagnostics.py" />
+    <EmbeddedResource Include="../../linux/manage-hardware-oauth-cutover.py" LogicalName="LinuxMailRelay365.linux.hardware-oauth-cutover.py" />
     <EmbeddedResource Include="../../linux/probe-linux.sh" LogicalName="LinuxMailRelay365.linux.security-probe.sh" />
     <EmbeddedResource Include="../../linux/mail-config-recovery.sh" LogicalName="LinuxMailRelay365.linux.recovery.sh" />
     <EmbeddedResource Include="../../linux/sidecar-config-recovery.py" LogicalName="LinuxMailRelay365.linux.sidecar-config-recovery.py" />
