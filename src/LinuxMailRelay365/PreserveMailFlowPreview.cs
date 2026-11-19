@@ -8,7 +8,10 @@ namespace LinuxMailRelay365;
 internal sealed record PreserveFlowSnapshot(
     string LinuxHost, string Listener, string SmtpPort, string Mailbox,
     string TenantId, string TrustedCidrs, string? ExistingMta, bool PublicRequested,
-    bool ConnectorPlanned = false, bool SenderPolicyPlanned = false, string VerifiedDomain = "")
+    bool ConnectorPlanned = false, bool SenderPolicyPlanned = false, string VerifiedDomain = "",
+    string TransportMode = "oauth2", string OAuthSenderMode = "fixed-mailbox",
+    string OutboundMx = "", string EopFixedSender = "",
+    bool KeepExisting = true, string SenderPolicy = "fixed-mailbox")
 {
     private static string OneLine(string? value, int limit = 120)
     {
@@ -17,7 +20,23 @@ internal sealed record PreserveFlowSnapshot(
     }
 
     internal bool LocalOnly => string.IsNullOrWhiteSpace(Listener);
-    internal bool NotDeployablePlan => ConnectorPlanned || SenderPolicyPlanned;
+    // Connector and Direct Send ARE implemented as separately reviewed EOP routes.
+    // Only the multi-mailbox OAuth option is not deployable yet.
+    internal bool NotDeployablePlan => MailRoutingGuidance.IsUnimplementedOAuthMultiSender(
+        TransportMode, OAuthSenderMode);
+    internal string MailRouteTitle => TransportMode switch
+    {
+        "connector" => "M365 CONNECTOR · TCP 25",
+        "direct-send" => "DIRECT SEND · INTERNAL",
+        _ => "XOAUTH2 · TCP 587"
+    };
+    internal string MailRouteHint => TransportMode switch
+    {
+        "connector" => "Authorized Inbound Connector",
+        "direct-send" => "Internal recipients only",
+        _ => NotDeployablePlan ? "Multiple mailboxes: PLAN ONLY" : DisplayMailbox
+    };
+    internal string OutboundDescription => MailRoutingGuidance.Outbound(TransportMode, OutboundMx);
     internal string ServerForClient => LocalOnly ? "127.0.0.1" : OneLine(Listener);
     internal string DisplayHost => string.IsNullOrWhiteSpace(LinuxHost)
         ? "(not entered)" : OneLine(LinuxHost);
@@ -30,7 +49,7 @@ internal sealed record PreserveFlowSnapshot(
     internal string ExistingStatus => ExistingMta switch
     {
         "postfix" => "Postfix detected",
-        "sendmail" or "exim" => "Existing MTA not supported by sidecar",
+        "sendmail" or "exim" => "Detected external MTA: guarded coexistence requires review",
         "none" => "No existing MTA detected",
         "unknown" => "MTA state uncertain",
         _ => "MTA not inspected"
@@ -38,26 +57,51 @@ internal sealed record PreserveFlowSnapshot(
 
     internal string ClientInstructions(int lang)
     {
+        string route = MailRoutingGuidance.Explain(TransportMode, SenderPolicy,
+            OAuthSenderMode, Mailbox, OutboundMx, EopFixedSender,
+            VerifiedDomain, SmtpPort, KeepExisting, lang);
         if (NotDeployablePlan)
-        {
-            string domain = string.IsNullOrWhiteSpace(VerifiedDomain)
-                ? "(not specified)" : OneLine(VerifiedDomain);
-            return lang switch
+            return route + "\r\n" + (lang switch
             {
-                1 => "LinuxMailRelay365 | NOT READY TO DEPLOY\r\n" +
-                     "Selected: Microsoft 365 Connector, Direct Send or sender-policy plan NOT DEPLOYED.\r\n" +
-                     "Linux: " + DisplayHost + " | SMTP port: " + DisplayPort +
-                     " | Verified domain: " + domain + "\r\n" +
-                     "Preserve Existing Mail means old clients stay on existing SMTP; do not switch clients to this planned route.\r\n",
-                2 => "LinuxMailRelay365 | תצורה בתכנון, עדיין לא ניתנת להתקנה\r\n" +
-                     "שרת: " + DisplayHost + " | יציאה: " + DisplayPort +
-                     " | דומיין: " + domain + "\r\nאין לשנות הגדרות של יישומים קיימים.\r\n",
-                _ => "LinuxMailRelay365 | ТОЛЬКО ПЛАН, УСТАНОВКА НЕДОСТУПНА\r\n" +
-                     "Выбран режим Microsoft 365 Connector или обработки отправителя, ещё не реализованный в этом Preview.\r\n" +
-                     "Linux: " + DisplayHost + " | Порт SMTP: " + DisplayPort +
-                     " | Проверенный домен: " + domain + "\r\n" +
-                     "Существующие приложения остаются на старом SMTP. НЕ переключайте клиентов на этот маршрут.\r\n"
-            };
+                0 => "НЕ ПЕРЕКЛЮЧАЙТЕ ПРИЛОЖЕНИЯ. Многопользовательский XOAUTH2 только планируется: установка и отправка не разрешены.\r\n",
+                2 => "אין לעבור למסלול זה לפני אימות הרשאות ושולחים.\r\n",
+                _ => "DO NOT SWITCH APPLICATIONS. Multi-mailbox XOAUTH2 cannot be installed or used yet.\r\n"
+            });
+        if (TransportMode is "connector" or "direct-send")
+        {
+            string host = ServerForClient;
+            string scope = TransportMode == "direct-send"
+                ? (lang == 0 ? "Только внутренние получатели Microsoft 365.\r\n"
+                    : lang == 2 ? "רק נמענים פנימיים ב-Microsoft 365.\r\n"
+                    : "Microsoft 365 internal recipients ONLY.\r\n")
+                : (lang == 0 ? "Внутренние и внешние получатели (только через проверенный Connector).\r\n"
+                    : lang == 2 ? "נמענים פנימיים וחיצוניים בכפוף ל-Connector תקין.\r\n"
+                    : "Internal and external recipients (verified Connector required).\r\n");
+            return route + "\r\n" + (lang switch
+            {
+                0 => "ПАРАМЕТРЫ ДЛЯ ПРИЛОЖЕНИЙ (план; установка ещё не проверена):\r\n" +
+                     "  SMTP Linux: " + host + ":" + DisplayPort + "\r\n" +
+                     "  Исходящий Microsoft 365: " + OutboundDescription + "\r\n" +
+                     "  Отправитель: " + MailRoutingGuidance.SenderResult(
+                         TransportMode, SenderPolicy, OAuthSenderMode, Mailbox, EopFixedSender, lang) + "\r\n" +
+                     "  Отдельная очередь: /var/spool/linuxmailrelay365-sidecar\r\n" +
+                     "  SMTP AUTH/STARTTLS: включить и проверить отдельно; не предполагать их наличие.\r\n",
+                2 => "הגדרות SMTP מוצעות: " + host + ":" + DisplayPort +
+                     "\r\nיעד Microsoft 365: " + OutboundDescription +
+                     "\r\nיש לבדוק SMTP AUTH/STARTTLS לפני השימוש.\r\n",
+                _ => "PROPOSED CLIENT SETTINGS (not verified installed):\r\n" +
+                     "  Linux SMTP: " + host + ":" + DisplayPort + "\r\n" +
+                     "  Outbound Microsoft 365: " + OutboundDescription + "\r\n" +
+                     "  Sender: " + MailRoutingGuidance.SenderResult(
+                         TransportMode, SenderPolicy, OAuthSenderMode, Mailbox, EopFixedSender, lang) + "\r\n" +
+                     "  Dedicated queue: /var/spool/linuxmailrelay365-sidecar\r\n" +
+                     "  SMTP AUTH/STARTTLS: enable and verify separately; never assume enabled.\r\n"
+            }) + scope + (lang switch
+            {
+                0 => "Сначала проверьте установленную конфигурацию, права отправителей и реальную доставку. Не переключайте старые программы автоматически.\r\n",
+                2 => "יש לאמת את המסלול וההרשאות לפני שינוי היישומים.\r\n",
+                _ => "Verify installed route, sender rights and real delivery first. Never silently switch existing apps.\r\n"
+            });
         }
         string listener = ServerForClient;
         string port = DisplayPort;
@@ -135,7 +179,19 @@ internal sealed record PreserveFlowSnapshot(
             !instructions.Contains("linux-alerts@example.org") ||
             !instructions.Contains("preserved", StringComparison.OrdinalIgnoreCase)) return false;
         var local = sample with { Listener = "", SmtpPort = "2525", Mailbox = "" };
-        return local.ServerForClient == "127.0.0.1" &&
+        var eop = sample with { TransportMode = "connector",
+            OutboundMx = "example-org.mail.protection.outlook.com",
+            EopFixedSender = "alerts@example.org", SenderPolicy = "preserve-domain" };
+        var direct = sample with { TransportMode = "direct-send",
+            OutboundMx = "example-org.mail.protection.outlook.com",
+            EopFixedSender = "alerts@example.org" };
+        var multiple = sample with { OAuthSenderMode = "authorized-multiple-mailboxes" };
+        return eop.ClientInstructions(1).Contains("Connector") &&
+               eop.ClientInstructions(1).Contains("external recipients") &&
+               direct.ClientInstructions(1).Contains("internal recipients ONLY") &&
+               !direct.ClientInstructions(1).Contains("external recipients (verified Connector") &&
+               multiple.NotDeployablePlan && multiple.ClientInstructions(1).Contains("DO NOT SWITCH") &&
+               local.ServerForClient == "127.0.0.1" &&
                local.ClientInstructions(0).Contains("НА ЭТОМ Linux") &&
                local.DisplayMailbox == "(not selected)" &&
                local.ClientInstructions(1).Contains("127.0.0.1") &&
@@ -197,22 +253,34 @@ internal sealed class PreserveMailFlowPreview : Control
             DrawText(graphics, language switch { 1 => "NOT DEPLOYED", 2 => "טרם הותקן",
                 _ => "НЕ ПОДТВЕРЖДЕНО" }, new RectangleF(699, 12, 170, 23), 9, UiTheme.Muted);
 
-            DrawCard(graphics, 18, 48, false, language switch
-                { 1 => "EXISTING APPLICATIONS", 2 => "יישומים קיימים", _ => "СУЩЕСТВУЮЩИЕ ПРОГРАММЫ" },
+            DrawCard(graphics, 18, 48, false, state.KeepExisting
+                ? language switch { 1 => "EXISTING APPLICATIONS", 2 => "יישומים קיימים", _ => "СУЩЕСТВУЮЩИЕ ПРОГРАММЫ" }
+                : language switch { 1 => "EXISTING APPS · RISK", 2 => "יישומים קיימים", _ => "СТАРЫЕ ПРОГРАММЫ · РИСК" },
                 language switch { 1 => "Existing SMTP settings", 2 => "הגדרות קודמות", _ => "Старые настройки SMTP" },
-                language switch { 1 => "No client changes", 2 => "ללא שינוי", _ => "Без изменений" });
+                state.KeepExisting
+                    ? language switch { 1 => "No client changes", 2 => "ללא שינוי", _ => "Без изменений" }
+                    : language switch { 1 => "Replacement requires approval", 2 => "נדרש אישור", _ => "Замена требует согласия" });
             DrawArrow(graphics, 270, 97, UiTheme.Muted);
             DrawCard(graphics, 322, 48, false, language switch
                 { 1 => "PRIMARY MAIL SERVER", 2 => "שרת הדואר הקיים", _ => "ДЕЙСТВУЮЩИЙ MTA" },
                 state.ExistingStatus,
-                language switch { 1 => "Current config and queue", 2 => "תצורה ותור קיימים",
-                    _ => "Текущие маршруты и очередь" });
+                state.KeepExisting
+                    ? language switch { 1 => "Current config and queue", 2 => "תצורה ותור קיימים",
+                        _ => "Текущие маршруты и очередь" }
+                    : language switch { 1 => "Backup before changes", 2 => "גיבוי לפני שינויים",
+                        _ => "Перед заменой — backup" });
             DrawArrow(graphics, 574, 97, UiTheme.Muted);
             DrawCard(graphics, 626, 48, false, language switch
                 { 1 => "CURRENT DESTINATIONS", 2 => "יעדים קיימים", _ => "ПРЕЖНЯЯ ДОСТАВКА" },
-                language switch { 1 => "Unchanged routing", 2 => "ניתוב ללא שינוי", _ => "Без изменения маршрутов" },
-                language switch { 1 => "No rerouting to M365", 2 => "אין העברה אוטומטית",
-                    _ => "Не переключаем в 365" });
+                state.KeepExisting
+                    ? language switch { 1 => "Unchanged routing", 2 => "ניתוב ללא שינוי", _ => "Без изменения маршрутов" }
+                    : language switch { 1 => "REPLACE: extra review", 2 => "דרוש אישור נוסף",
+                        _ => "ЗАМЕНА: нужна проверка" },
+                state.KeepExisting
+                    ? language switch { 1 => "No rerouting to M365", 2 => "אין העברה אוטומטית",
+                        _ => "Не переключаем в 365" }
+                    : language switch { 1 => "Service interruption risk", 2 => "סיכון להפרעה",
+                        _ => "Риск простоя почты" });
 
             DrawCard(graphics, 18, 148, true, language switch
                 { 1 => "NEW APPLICATIONS", 2 => "יישומים חדשים", _ => "НОВЫЕ ПРИЛОЖЕНИЯ" },
@@ -227,14 +295,16 @@ internal sealed class PreserveMailFlowPreview : Control
                     _ => "Отдельная служба и порт" });
             DrawArrow(graphics, 574, 197, UiTheme.Accent);
             DrawCard(graphics, 626, 148, true,
-                state.NotDeployablePlan ? "EOP · ADVANCED ROUTE" : "MICROSOFT 365",
-                state.NotDeployablePlan ? "Check Advanced SMTP" : state.DisplayMailbox,
+                state.MailRouteTitle,
+                state.MailRouteHint,
                 state.NotDeployablePlan
-                    ? (language == 1 ? "Do not switch clients" : "Не переключать клиентов")
-                    : (language == 1 ? "Recipient is preserved" : "Получатель сохраняется"));
+                    ? (language == 1 ? "PLAN ONLY · not deployable" : "ТОЛЬКО ПЛАН")
+                    : state.TransportMode == "direct-send"
+                    ? (language == 1 ? "Internal recipients ONLY" : "Только внутри M365")
+                    : (language == 1 ? "Recipients preserved" : "Получатель сохраняется"));
 
-            DrawText(graphics, (language == 1 ? "Linux: " : "Linux: ") + state.DisplayHost +
-                "    |    Tenant: " + state.DisplayTenant,
+            DrawText(graphics, "Linux: " + state.DisplayHost +
+                "    |    Outbound: " + state.OutboundDescription,
                 new RectangleF(18, 251, 694, 20), 9, UiTheme.Muted);
             if (state.PublicRequested)
                 DrawText(graphics, language == 1 ? "PUBLIC SMTP: BLOCKED" : "PUBLIC SMTP: ЗАБЛОКИРОВАН",
