@@ -18,32 +18,56 @@ GUARD_UNIT=linuxmailrelay365-from-guard.service
 DOVECOT_UNIT=linuxmailrelay365-smtp-auth.service
 PRIMARY=/etc/postfix
 CA=/etc/linuxmailrelay365-ci-smtp/next-cert.pem
-sudo test -f "$CA" || exit 2
-sudo systemctl is-active --quiet postfix
-sudo systemctl is-active --quiet "$UNIT"
-sudo systemctl is-active --quiet "$DOVECOT_UNIT"
-sudo systemctl is-active --quiet "$GUARD_UNIT"
-test "$(sudo postconf -c "$CONF" -h inet_interfaces)" = 127.0.0.1
-test "$(sudo postconf -c "$CONF" -h smtpd_relay_restrictions)" = "permit_sasl_authenticated, reject"
-test "$(sudo postconf -c "$CONF" -h smtpd_sasl_auth_enable)" = yes
-test "$(sudo postconf -c "$CONF" -h smtpd_tls_security_level)" = encrypt
-test "$(sudo postconf -c "$CONF" -h smtpd_milters)" = \
+require_unit() {
+  if ! sudo systemctl is-active --quiet "$1"; then
+    echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=inactive_$1" >&2
+    exit 2
+  fi
+}
+require_setting() {
+  local name="$1" expected="$2" actual
+  actual="$(sudo postconf -c "$CONF" -h "$name")" || {
+    echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=unreadable_$name" >&2
+    exit 2
+  }
+  if [ "$actual" != "$expected" ]; then
+    echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=unexpected_$name" >&2
+    exit 2
+  fi
+}
+sudo test -f "$CA" || { echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=missing_CA" >&2; exit 2; }
+require_unit postfix
+require_unit "$UNIT"
+require_unit "$DOVECOT_UNIT"
+require_unit "$GUARD_UNIT"
+echo "SMTP_AUTH_GUARD_PRECHECK_SERVICES=pass"
+require_setting inet_interfaces 127.0.0.1
+require_setting smtpd_relay_restrictions "permit_sasl_authenticated, reject"
+require_setting smtpd_sasl_auth_enable yes
+require_setting smtpd_tls_security_level encrypt
+require_setting smtpd_milters \
   unix:/run/linuxmailrelay365-from-guard/from-guard.sock
-test "$(sudo postconf -c "$CONF" -h milter_default_action)" = tempfail
-test "$(sudo postconf -c "$CONF" -h default_transport)" = \
+require_setting milter_default_action tempfail
+echo "SMTP_AUTH_GUARD_PRECHECK_INGRESS=pass"
+require_setting default_transport \
   "smtp:[example-org.mail.protection.outlook.com]:25"
-test "$(sudo postconf -c "$CONF" -h relay_transport)" = \
+require_setting relay_transport \
   "smtp:[example-org.mail.protection.outlook.com]:25"
-test "$(sudo postconf -c "$CONF" -h relayhost)" = \
+require_setting relayhost \
   "[example-org.mail.protection.outlook.com]:25"
-# No secondary route may bypass the loopback-only capture. Check BEFORE any
-# modification and refuse unknown routing constructs. Never run on real hosts.
 for setting in transport_maps sender_dependent_relayhost_maps \
   smtp_fallback_relay smtp_tls_policy_maps; do
-  test -z "$(sudo postconf -c "$CONF" -h "$setting")"
+  require_setting "$setting" ""
 done
-initial_queue="$(sudo postqueue -c "$CONF" -j)"
-test -z "$initial_queue"
+echo "SMTP_AUTH_GUARD_PRECHECK_OUTBOUND=pass"
+initial_queue="$(sudo postqueue -c "$CONF" -j)" || {
+  echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=unreadable_queue" >&2; exit 2;
+}
+if [ -n "$initial_queue" ]; then
+  echo "SMTP_AUTH_GUARD_PRECHECK_ERROR=queue_not_empty" >&2
+  exit 2
+fi
+echo "SMTP_AUTH_GUARD_PRECHECK_QUEUE=empty"
 primary_sha="$(sudo sha256sum "$PRIMARY/main.cf" "$PRIMARY/master.cf")"
 primary_queue="$(sudo postconf -h queue_directory)"
 main_sha="$(sudo sha256sum "$CONF/main.cf" | awk '{print $1}')"
