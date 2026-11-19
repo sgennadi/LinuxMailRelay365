@@ -2491,6 +2491,8 @@ internal sealed class MainForm : Form
             ["OAUTH_SENDER_MAP_IDENTITIES"] = @"\A[1-9][0-9]{0,3}\z",
             ["OAUTH_SENDER_MAP_TENANTS"] = @"\A[1-9][0-9]{0,3}\z",
             ["OAUTH_SENDER_MAP_SENDAS_DIFFERENT_FROM"] = @"\A[0-9]{1,4}\z",
+            ["OAUTH_SENDER_MAP_POLICY_SIMULATION"] = @"\Apassed_offline_only\z",
+            ["OAUTH_SENDER_MAP_POLICY_SIMULATION_TEST_CASES"] = @"\A[1-9][0-9]{0,4}\z",
             ["OAUTH_SENDER_MAP_LOCAL_SMTP_LOGIN_VERIFIED"] = @"\Ano\z",
             ["OAUTH_SENDER_MAP_ENVELOPE_AUTHORIZATION_ACTIVE"] = @"\Ano\z",
             ["OAUTH_SENDER_MAP_HEADER_FROM_GUARD_ACTIVE"] = @"\Ano\z",
@@ -2519,6 +2521,7 @@ internal sealed class MainForm : Form
             throw new InvalidDataException("Incomplete multi-mailbox audit report.");
         foreach (string key in allowed.Keys)
             WriteLine(key + "=" + values[key]);
+        WriteLine("Offline policy simulation passed: login, envelope sender, configured mailbox and From matching / negative spoofing tests. It is NOT real SMTP AUTH, installed Milter, Exchange Send As or delivery. No route was enabled.");
         WriteLine("Structural map review passed; sender authentication, header From ownership, Entra Exchange permissions and SMTP delivery remain NOT VERIFIED. No route was enabled.");
     }
 
