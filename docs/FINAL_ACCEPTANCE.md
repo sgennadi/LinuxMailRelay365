@@ -355,3 +355,36 @@ Explicit approval should produce at most one small fixed message per recipient, 
 Successful SMTP submissions prove only Exchange **submission acceptance**. Locate both trace IDs in Microsoft 365 Message Trace, inspect each inbox or quarantine, record final acceptance/delivery/bounce/deferral (from recipient/Exchange evidence, not inferred from SMTP 250), check mail content, and verify there was no SMTP relay abuse, unexpected sender, Postfix config change, MTA restart, new firewall opening or secret leakage.
 
 Complete a separate end-to-end test through the isolated custom-port Postfix listener, actual client SMTP AUTH/STARTTLS, local queue/retries, transport delivery, and recipient's inbox. This additional test is not provided by direct OAuth transport acceptance and blocks Stable.
+
+
+## Automatic TPM2 RPM profile acceptance (Draft)
+
+When the Linux security probe finds TPM 2.0, the Windows Wizard now defaults
+to **Automatic TPM2 RPM profile** for RHEL, Oracle, Rocky and Alma 8-10. A
+read-only SHA256 plan is mandatory before a separate typed, approved DNF
+transaction. The app never enables third-party repositories, downloads RPMs
+directly from arbitrary URLs, builds a provider unattended, clears a TPM,
+evicts occupied handles or modifies Postfix.
+
+* RHEL-family 10: prefer the native tpm2-openssl RPM profile.
+* RHEL-family 9: only select the OpenSSL3 PKCS#11 path automatically if
+  pkcs11-provider is **already installed**. Otherwise install only approved
+  TPM2 utilities; selecting a provider requires independent repository/source
+  review. Explicit administrator selection may fail on missing vendor RPMs.
+* RHEL-family 8: only auto-select TPM2 utilities. Its default OpenSSL 1.1
+  environment does not satisfy the hardware OAuth OpenSSL3 provider.
+* /dev/tpm0 alone is not equivalent to /dev/tpmrm0. Report the kernel resource
+  manager separately and block physical provisioning until it is verified.
+* The reviewed SHA binds the requested and selected profile, package
+  inventory, TPM node and the actual /usr/bin/tpm2_getcap executable check.
+  After installation, missing tpm2_getcap must report an error even if RPM
+  inventory indicates success.
+
+Read-only command on an approved test host:
+
+    sudo python3 linux/manage-tpm-dependencies.py --profile auto
+
+A successful package installation does **not** prove the OpenSSL TPM provider
+loads, that the service identity has hardware access, TPM provenance or
+attestation, key usability after reboot, or Microsoft 365 SMTP delivery.
+These remain independent acceptance gates.
