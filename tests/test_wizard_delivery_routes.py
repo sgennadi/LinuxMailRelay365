@@ -102,6 +102,26 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
         self.assertIn("LMR365_OAUTH_MAP_AUDIT", assets)
         self.assertIn("Only an absolute /etc/linuxmailrelay365/", assets)
 
+    def test_oauth_ingress_inspection_is_read_only_and_stays_non_deployable(self):
+        project = (ROOT/"src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+        assets = (ROOT/"src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
+        self.assertIn("Compare sender map with installed SMTP AUTH and From Guard (read-only)", self.form)
+        self.assertIn("InspectOAuthIngressAsync, false", self.form)
+        self.assertIn("private async Task InspectOAuthIngressAsync()", self.form)
+        self.assertIn("BuildOAuthIngressAuditBundle(auditedPath)", self.form)
+        self.assertIn('["OAUTH_INGRESS_MULTI_MAILBOX_ENABLED"] = @"\\Ano\\z"', self.form)
+        self.assertIn('["OAUTH_INGRESS_REAL_SMTP_LOGIN_VERIFIED"] = @"\\Ano\\z"', self.form)
+        self.assertIn('["OAUTH_INGRESS_M365_SENDAS_VERIFIED"] = @"\\Ano\\z"', self.form)
+        self.assertIn("SMTP host, sender policy or map changed while inspecting", self.form)
+        self.assertIn("ingress_config_consistent_not_live_verified", self.form)
+        self.assertIn("oauthIngressAuditSummary", self.form)
+        self.assertIn('private string oauthIngressAuditSummary = "";', self.form)
+        self.assertIn("BuildOAuthIngressAuditBundle(string mapPath)", assets)
+        self.assertIn("LMR365_OAUTH_INGRESS_AUDIT", assets)
+        self.assertIn("LMR365_OAUTH_SENDER_MAP_LIB", assets)
+        self.assertIn("LinuxMailRelay365.linux.oauth-ingress-audit.py", project)
+        self.assertIn("Read-only XOAUTH2 ingress comparison bundle", self.program)
+
     def test_previous_mail_not_silently_reconfigured(self):
         self.assertIn('KeepExisting', self.flow)
         self.assertIn('mailTransport.SelectedIndex != 1', self.form)
