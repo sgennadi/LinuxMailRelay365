@@ -1259,3 +1259,19 @@ Equivalent CLI for an explicitly authorized test host:
     sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --token-preflight --approve-sha256 <reviewed-plan-sha256> --confirm VERIFY_STAGED_ENTRA_TOKEN
 
 **No token is printed or saved.** An unsuccessful signature, invalid Entra certificate, network error or changed plan returns non-success without changing `app.json`. This preflight **does not** confirm Exchange Online SMTP authorization, mailbox permissions or recipient delivery. The later guarded activation repeats both checks with a fresh token, so a previously passing result cannot bypass current validation. Current physical TPM acceptance and live tenant SMTP delivery remain mandatory before Stable.
+
+
+## Pre-cutover Exchange Online SMTP AUTH validation (no mail sent)
+
+Even if a staged TPM/HSM signing key gets an Entra token, Microsoft 365 SMTP may still reject the app due to missing Exchange service-principal permission, SMTP AUTH being disabled or a mailbox mapping issue. The Wizard therefore offers **Test Exchange SMTP AUTH XOAUTH2 (no mail sent)** separately from the staged Entra token check and the active OAuth cutover.
+
+The operator first reviews the unchanged `hardware-staged.json` cutover SHA plan. A second approval connects to `smtp.office365.com:587` using TLS with standard server certificate verification, negotiates STARTTLS, confirms `AUTH XOAUTH2` is offered, and authenticates as the configured fixed mailbox using a fresh Entra token signed by the hardware key. The SMTP session then closes. It explicitly does **not** issue MAIL FROM, RCPT TO or DATA, submit any message or alter `app.json`, Postfix, queues or tenant application registration. It never prints or stores the access token, SASL exchange or SMTP challenge.
+
+Equivalent CLI, on a separately approved test host:
+
+    sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --plan
+    sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --smtp-auth-preflight --approve-sha256 <reviewed-64hex-sha> --confirm VERIFY_STAGED_SMTP_AUTH
+
+Success returns `HARDWARE_CUTOVER_SMTP_STARTTLS_VERIFIED=yes`, `HARDWARE_CUTOVER_SMTP_AUTH_XOAUTH2_VERIFIED=yes`, `HARDWARE_CUTOVER_MAIL_FROM_RCPT_DATA_SENT=no`, `HARDWARE_CUTOVER_ACTIVE_OAUTH_CHANGED=no`, `HARDWARE_CUTOVER_TOKEN_PRINTED=no` and `HARDWARE_CUTOVER_APPLIED=no`. The manager rechecks the exact SHA plan after network validation and refuses any drift.
+
+This preflight establishes a real authenticated SMTP session, **not** the ability to send or deliver mail to a specific internal/external recipient. SMTP RCPT/DATA, queue processing, Exchange policy and recipient acceptance still require a separately approved end-to-end delivery acceptance test. Real tenant and TPM tests remain prerequisites for Stable.
