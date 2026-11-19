@@ -294,7 +294,8 @@ def audit(path, reader=secure_read, service_gid=None):
         IDENTITIES=len(inspected),
         TENANTS=len(set(item[1] for item in inspected.values())),
         SENDAS_DIFFERENT_FROM=sum(row[1] != row[2] for row in rows),
-        POLICY_SIMULATION_TEST_CASES=simulation_cases)
+        POLICY_SIMULATION_TEST_CASES=simulation_cases,
+        EXISTING_FROM_GUARD_CAPACITY_COMPATIBLE=("yes" if len(rows) <= 64 else "no"))
 
 
 def main(argv=None):
@@ -311,6 +312,8 @@ def main(argv=None):
                     "POLICY_SIMULATION_TEST_CASES"):
             print("OAUTH_SENDER_MAP_" + key + "=" + str(report[key]))
         print("OAUTH_SENDER_MAP_POLICY_SIMULATION=passed_offline_only")
+        print("OAUTH_SENDER_MAP_EXISTING_FROM_GUARD_CAPACITY_COMPATIBLE=" +
+              report["EXISTING_FROM_GUARD_CAPACITY_COMPATIBLE"])
         for key in ("LOCAL_SMTP_LOGIN_VERIFIED", "ENVELOPE_AUTHORIZATION_ACTIVE",
                     "HEADER_FROM_GUARD_ACTIVE", "EXCHANGE_SENDAS_VERIFIED",
                     "CERTIFICATE_AND_SIGNER_VERIFIED"):
