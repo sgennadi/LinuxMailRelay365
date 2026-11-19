@@ -370,7 +370,7 @@ unauthenticated SMTP, and states requiring manual review.
 ## Intended workflow
 
 1. Connect to an Ubuntu/Debian or RHEL/Oracle Linux server using SSH private key/agent or user password; verify SSH host key. A separate `sudo` password is optional. Passwords exist in the live wizard session only, are not persisted, and are never passed as process command-line arguments.
-2. **Optional security check**: read-only inventory of TPM 2.0, `tpm2-tools`, PKCS#11/HSM hints; optionally run read-only Entra policy/log access diagnostic. Nothing is enabled or installed by these checks. All three optional protection choices are **OFF by default**.
+2. **Optional security check**: read-only inventory of TPM 2.0, `tpm2-tools`, PKCS#11/HSM hints; optionally run read-only Entra policy/log access diagnostic. All three protection choices are **OFF by default**. When a TPM 2.0 node is detected on RHEL/Oracle/Rocky/Alma 8–10, the Wizard additionally offers a **separate reviewed RPM dependencies Preview** and a **typed-confirmation DNF install** action. The initial scan never installs anything; the optional package operation does not enable OAuth hardware signing, change TPM keys, start `tpm2-abrmd`, adjust SELinux or modify Postfix.
 3. Click **Connect to Microsoft 365 and discover tenants**: a delegated interactive Az.Accounts sign-in lists accessible Entra directories. With exactly one tenant, Tenant ID is automatically filled; with multiple tenants, a dropdown requires an explicit choice. If Azure tenant enumeration is unavailable, switch to manual GUID entry. Nothing is provisioned during discovery. Then set mailbox, Entra application display name, optional existing Client ID for a shared app, and certificate validity 1–365 days. Generate an RSA signing key on Linux. Only its public X.509 certificate is transferred to Windows.
 4. Perform interactive Entra + Exchange Online provisioning. Grant mailbox-scoped `Application SMTP.SendAsApp`, without Exchange Connector, Direct Send, mailbox password, client secret or refresh token.
 5. Back up existing Postfix configuration and install dedicated Linux Python XOAUTH2 pipe transport. Existing Sendmail/Exim MTA is detected and **not silently replaced**. Run token check, queue check and test email.
@@ -984,8 +984,8 @@ identity and Exchange Online Send As permissions remain separate checks.
 
 | Mechanism | Discovery | Default | Activation in this preview |
 |---|---|---|---|
-| TPM 2.0, TPM2 tools | Read-only device, sysfs and command probe | Off | **Manual only, not automatically provisioned**. A detected TPM is not proof of a compatible nonexportable signing key. |
-| HSM/PKCS#11 | Read-only tools and token-slot hints | Off | **Manual only, not automatically provisioned**. Hardware signing is not wired to the PEM-based transport yet. |
+| TPM 2.0, TPM2 tools | Read-only device, sysfs and command probe; separate SHA-reviewed RPM inventory (RHEL family) | Off | **Preview** and explicitly approved DNF installation of missing packages, only when TPM2 hardware and signed repository prerequisites are present. No key provisioning or background package install. |
+| HSM/PKCS#11 | Read-only tools and token-slot hints | Off | Preview signer supports an explicitly staged protected OpenSSL 3 TPM2/PKCS#11 provider with PS256 and public-certificate verification; **no automatic provisioning or tenant activation**. RHEL 9 source provider builds are manual; RHEL 10 native RPM is selected separately. |
 | Entra workload identity IP Conditional Access | Explicit read-only admin sign-in, Graph policy API accessibility check | Off | Operator configures a **Report-only** policy in Entra, checks results, then enables it manually. No automatic CA mutations. Requires Workload ID Premium. |
 | Entra sign-in logs | Explicit read-only Graph audit endpoint check | Off | Operator configures alerting manually. Reading logs does not enable alerts. |
 
@@ -1037,7 +1037,7 @@ The repository exists at [sgennadi/LinuxMailRelay365](https://github.com/sgennad
 
 - Real SMTP/Entra tenant and SSH hosts have not been exercised; verify in a dedicated test tenant and server before production.
 - Exim/Sendmail automatic migration is not supported; their fixed-sender Direct Send/Connector isolated sidecar requires an already-installed Postfix, separate FQDN, guarded service/config fingerprint and explicit approval. Real mixed-MTA acceptance remains outstanding.
-- Hardware-backed OAuth signing and automatic Conditional Access enforcement are not implemented. Do not treat planned options as enabled.
+- Hardware-signing helper and guarded RHEL-family TPM2 package dependency installation are implemented in Preview, but **no actual non-exportable key provisioning, GUI activation, real TPM signer acceptance, tenant delivery or automatic Conditional Access enforcement is verified**. Do not treat staged/configured options as active.
 - Microsoft Entra tenant discovery uses `Az.Accounts` (installed for CurrentUser when absent) and `Get-AzTenant`. Azure APIs might not enumerate all external/guest tenants. User can enter the correct Tenant GUID manually. Discovery and actual Graph/Exchange provisioning are separate administrative sign-ins in this preview. Exchange tenant identity is independently checked using `Get-ConnectionInformation` before any changes.
 - The wizard uses PowerShell 7 for Microsoft 365 provisioning. The operator must consent with an authorized administrative account.
 - XOAUTH2 application signing certificate renewal exists in the Linux CLI
@@ -1082,3 +1082,45 @@ an individual authorization and live delivery test.
 ### RHEL-family custom SMTP port label (Preview 13)
 
 The Wizard's Advanced SMTP section can check, explicitly add, and restore a missing `smtp_port_t` SELinux port assignment using `semanage port`. Operations require a reviewed policy SHA-256, an unclaimed port, typed confirmation, a root-only rollback record and an empty TCP listener for restoration. RHEL, Oracle Linux, Rocky, AlmaLinux 8/9/10 and CentOS Stream 9/10 are identified without disabling SELinux. SELinux Enforcing installation, file/queue/socket label policy and real SMTP verification are **not** automatically approved by this preparatory action.
+
+
+## RHEL-family TPM2 RPM preparation (Preview; dedicated package approval)
+
+On RHEL/Oracle/Rocky/Alma Linux 8–10 with a detected TPM 2.0 device,
+Security Center offers a dedicated read-only dependency plan (runtime,
+build prerequisites, PKCS#11 on OpenSSL 3, or native provider on RHEL 10).
+Use the Windows Wizard or the Linux CLI. **The default command never modifies the system:**
+
+```bash
+sudo python3 linux/manage-tpm-dependencies.py --profile runtime
+sudo python3 linux/manage-tpm-dependencies.py --profile build-prereqs
+```
+
+For RHEL 9, the native `tpm2-openssl` RPM is not assumed; choose PKCS#11
+with an approved OpenSSL 3 PKCS#11 provider where available, or build the
+native provider from reviewed upstream sources **outside the automatic installer**.
+For RHEL 10 only, `--profile native-provider` requests the packaged native
+provider. Availability is determined by the signed configured DNF repositories.
+On Rocky 8, `tpm2-tools` can be sourced from the official BaseOS repository;
+do not enable Devel just to obtain it. Some development headers on RHEL 8/9
+need their distribution's approved development repository already enabled.
+
+After reviewing the current plan and its exact `TPM_DEPS_PLAN_SHA256`, and
+only on an authorized disposable or approved machine, an administrator may
+run the explicit installation command with the SHA from **that same host and
+profile**. This can install or update RPM dependencies, but does not activate
+hardware-based OAuth or change keys:
+
+```bash
+sudo python3 linux/manage-tpm-dependencies.py --profile runtime \\
+  --apply --approve-sha256 <SHA_FROM_PREVIEW> \\
+  --confirm INSTALL_TPM2_DEPENDENCIES
+```
+
+A mismatched plan/device/OS/package set, missing TPM 2.0, missing privilege,
+missing RPM dependencies or unapproved profile blocks the operation. It never
+adds repositories, bypasses package signatures, builds code from GitHub,
+enables tpm2-abrmd, modifies a mail service or provisions a TPM key.
+RHEL 8 uses an older default OpenSSL API; its TPM packages alone do not make
+OpenSSL 3-provider signing available. Provider loading and offline signing
+must be separately verified before any real Microsoft 365 tenant test.
