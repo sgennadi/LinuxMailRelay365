@@ -79,10 +79,31 @@ if has pkcs11-tool && has timeout; then
     val PKCS11_TOKENS none_or_inaccessible
   fi
 fi
-val OPENSSL_PKCS11_PROVIDER "$( [ -d /usr/lib64/ossl-modules ] || [ -d /usr/lib/x86_64-linux-gnu/ossl-modules ] || [ -d /usr/lib/ossl-modules ] && echo directory_present_unverified || echo unknown )"
-# TPM2/HSM key integration is NOT automatically activated by discovery.
-# The current XOAUTH2 transport uses an OpenSSL PEM key. A hardware key requires
-# tested PKCS#11 or provider signing support AND a fresh Entra certificate upload.
+# Probe provider loading without creating a key or touching the mail service.
+OPENSSL_TPM2_PROVIDER=not_available
+OPENSSL_PKCS11_PROVIDER=not_available
+if has openssl && has timeout; then
+  if timeout 6 openssl list -providers -provider tpm2 >/dev/null 2>&1; then
+    OPENSSL_TPM2_PROVIDER=loadable_unverified
+  fi
+  if timeout 6 openssl list -providers -provider pkcs11 >/dev/null 2>&1; then
+    OPENSSL_PKCS11_PROVIDER=loadable_unverified
+  fi
+fi
+val OPENSSL_TPM2_PROVIDER "$OPENSSL_TPM2_PROVIDER"
+val OPENSSL_PKCS11_PROVIDER "$OPENSSL_PKCS11_PROVIDER"
+TPM2_ABRMD_SERVICE=not_verified
+if has systemctl; then
+  if systemctl -q is-active tpm2-abrmd.service >/dev/null 2>&1; then
+    TPM2_ABRMD_SERVICE=active
+  else
+    TPM2_ABRMD_SERVICE=inactive_or_unavailable
+  fi
+fi
+val TPM2_ABRMD_SERVICE "$TPM2_ABRMD_SERVICE"
+# The XOAUTH2 transport can use an explicitly staged hardware signer.
+# Discovery never provisions a key, selects a provider or changes Entra; an
+# approved hardware key/certificate/signature test is still mandatory.
 val HARDWARE_SIGNING_CONFIGURED not_verified
 val HARDWARE_SIGNING_AUTOMATICALLY_ENABLED no
 val ENTRA_IP_POLICY not_checked_on_linux
