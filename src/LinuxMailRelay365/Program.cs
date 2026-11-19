@@ -12,6 +12,15 @@ internal static class Program
         var checks = new List<(string Name, Func<bool> Run)>
         {
             ("Security plans", SecurityOptionsSelfTest.Run),
+            ("Hardware OAuth diagnostics bundle", () =>
+            {
+                var inventory = EmbeddedAssets.BuildHardwareOAuthDiagnosticBundle(false);
+                var signing = EmbeddedAssets.BuildHardwareOAuthDiagnosticBundle(true);
+                return inventory.Contains("LMR365_HW_OAUTH", StringComparison.Ordinal) &&
+                       inventory.Contains("--inventory-only", StringComparison.Ordinal) &&
+                       signing.Contains("LMR365_HW_OAUTH", StringComparison.Ordinal) &&
+                       !signing.Contains("--inventory-only", StringComparison.Ordinal);
+            }),
             ("Mail routing safety", MailRoutingPlanStore.SelfTest),
             ("Embedded backup / restore", () =>
             {
