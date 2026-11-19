@@ -16,6 +16,7 @@ internal static class EmbeddedAssets
 
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
+    internal static string HardwareSigner => Text("LinuxMailRelay365.linux.hardware-signer.py");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarConfigRecovery => Text("LinuxMailRelay365.linux.sidecar-config-recovery.py");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
@@ -70,6 +71,8 @@ internal static class EmbeddedAssets
                Encode(Installer) + "\nM365_INSTALL\n" +
                "base64 -d > \"$work/m365_xoauth2_transport.py\" <<'M365_TRANSPORT'\n" +
                Encode(Transport) + "\nM365_TRANSPORT\n" +
+               "base64 -d > \"$work/m365_hardware_signer.py\" <<'LMR365_HARDWARE_SIGNER'\n" +
+               Encode(HardwareSigner) + "\nLMR365_HARDWARE_SIGNER\n" +
                "base64 -d > \"$work/mail-config-recovery.sh\" <<'LMR365_RECOVERY'\n" +
                Encode(Recovery) + "\nLMR365_RECOVERY\n" +
                "bash \"$work/install-postfix-m365-xoauth2.sh\" " + string.Join(" ", args) + "\n";
@@ -228,6 +231,8 @@ internal static class EmbeddedAssets
                Encode(SidecarInstaller) + "\nLMR365_SIDECAR\n" +
                "base64 -d > \"$work/m365_xoauth2_transport.py\" <<'LMR365_TRANSPORT'\n" +
                Encode(Transport) + "\nLMR365_TRANSPORT\n" +
+               "base64 -d > \"$work/m365_hardware_signer.py\" <<'LMR365_HARDWARE_SIGNER'\n" +
+               Encode(HardwareSigner) + "\nLMR365_HARDWARE_SIGNER\n" +
                "bash \"$work/install-sidecar.sh\" " + string.Join(" ", args) + "\n";
     }
 
