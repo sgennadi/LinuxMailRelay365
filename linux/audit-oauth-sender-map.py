@@ -5,6 +5,8 @@ No SMTP/Entra network, no token, no Postfix edits, no identity provisioning.
 Does not activate multi-mailbox sending. Supports Python 3.6+ (RHEL 8).
 """
 import argparse
+import email.policy
+from email.parser import BytesParser
 import hashlib
 import json
 import os
@@ -17,10 +19,11 @@ from pathlib import Path
 BASE = "/etc/linuxmailrelay365/"
 IDENTITIES = BASE + "oauth-identities/"
 HEADER = "smtp_login\tenvelope_from\tm365_mailbox\tidentity_config_path"
-EMAIL = re.compile(r"\A[A-Za-z0-9.!#$%&'*+/=?^_\x60{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
-LOGIN = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}\Z")
+EMAIL = re.compile(r"\A[A-Za-z0-9._+-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
+LOGIN = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.@-]{2,63}\Z")
 SAFE_PATH = re.compile(r"\A/etc/linuxmailrelay365/[A-Za-z0-9_./-]{1,240}\Z")
 MAX_MAP, MAX_IDENTITY, MAX_ENTRIES = 65536, 8192, 256
+MAX_OFFLINE_MESSAGE = 65536
 
 
 class Refused(Exception):
@@ -138,6 +141,109 @@ def validate_identity(raw, mailbox):
     return tenant
 
 
+
+def strict_header_address(value):
+    """Match the existing From Guard semantics (one mailbox, no groups)."""
+    try:
+        if value is None or value.defects or len(value.addresses) != 1:
+            return None
+        groups = value.groups
+        if len(groups) != 1 or groups[0].display_name is not None:
+            return None
+        address = value.addresses[0].addr_spec
+        if not isinstance(address, str) or not EMAIL.fullmatch(address):
+            return None
+        return address.casefold()
+    except (AttributeError, TypeError, ValueError, UnicodeError):
+        return None
+
+
+def authorize_offline(rows, authenticated_login, envelope_from, m365_mailbox,
+                      raw_message):
+    """Proof-of-policy simulation ONLY; not an SMTP AUTH or Exchange assertion.
+
+    The login in this function is a *trusted test parameter*, not a value
+    extracted from an SMTP session. Never call this to authorize real mail
+    until the server-side authenticated identity is bound to the queue path.
+    """
+    if (not isinstance(authenticated_login, str) or
+            not isinstance(envelope_from, str) or
+            not isinstance(m365_mailbox, str)):
+        raise Refused("invalid_sender_identity")
+    login = authenticated_login.casefold()
+    sender = envelope_from.casefold()
+    mailbox = m365_mailbox.casefold()
+    if (not LOGIN.fullmatch(login) or not EMAIL.fullmatch(sender) or
+            not EMAIL.fullmatch(mailbox) or
+            sum(1 for row in rows if row[:3] == (login, sender, mailbox)) != 1):
+        raise Refused("sender_login_mailbox_mapping_denied")
+    if (not isinstance(raw_message, bytes) or
+            not 1 <= len(raw_message) <= MAX_OFFLINE_MESSAGE or
+            b"\x00" in raw_message):
+        raise Refused("invalid_message_size_or_encoding")
+    try:
+        message = BytesParser(policy=email.policy.default).parsebytes(
+            raw_message, headersonly=True)
+        if message.defects:
+            raise Refused("malformed_message_headers")
+        fields = list(message.raw_items())
+        if len(fields) > 256:
+            raise Refused("too_many_message_headers")
+        count = {}
+        for name, value in fields:
+            low = name.lower()
+            count[low] = count.get(low, 0) + 1
+            if low in ("return-path", "resent-from", "resent-sender"):
+                raise Refused("forged_or_resent_sender_headers")
+            if low in ("from", "sender") and count[low] > 1:
+                raise Refused("ambiguous_sender_headers")
+        if count.get("from") != 1 or count.get("sender", 0) > 1:
+            raise Refused("invalid_from_header_count")
+        if strict_header_address(message["From"]) != sender:
+            raise Refused("header_from_not_authorized_for_envelope")
+        if count.get("sender", 0) == 1 and \
+                strict_header_address(message["Sender"]) != sender:
+            raise Refused("sender_header_not_authorized_for_envelope")
+        return True
+    except (TypeError, ValueError, UnicodeError, AttributeError):
+        raise Refused("malformed_message_headers")
+
+
+def simulate_policy(rows):
+    """Deterministic positive and spoofing-negative tests, using no sockets."""
+    tested = 0
+    for login, sender, mailbox, _ in rows:
+        message = ("From: <" + sender + ">\r\n"
+                   "To: fixture@ci.invalid\r\n"
+                   "Subject: local policy test\r\n\r\n"
+                   "This message is not transmitted.\r\n").encode("ascii")
+        if not authorize_offline(rows, login, sender, mailbox, message):
+            raise Refused("policy_simulation_unexpected_denial")
+        tested += 1
+        invalid = (
+            ("not-authorized-user", sender, mailbox, message),
+            (login, "other@invalid.example", mailbox, message),
+            (login, sender, "other@invalid.example", message),
+            (login, sender, mailbox, message.replace(
+                ("From: <" + sender + ">").encode("ascii"),
+                b"From: <other@invalid.example>")),
+            (login, sender, mailbox, message.replace(
+                b"Subject: local policy test\r\n",
+                b"Sender: <other@invalid.example>\r\nSubject: local policy test\r\n")),
+            (login, sender, mailbox, message.replace(
+                b"Subject: local policy test\r\n",
+                b"From: <other@invalid.example>\r\nSubject: local policy test\r\n")),
+        )
+        for bad_login, bad_sender, bad_mailbox, bad_message in invalid:
+            try:
+                authorize_offline(rows, bad_login, bad_sender, bad_mailbox,
+                                  bad_message)
+            except Refused:
+                tested += 1
+            else:
+                raise Refused("policy_simulation_accepted_spoof")
+    return tested
+
 def audit(path, reader=secure_read, service_gid=None):
     allowed_path(path)
     if service_gid is None:
@@ -148,6 +254,7 @@ def audit(path, reader=secure_read, service_gid=None):
             raise Refused("m365mailer_group_missing")
     raw = reader(path, MAX_MAP, 0o600, None)
     rows = parse_map(raw)
+    simulation_cases = simulate_policy(rows)
     inspected = {}
     for login, sender, mailbox, identity_path in rows:
         if identity_path not in inspected:
@@ -163,7 +270,8 @@ def audit(path, reader=secure_read, service_gid=None):
         MAILBOXES=len(set(row[2] for row in rows)),
         IDENTITIES=len(inspected),
         TENANTS=len(set(item[1] for item in inspected.values())),
-        SENDAS_DIFFERENT_FROM=sum(row[1] != row[2] for row in rows))
+        SENDAS_DIFFERENT_FROM=sum(row[1] != row[2] for row in rows),
+        POLICY_SIMULATION_TEST_CASES=simulation_cases)
 
 
 def main(argv=None):
@@ -176,8 +284,10 @@ def main(argv=None):
         report = audit(args.map_path)
         print("OAUTH_SENDER_MAP_RESULT=structural_review_only")
         for key in ("MAP_SHA256", "ENTRIES", "LOCAL_LOGINS", "MAILBOXES",
-                    "IDENTITIES", "TENANTS", "SENDAS_DIFFERENT_FROM"):
+                    "IDENTITIES", "TENANTS", "SENDAS_DIFFERENT_FROM",
+                    "POLICY_SIMULATION_TEST_CASES"):
             print("OAUTH_SENDER_MAP_" + key + "=" + str(report[key]))
+        print("OAUTH_SENDER_MAP_POLICY_SIMULATION=passed_offline_only")
         for key in ("LOCAL_SMTP_LOGIN_VERIFIED", "ENVELOPE_AUTHORIZATION_ACTIVE",
                     "HEADER_FROM_GUARD_ACTIVE", "EXCHANGE_SENDAS_VERIFIED",
                     "CERTIFICATE_AND_SIGNER_VERIFIED"):
