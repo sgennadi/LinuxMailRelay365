@@ -13,6 +13,9 @@ SOURCE = Path(__file__).resolve().parents[1] / "linux" / "manage-tpm-oauth-key.p
 SPEC = importlib.util.spec_from_file_location("tpm_oauth_provision", str(SOURCE))
 TPM = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TPM)
+REAL_REQUIRE_ROOT = TPM.require_root
+REAL_PROVIDER_READY = TPM.provider_ready
+REAL_READ_CAPABILITIES = TPM.read_capabilities
 ACTIVE = {
     "tenant_id": "11111111-1111-1111-1111-111111111111",
     "client_id": "22222222-2222-2222-2222-222222222222",
@@ -78,26 +81,26 @@ class TpmOAuthKeyTests(unittest.TestCase):
     def test_real_root_gate_and_openssl3_gate(self):
         with mock.patch.object(TPM.os, "geteuid", return_value=1000):
             with self.assertRaisesRegex(TPM.Refused, "root_required"):
-                TPM.require_root()
+                REAL_REQUIRE_ROOT()
         with mock.patch.object(TPM, "run_command",
                                side_effect=[b"OpenSSL 1.1.1k\n"]) as runner:
             with self.assertRaisesRegex(TPM.Refused, "openssl3"):
-                TPM.provider_ready()
+                REAL_PROVIDER_READY()
             self.assertEqual(runner.call_count, 1)
         with mock.patch.object(TPM, "run_command",
                                side_effect=[b"OpenSSL 3.0.7\n",
                                             TPM.Refused("tpm2_openssl_provider_missing")]):
             with self.assertRaisesRegex(TPM.Refused, "provider_missing"):
-                TPM.provider_ready()
+                REAL_PROVIDER_READY()
 
     def test_capability_inventory_parse_and_failclosed(self):
         with mock.patch.object(TPM, "run_command",
                                return_value=b"- 0x81010001\n- 0x81000002\n"):
-            self.assertEqual(TPM.read_capabilities(),
+            self.assertEqual(REAL_READ_CAPABILITIES(),
                              {"0x81010001", "0x81000002"})
         with mock.patch.object(TPM, "run_command", return_value=b"invalid\n"):
             with self.assertRaisesRegex(TPM.Refused, "unparseable"):
-                TPM.read_capabilities()
+                REAL_READ_CAPABILITIES()
 
     def test_approval_denied_before_tpm_change(self):
         with mock.patch.object(TPM, "lock") as lock, \
