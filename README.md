@@ -1243,3 +1243,19 @@ After typed confirmation, the Wizard re-reads Linux identity/certificate evidenc
 The only Graph write is POST to `/v1.0/applications/{objectId}/addKey` containing `AsymmetricX509Cert` / `Verify` and the candidate public DER. Afterward the Wizard checks that the new credential appears and **every existing key ID, type, usage, fingerprint and validity window is unchanged**. If Graph does not return a verified result, inspect the app's certificates before retrying: the addKey request may already have completed, and the tool never auto-removes keys.
 
 **After success** perform a separate reviewed Linux staged-to-active cutover, which checks real Entra OAuth token acquisition before and after switching and can roll back `app.json`. Public certificate registration **does not prove** that Exchange Online accepts SMTP XOAUTH2 or delivered a test message. Do not merge Stable until tested on an authorized tenant/physical TPM.
+
+
+## Separate staged TPM/HSM Entra application token check (Preview)
+
+After a new TPM2/PKCS#11 public certificate is registered in the existing Entra application, the Wizard provides a **separate staged-key token preflight**. It runs before the operator performs any active OAuth identity switch.
+
+1. Review the exact staged hardware OAuth cutover SHA256 plan (`--target sidecar --plan` or `--target primary --plan`). The plan binds the active identity, hardware-staged.json, certificate, provider config and installed transport/signing module.
+2. Select **Verify staged TPM/HSM Entra token without switching** and approve a real Entra token request. The root-owned manager takes the hardware OAuth lock, confirms the reviewed SHA, runs existing `--signing-check --candidate-config` and `--token-check --candidate-config` as `m365mailer`, and rechecks the complete plan after the network request.
+3. It outputs non-secret statuses: `HARDWARE_CUTOVER_STAGED_ONLY=yes`, `HARDWARE_CUTOVER_LOCAL_SIGNING_VERIFIED=yes`, `HARDWARE_CUTOVER_ENTRA_TOKEN_VERIFIED=yes`, `HARDWARE_CUTOVER_ACTIVE_OAUTH_CHANGED=no`, `HARDWARE_CUTOVER_MAIL_SENT=no`, `HARDWARE_CUTOVER_TOKEN_PRINTED=no`.
+
+Equivalent CLI for an explicitly authorized test host:
+
+    sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --plan
+    sudo python3 linux/manage-hardware-oauth-cutover.py --target sidecar --token-preflight --approve-sha256 <reviewed-plan-sha256> --confirm VERIFY_STAGED_ENTRA_TOKEN
+
+**No token is printed or saved.** An unsuccessful signature, invalid Entra certificate, network error or changed plan returns non-success without changing `app.json`. This preflight **does not** confirm Exchange Online SMTP authorization, mailbox permissions or recipient delivery. The later guarded activation repeats both checks with a fresh token, so a previously passing result cannot bypass current validation. Current physical TPM acceptance and live tenant SMTP delivery remain mandatory before Stable.
