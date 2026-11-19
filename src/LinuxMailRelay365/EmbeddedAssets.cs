@@ -60,13 +60,50 @@ internal static class EmbeddedAssets
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
 
     internal static string BuildHardwareOAuthCutoverBundle(
-        string target, string operation, string? approvalSha = null, string? backupId = null)
+        string target, string operation, string? approvalSha = null, string? backupId = null,
+        string? stageProvider = null, string? stageKeyRef = null)
     {
         if (target is not ("sidecar" or "primary"))
             throw new ArgumentException("Unsupported hardware OAuth target.");
         string args = "--target " + target;
+        string stageArgs = "";
+        if (operation is "stage-plan" or "stage-apply")
+        {
+            if (stageProvider is not ("tpm2" or "pkcs11") || stageKeyRef is null)
+                throw new ArgumentException("Choose a supported hardware provider and key reference.");
+            bool validRef = stageProvider == "tpm2"
+                ? Regex.IsMatch(stageKeyRef, @"\Ahandle:0x81[a-fA-F0-9]{6}\z",
+                                RegexOptions.CultureInvariant) ||
+                  stageKeyRef == (target == "sidecar"
+                      ? "/etc/linuxmailrelay365/sidecar-identity/tpm2-app.key"
+                      : "/etc/postfix/m365-oauth/tpm2-app.key")
+                : Regex.IsMatch(stageKeyRef,
+                    @"\Apkcs11:[A-Za-z0-9%._+;=:@-]{5,230}\z",
+                    RegexOptions.CultureInvariant) &&
+                  !Regex.IsMatch(stageKeyRef, @"pin|module-path|module-name",
+                                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) &&
+                  (stageKeyRef.Contains("object=", StringComparison.Ordinal) ||
+                   stageKeyRef.Contains("id=", StringComparison.Ordinal)) &&
+                  stageKeyRef.Contains("type=private", StringComparison.Ordinal);
+            if (!validRef || stageKeyRef.Length > 240)
+                throw new ArgumentException("Invalid TPM2/PKCS#11 key reference or embedded secret.");
+            // The strict provider/key-ref alphabets exclude shell quotes,
+            // whitespace, control bytes and command substitutions.
+            stageArgs = " --stage-provider " + stageProvider +
+                        " --stage-key-ref '" + stageKeyRef + "'";
+        }
+        else if (stageProvider is not null || stageKeyRef is not null)
+            throw new ArgumentException("Stage key parameters are not valid for this operation.");
         switch (operation)
         {
+            case "stage-plan" when approvalSha is null && backupId is null:
+                args += " --stage-plan" + stageArgs;
+                break;
+            case "stage-apply" when backupId is null && approvalSha is not null &&
+                                    Regex.IsMatch(approvalSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant):
+                args += " --stage-apply" + stageArgs + " --approve-sha256 " +
+                        approvalSha + " --confirm STAGE_HARDWARE_OAUTH";
+                break;
             case "plan" when approvalSha is null && backupId is null:
                 args += " --plan";
                 break;
