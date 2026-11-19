@@ -209,6 +209,28 @@ def authorize_offline(rows, authenticated_login, envelope_from, m365_mailbox,
         raise Refused("malformed_message_headers")
 
 
+
+def select_planned_identity_offline(rows, authenticated_login, envelope_from,
+                                    m365_mailbox, raw_message):
+    """Plan an exact mailbox identity AFTER the synthetic sender checks.
+
+    This is a pure in-memory policy check. It must never be used as live
+    delivery authorization: the login is a caller-supplied fixture value,
+    not a verified Postfix/Dovecot SASL identity.
+    """
+    if not authorize_offline(rows, authenticated_login, envelope_from,
+                             m365_mailbox, raw_message):
+        raise Refused("offline_policy_did_not_authorize")
+    matches = [
+        row[3] for row in rows
+        if row[:3] == (authenticated_login.casefold(),
+                       envelope_from.casefold(), m365_mailbox.casefold())
+    ]
+    if len(matches) != 1:
+        raise Refused("ambiguous_planned_identity")
+    return matches[0]
+
+
 def simulate_policy(rows):
     """Deterministic positive and spoofing-negative tests, using no sockets."""
     tested = 0
@@ -217,8 +239,9 @@ def simulate_policy(rows):
                    "To: fixture@ci.invalid\r\n"
                    "Subject: local policy test\r\n\r\n"
                    "This message is not transmitted.\r\n").encode("ascii")
-        if not authorize_offline(rows, login, sender, mailbox, message):
-            raise Refused("policy_simulation_unexpected_denial")
+        if select_planned_identity_offline(rows, login, sender, mailbox,
+                                           message) != _:
+            raise Refused("policy_simulation_wrong_oauth_identity")
         tested += 1
         invalid = (
             ("not-authorized-user", sender, mailbox, message),
