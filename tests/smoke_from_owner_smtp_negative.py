@@ -12,7 +12,33 @@ import smtplib
 import ssl
 import subprocess
 import sys
-import time
+
+
+def postconf(config, name):
+    result = subprocess.run(
+        ["postconf", "-c", config, "-h", name],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12,
+        universal_newlines=True)
+    if result.returncode:
+        raise AssertionError("isolated_postconf_unavailable")
+    return result.stdout.strip()
+
+
+def verify_no_external_transport(config):
+    """Enforce *offline* CI negative DATA even if the Milter has a bug.
+
+    If a spoof were inadvertently accepted, the message must NOT be handed
+    to the Microsoft 365 SMTP transport. The queue comparison then fails.
+    """
+    if postconf(config, "queue_directory") != "/var/spool/linuxmailrelay365-sidecar":
+        raise AssertionError("would_inspect_primary_postfix_queue")
+    if postconf(config, "defer_transports") != "smtp":
+        raise AssertionError("test_outbound_smtp_not_deferred")
+    if postconf(config, "milter_default_action") != "tempfail":
+        raise AssertionError("test_milter_default_not_fail_closed")
+    if postconf(config, "smtpd_milters") != (
+            "unix:/run/linuxmailrelay365-from-guard/from-guard.sock"):
+        raise AssertionError("test_milter_not_attached")
 
 
 def queue_fingerprint(config):
@@ -114,6 +140,7 @@ def main():
     if not pathlib.Path(args.ca_file).is_file():
         raise AssertionError("fixture_certificate_missing")
     conf = "/etc/linuxmailrelay365/sidecar-postfix"
+    verify_no_external_transport(conf)
     before = queue_fingerprint(conf)
     if args.guard_down:
         tempfailed_missing_guard(args.smtp_port, args.ca_file, args.hostname)
