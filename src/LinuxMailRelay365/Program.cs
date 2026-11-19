@@ -159,6 +159,33 @@ internal static class Program
                 return bundle.Contains("LMR365_SIDECAR", StringComparison.Ordinal)
                     && bundle.Contains("LMR365_TRANSPORT", StringComparison.Ordinal);
             }),
+            ("Multi-mailbox sender map audit bundle", () =>
+            {
+                const string safe = "/etc/linuxmailrelay365/oauth-senders.tsv";
+                string bundle = EmbeddedAssets.BuildOAuthSenderMapAuditBundle(safe);
+                if (!bundle.Contains("LMR365_OAUTH_MAP_AUDIT", StringComparison.Ordinal) ||
+                    !bundle.Contains("--map-path " + safe, StringComparison.Ordinal) ||
+                    bundle.Contains("--apply", StringComparison.Ordinal) ||
+                    bundle.Contains("--send", StringComparison.Ordinal) ||
+                    bundle.Contains("--grant", StringComparison.Ordinal))
+                    return false;
+                foreach (string unsafePath in new[] {
+                    "../../tmp/map.tsv",
+                    "/tmp/map.tsv",
+                    "/etc/linuxmailrelay365/../etc/passwd.tsv",
+                    "/etc/linuxmailrelay365/map.tsv;echo BAD",
+                    "/etc/linuxmailrelay365/map.json"
+                })
+                {
+                    try
+                    {
+                        EmbeddedAssets.BuildOAuthSenderMapAuditBundle(unsafePath);
+                        return false;
+                    }
+                    catch (ArgumentException) { }
+                }
+                return true;
+            }),
             ("Preserve mail diagram", PreserveFlowSnapshot.SelfTest),
             ("Live delivery route explanations", MailRoutingGuidance.SelfTest),
             ("Existing public SMTP audit", () =>
