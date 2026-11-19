@@ -451,3 +451,42 @@ A separate future acceptance needs two explicitly consented recipients,
 a short real message through the installed custom-port Postfix SMTP path,
 queue and retry observation, Exchange Message Trace plus recipient evidence,
 and signed deployment. Do not treat the envelope preflight as Stable evidence.
+
+
+## Full local Postfix message path to loopback-only SMTP sink (CI acceptance)
+
+The previous SMTP smoke tests exercised only EHLO/MAIL/RCPT, avoiding message
+DATA and the independent Postfix queue. The Ubuntu fresh Connector CI matrix
+now includes a bounded **real DATA** test, using an explicitly disposable
+GitHub Actions runner and synthetic `example.org` sender/recipient:
+
+    bash tests/smoke_local_postfix_delivery.sh 46500
+
+The script verifies that the primary Postfix service and configuration are
+unchanged, the independent queue is empty and the private SMTP listener is
+localhost-only. It stops the independent service, saves its original
+`main.cf`, forces **all three** outbound relay routes to a fixed
+`127.0.0.1:46601` sink, disables fallback relay and outbound TLS only
+while this isolated fixture is running, binds outgoing SMTP to 127.0.0.1,
+and restarts **only** the independent Postfix service.
+
+The synthetic application client sends one message through the real Postfix
+listener using MAIL/RCPT/DATA. A local Python SMTP server validates the exact
+sender, recipient, Message-ID, From, To and body marker. The test requires
+one sink delivery and a fully drained **independent** queue. On success, the
+script stops the sidecar, restores the byte-identical original
+`main.cf`, confirms the original `master.cf`, verifies the primary MTA's
+SHA256 and queue location, and restarts the private service.
+
+**Fail-closed recovery:** if any stage fails and the independent queue is
+not provably empty, the service is stopped and the loopback-only route is
+left intact, so restarting the service cannot send the test message to
+Microsoft 365. In this failure case the CI VM is disposable and should be
+destroyed; do not run this helper on production machines.
+
+Evidence proves: application SMTP submission -> independent Postfix queue
+and outbound SMTP client -> local sink on 127.0.0.1, including message DATA,
+successful acceptance and queue drain. **It does not prove** Exchange Online
+SMTP, actual tenant Connector, XOAUTH2, mailbox delivery, TLS enforcement to
+Microsoft 365, hardware key provenance, real reboot persistence or SELinux
+Enforcing. These remain independent acceptance requirements before Stable.
