@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Independent ephemeral GitHub Actions VM, NO Entra app, NO mail DATA.
+# Disposable GitHub Actions VM, NO Entra app or real M365 mail.
+# After RCPT-only checks, one synthetic DATA message is delivered to a loopback SMTP sink.
 set -Eeuo pipefail
 export LC_ALL=C DEBIAN_FRONTEND=noninteractive
 PORT=46500
@@ -134,6 +135,11 @@ else:
 print('FRESH_CONNECTOR_LOCAL_RCPT_POLICY=PASS')
 print('MAIL_DATA_SENT=no')
 PY
+echo '=== Full local SMTP DATA through real independent Postfix into loopback-only sink ==='
+bash tests/smoke_local_postfix_delivery.sh "$PORT"
+sudo systemctl is-active --quiet "$UNIT"
+test "$(sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf)" = "$primary_before"
+test "$(sudo postconf -h queue_directory)" = "$primary_queue"
 echo '=== Isolated systemd service cold start, no OS reboot ==='
 sudo systemctl stop "$UNIT"
 sudo systemctl start "$UNIT"
