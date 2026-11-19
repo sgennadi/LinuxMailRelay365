@@ -124,6 +124,9 @@ class OAuthSenderMapTests(unittest.TestCase):
                        b"To: synthetic@example.net\r\n\r\nBody\r\n")
         self.assertTrue(AUDIT.authorize_offline(
             rows, "alice", "alice@example.org", "alice@example.org", from_header))
+        self.assertEqual(AUDIT.select_planned_identity_offline(
+            rows, "alice", "alice@example.org", "alice@example.org",
+            from_header), IDENTITY_A)
         self.assertEqual(AUDIT.simulate_policy(rows), 14)
         for login, envelope, mailbox, headers in (
             ("bob", "alice@example.org", "alice@example.org", from_header),
@@ -158,6 +161,19 @@ class OAuthSenderMapTests(unittest.TestCase):
                               raw=headers[:65]):
                 with self.assertRaises(AUDIT.Refused):
                     AUDIT.authorize_offline(rows, login, envelope, mailbox, headers)
+
+    def test_offline_identity_selection_refuses_cross_login_and_mailbox(self):
+        rows = AUDIT.parse_map(records(self.rows))
+        bob = b"From: bob@example.org\r\n\r\nSynthetic only.\r\n"
+        self.assertEqual(AUDIT.select_planned_identity_offline(
+            rows, "bob", "bob@example.org", "service@example.org", bob),
+            IDENTITY_B)
+        for identity in (("alice", "bob@example.org", "service@example.org"),
+                         ("bob", "bob@example.org", "alice@example.org"),
+                         ("bob", "alice@example.org", "service@example.org")):
+            with self.assertRaises(AUDIT.Refused):
+                AUDIT.select_planned_identity_offline(rows, identity[0],
+                    identity[1], identity[2], bob)
 
     def test_simulation_does_not_parse_real_mail_or_contact_tenant(self):
         rows = AUDIT.parse_map(records(self.rows))
