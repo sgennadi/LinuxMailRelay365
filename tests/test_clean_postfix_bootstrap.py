@@ -30,8 +30,12 @@ class CleanPostfixTests(unittest.TestCase):
     def test_no_foreign_mta_or_default_port_mutations(self):
         text = SCRIPT.read_text(encoding="utf-8")
         for expected in ("INSTALL_CLEAN_POSTFIX_PACKAGES",
-                         '"mask", "--runtime", "postfix.service"',
-                         '"disable", "postfix.service"',
+                         '"mask", "--runtime", unit',
+                         '"disable", unit',
+                         "postfix@-.service",
+                         "--verify-prepared",
+                         "postfix_config_hashes",
+                         "CLEAN_POSTFIX_PREPARED_VERIFIED=yes",
                          "existing_mta_unit_", "existing_mta_package",
                          "smtp_socket_already_open", "existing_service_start_policy",
                          "ISOLATED_RELAY_INSTALLED=no",
@@ -40,6 +44,17 @@ class CleanPostfixTests(unittest.TestCase):
         for prohibited in ("systemctl enable postfix", "systemctl restart postfix",
                            "setenforce 0", "ufw allow", "firewall-cmd --add-port"):
             self.assertNotIn(prohibited, text)
+
+    def test_verify_requires_root_owned_marker_and_exact_port(self):
+        with patch.object(module.os, "geteuid", return_value=1000):
+            with self.assertRaises(ValueError):
+                module.verify_prepared(2525)
+        with self.assertRaises(ValueError):
+            module.verify_prepared(25)
+        with patch.object(module.os, "geteuid", return_value=0), \
+             patch.object(module.MARKER, "lstat", side_effect=FileNotFoundError):
+            with self.assertRaises(FileNotFoundError):
+                module.verify_prepared(2525)
 
     def test_port_bounds(self):
         for bad in (25, 0, 65536):

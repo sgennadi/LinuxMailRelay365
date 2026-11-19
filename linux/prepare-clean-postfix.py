@@ -131,6 +131,56 @@ def inspect(port):
             "sha": sha, "os": os_id, "manager": manager}
 
 
+def verify_prepared(port):
+    """Validate root-owned marker, unchanged Postfix files, and inactive MTA.
+
+    Only a one-time clean bootstrap may authorize an inactive installed Postfix
+    for a guarded isolated EOP sidecar; an arbitrary disabled Postfix cannot.
+    """
+    if not 1024 <= port <= 65535:
+        raise ValueError("invalid_custom_smtp_port")
+    if os.geteuid() != 0:
+        raise ValueError("root_required")
+    parent = MARKER.parent
+    for path in (parent, MARKER):
+        info = path.lstat()
+        if info.st_uid != 0 or info.st_mode & 0o022 or path.is_symlink():
+            raise ValueError("unsafe_postfix_bootstrap_marker_permissions")
+    if not parent.is_dir() or not MARKER.is_file():
+        raise ValueError("invalid_postfix_bootstrap_marker")
+    if MARKER.stat().st_mode & 0o077:
+        raise ValueError("postfix_bootstrap_marker_must_be_private")
+    marker = json.loads(MARKER.read_text(encoding="utf-8"))
+    if (marker.get("schema") != 1 or
+            marker.get("postfix_prepared_for_isolated_relay") is not True or
+            marker.get("port") != port or
+            not re.fullmatch(r"[a-f0-9]{64}", str(marker.get("plan_sha256", "")))):
+        raise ValueError("unexpected_postfix_bootstrap_marker")
+    for path in ("/etc/postfix/main.cf", "/etc/postfix/master.cf"):
+        if not pathlib.Path(path).is_file():
+            raise ValueError("postfix_configuration_missing")
+        current = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+        if marker.get("postfix_config_hashes", {}).get(path) != current:
+            raise ValueError("prepared_postfix_configuration_changed")
+    if not shutil.which("postconf") or not shutil.which("postfix"):
+        raise ValueError("prepared_postfix_package_missing")
+    for unit in ("postfix.service", "postfix@-.service",
+                 "exim.service", "exim4.service", "sendmail.service"):
+        result = run(["systemctl", "is-active", unit])
+        if result.stdout.strip() not in ("inactive", "unknown", "failed") or (
+                result.stdout.strip() == "unknown" and unit_load(unit) != "not-found"):
+            raise ValueError("mail_service_state_not_safely_inactive")
+    for unit in ("exim.service", "exim4.service", "sendmail.service"):
+        if unit_load(unit) != "not-found":
+            raise ValueError("foreign_mta_unit_present")
+    if sockets().intersection((25, 465, 587, port)):
+        raise ValueError("smtp_port_not_available")
+    print("CLEAN_POSTFIX_PREPARED_VERIFIED=yes")
+    print("CLEAN_POSTFIX_PREPARED_CUSTOM_PORT=" + str(port))
+    print("POSTFIX_PRIMARY_STARTED=no")
+    print("CHANGES_APPLIED=no")
+
+
 def apply(port, expected, confirm):
     if confirm != "INSTALL_CLEAN_POSTFIX_PACKAGES":
         raise ValueError("explicit_package_approval_required")
@@ -144,12 +194,15 @@ def apply(port, expected, confirm):
     if not pathlib.Path("/run/systemd/system").is_dir():
         raise ValueError("live_systemd_required")
     policy = pathlib.Path("/usr/sbin/policy-rc.d")
-    masked = False
+    masked_units = []
     policy_created = False
     try:
-        if run(["systemctl", "mask", "--runtime", "postfix.service"]).returncode:
-            raise RuntimeError("cannot_mask_primary_postfix_start")
-        masked = True
+        # Debian may invoke postfix@-.service. Mask BOTH canonical units so
+        # package post-install hooks cannot start a network MTA.
+        for unit in ("postfix.service", "postfix@-.service"):
+            if run(["systemctl", "mask", "--runtime", unit]).returncode:
+                raise RuntimeError("cannot_mask_primary_postfix_start")
+            masked_units.append(unit)
         if result["manager"] == "apt-get":
             # Temporary policy blocks legacy invoke-rc.d during Postfix postinst.
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -183,8 +236,9 @@ def apply(port, expected, confirm):
         config = ("/etc/postfix/main.cf", "/etc/postfix/master.cf")
         if not all(pathlib.Path(x).is_file() for x in config):
             raise RuntimeError("postfix_config_missing_after_package_install")
-        if run(["systemctl", "disable", "postfix.service"]).returncode:
-            raise RuntimeError("could_not_disable_primary_postfix")
+        for unit in ("postfix.service", "postfix@-.service"):
+            if run(["systemctl", "disable", unit]).returncode:
+                raise RuntimeError("could_not_disable_primary_postfix")
         if sockets().intersection((25, 465, 587, port)):
             raise RuntimeError("unexpected_primary_smtp_listener")
         for unit in ("exim.service", "exim4.service", "sendmail.service"):
@@ -209,7 +263,11 @@ def apply(port, expected, confirm):
     finally:
         if policy_created:
             policy.unlink()
-        if masked and run(["systemctl", "unmask", "--runtime", "postfix.service"]).returncode:
+        restore_failed = False
+        for unit in reversed(masked_units):
+            if run(["systemctl", "unmask", "--runtime", unit]).returncode:
+                restore_failed = True
+        if restore_failed:
             raise RuntimeError("temporary_postfix_mask_restore_failed")
 
 
@@ -218,6 +276,7 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check-only", action="store_true")
     group.add_argument("--apply", action="store_true")
+    group.add_argument("--verify-prepared", action="store_true")
     parser.add_argument("--smtp-port", type=int, required=True)
     parser.add_argument("--expected-plan-sha256", default="")
     parser.add_argument("--confirm", default="")
@@ -235,6 +294,11 @@ def main(argv=None):
                   else ",".join(current["reasons"][:16])))
             print("CLEAN_POSTFIX_PLAN_SHA256=" + current["sha"])
             print("CHANGES_APPLIED=no")
+            return 0
+        if options.verify_prepared:
+            if options.expected_plan_sha256 or options.confirm:
+                raise ValueError("verify_must_not_accept_approval")
+            verify_prepared(options.smtp_port)
             return 0
         apply(options.smtp_port, options.expected_plan_sha256, options.confirm)
         return 0
