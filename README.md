@@ -1449,3 +1449,11 @@ spoof attempts. Only synthetic messages are parsed; no user mail or tokens are
 read, nothing is delivered. The GUI reports the number of tests and explicitly
 labels them **offline simulation only**. Live sender-ownership enforcement and
 multi-mailbox SMTP sending are still disabled.
+
+## Multi-mailbox: current From Guard account limit
+
+The audit also shows whether a planned sender map fits the current 64-entry
+From Guard / SMTP account capacity. This does NOT verify that the Milter is
+actually running, bound to authenticated SMTP submissions or authorized in
+Exchange Online. Maps beyond that limit stay plan-only; the program never
+truncates sender mappings or silently changes to a less secure mode.
