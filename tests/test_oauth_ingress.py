@@ -38,6 +38,7 @@ class IngressAuditTests(unittest.TestCase):
         self.blobs = {
             AUDIT.HASHES: ("alice:" + salted + "\nbob:" + salted + "\n").encode("ascii"),
             AUDIT.GUARD: b"alice@example.org alice\nbob@example.org bob\n",
+            AUDIT.OWNER_RULES: b"/^alice@example[.]org$/ alice\n/^bob@example[.]org$/ bob\n",
         }
         self.cfg = dict(
             smtpd_sasl_auth_enable="yes",
@@ -69,12 +70,15 @@ class IngressAuditTests(unittest.TestCase):
             config=lambda key: self.cfg.get(key),
             active=lambda unit: True,
             gids=(141, 142),
-            socket_check=lambda: True)
+            socket_check=lambda: True,
+            guard_pin=lambda sha: True)
 
     def test_exact_matches_are_only_static_compatibility(self):
         results = self.evaluate()
         self.assertEqual(results["AUTH_ACCOUNTS"], "exact_match")
         self.assertEqual(results["FROM_GUARD_POLICY"], "exact_match")
+        self.assertEqual(results["POSTFIX_OWNER_RULES"], "exact_match")
+        self.assertEqual(results["FROM_GUARD_SHA_PIN"], "configured_pinned_only")
         self.assertEqual(results["SASL_TLS_CONFIG"], "configured_only")
         self.assertEqual(results["SENDER_LOGIN_CONFIG"], "configured_only")
         self.assertEqual(results["FROM_GUARD_MILTER_CONFIG"],
@@ -101,6 +105,36 @@ class IngressAuditTests(unittest.TestCase):
         self.assertEqual(self.evaluate()["OVERALL"], "not_ready")
         self.blobs[AUDIT.GUARD] = b"alice@example.org bob\nalice@example.org alice\n"
         self.assertEqual(self.evaluate()["FROM_GUARD_POLICY"], "unavailable_or_unsafe")
+
+    def test_postfix_owner_regexp_table_must_match_literal_map(self):
+        self.blobs[AUDIT.OWNER_RULES] = b"/^.*$/ alice\n"
+        result = self.evaluate()
+        self.assertEqual(result["POSTFIX_OWNER_RULES"], "different")
+        self.assertEqual(result["OVERALL"], "not_ready")
+        self.blobs[AUDIT.OWNER_RULES] = b"/^alice@example[.]org$/ alice\n"
+        self.assertEqual(self.evaluate()["POSTFIX_OWNER_RULES"], "different")
+
+    def test_guard_must_have_sha_pinned_to_exact_root_policy(self):
+        state = AUDIT.assess(
+            self.rows, MAP,
+            read_file=lambda path, limit, mode, gid: self.blobs[path],
+            config=lambda key: self.cfg.get(key),
+            active=lambda unit: True, gids=(141, 142),
+            socket_check=lambda: True, guard_pin=lambda sha: False)
+        self.assertEqual(state["FROM_GUARD_POLICY"], "exact_match")
+        self.assertEqual(state["FROM_GUARD_SHA_PIN"], "not_verified")
+        self.assertEqual(state["OVERALL"], "not_ready")
+
+    def test_literal_owner_rules_disallow_wildcards_duplicates_and_extras(self):
+        correct = self.blobs[AUDIT.OWNER_RULES]
+        self.assertTrue(AUDIT.exact_postfix_owner_rules(correct, self.rows))
+        for evil in (correct + b"/^.*$/ hacker\n",
+                     correct.replace(b"[.]", b"."),
+                     correct.replace(b"alice\n", b"bob\n"),
+                     correct.replace(b"\n", b"\r\n"),
+                     correct + correct):
+            with self.subTest(example=evil[:50]):
+                self.assertFalse(AUDIT.exact_postfix_owner_rules(evil, self.rows))
 
     def test_config_drift_cannot_be_reported_as_consistent(self):
         mutations = (
@@ -137,7 +171,8 @@ class IngressAuditTests(unittest.TestCase):
             config=lambda key: self.cfg.get(key),
             active=lambda unit: unit != "linuxmailrelay365-from-guard.service",
             gids=(141, 142),
-            socket_check=lambda: False)
+            socket_check=lambda: False,
+            guard_pin=lambda sha: True)
         self.assertEqual(result["SERVICES"], "not_all_active")
         self.assertEqual(result["MILTER_SOCKET"], "not_verified")
         self.assertEqual(result["OVERALL"], "not_ready")
