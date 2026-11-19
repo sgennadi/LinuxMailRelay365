@@ -257,10 +257,12 @@ internal static class EmbeddedAssets
                (verifySigning ? "" : "--inventory-only") + "\n";
     }
 
-    internal static string BuildTpmDependenciesBundle(string profile, string? reviewedSha = null)
+    internal static string BuildTpmDependenciesBundle(string profile, string? reviewedSha = null, bool inspectProvider = false)
     {
         if (profile is not ("auto" or "runtime" or "build-prereqs" or "pkcs11" or "native-provider"))
             throw new ArgumentException("Unsupported TPM dependency profile.");
+        if (reviewedSha is not null && inspectProvider)
+            throw new ArgumentException("TPM provider inspection cannot apply packages.");
         if (reviewedSha is not null &&
             !Regex.IsMatch(reviewedSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
             throw new ArgumentException("Expected a reviewed TPM dependencies SHA256.");
@@ -268,6 +270,8 @@ internal static class EmbeddedAssets
         if (reviewedSha is not null)
             args += " --apply --approve-sha256 " + reviewedSha +
                     " --confirm INSTALL_TPM2_DEPENDENCIES";
+        else if (inspectProvider)
+            args += " --inspect-provider";
         return "set -Eeuo pipefail\numask 077\n" +
                "work=$(mktemp -d /tmp/lmr365-tpmdeps.XXXXXXXX)\n" +
                "trap 'rm -rf -- \"$work\"' EXIT\n" +
