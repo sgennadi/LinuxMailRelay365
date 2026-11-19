@@ -112,6 +112,8 @@ internal sealed class MainForm : Form
     private string hardwareCutoverSummary = "";
     private string? verifiedHardwarePreflightSha;
     private string? verifiedHardwarePreflightContext;
+    private string? verifiedHardwareSmtpAuthSha;
+    private string? verifiedHardwareSmtpAuthContext;
     private string? reviewedHardwareCutoverSha;
     private string? reviewedHardwareCutoverContext;
     private string? listedHardwareBackupsContext;
@@ -221,6 +223,8 @@ internal sealed class MainForm : Form
             hardwareCutoverSummary = "";
             verifiedHardwarePreflightSha = null;
             verifiedHardwarePreflightContext = null;
+            verifiedHardwareSmtpAuthSha = null;
+            verifiedHardwareSmtpAuthContext = null;
             listedHardwareBackupsContext = null;
             hardwareCutoverBackup.Items.Clear();
             reviewedHardwareStageSha = null;
@@ -622,6 +626,16 @@ internal sealed class MainForm : Form
                                 "Последняя проверка токена Entra с подготовленным TPM/HSM прошла. Токен не сохранён; перед активацией будет выполнена новая проверка.",
                                 "Staged TPM/HSM Entra token check passed. The token was not stored; activation always performs a fresh check.",
                                 "בדיקת אסימון Entra הצליחה. האסימון לא נשמר, וההפעלה דורשת בדיקה נוספת.")));
+                        if (verifiedHardwareSmtpAuthSha == reviewedHardwareCutoverSha &&
+                            verifiedHardwareSmtpAuthContext == SecurityOptionsStore.Identity(Endpoint()) + "|" + SelectedHardwareCutoverTarget())
+                            AddLine(page, UiTheme.Text(T(
+                                "Exchange Online: проверка STARTTLS и AUTH XOAUTH2 прошла без MAIL/RCPT/DATA. Реальная доставка ещё не проверена.",
+                                "Exchange Online STARTTLS and AUTH XOAUTH2 passed without MAIL/RCPT/DATA. Recipient delivery is still unverified.",
+                                "אימות SMTP AUTH XOAUTH2 הצליח ללא שליחת דואר.")));
+                        AddAction(page, T("Проверить SMTP AUTH XOAUTH2 без отправки письма...",
+                                          "Test Exchange SMTP AUTH XOAUTH2 (no mail sent)...",
+                                          "בדיקת SMTP AUTH ללא שליחת דואר"),
+                                          VerifyStagedExchangeSmtpAuthAsync, false, "shield", "hardware-staged-smtp-auth");
                         AddAction(page, T("Проверить получение токена Entra новым TPM/HSM (без смены OAuth)...",
                                           "Verify staged TPM/HSM Entra token without switching...",
                                           "בדיקת אסימון Entra ללא שינוי זהות OAuth"),
@@ -3101,6 +3115,8 @@ internal sealed class MainForm : Form
             hardwareCutoverSummary = "";
             verifiedHardwarePreflightSha = null;
             verifiedHardwarePreflightContext = null;
+            verifiedHardwareSmtpAuthSha = null;
+            verifiedHardwareSmtpAuthContext = null;
             reviewedHardwareCutoverSha = null;
             reviewedHardwareCutoverContext = null;
             listedHardwareBackupsContext = null;
@@ -3577,6 +3593,8 @@ internal sealed class MainForm : Form
         {
             verifiedHardwarePreflightSha = null;
             verifiedHardwarePreflightContext = null;
+            verifiedHardwareSmtpAuthSha = null;
+            verifiedHardwareSmtpAuthContext = null;
             reviewedHardwareCutoverSha = null;
             reviewedHardwareCutoverContext = null;
             throw new InvalidOperationException("Staged identity, hardware key or certificate changed. Review the plan again.");
@@ -3602,6 +3620,55 @@ internal sealed class MainForm : Form
         verifiedHardwarePreflightContext = context;
         WriteLine(result.StdOut.Trim());
         WriteLine("Staged hardware key acquired an Entra application token without activating a mail transport. Exchange SMTP authorization and recipient delivery still need a separate test.");
+        RenderPage();
+    }
+
+    private async Task VerifyStagedExchangeSmtpAuthAsync()
+    {
+        if (linuxSecurity is null)
+            throw new InvalidOperationException("Run Linux discovery before staged SMTP AUTH verification.");
+        var endpoint = Endpoint();
+        string target = SelectedHardwareCutoverTarget();
+        string context = SecurityOptionsStore.Identity(endpoint) + "|" + target;
+        if (reviewedHardwareCutoverSha is null || reviewedHardwareCutoverContext != context)
+            throw new InvalidOperationException("Review the exact staged OAuth cutover plan first.");
+        string sha = reviewedHardwareCutoverSha;
+        var fresh = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHardwareOAuthCutoverBundle(target, "plan"), TimeSpan.FromSeconds(90));
+        fresh.EnsureSuccess();
+        var digest = System.Text.RegularExpressions.Regex.Match(fresh.StdOut,
+            @"(?m)^HARDWARE_CUTOVER_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        if (!digest.Success || digest.Groups[1].Value != sha ||
+            !fresh.StdOut.Contains("HARDWARE_CUTOVER_APPLIED=no", StringComparison.Ordinal))
+        {
+            reviewedHardwareCutoverSha = null;
+            reviewedHardwareCutoverContext = null;
+            verifiedHardwareSmtpAuthSha = null;
+            verifiedHardwareSmtpAuthContext = null;
+            throw new InvalidOperationException("Hardware OAuth signing, certificate or provider changed. Review the staged plan again.");
+        }
+        if (MessageBox.Show(this, T(
+            "Будет установлен реальный STARTTLS-сеанс с smtp.office365.com:587 и выполнен AUTH XOAUTH2 через подготовленный TPM/HSM-ключ. Команды MAIL FROM, RCPT TO и DATA не отправляются. Активный app.json, Postfix и очередь не меняются. Продолжить?",
+            "A real STARTTLS connection to smtp.office365.com:587 will authenticate using AUTH XOAUTH2 with the staged TPM/HSM key. No MAIL FROM, RCPT TO or DATA command is sent; active app.json, Postfix and mail queue are unchanged. Continue?",
+            "תתבצע בדיקת STARTTLS ו-SMTP AUTH אמיתית ללא שליחת דואר וללא שינוי Postfix. להמשיך?"),
+            "LinuxMailRelay365 | Staged Exchange SMTP AUTH",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildHardwareOAuthCutoverBundle(target, "smtp-auth-preflight", approvalSha: sha),
+            TimeSpan.FromMinutes(5));
+        result.EnsureSuccess();
+        if (!result.StdOut.Contains("HARDWARE_CUTOVER_STAGED_ONLY=yes", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_SMTP_STARTTLS_VERIFIED=yes", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_SMTP_AUTH_XOAUTH2_VERIFIED=yes", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_MAIL_FROM_RCPT_DATA_SENT=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_ACTIVE_OAUTH_CHANGED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_TOKEN_PRINTED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("HARDWARE_CUTOVER_APPLIED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("Exchange SMTP AUTH preflight did not prove the required non-delivery status.");
+        verifiedHardwareSmtpAuthSha = sha;
+        verifiedHardwareSmtpAuthContext = context;
+        WriteLine(result.StdOut.Trim());
+        WriteLine("Exchange Online STARTTLS and XOAUTH2 authentication passed with staged hardware OAuth. No message sent. Recipient delivery still requires authorized end-to-end tests.");
         RenderPage();
     }
 
@@ -3647,6 +3714,8 @@ internal sealed class MainForm : Form
         reviewedHardwareCutoverContext = null;
         verifiedHardwarePreflightSha = null;
         verifiedHardwarePreflightContext = null;
+        verifiedHardwareSmtpAuthSha = null;
+        verifiedHardwareSmtpAuthContext = null;
         hardwareCutoverSummary = response.StdOut.Trim();
         WriteLine(hardwareCutoverSummary);
         WriteLine("Hardware OAuth identity activated. MTA, certificate and TPM key files were NOT restarted, replaced or deleted. Check the live mail path separately.");
