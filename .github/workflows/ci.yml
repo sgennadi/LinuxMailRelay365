@@ -22,6 +22,8 @@ jobs:
           python3 -m py_compile linux/sidecar-from-owner-milter.py
           python3 -m py_compile linux/manage-tpm-dependencies.py
           python3 -m unittest discover -v -s tests -p test_tpm_dependencies.py
+          python3 -m py_compile linux/verify-hardware-oauth.py
+          python3 -m unittest discover -v -s tests -p test_verify_hardware_oauth.py
           python3 linux/sidecar-from-owner-milter.py --self-test
           python3 -m unittest discover -v -s tests -p test_sidecar_from_owner_milter.py
           python3 -m unittest discover -v -s tests
@@ -107,6 +109,8 @@ jobs:
           set -Eeuo pipefail
           python3 linux/platform-compat.py --smtp-port 2526 | tee /tmp/lmr365-platform.log
           python3 -m unittest discover -v -s tests -p test_tpm_dependencies.py
+          python3 -m py_compile linux/verify-hardware-oauth.py
+          python3 -m unittest discover -v -s tests -p test_verify_hardware_oauth.py
           grep -Fx 'OS_FAMILY=rhel' /tmp/lmr365-platform.log
           grep -Fx 'SMTP_PORT=2526' /tmp/lmr365-platform.log
           grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-platform.log
