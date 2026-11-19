@@ -235,7 +235,7 @@ def check_smtp_auth(config, token):
 # Direct supervised delivery acceptance is independent of the Postfix pipe.
 # It has no arbitrary message body, staged identity or recipient CLI argument.
 ACCEPTANCE_EMAIL = re.compile(
-    r'^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+    r'^(?![^@]*\.\.)(?:[A-Za-z0-9](?:[A-Za-z0-9._+-]{0,62}[A-Za-z0-9_+-])?)@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
     r'(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$')
 ACCEPTANCE_ID = re.compile(r'^[a-f0-9]{32}$')
 
