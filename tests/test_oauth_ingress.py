@@ -39,7 +39,9 @@ class IngressAuditTests(unittest.TestCase):
             AUDIT.HASHES: ("alice:" + salted + "\nbob:" + salted + "\n").encode("ascii"),
             AUDIT.GUARD: b"alice@example.org alice\nbob@example.org bob\n",
             AUDIT.OWNER_RULES: b"/^alice@example[.]org$/ alice\n/^bob@example[.]org$/ bob\n",
+            AUDIT.SMTP_PORT_FILE: b"46500\n",
         }
+        self.master = ("46500 inet n - n - - smtpd\n", "")
         self.cfg = dict(
             smtpd_sasl_auth_enable="yes",
             smtpd_tls_security_level="encrypt",
@@ -71,7 +73,8 @@ class IngressAuditTests(unittest.TestCase):
             active=lambda unit: True,
             gids=(141, 142),
             socket_check=lambda: True,
-            guard_pin=lambda sha: True)
+            guard_pin=lambda sha: True,
+            master_reader=lambda: self.master)
 
     def test_exact_matches_are_only_static_compatibility(self):
         results = self.evaluate()
@@ -85,11 +88,47 @@ class IngressAuditTests(unittest.TestCase):
                          "configured_fail_closed_only")
         self.assertEqual(results["SERVICES"], "all_report_active")
         self.assertEqual(results["MILTER_SOCKET"], "metadata_matches_only")
+        self.assertEqual(results["MASTER_CF_SERVICE"], "single_private_smtpd_no_overrides")
         self.assertEqual(results["TRANSPORT"], "eop_smtp_not_xoauth2_multi")
         self.assertEqual(results["OVERALL"],
                          "ingress_config_consistent_not_live_verified")
         self.assertNotIn("alice@", repr(results))
         self.assertNotIn("service@", repr(results))
+
+
+    def test_master_readback_rejects_extra_listener_and_overrides(self):
+        scenarios = (
+            ("46500 inet n - n - - smtpd\n46501 inet n - n - - smtpd\n", "", "unexpected_inet_service"),
+            ("46500 inet n - n - - smtpd\n", "46500/inet/smtpd_sasl_auth_enable = no\n",
+             "per_service_overrides_present"),
+            ("46500/inet = 46500 inet n - n - - smtpd\n", "", "unavailable_or_unsafe"),
+        )
+        for master, overrides, status in scenarios:
+            with self.subTest(status=status):
+                self.master = (master, overrides)
+                self.assertEqual(self.evaluate()["MASTER_CF_SERVICE"], status)
+                self.assertEqual(self.evaluate()["OVERALL"], "not_ready")
+
+    def test_readback_missing_and_port_mismatch_fail_closed(self):
+        self.master = None
+        self.assertEqual(self.evaluate()["MASTER_CF_SERVICE"], "unavailable_or_unsafe")
+        self.master = ("46500 inet n - n - - smtpd\n", "")
+        self.blobs[AUDIT.SMTP_PORT_FILE] = b"2525\n"
+        self.assertEqual(self.evaluate()["MASTER_CF_SERVICE"], "unexpected_inet_service")
+        self.assertEqual(self.evaluate()["OVERALL"], "not_ready")
+
+    def test_postconf_readback_never_edits_configuration(self):
+        argv = []
+        def run(args, **kwargs):
+            argv.append(args)
+            return mock.Mock(returncode=0, stdout=("46500 inet n - n - - smtpd\n" if args[-1] == "-M" else ""))
+        with mock.patch.object(AUDIT, "_trusted_binary", return_value="/usr/sbin/postconf"), \
+             mock.patch.object(AUDIT.subprocess, "run", side_effect=run):
+            self.assertEqual(AUDIT.read_master_readback(), ("46500 inet n - n - - smtpd\n", ""))
+        self.assertEqual(argv, [
+            ["/usr/sbin/postconf", "-c", AUDIT.CONF, "-M"],
+            ["/usr/sbin/postconf", "-c", AUDIT.CONF, "-P"],
+        ])
 
     def test_login_mismatch_and_duplicate_are_not_reported_ready(self):
         self.blobs[AUDIT.HASHES] = self.blobs[AUDIT.HASHES].replace(b"bob:", b"eve:")

@@ -26,6 +26,7 @@ CONF = "/etc/linuxmailrelay365/sidecar-postfix"
 SOCKET = "/run/linuxmailrelay365-from-guard/from-guard.sock"
 MILTER = "unix:" + SOCKET
 OWNER_MAP = "regexp:" + CONF + "/eop-sender-owners.regexp"
+SMTP_PORT_FILE = CONF + "/smtp-port"
 SENDER_POLICY = "reject_authenticated_sender_login_mismatch, check_sender_access regexp:" + CONF + "/eop-fixed-sender.regexp, reject"
 HASH_RE = re.compile(
     r"\{SHA512-CRYPT\}\$6\$(?:rounds=[0-9]{3,9}\$)?"
@@ -161,6 +162,55 @@ def read_postconf(key):
         return None
 
 
+
+def read_master_readback():
+    """Read only Postfix master.cf services and explicit -o overrides."""
+    binary = _trusted_binary("postconf", ("/usr/sbin/postconf", "/usr/bin/postconf"))
+    if not binary:
+        return None
+    output = []
+    for flag in ("-M", "-P"):
+        try:
+            proc = subprocess.run([binary, "-c", CONF, flag],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                universal_newlines=True, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if proc.returncode or not isinstance(proc.stdout, str) or len(proc.stdout) > 32768:
+            return None
+        output.append(proc.stdout)
+    return tuple(output)
+
+
+def inspect_master_service(port_raw, master_text, overrides):
+    """Fail closed on unexpected inet listeners or any master.cf -o overrides."""
+    if not isinstance(port_raw, bytes) or not re.fullmatch(rb"[0-9]{4,5}\n?", port_raw):
+        return "unavailable_or_unsafe"
+    port = int(port_raw.strip())
+    if port < 1024 or port > 65535:
+        return "unavailable_or_unsafe"
+    if (not isinstance(master_text, str) or not isinstance(overrides, str) or
+            not 1 <= len(master_text) <= 32768 or len(overrides) > 32768 or
+            any(c in master_text + overrides for c in ("\x00", "\r"))):
+        return "unavailable_or_unsafe"
+    listeners = []
+    for line in master_text.splitlines():
+        if not line or line.startswith(("#", " ", "\t")):
+            continue
+        fields = line.split()
+        if len(fields) < 2:
+            return "unavailable_or_unsafe"
+        if fields[1] == "inet":
+            if len(fields) != 8 or fields[0] != str(port) or fields[-1] != "smtpd":
+                return "unexpected_inet_service"
+            listeners.append(fields[0])
+    if len(listeners) != 1:
+        return "unexpected_inet_service"
+    if overrides.strip():
+        return "per_service_overrides_present"
+    return "single_private_smtpd_no_overrides"
+
+
 def service_active(unit):
     if unit not in ("linuxmailrelay365-sidecar.service",
                     "linuxmailrelay365-smtp-auth.service",
@@ -195,7 +245,7 @@ def socket_metadata():
 
 
 def assess(rows, auditor, read_file=None, config=None, active=None,
-           gids=None, socket_check=None, guard_pin=None):
+           gids=None, socket_check=None, guard_pin=None, master_reader=None):
     """Pure report orchestration: mocked inputs can test every negative branch.
 
     Even an entirely positive report is only a *static configuration* review.
@@ -207,6 +257,7 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
     active = active or service_active
     socket_check = socket_check or socket_metadata
     guard_pin = guard_pin or guard_pinned_policy
+    master_reader = master_reader or read_master_readback
     if gids is None:
         try:
             gids = (grp.getgrnam("dovecot").gr_gid, grp.getgrnam("postfix").gr_gid)
@@ -224,6 +275,7 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
         "FROM_GUARD_MILTER_CONFIG": "not_verified",
         "SERVICES": "not_all_active",
         "MILTER_SOCKET": "not_verified",
+        "MASTER_CF_SERVICE": "unavailable_or_unsafe",
         "TRANSPORT": "not_multi_mailbox_xoauth2",
         "OVERALL": "not_ready",
     }
@@ -261,6 +313,14 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
             pass
     else:
         result["POSTFIX_OWNER_RULES"] = "over_64_account_limit"
+
+    try:
+        readback = master_reader()
+        if readback is not None and len(readback) == 2:
+            port_data = read_file(SMTP_PORT_FILE, 8, 0o644, None)
+            result["MASTER_CF_SERVICE"] = inspect_master_service(port_data, readback[0], readback[1])
+    except (OSError, ValueError, AuditRefused, auditor.Refused, TypeError):
+        pass
 
     values = {}
     for key in (
@@ -319,6 +379,7 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
         ("FROM_GUARD_MILTER_CONFIG", "configured_fail_closed_only"),
         ("SERVICES", "all_report_active"),
         ("MILTER_SOCKET", "metadata_matches_only"),
+        ("MASTER_CF_SERVICE", "single_private_smtpd_no_overrides"),
     )):
         result["OVERALL"] = "ingress_config_consistent_not_live_verified"
     return result
@@ -347,7 +408,7 @@ def main(argv=None):
         for key in ("AUTH_ACCOUNTS", "FROM_GUARD_POLICY", "POSTFIX_OWNER_RULES",
                     "FROM_GUARD_SHA_PIN", "SASL_TLS_CONFIG",
                     "SENDER_LOGIN_CONFIG", "FROM_GUARD_MILTER_CONFIG",
-                    "SERVICES", "MILTER_SOCKET", "TRANSPORT", "OVERALL"):
+                    "SERVICES", "MILTER_SOCKET", "MASTER_CF_SERVICE", "TRANSPORT", "OVERALL"):
             print("OAUTH_INGRESS_" + key + "=" + report[key])
         print("OAUTH_INGRESS_REAL_SMTP_LOGIN_VERIFIED=no")
         print("OAUTH_INGRESS_REAL_FROM_GUARD_MESSAGE_VERIFIED=no")

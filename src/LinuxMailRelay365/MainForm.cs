@@ -2614,6 +2614,7 @@ internal sealed class MainForm : Form
             ["OAUTH_INGRESS_FROM_GUARD_MILTER_CONFIG"] = @"\A(?:not_verified|configured_fail_closed_only)\z",
             ["OAUTH_INGRESS_SERVICES"] = @"\A(?:not_all_active|all_report_active)\z",
             ["OAUTH_INGRESS_MILTER_SOCKET"] = @"\A(?:not_verified|metadata_matches_only)\z",
+            ["OAUTH_INGRESS_MASTER_CF_SERVICE"] = @"\A(?:unavailable_or_unsafe|single_private_smtpd_no_overrides|unexpected_inet_service|per_service_overrides_present)\z",
             ["OAUTH_INGRESS_TRANSPORT"] = @"\A(?:not_multi_mailbox_xoauth2|eop_smtp_not_xoauth2_multi)\z",
             ["OAUTH_INGRESS_OVERALL"] = @"\A(?:not_ready|ingress_config_consistent_not_live_verified)\z",
             ["OAUTH_INGRESS_REAL_SMTP_LOGIN_VERIFIED"] = @"\Ano\z",
@@ -2652,7 +2653,7 @@ internal sealed class MainForm : Form
             "ingress_config_consistent_not_live_verified";
         oauthIngressAuditSummary = consistent
             ? T("SMTP AUTH, Dovecot и From Guard структурно согласованы с картой. Это НЕ реальный SMTP-тест и НЕ готовый XOAUTH2: почтовый поток остаётся заблокированным.",
-                "SMTP AUTH, Dovecot and From Guard are structurally consistent with the map. NOT a live SMTP test or multi-mailbox XOAUTH2 readiness; sending remains disabled.",
+                "SMTP AUTH, Dovecot, From Guard and Postfix master.cf readback are structurally consistent. NOT a live SMTP test or multi-mailbox XOAUTH2 readiness; sending remains disabled.",
                 "התצורה תואמת למפה בלבד. שליחת XOAUTH2 עדיין חסומה.")
             : T("Обнаружены отсутствующие или несовместимые настройки SMTP AUTH / From Guard. Проверьте диагностические статусы. Применение запрещено.",
                 "SMTP AUTH / From Guard is missing or differs from the planned map. See sanitized status report. Deployment remains blocked.",
