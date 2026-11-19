@@ -243,19 +243,27 @@ def simulate_policy(rows):
                                            message) != identity_path:
             raise Refused("policy_simulation_wrong_oauth_identity")
         tested += 1
+        # Sentinels are guaranteed DIFFERENT from this row's values, even
+        # when the configured organization happens to use the test strings.
+        bad_login = ("not-authorized-user" if login != "not-authorized-user"
+                     else "denied-account")
+        bad_sender = ("other@invalid.example" if sender != "other@invalid.example"
+                      else "different@invalid.example")
+        bad_mailbox = ("other@invalid.example" if mailbox != "other@invalid.example"
+                       else "different@invalid.example")
         invalid = (
-            ("not-authorized-user", sender, mailbox, message),
-            (login, "other@invalid.example", mailbox, message),
-            (login, sender, "other@invalid.example", message),
+            (bad_login, sender, mailbox, message),
+            (login, bad_sender, mailbox, message),
+            (login, sender, bad_mailbox, message),
             (login, sender, mailbox, message.replace(
                 ("From: <" + sender + ">").encode("ascii"),
-                b"From: <other@invalid.example>")),
+                ("From: <" + bad_sender + ">").encode("ascii"))),
             (login, sender, mailbox, message.replace(
                 b"Subject: local policy test\r\n",
-                b"Sender: <other@invalid.example>\r\nSubject: local policy test\r\n")),
+                ("Sender: <" + bad_sender + ">\r\nSubject: local policy test\r\n").encode("ascii"))),
             (login, sender, mailbox, message.replace(
                 b"Subject: local policy test\r\n",
-                b"From: <other@invalid.example>\r\nSubject: local policy test\r\n")),
+                ("From: <" + bad_sender + ">\r\nSubject: local policy test\r\n").encode("ascii"))),
         )
         for bad_login, bad_sender, bad_mailbox, bad_message in invalid:
             try:
