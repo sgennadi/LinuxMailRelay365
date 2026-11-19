@@ -186,6 +186,7 @@ internal sealed class MainForm : Form
         Directory.CreateDirectory(dataDirectory);
         sshPassword.UseSystemPasswordChar = true;
         sudoPassword.UseSystemPasswordChar = true;
+        sshFingerprint.AccessibleDescription = "Optional SHA256 fingerprint. Leave blank to review the server key before sending the SSH password.";
         sshAuthMode.Items.AddRange(["SSH key / ssh-agent", "SSH username + password"]);
         mailTransport.Items.AddRange([
             "XOAUTH2 · sender mailbox (available)",
@@ -656,9 +657,13 @@ internal sealed class MainForm : Form
                 if (sshAuthMode.SelectedIndex == 1)
                 {
                     AddField(page, T("Пароль SSH (не сохраняется)", "SSH password (not saved)", "סיסמת SSH"), sshPassword);
-                    AddField(page, T("Проверенный SSH host key SHA256 (обязательно, вне SSH-соединения)",
-                                     "Verified SSH host key SHA256 (required, obtain out-of-band)",
-                                     "טביעת SHA256 מאומתת של השרת"), sshFingerprint);
+                    sshFingerprint.PlaceholderText = T(
+                        "Необязательно — предложить подтвердить при подключении",
+                        "Optional — confirm on first connection",
+                        "אופציונלי — אישור בחיבור ראשון");
+                    AddField(page, T("SSH host key SHA256 (необязательно)",
+                                     "SSH host key SHA256 (optional)",
+                                     "טביעת SHA256 של SSH (אופציונלי)"), sshFingerprint);
                 }
                 else
                 {
@@ -668,9 +673,9 @@ internal sealed class MainForm : Form
                                  "sudo password (optional, not saved)", "סיסמת sudo"), sudoPassword);
                 AddAction(page, T("Проверить SSH и sudo", "Check SSH and sudo", "בדיקת SSH ו-sudo"), CheckSshAsync, true, "ssh", "ssh");
                 AddLine(page, UiTheme.Text(T(
-                    "SSH host key проверяется обязательно: ключевой режим — через known_hosts, парольный — по подтверждённому SHA256. Пароли не сохраняются на диск и не передаются в аргументах процесса.",
-                    "Host-key verification is mandatory: known_hosts for key mode, verified SHA256 for password mode. Passwords are never persisted or placed in command arguments.",
-                    "אימות מפתח השרת חובה. סיסמאות אינן נשמרות.")));
+                    "Отпечаток SHA256 можно не вводить: при первом подключении покажем ключ сервера для явного подтверждения до отправки пароля. При возможности сверяйте его через консоль Linux. Режим SSH-ключа использует known_hosts. Пароли не сохраняются.",
+                    "SHA256 is optional: on first connection the server key is shown for explicit approval BEFORE password authentication. Verify it out of band when possible. SSH key mode uses known_hosts. Passwords are not stored.",
+                    "טביעת SHA256 אינה חובה; המפתח מוצג לאישור לפני שליחת הסיסמה. מומלץ לאמת בנפרד.")));
                 break;
             case 1:
                 EnsureSecurityLoaded();
@@ -1643,6 +1648,43 @@ internal sealed class MainForm : Form
         return Task.CompletedTask;
     }
 
+    private bool ConfirmFirstUseSshHostKey(SshEndpoint endpoint, string sha256)
+    {
+        // HostKeyReceived is raised on the SSH worker thread before AUTH.
+        // Marshal the decision to the visible GUI; no password is sent first.
+        if (IsDisposed || Disposing) return false;
+        if (InvokeRequired)
+        {
+            try
+            {
+                return (bool)Invoke(new Func<SshEndpoint, string, bool>(
+                    ConfirmFirstUseSshHostKey), endpoint, sha256);
+            }
+            catch (InvalidOperationException) { return false; }
+        }
+        if (!string.Equals(host.Text.Trim(), endpoint.Host, StringComparison.OrdinalIgnoreCase) ||
+            !int.TryParse(sshPort.Text, out int port) || port != endpoint.Port ||
+            !string.Equals(sshUser.Text.Trim(), endpoint.Username, StringComparison.Ordinal))
+            return false;
+        var choice = MessageBox.Show(this,
+            T("Это первый SSH-контакт с " + endpoint.Host + ":" + endpoint.Port +
+              ". Получен отпечаток ключа сервера:\n\nSHA256:" + sha256 +
+              "\n\nЭтот ключ ещё НЕ проверен независимым способом. Для защиты от перехвата по возможности сверьте его на Linux-сервере через консоль.\n\nДоверять этому ключу только для текущего запуска программы и продолжить?",
+              "First SSH connection to " + endpoint.Host + ":" + endpoint.Port +
+              ". Server host key fingerprint:\n\nSHA256:" + sha256 +
+              "\n\nThis key has NOT been independently verified. For MITM protection, compare it using your Linux server console if available.\n\nTrust this key for the current application session and continue?",
+              "מפתח SSH חדש לשרת " + endpoint.Host + ".\nSHA256:" + sha256 +
+              "\nיש לאמת את המפתח ממקור אמין לפני אישור. להמשיך?"),
+            T("Подтверждение SSH host key", "Verify first-use SSH host key", "אימות מפתח SSH"),
+            MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (choice != DialogResult.Yes) return false;
+        // Session-only pin. Never persist an unverified key to disk.
+        sshFingerprint.Text = "SHA256:" + sha256;
+        WriteLine("SSH first-use host key approved and pinned in memory for this session.");
+        return true;
+    }
+
     private SshEndpoint Endpoint()
     {
         if (!int.TryParse(sshPort.Text, out int port)) throw new ArgumentException("Invalid SSH port.");
@@ -1653,7 +1695,10 @@ internal sealed class MainForm : Form
             passwordMode ? "" : sshKey.Text.Trim(),
             passwordMode ? sshPassword.Text : "",
             passwordMode ? sshFingerprint.Text.Trim() : "",
-            sudoPassword.Text);
+            sudoPassword.Text)
+        {
+            ConfirmFirstUseHostKey = passwordMode ? ConfirmFirstUseSshHostKey : null
+        };
         endpoint.Validate();
         return endpoint;
     }

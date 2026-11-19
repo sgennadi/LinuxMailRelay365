@@ -11,6 +11,41 @@ internal static class Program
         // makes failures inspectable in unattended GitHub Actions runs.
         var checks = new List<(string Name, Func<bool> Run)>
         {
+            ("SSH optional host key requires explicit approval before password AUTH", () =>
+            {
+                const string hostKey = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
+                int approvals = 0;
+                var firstUse = new SshEndpoint("relay.example.org", 22, "root", "", "fake-test-password")
+                {
+                    ConfirmFirstUseHostKey = (_, offered) =>
+                    {
+                        approvals++;
+                        return offered == hostKey;
+                    }
+                };
+                firstUse.Validate(); // Empty pinned fingerprint is valid with a callback.
+                if (!SshRemote.IsPasswordHostKeyTrusted(firstUse, hostKey) ||
+                    approvals != 1 ||
+                    SshRemote.IsPasswordHostKeyTrusted(firstUse, "invalid-sha256") ||
+                    approvals != 1) return false;
+                var denied = firstUse with { ConfirmFirstUseHostKey = (_, _) => false };
+                if (SshRemote.IsPasswordHostKeyTrusted(denied, hostKey)) return false;
+                var manuallyPinned = firstUse with
+                {
+                    HostKeySha256 = "SHA256:" + hostKey,
+                    ConfirmFirstUseHostKey = (_, _) => throw new Exception("Pinned SSH must never ask again")
+                };
+                manuallyPinned.Validate();
+                if (!SshRemote.IsPasswordHostKeyTrusted(manuallyPinned, hostKey) ||
+                    SshRemote.IsPasswordHostKeyTrusted(manuallyPinned,
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ")) return false;
+                try
+                {
+                    new SshEndpoint("relay.example.org", 22, "root", "", "fake-test-password").Validate();
+                    return false; // No fingerprint and no callback MUST be refused.
+                }
+                catch (ArgumentException) { return true; }
+            }),
             ("Security plans", SecurityOptionsSelfTest.Run),
             ("Entra public certificate bridge", () =>
             {

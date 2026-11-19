@@ -1502,3 +1502,8 @@ These results prove only local ingress policy and queue acceptance on
 disposable CI hosts. They **do not** enable or prove multi-mailbox XOAUTH2,
 real Microsoft 365 Connector, Exchange Send As, remote tenant delivery or
 physical host acceptance. See `docs/FINAL_ACCEPTANCE.md`.
+
+
+### Optional SSH host-key fingerprint in password mode
+
+With SSH password authentication, the host-key SHA256 input is **optional**: when blank, the wizard displays the server's presented fingerprint and requires the operator to explicitly approve it before password authentication. Trust is session-only and pins the SHA256 for later connections in the same application session. A manually entered fingerprint is checked strictly with no fallback on mismatch. When possible, independently verify the fingerprint on the Linux console; first-use approval does not itself prevent a first-connection MITM attack. SSH key/agent mode still requires an existing trusted entry in OpenSSH `known_hosts`.

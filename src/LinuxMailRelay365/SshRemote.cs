@@ -8,6 +8,10 @@ namespace LinuxMailRelay365;
 internal sealed record SshEndpoint(string Host, int Port, string Username, string KeyPath,
     string Password = "", string HostKeySha256 = "", string SudoPassword = "")
 {
+    // The GUI may explicitly confirm an unfamiliar server key on first use.
+    // A caller without this approval callback MUST supply an expected SHA256.
+    internal Func<SshEndpoint, string, bool>? ConfirmFirstUseHostKey { get; init; }
+
     internal void Validate()
     {
         if (string.IsNullOrWhiteSpace(Host) || Host.Length > 253 ||
@@ -26,8 +30,13 @@ internal sealed record SshEndpoint(string Host, int Port, string Username, strin
                 throw new ArgumentException("Choose either SSH password or a key, not both.");
             string fp = HostKeySha256.StartsWith("SHA256:", StringComparison.OrdinalIgnoreCase)
                 ? HostKeySha256[7..] : HostKeySha256;
-            if (!Regex.IsMatch(fp.TrimEnd('='), @"^[A-Za-z0-9+/]{43}$", RegexOptions.CultureInvariant))
-                throw new ArgumentException("Password SSH requires an out-of-band verified SHA256 host key fingerprint.");
+            if (fp.Length == 0)
+            {
+                if (ConfirmFirstUseHostKey is null)
+                    throw new ArgumentException("Password SSH requires a pinned SHA256 or explicit first-use host key approval.");
+            }
+            else if (!Regex.IsMatch(fp.TrimEnd('='), @"^[A-Za-z0-9+/]{43}$", RegexOptions.CultureInvariant))
+                throw new ArgumentException("Invalid SSH host key SHA256 fingerprint.");
         }
     }
 }
@@ -46,6 +55,24 @@ internal sealed record RemoteResult(int ExitCode, string StdOut, string StdErr)
 
 internal static class SshRemote
 {
+    // Called inside SSH.NET HostKeyReceived, before password authentication.
+    // Never silently approve a new or mismatched host key.
+    internal static bool IsPasswordHostKeyTrusted(SshEndpoint endpoint, string receivedSha256)
+    {
+        if (string.IsNullOrEmpty(receivedSha256)) return false;
+        string actual = receivedSha256.StartsWith("SHA256:", StringComparison.OrdinalIgnoreCase)
+            ? receivedSha256[7..] : receivedSha256;
+        actual = actual.TrimEnd('=');
+        if (!Regex.IsMatch(actual, @"^[A-Za-z0-9+/]{43}$", RegexOptions.CultureInvariant))
+            return false;
+        string pinned = endpoint.HostKeySha256.StartsWith("SHA256:", StringComparison.OrdinalIgnoreCase)
+            ? endpoint.HostKeySha256[7..] : endpoint.HostKeySha256;
+        pinned = pinned.TrimEnd('=');
+        if (pinned.Length != 0)
+            return string.Equals(actual, pinned, StringComparison.Ordinal);
+        return endpoint.ConfirmFirstUseHostKey?.Invoke(endpoint, actual) == true;
+    }
+
     internal static async Task<RemoteResult> ExecuteAsync(
         SshEndpoint endpoint, string command, string? input = null,
         TimeSpan? timeout = null, CancellationToken cancellationToken = default)
@@ -113,17 +140,14 @@ internal static class SshRemote
         // password in process command arguments, environment variables or logs.
         return await Task.Run(async () =>
         {
-            string expected = endpoint.HostKeySha256.StartsWith("SHA256:", StringComparison.OrdinalIgnoreCase)
-                ? endpoint.HostKeySha256[7..] : endpoint.HostKeySha256;
-            expected = expected.TrimEnd('=');
             using var client = new SshClient(endpoint.Host, endpoint.Port,
                 endpoint.Username, endpoint.Password);
             client.ConnectionInfo.Timeout = TimeSpan.FromSeconds(15);
             bool trusted = false;
             client.HostKeyReceived += (_, args) =>
             {
-                trusted = string.Equals(args.FingerPrintSHA256.TrimEnd('='), expected,
-                    StringComparison.Ordinal);
+                // This callback runs during key exchange BEFORE password AUTH.
+                trusted = IsPasswordHostKeyTrusted(endpoint, args.FingerPrintSHA256);
                 args.CanTrust = trusted;
             };
             client.Connect();
