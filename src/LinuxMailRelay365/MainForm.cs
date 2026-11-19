@@ -90,6 +90,10 @@ internal sealed class MainForm : Form
     private string? reviewedTpmPlanContext;
     private string tpmPlanSummary = "";
     private string hardwareOAuthSummary = "";
+    private readonly TextBox tpmKeyHandle = Field("0x81010001");
+    private string tpmKeySummary = "";
+    private string? reviewedTpmKeyPlanSha;
+    private string? reviewedTpmKeyPlanContext;
     private readonly ComboBox hardwareStageProvider = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 560 };
     private readonly TextBox hardwareStageKeyRef = Field("");
     private string hardwareStageSummary = "";
@@ -171,6 +175,12 @@ internal sealed class MainForm : Form
             "Native TPM2 OpenSSL provider (RHEL 10 only)"
         ]);
         tpmDependencyProfile.SelectedIndex = 0;
+        tpmKeyHandle.TextChanged += (_, _) =>
+        {
+            reviewedTpmKeyPlanSha = null;
+            reviewedTpmKeyPlanContext = null;
+            tpmKeySummary = "";
+        };
         hardwareStageProvider.Items.AddRange([
             "TPM2 OpenSSL provider (existing TPM2 key)",
             "PKCS#11 OpenSSL provider (existing HSM/TPM key)"
@@ -205,6 +215,9 @@ internal sealed class MainForm : Form
             reviewedHardwareStageContext = null;
             hardwareStageSummary = "";
             hardwareStageKeyRef.Text = "";
+            reviewedTpmKeyPlanSha = null;
+            reviewedTpmKeyPlanContext = null;
+            tpmKeySummary = "";
             if (step == 1 && !busy) RenderPage();
         };
         tpmDependencyProfile.SelectedIndexChanged += (_, _) =>
@@ -518,6 +531,28 @@ internal sealed class MainForm : Form
                                       VerifyOfflineHardwareOAuthAsync, false, "shield", "hardware-oauth-signing");
                     if (!string.IsNullOrEmpty(hardwareOAuthSummary))
                         AddLine(page, UiTheme.Text(hardwareOAuthSummary));
+                    AddLine(page, hardwareCutoverTarget);
+                    if (linuxSecurity.HasTpm2)
+                    {
+                        AddLine(page, UiTheme.Text(T(
+                            "TPM2 RSA-ключ: необратимое создание нового persistent key (без автоматического удаления). Только свободный 0x8101xxxx; требуется OpenSSL 3 + tpm2 provider, доступ m365mailer к TPM. Предварительная проверка ничего не изменяет.",
+                            "TPM2 RSA key: creates a new persistent key and NEVER evicts it automatically. Only a free 0x8101xxxx handle; requires OpenSSL 3, tpm2 provider and TPM access for m365mailer. Preview is read-only.",
+                            "יצירת מפתח TPM2 קבוע ללא מחיקה אוטומטית; נדרשת בדיקה ואישור.")));
+                        AddField(page, T("Новый TPM2 persistent handle (0x8101xxxx)",
+                                         "New TPM2 persistent handle (0x8101xxxx)",
+                                         "מזהה TPM2 קבוע חדש"), tpmKeyHandle);
+                        AddAction(page, T("Проверить создание TPM2 RSA-ключа (без изменений)",
+                                          "Review TPM2 key provisioning (read-only)",
+                                          "בדיקת יצירת מפתח TPM2"),
+                                          PreviewTpmKeyAsync, false, "check", "tpm-key-plan");
+                        if (!string.IsNullOrEmpty(tpmKeySummary))
+                            AddLine(page, UiTheme.Text(tpmKeySummary));
+                        if (reviewedTpmKeyPlanSha is not null)
+                            AddAction(page, T("Подтвердить создание TPM2-ключа и сертификата...",
+                                              "Approve TPM2 key and certificate creation...",
+                                              "אישור יצירת מפתח TPM2 ואישור ציבורי"),
+                                              ApplyTpmKeyAsync, false, "shield", "tpm-key-apply");
+                    }
                     AddLine(page, UiTheme.Text(T(
                         "Подготовка hardware-staged.json: на Linux должны уже существовать защищённый TPM2/PKCS#11 провайдер (tpm2.cnf или pkcs11.cnf) и открытый сертификат hardware-app.crt. Ключ не создаётся, программный PEM-ключ не копируется. Для TPM2 введите handle:0x81...... или путь к tpm2-app.key; для PKCS#11 — URI без PIN.",
                         "Prepare hardware-staged.json: the Linux host must already have a protected provider configuration (tpm2.cnf or pkcs11.cnf) and matching public hardware-app.crt. No key is created or copied. Enter a TPM2 persistent handle/TSS2 blob path, or a PIN-free PKCS#11 URI.",
@@ -541,7 +576,6 @@ internal sealed class MainForm : Form
                         "Активация TPM/HSM — только для заранее подготовленного hardware-staged.json. Требует успешной подписи и получения токена Entra до переключения; выполняет резервное копирование и откат при ошибке.",
                         "TPM/HSM cutover requires an existing hardware-staged.json, successful offline signature and Entra token BEFORE activation, with backup and automatic rollback on failure.",
                         "הפעלה דורשת זהות חומרה מוכנה, חתימה תקינה, אימות Entra וגיבוי עם שחזור במקרה כשל.")));
-                    AddLine(page, hardwareCutoverTarget);
                     AddAction(page, T("Предпросмотр переключения TPM/HSM (без изменений)",
                                       "Review hardware OAuth cutover (read-only)",
                                       "תצוגה מקדימה של מעבר חומרה"),
@@ -3008,6 +3042,9 @@ internal sealed class MainForm : Form
             reviewedTpmPlanContext = null;
             tpmPlanSummary = "";
             hardwareOAuthSummary = "";
+            reviewedTpmKeyPlanSha = null;
+            reviewedTpmKeyPlanContext = null;
+            tpmKeySummary = "";
             hardwareStageSummary = "";
             reviewedHardwareStageSha = null;
             reviewedHardwareStageContext = null;
@@ -3082,6 +3119,89 @@ internal sealed class MainForm : Form
         hardwareOAuthSummary = result.StdOut.Trim();
         WriteLine(hardwareOAuthSummary);
         WriteLine("Provider PS256 signature check is local only. TPM provenance, restart continuity and Microsoft 365 acceptance require independent evidence.");
+        RenderPage();
+    }
+
+    private string CurrentTpmKeyContext(SshEndpoint endpoint, string target, string handle) =>
+        SecurityOptionsStore.Identity(endpoint) + "|" + target + "|" + handle;
+
+    private async Task PreviewTpmKeyAsync()
+    {
+        if (linuxSecurity?.HasTpm2 != true)
+            throw new InvalidOperationException("Run Linux discovery and detect TPM 2.0 first.");
+        var endpoint = Endpoint();
+        string target = SelectedHardwareCutoverTarget();
+        string handle = tpmKeyHandle.Text.Trim();
+        reviewedTpmKeyPlanSha = null;
+        reviewedTpmKeyPlanContext = null;
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildTpmOauthProvisionBundle(target, handle),
+            TimeSpan.FromSeconds(120));
+        result.EnsureSuccess();
+        var match = System.Text.RegularExpressions.Regex.Match(result.StdOut,
+            @"(?m)^TPM_PROVISION_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        if (!match.Success ||
+            !result.StdOut.Contains("TPM_PROVISION_KEY_CREATED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("TPM_PROVISION_HANDLE_FREE=yes", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("TPM_PROVISION_ACTIVE_OAUTH_CHANGED=no", StringComparison.Ordinal) ||
+            !result.StdOut.Contains("TPM_PROVISION_ENTRA_CONTACTED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("TPM2 provisioning did not return an intact read-only review.");
+        reviewedTpmKeyPlanSha = match.Groups[1].Value;
+        reviewedTpmKeyPlanContext = CurrentTpmKeyContext(endpoint, target, handle);
+        tpmKeySummary = result.StdOut.Trim();
+        WriteLine(tpmKeySummary);
+        WriteLine("TPM2 handle availability and OpenSSL3 provider reviewed. No persistent key or certificate was created.");
+        RenderPage();
+    }
+
+    private async Task ApplyTpmKeyAsync()
+    {
+        if (linuxSecurity?.HasTpm2 != true)
+            throw new InvalidOperationException("TPM2 must be detected in Linux security discovery.");
+        var endpoint = Endpoint();
+        string target = SelectedHardwareCutoverTarget();
+        string handle = tpmKeyHandle.Text.Trim();
+        if (reviewedTpmKeyPlanSha is null ||
+            reviewedTpmKeyPlanContext != CurrentTpmKeyContext(endpoint, target, handle))
+            throw new InvalidOperationException("Review this exact TPM2 handle and SHA256 plan first.");
+        string sha = reviewedTpmKeyPlanSha;
+        var fresh = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildTpmOauthProvisionBundle(target, handle),
+            TimeSpan.FromSeconds(120));
+        fresh.EnsureSuccess();
+        var actual = System.Text.RegularExpressions.Regex.Match(fresh.StdOut,
+            @"(?m)^TPM_PROVISION_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        if (!actual.Success || actual.Groups[1].Value != sha ||
+            !fresh.StdOut.Contains("TPM_PROVISION_READY_FOR_APPROVED_CREATION=yes", StringComparison.Ordinal))
+        {
+            reviewedTpmKeyPlanSha = null;
+            reviewedTpmKeyPlanContext = null;
+            throw new InvalidOperationException("TPM2 handle, identity or provider changed; review a new plan.");
+        }
+        if (!ConfirmDestructive("LinuxMailRelay365 | Create TPM2 persistent RSA key",
+            T("ЭТО РЕАЛЬНО СОЗДАСТ постоянный аппаратный RSA-ключ в TPM2 по адресу ",
+              "THIS WILL CREATE a new persistent RSA key inside the TPM2 at handle ",
+              "פעולה זו יוצרת מפתח חומרה קבוע ב-TPM2: ") + handle + ".\n" +
+            T("Используется только свободный owner handle, но операция расходует TPM NVRAM. Автоматического удаления нет даже при неуспешной проверке сертификата. Действующие ключи, app.json и Postfix не меняются. Если создание оборвётся, потребуется ручная проверка состояния TPM. Продолжить?",
+              "The free owner handle consumes TPM NVRAM; NO existing key is evicted and NO automatic TPM key deletion occurs, even on failure. Active keys, app.json and Postfix remain untouched. An interrupted operation may require manual TPM inventory. Continue?",
+              "מפתח קבוע ייכתב ב-TPM ללא מחיקת מפתחות קיימים; במקרה כשל נדרשת בדיקה ידנית."),
+            "CREATE_TPM2_OAUTH_KEY")) return;
+        reviewedTpmKeyPlanSha = null;
+        reviewedTpmKeyPlanContext = null;
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildTpmOauthProvisionBundle(target, handle, sha),
+            TimeSpan.FromMinutes(7));
+        response.EnsureSuccess();
+        if (!response.StdOut.Contains("TPM_PROVISION_PERSISTENT_KEY_CREATED=yes", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("TPM_PROVISION_CERTIFICATE_CREATED=yes", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("TPM_PROVISION_SERVICE_ACCOUNT_PS256_VERIFIED=yes", StringComparison.Ordinal) ||
+            !response.StdOut.Contains("TPM_PROVISION_ACTIVE_OAUTH_CHANGED=no", StringComparison.Ordinal))
+            throw new InvalidDataException("TPM2 creation did not pass key/certificate acceptance; inspect the selected TPM handle.");
+        tpmKeySummary = response.StdOut.Trim();
+        WriteLine(tpmKeySummary);
+        hardwareStageProvider.SelectedIndex = 0;
+        hardwareStageKeyRef.Text = "handle:" + handle;
+        WriteLine("TPM2 hardware key and public certificate created. Next: review and stage the candidate identity; Entra certificate upload remains separate.");
         RenderPage();
     }
 
