@@ -26,6 +26,7 @@ import sys
 VERSION = "1"
 CONFIRM_APPLY = "ACTIVATE_HARDWARE_OAUTH"
 CONFIRM_ROLLBACK = "ROLLBACK_HARDWARE_OAUTH"
+CONFIRM_STAGE = "STAGE_HARDWARE_OAUTH"
 BACKUP_ROOT = Path("/var/backups/linuxmailrelay365-hardware-oauth")
 LOCK_FILE = Path("/run/linuxmailrelay365-hardware-oauth.lock")
 TRANSPORT_DIR = Path("/usr/local/libexec")
@@ -527,10 +528,194 @@ def list_backups(target):
     say("BACKUP_COUNT", str(len(ids)))
 
 
+def stage_prepare(target):
+    """Read-only plan for a pre-provisioned hardware signing key.
+
+    An operator must first place two trusted files on the Linux host:
+    hardware-request.json (root:m365mailer 0640, only provider/key_ref/
+    provider_config) and hardware-app.crt (root-owned public certificate).
+    A generated candidate never imports private key bytes into the app.
+    """
+    directory, transport = TARGETS[target]
+    current = directory
+    while current != current.parent:
+        checked_directory(current)
+        current = current.parent
+    checked_directory(current)
+    try:
+        gid = grp.getgrnam("m365mailer").gr_gid
+    except KeyError:
+        raise Refused("m365mailer_group_missing")
+    staged_path = directory / "hardware-staged.json"
+    if staged_path.exists() or staged_path.is_symlink():
+        raise Refused("candidate_already_exists_no_overwrite")
+    active_raw, active = read_identity(directory / "app.json", gid)
+    # The current PEM key/cert must exist for a future rollback.
+    original_preflight(active_raw, active, gid, directory)
+    request_raw = read_checked(directory / "hardware-request.json", MAX_IDENTITY, gid)
+    try:
+        request = json.loads(request_raw.decode("utf-8"))
+    except (ValueError, UnicodeError):
+        raise Refused("invalid_hardware_request_json")
+    if not isinstance(request, dict) or set(request) != {
+            "provider", "key_ref", "provider_config"}:
+        raise Refused("invalid_hardware_request_fields")
+    signer = dict(request, type="openssl-provider")
+    candidate = {"tenant_id": active["tenant_id"],
+                 "client_id": active["client_id"],
+                 "mailbox": active["mailbox"],
+                 "certificate": str(directory / "hardware-app.crt"),
+                 "signer": signer}
+    check_candidate(active, candidate, directory, gid)
+    raw = (json.dumps(candidate, sort_keys=True,
+                      separators=(",", ":")) + "\n").encode("utf-8")
+    if len(raw) > MAX_IDENTITY:
+        raise Refused("candidate_too_large")
+    if raw == active_raw:
+        raise Refused("candidate_matches_active_identity")
+    runuser = ensure_runtime(transport)
+    refs = reference_hashes(candidate, directory, gid)
+    refs["transport"] = digest(read_checked(transport, MAX_REF,
+                                            modes=(0o644, 0o755)))
+    refs["signer_module"] = digest(read_checked(HELPER, MAX_REF,
+                                                modes=(0o644, 0o755)))
+    plan_data = {"stage_version": VERSION, "target": target,
+                 "current_sha": digest(active_raw),
+                 "request_sha": digest(request_raw),
+                 "candidate_sha": digest(raw),
+                 "dependencies": refs, "identity_gid": gid}
+    sha = digest(json.dumps(plan_data, sort_keys=True,
+                            separators=(",", ":")).encode("ascii"))
+    return {"target": target, "directory": directory, "transport": transport,
+            "runuser": runuser, "gid": gid, "sha": sha,
+            "candidate_raw": raw, "candidate_sha": digest(raw),
+            "current_sha": digest(active_raw), "request_sha": digest(request_raw),
+            "references": refs, "candidate": candidate}
+
+
+def stage_report(plan):
+    print("HARDWARE_STAGE_VERSION=" + VERSION)
+    print("HARDWARE_STAGE_TARGET=" + plan["target"])
+    print("HARDWARE_STAGE_PLAN_SHA256=" + plan["sha"])
+    print("HARDWARE_STAGE_PROVIDER=" + plan["candidate"]["signer"]["provider"])
+    print("HARDWARE_STAGE_CURRENT_SHA256=" + plan["current_sha"])
+    print("HARDWARE_STAGE_CANDIDATE_SHA256=" + plan["candidate_sha"])
+    print("HARDWARE_STAGE_ROUTING_IDENTITY_UNCHANGED=yes")
+    print("HARDWARE_STAGE_STAGED=no")
+    print("HARDWARE_STAGE_KEY_CREATED=no")
+    print("HARDWARE_STAGE_ENTRA_CONTACTED=no")
+    print("HARDWARE_STAGE_MAIL_SENT=no")
+    print("HARDWARE_STAGE_PRIMARY_MTA_CHANGED=no")
+
+
+def stage_identity(plan):
+    """Exclusive atomic publication: existing staged file is never replaced."""
+    directory = plan["directory"]
+    output = directory / "hardware-staged.json"
+    temp = directory / (".hardware-staged-" + secrets.token_hex(12))
+    fd = None
+    try:
+        fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     getattr(os, "O_NOFOLLOW", 0), 0o600)
+        os.fchown(fd, 0, plan["gid"])
+        os.fchmod(fd, 0o640)
+        try:
+            label = os.getxattr(str(directory / "app.json"), "security.selinux",
+                                follow_symlinks=False)
+        except OSError as exc:
+            if exc.errno in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
+                label = None
+            else:
+                raise Refused("selinux_context_read_failed")
+        if label is not None:
+            try:
+                os.setxattr(str(temp), "security.selinux", label,
+                            follow_symlinks=False)
+            except OSError:
+                raise Refused("selinux_context_preservation_failed")
+        with os.fdopen(fd, "wb") as writer:
+            fd = None
+            writer.write(plan["candidate_raw"])
+            writer.flush()
+            os.fsync(writer.fileno())
+        checked_file(temp, MAX_IDENTITY, plan["gid"])
+        # Python os.link raises EEXIST for an existing stage, including
+        # symlinks; no replace()/rename() that could clobber a review.
+        os.link(str(temp), str(output), follow_symlinks=False)
+        temp.unlink()
+        fsync_dir(directory)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if temp.exists() or temp.is_symlink():
+            temp.unlink()
+
+
+def stage_apply(target, approved_sha, confirmation, runner=subprocess.run):
+    ensure_root()
+    if confirmation != CONFIRM_STAGE or not SHA.fullmatch(approved_sha):
+        raise Refused("stage_typed_confirmation_or_sha_required")
+    fd = lock()
+    try:
+        plan = stage_prepare(target)
+        if plan["sha"] != approved_sha:
+            raise Refused("stage_plan_changed_review_again")
+        # Input and certificate/provider bytes must be stable all the way
+        # through signing. The plan cannot be recreated after staging.
+        if stage_prepare(target)["sha"] != approved_sha:
+            raise Refused("stage_inputs_changed_before_write")
+        stage_path = plan["directory"] / "hardware-staged.json"
+        stage_identity(plan)
+        try:
+            if digest(read_checked(stage_path, MAX_IDENTITY, plan["gid"])) != plan["candidate_sha"]:
+                raise Refused("staged_candidate_changed")
+            checked_run(plan, True, False, runner)
+            if digest(read_checked(stage_path, MAX_IDENTITY, plan["gid"])) != plan["candidate_sha"]:
+                raise Refused("staged_candidate_changed")
+            # Verify every reviewed non-secret external dependency still
+            # matches the reviewed plan, not just the staged JSON.
+            new_refs = reference_hashes(plan["candidate"], plan["directory"], plan["gid"])
+            new_refs["transport"] = digest(read_checked(plan["transport"], MAX_REF,
+                                                        modes=(0o644, 0o755)))
+            new_refs["signer_module"] = digest(read_checked(HELPER, MAX_REF,
+                                                            modes=(0o644, 0o755)))
+            if new_refs != plan["references"] or \
+                    digest(read_checked(plan["directory"] / "hardware-request.json",
+                                        MAX_IDENTITY, plan["gid"])) != plan["request_sha"] or \
+                    digest(read_checked(plan["directory"] / "app.json",
+                                        MAX_IDENTITY, plan["gid"])) != plan["current_sha"]:
+                raise Refused("stage_dependencies_changed_during_signature")
+        except Exception:
+            # Remove only our exact candidate; never clobber unexpected
+            # operator changes. No active identity is ever modified.
+            try:
+                if digest(read_checked(stage_path, MAX_IDENTITY, plan["gid"])) != plan["candidate_sha"]:
+                    raise Refused("staged_candidate_modified_manual_review")
+                stage_path.unlink()
+                fsync_dir(plan["directory"])
+            except Exception:
+                raise Refused("stage_signing_failed_manual_cleanup_required")
+            raise Refused("stage_signing_failed_candidate_removed")
+        print("HARDWARE_STAGE_VERSION=" + VERSION)
+        print("HARDWARE_STAGE_TARGET=" + target)
+        print("HARDWARE_STAGE_STAGED=yes")
+        print("HARDWARE_STAGE_STAGED_SHA256=" + plan["candidate_sha"])
+        print("HARDWARE_STAGE_LOCAL_PS256_VERIFIED=yes")
+        print("HARDWARE_STAGE_ENTRA_CONTACTED=no")
+        print("HARDWARE_STAGE_MAIL_SENT=no")
+        print("HARDWARE_STAGE_KEY_CREATED=no")
+        print("HARDWARE_STAGE_PRIMARY_MTA_CHANGED=no")
+        print("HARDWARE_STAGE_NEXT=register_public_certificate_in_entra_then_review_cutover")
+    finally:
+        os.close(fd)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=sorted(TARGETS), required=True)
     parser.add_argument("--plan", action="store_true")
+    parser.add_argument("--stage-plan", action="store_true")
+    parser.add_argument("--stage-apply", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--rollback", metavar="BACKUP_ID")
     parser.add_argument("--list", action="store_true")
@@ -539,11 +724,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         ensure_root()
-        if sum((args.plan, args.apply, bool(args.rollback), args.list)) != 1:
+        if sum((args.plan, args.apply, bool(args.rollback), args.list,
+                args.stage_plan, args.stage_apply)) != 1:
             raise Refused("select_exactly_one_operation")
-        if not args.apply and not args.rollback and (args.confirm or args.approve_sha256):
+        if not args.apply and not args.rollback and not args.stage_apply and (args.confirm or args.approve_sha256):
             raise Refused("approval_not_allowed_in_readonly_mode")
-        if args.plan:
+        if args.stage_plan:
+            stage_report(stage_prepare(args.target))
+        elif args.stage_apply:
+            stage_apply(args.target, args.approve_sha256, args.confirm)
+        elif args.plan:
             report_plan(prepare(args.target))
         elif args.apply:
             apply(args.target, args.approve_sha256, args.confirm)
