@@ -402,18 +402,18 @@ a distinct warning, not misrepresented as a package rollback.
 This command does not install RPMs, create/clear/evict TPM objects, change
 Entra/Postfix, sign an OAuth assertion or send email. It intentionally opens
 the TPM only for non-mutating provider initialization and a
-\`tpm2_getcap properties-fixed\` query as the **m365mailer** service account.
+`tpm2_getcap properties-fixed` query as the **m365mailer** service account.
 Both probes are bounded and run without the administrator's inherited
 OpenSSL configuration, PKCS#11 PIN or environment. Standard output and error
 from child processes are suppressed. Only fixed, non-secret status codes
 are returned:
 
-- \`TPM_DEPS_DIAG_OPENSSL3\` and \`TPM_DEPS_DIAG_SERVICE_USER\` describe
+- `TPM_DEPS_DIAG_OPENSSL3` and `TPM_DEPS_DIAG_SERVICE_USER` describe
   executable and service-account preconditions.
-- \`TPM_DEPS_DIAG_TPM2_PROVIDER\` and
-  \`TPM_DEPS_DIAG_PKCS11_PROVIDER\` describe whether an OpenSSL3 provider
+- `TPM_DEPS_DIAG_TPM2_PROVIDER` and
+  `TPM_DEPS_DIAG_PKCS11_PROVIDER` describe whether an OpenSSL3 provider
   can be loaded in a minimal environment by the service account.
-- \`TPM_DEPS_DIAG_TPM2_DEVICE_AS_SERVICE=read_verified\` means that the
+- `TPM_DEPS_DIAG_TPM2_DEVICE_AS_SERVICE=read_verified` means that the
   service account can read TPM fixed capabilities. It is **not** proof
   of key provenance, persistent handle access, successful signing or
   device attestation.
@@ -422,5 +422,5 @@ are returned:
   that the application's own provider configuration is correct.
 
 To test an existing hardware OAuth key, run the **separate**, explicitly
-confirmed offline PS256 signing action (\`verify-hardware-oauth.py\`).
+confirmed offline PS256 signing action (`verify-hardware-oauth.py`).
 It still does not prove Entra authorization or Microsoft 365 SMTP delivery.
