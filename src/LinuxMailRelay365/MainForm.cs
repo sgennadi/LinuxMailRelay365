@@ -616,6 +616,12 @@ internal sealed class MainForm : Form
                         AddLine(page, UiTheme.Text(hardwareCutoverSummary));
                     if (reviewedHardwareCutoverSha is not null)
                     {
+                        if (verifiedHardwarePreflightSha == reviewedHardwareCutoverSha &&
+                            verifiedHardwarePreflightContext == SecurityOptionsStore.Identity(Endpoint()) + "|" + SelectedHardwareCutoverTarget())
+                            AddLine(page, UiTheme.Text(T(
+                                "Последняя проверка токена Entra с подготовленным TPM/HSM прошла. Токен не сохранён; перед активацией будет выполнена новая проверка.",
+                                "Staged TPM/HSM Entra token check passed. The token was not stored; activation always performs a fresh check.",
+                                "בדיקת אסימון Entra הצליחה. האסימון לא נשמר, וההפעלה דורשת בדיקה נוספת.")));
                         AddAction(page, T("Проверить получение токена Entra новым TPM/HSM (без смены OAuth)...",
                                           "Verify staged TPM/HSM Entra token without switching...",
                                           "בדיקת אסימון Entra ללא שינוי זהות OAuth"),
@@ -3531,6 +3537,8 @@ internal sealed class MainForm : Form
         string target = SelectedHardwareCutoverTarget();
         reviewedHardwareCutoverSha = null;
         reviewedHardwareCutoverContext = null;
+        verifiedHardwarePreflightSha = null;
+        verifiedHardwarePreflightContext = null;
         var result = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildHardwareOAuthCutoverBundle(target, "plan"), TimeSpan.FromSeconds(90));
         result.EnsureSuccess();
