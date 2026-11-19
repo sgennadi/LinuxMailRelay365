@@ -1379,3 +1379,44 @@ The **full system path to Exchange Online and actual inbox delivery**
 remains unverified. Production delivery requires separately reviewed
 real-tenant internal and external tests, TPM hardware signing acceptance
 and Linux host-specific verification. See `docs/FINAL_ACCEPTANCE.md`.
+
+## Universal delivery Wizard — route, sender and mail-flow preview
+
+The Windows GUI now separates three independent decisions rather than
+conflating them in a single Postfix install button:
+
+1. **Outbound delivery**: XOAUTH2 via Microsoft 365 SMTP AUTH on 587,
+   Exchange Online Inbound Connector through tenant MX on TCP 25, or Direct
+   Send through the tenant MX on TCP 25 (tenant-internal recipients only).
+2. **Sender handling**: for XOAUTH2, a single approved mailbox that
+   **rewrites RFC5322 From and envelope sender**; the multi-mailbox preserve
+   mode can be selected as an **intent-only, non-deployable plan**. For
+   Connector, choose a fixed sender, preserved approved-domain senders, or
+   reviewed subdomain masquerading. Multi-sender Connector requires
+   SMTP AUTH/STARTTLS, a root-only sender login ownership map and a running
+   RFC5322 From Guard.
+3. **Existing mail**: Preserve Existing Mail remains the safe default with
+   its own independent Postfix listener and queue, configurable input port
+   1024–65535, optional private listener and trusted CIDRs.
+
+**The flowchart and copyable proposed SMTP-client instructions now change
+immediately based on the operator's entered values and choices**. The route
+explanation includes separate input and output ports, required credentials,
+recipient scope, sender rewriting, and whether the existing MTA is preserved.
+RU / EN / HE delivery and sender options are supported. The diagram is a
+preview, **never proof of deployment or real Exchange delivery**.
+
+The Microsoft 365/Entra wizard step is automatically explained as optional
+for Connector and Direct Send; only XOAUTH2 needs an Entra application and
+mailbox. The main Postfix page exposes preflight and initial installation
+of a fixed-sender Connector or internal-only Direct Send without requiring
+the Advanced section. Migrating an already installed sidecar to a different
+EOP route stays in Advanced and remains SHA-reviewed with backup/restore.
+
+The normal test-mail button is currently **XOAUTH2 only**. It will not
+silently submit Connector or Direct Send mail with XOAUTH2 credentials.
+Approval-gated real EOP mailbox delivery remains a separate acceptance
+gate. Preserve-multiple-mailbox XOAUTH2 cannot be installed or used yet;
+a future implementation must verify the incoming authenticated SMTP login,
+both envelope and RFC5322 From ownership, the chosen M365 mailbox mapping,
+and Exchange Online app Send As permissions before enabling delivery.
