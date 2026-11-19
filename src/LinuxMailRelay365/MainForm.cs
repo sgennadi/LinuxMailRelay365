@@ -1478,6 +1478,25 @@ internal sealed class MainForm : Form
             step = index;
             RenderPage();
             Screenshot(names[index]);
+            if (index == 2)
+            {
+                // The operator can choose Connector/Direct Send BEFORE
+                // Entra. Capture the real skip-configuration screens as well.
+                foreach (var (choice, picture) in new[] {
+                    (1, "03-connector-no-entra.png"),
+                    (2, "03-direct-send-no-entra.png")
+                })
+                {
+                    routingLoading = true;
+                    try { mailTransport.SelectedIndex = choice; }
+                    finally { routingLoading = false; }
+                    RenderPage();
+                    Screenshot(picture);
+                }
+                routingLoading = true;
+                try { mailTransport.SelectedIndex = 0; }
+                finally { routingLoading = false; }
+            }
             if (index == 3)
             {
                 try
