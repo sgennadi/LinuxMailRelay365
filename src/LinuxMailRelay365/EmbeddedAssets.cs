@@ -17,6 +17,7 @@ internal static class EmbeddedAssets
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
     internal static string HardwareSigner => Text("LinuxMailRelay365.linux.hardware-signer.py");
+    internal static string TpmDependencies => Text("LinuxMailRelay365.linux.tpm-dependencies.py");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarConfigRecovery => Text("LinuxMailRelay365.linux.sidecar-config-recovery.py");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
@@ -55,6 +56,25 @@ internal static class EmbeddedAssets
     internal static string TenantConnectorManager => Text("LinuxMailRelay365.windows.tenant-connector-manager.ps1");
 
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+
+    internal static string BuildTpmDependenciesBundle(string profile, string? reviewedSha = null)
+    {
+        if (profile is not ("runtime" or "build-prereqs" or "pkcs11" or "native-provider"))
+            throw new ArgumentException("Unsupported TPM dependency profile.");
+        if (reviewedSha is not null &&
+            !Regex.IsMatch(reviewedSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("Expected a reviewed TPM dependencies SHA256.");
+        string args = "--profile " + profile;
+        if (reviewedSha is not null)
+            args += " --apply --approve-sha256 " + reviewedSha +
+                    " --confirm INSTALL_TPM2_DEPENDENCIES";
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-tpmdeps.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/manage-tpm-dependencies.py\" <<'LMR365_TPM_DEPENDENCIES'\n" +
+               Encode(TpmDependencies) + "\nLMR365_TPM_DEPENDENCIES\n" +
+               "python3 \"$work/manage-tpm-dependencies.py\" " + args + "\n";
+    }
 
     internal static string BuildLinuxBundle(string[] args)
     {
