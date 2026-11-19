@@ -248,7 +248,7 @@ jobs:
           $result = Start-Process -FilePath $exe -ArgumentList @('--capture-wizard-screens', ('"{0}"' -f $folder)) -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Wizard screenshot capture failed: exit $($result.ExitCode)" }
           $images = @(Get-ChildItem -LiteralPath $folder -Filter '*.png')
-          if ($images.Count -ne 7) { throw "Expected 7 real Wizard PNG screens; found $($images.Count)" }
+          if ($images.Count -ne 9) { throw "Expected 9 real Wizard PNG screens; found $($images.Count)" }
           foreach ($image in $images) {
             if ($image.Length -lt 3000) { throw "Empty or invalid screen PNG: $($image.Name)" }
           }
