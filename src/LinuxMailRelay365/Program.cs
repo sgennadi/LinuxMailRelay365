@@ -160,6 +160,7 @@ internal static class Program
                     && bundle.Contains("LMR365_TRANSPORT", StringComparison.Ordinal);
             }),
             ("Preserve mail diagram", PreserveFlowSnapshot.SelfTest),
+            ("Live delivery route explanations", MailRoutingGuidance.SelfTest),
             ("Existing public SMTP audit", () =>
             {
                 var bundle = EmbeddedAssets.BuildExistingSmtpAuditBundle();
