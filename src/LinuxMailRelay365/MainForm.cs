@@ -1536,6 +1536,16 @@ internal sealed class MainForm : Form
             }
             if (index == 3)
             {
+                // Capture actual GUI of the deliberately blocked multi-mailbox
+                // XOAUTH2 plan without connecting or inspecting host files.
+                routingLoading = true;
+                try { oauthSenderMode.SelectedIndex = 1; }
+                finally { routingLoading = false; }
+                RenderPage();
+                Screenshot("04-postfix-xoauth2-multi-plan.png");
+                routingLoading = true;
+                try { oauthSenderMode.SelectedIndex = 0; }
+                finally { routingLoading = false; }
                 try
                 {
                     routingLoading = true;
