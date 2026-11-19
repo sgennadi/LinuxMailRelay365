@@ -1,0 +1,82 @@
+"""GUI contract: one universal explainable wizard, three separate outbound routes.
+
+The user may save a multi-mailbox XOAUTH2 *plan* but may not treat it as a
+working transport until server-side ownership + Exchange permissions exist.
+These tests verify the GUI-source contract without launching a GUI or sending.
+"""
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class WizardDeliveryRoutesTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        root = ROOT / "src" / "LinuxMailRelay365"
+        cls.form = (root / "MainForm.cs").read_text(encoding="utf-8")
+        cls.plan = (root / "MailRoutingPlan.cs").read_text(encoding="utf-8")
+        cls.guide = (root / "MailRoutingGuidance.cs").read_text(encoding="utf-8")
+        cls.flow = (root / "PreserveMailFlowPreview.cs").read_text(encoding="utf-8")
+        cls.program = (root / "Program.cs").read_text(encoding="utf-8")
+
+    def test_distinct_transport_and_sender_modes(self):
+        for needle in ('"oauth2"', '"connector"', '"direct-send"',
+                       'oauthSenderMode', 'senderPolicy',
+                       'LocalizeDeliveryChoices();',
+                       'XOAUTH2 sender policy',
+                       'Connector sender policy',
+                       'senderPolicy.SelectedIndex == 1'):
+            self.assertIn(needle, self.form)
+
+    def test_live_diagram_and_help_from_entered_values(self):
+        self.assertIn('MailRoutingGuidance.Explain(', self.form)
+        self.assertIn('AddLine(page, deliveryModeExplanation);', self.form)
+        self.assertIn('AddLine(page, preserveFlowPreview);', self.form)
+        self.assertIn('deliveryModeExplanation.Width = width;', self.form)
+        self.assertIn('PreserveFlowSnapshot(', self.form)
+        self.assertIn('mailTransport.SelectedIndex switch', self.form)
+        self.assertIn('outboundMxHost.Text.Trim(), outboundFixedSender.Text.Trim()', self.form)
+        for transport in ['"connector"', '"direct-send"', '"oauth2"']:
+            self.assertIn(transport, self.guide)
+        self.assertIn('return "smtp.office365.com:587', self.guide)
+        self.assertIn('":25 · STARTTLS/EOP"', self.guide)
+        self.assertIn('MailRouteTitle', self.flow)
+        self.assertIn('MailRouteHint', self.flow)
+        self.assertIn('Outgoing', self.guide.replace('Outbound', 'Outgoing'))
+
+    def test_multi_mailbox_is_plan_only_and_apply_and_test_refuse(self):
+        self.assertIn('OAuthSenderMode { get; set; }', self.plan)
+        self.assertIn('OAuthSenderMapPath { get; set; }', self.plan)
+        self.assertIn('authorized-multiple-mailboxes', self.plan)
+        self.assertIn('"/etc/linuxmailrelay365/"', self.plan)
+        self.assertIn('if (mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 1)',
+                      self.form)
+        self.assertGreaterEqual(
+            self.form.count('if (mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 1)'), 2)
+        self.assertIn('Multi-mailbox XOAUTH2 is an unimplemented', self.form)
+        self.assertIn('current transport uses one fixed mailbox', self.form)
+        self.assertIn('NotDeployablePlan', self.flow)
+        self.assertIn('MailRoutingGuidance.IsUnimplementedOAuthMultiSender', self.flow)
+        self.assertIn('MULTI-MAILBOX XOAUTH2 IS NOT DEPLOYABLE YET', self.guide)
+
+    def test_ru_en_he_selected_controls_and_selftests(self):
+        self.assertIn('int lang = language.SelectedIndex;', self.form)
+        self.assertIn('XOAUTH2 — ящик Microsoft 365', self.form)
+        self.assertIn('XOAUTH2 — תיבת דואר Microsoft 365', self.form)
+        self.assertIn('XOAUTH2 — authorized Microsoft 365', self.form)
+        self.assertIn('Live delivery route explanations', self.program)
+        self.assertIn('MailRoutingGuidance.SelfTest', self.program)
+        self.assertIn('PreserveFlowSnapshot.SelfTest', self.program)
+        self.assertIn('MailRoutingPlanStore.SelfTest', self.program)
+
+    def test_previous_mail_not_silently_reconfigured(self):
+        self.assertIn('KeepExisting', self.flow)
+        self.assertIn('mailTransport.SelectedIndex != 1', self.form)
+        self.assertIn('The active transport rewrites all From addresses to one mailbox', self.form)
+        self.assertIn('PLAN PREVIEW ONLY — NOT PROOF OF DEPLOYMENT', self.guide)
+        self.assertIn('Changing the primary MTA requires a backup', self.guide)
+
+
+if __name__ == "__main__":
+    unittest.main()
