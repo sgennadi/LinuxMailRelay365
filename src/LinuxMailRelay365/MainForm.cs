@@ -43,6 +43,7 @@ internal sealed class MainForm : Form
     private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox oauthSenderMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly TextBox oauthSenderMapPath = Field("");
+    private string oauthSenderAuditSummary = "";
     private readonly TextBox deliveryModeExplanation = new()
     {
         Width = 890, Height = 185, Multiline = true, ReadOnly = true,
@@ -285,6 +286,7 @@ internal sealed class MainForm : Form
         senderPolicy.SelectedIndex = 0;
         oauthSenderMode.SelectedIndexChanged += (_, _) =>
         {
+            oauthSenderAuditSummary = "";
             SaveRoutingChoices();
             UpdatePreserveFlowPreview();
             if (step == 3 && !routingLoading && !busy)
@@ -296,10 +298,12 @@ internal sealed class MainForm : Form
         };
         oauthSenderMapPath.TextChanged += (_, _) =>
         {
+            oauthSenderAuditSummary = "";
             SaveRoutingChoices();
             UpdatePreserveFlowPreview();
         };
         mailTransport.SelectedIndexChanged += (_, _) => {
+            oauthSenderAuditSummary = "";
             if (!routingLoading) {
                 acceptedDomainApproved.Checked = false;
                 connectorApproved.Checked = false;
@@ -921,6 +925,11 @@ internal sealed class MainForm : Form
                             "Audit SMTP login → sender → M365 mailbox map (read-only)",
                             "בדיקת מיפוי משתמשים ותיבות (קריאה בלבד)"),
                             InspectOAuthSenderMapAsync, false, "check", "oauth-sender-map-audit");
+                        AddLine(page, UiTheme.Text(string.IsNullOrEmpty(oauthSenderAuditSummary)
+                            ? T("Карта ещё не проверена. Проверка только чтение; отправка отключена.",
+                                "Map not yet audited. Read-only review; mail delivery disabled.",
+                                "המפה טרם נבדקה. שליחה אינה פעילה.")
+                            : oauthSenderAuditSummary));
                         AddLine(page, UiTheme.Text(T(
                             "Формат Linux TSV: smtp_login, envelope_from, m365_mailbox, identity_config_path. Карта root:root 0600; конфигурации OAuth root:m365mailer 0640. Проверка НЕ включает отправку и не подтверждает Send As.",
                             "Linux TSV columns: smtp_login, envelope_from, m365_mailbox, identity_config_path. Root-owned TSV mode 0600; OAuth identity JSON root:m365mailer 0640. Audit does NOT enable mail delivery or prove Send As.",
@@ -1651,6 +1660,7 @@ internal sealed class MainForm : Form
             };
             oauthSenderMode.SelectedIndex = routingPlan.OAuthSenderMode == "authorized-multiple-mailboxes" ? 1 : 0;
             oauthSenderMapPath.Text = routingPlan.OAuthSenderMapPath;
+            oauthSenderAuditSummary = "";
             preserveExistingMail.Checked = routingPlan.PreserveExistingMail;
             acceptedDomain.Text = routingPlan.VerifiedDomain;
             outboundMxHost.Text = routingPlan.EopMxHost;
@@ -2474,8 +2484,10 @@ internal sealed class MainForm : Form
             throw new InvalidOperationException(
                 "Select the XOAUTH2 multi-mailbox PLAN before inspecting its sender map.");
         var endpoint = Endpoint();
-        var script = EmbeddedAssets.BuildOAuthSenderMapAuditBundle(
-            oauthSenderMapPath.Text.Trim());
+        string auditedPath = oauthSenderMapPath.Text.Trim();
+        string auditedEndpointIdentity = SecurityOptionsStore.Identity(endpoint);
+        oauthSenderAuditSummary = "";
+        var script = EmbeddedAssets.BuildOAuthSenderMapAuditBundle(auditedPath);
         var report = await SshRemote.RunRootScriptAsync(endpoint, script,
             TimeSpan.FromSeconds(90));
         report.EnsureSuccess();
@@ -2519,8 +2531,19 @@ internal sealed class MainForm : Form
         }
         if (values.Count != allowed.Count)
             throw new InvalidDataException("Incomplete multi-mailbox audit report.");
+        if (oauthSenderMapPath.Text.Trim() != auditedPath ||
+            auditedEndpointIdentity != TryCurrentIdentity() ||
+            mailTransport.SelectedIndex != 0 || oauthSenderMode.SelectedIndex != 1)
+            throw new InvalidOperationException("The Linux endpoint, sender map, or delivery mode changed during audit. Run it again.");
         foreach (string key in allowed.Keys)
             WriteLine(key + "=" + values[key]);
+        oauthSenderAuditSummary = T(
+            "Проверка карты завершена: " + values["OAUTH_SENDER_MAP_ENTRIES"] + " отправителей; " +
+                values["OAUTH_SENDER_MAP_POLICY_SIMULATION_TEST_CASES"] + " синтетических проверок. ТОЛЬКО ПРОВЕРКА ПЛАНА. SMTP AUTH, Exchange Send As и отправка НЕ подтверждены.",
+            "Map reviewed: " + values["OAUTH_SENDER_MAP_ENTRIES"] + " senders; " +
+                values["OAUTH_SENDER_MAP_POLICY_SIMULATION_TEST_CASES"] + " synthetic policy cases. PLAN ONLY. Live SMTP AUTH, Exchange Send As and mail delivery NOT verified.",
+            "מיפוי נבדק; בדיקה בלבד. SMTP AUTH, Send As ושליחת דואר לא אומתו.");
+        RenderPage();
         WriteLine("Offline policy simulation passed: login, envelope sender, configured mailbox and From matching / negative spoofing tests. It is NOT real SMTP AUTH, installed Milter, Exchange Send As or delivery. No route was enabled.");
         WriteLine("Structural map review passed; sender authentication, header From ownership, Entra Exchange permissions and SMTP delivery remain NOT VERIFIED. No route was enabled.");
     }
