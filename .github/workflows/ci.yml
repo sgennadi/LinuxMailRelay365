@@ -261,11 +261,11 @@ jobs:
           $result = Start-Process -FilePath $exe -ArgumentList @('--capture-wizard-screens', ('"{0}"' -f $folder)) -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Wizard screenshot capture failed: exit $($result.ExitCode)" }
           $images = @(Get-ChildItem -LiteralPath $folder -Filter '*.png')
-          if ($images.Count -ne 13) { throw "Expected 13 real Wizard PNG screens; found $($images.Count)" }
+          if ($images.Count -ne 16) { throw "Expected 16 real Wizard PNG screens; found $($images.Count)" }
           foreach ($image in $images) {
             if ($image.Length -lt 3000) { throw "Empty or invalid screen PNG: $($image.Name)" }
           }
-          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=13'
+          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=16'
           Write-Host 'SMTP_TENANT_CONNECTIONS_ATTEMPTED=no'
       - name: Upload actual Wizard screenshots (no production host or tenant)
         uses: actions/upload-artifact@v6

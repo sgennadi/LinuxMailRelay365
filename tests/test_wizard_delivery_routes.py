@@ -143,6 +143,9 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
         self.assertIn("OAuth token diagnostics require the active single-mailbox XOAUTH2 route.", self.form)
         self.assertIn("Install and configure XOAUTH2 Postfix", self.form)
         self.assertIn("The XOAUTH2 installer is not offered", self.form)
+        self.assertIn("05-connector-diagnostics.png", self.form)
+        self.assertIn("05-direct-send-diagnostics.png", self.form)
+        self.assertIn("05-xoauth2-multi-plan-only.png", self.form)
 
     def test_previous_mail_not_silently_reconfigured(self):
         self.assertIn('KeepExisting', self.flow)

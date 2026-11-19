@@ -2033,6 +2033,31 @@ internal sealed class MainForm : Form
                 finally { routingLoading = false; }
             }
         }
+        // Visual QA: the final step must offer only valid diagnostics for
+        // each route. These screenshots neither connect nor send mail.
+        step = 4;
+        routingLoading = true;
+        try { mailTransport.SelectedIndex = 1; }
+        finally { routingLoading = false; }
+        RenderPage();
+        Screenshot("05-connector-diagnostics.png");
+        routingLoading = true;
+        try { mailTransport.SelectedIndex = 2; }
+        finally { routingLoading = false; }
+        RenderPage();
+        Screenshot("05-direct-send-diagnostics.png");
+        routingLoading = true;
+        try
+        {
+            mailTransport.SelectedIndex = 0;
+            oauthSenderMode.SelectedIndex = 1;
+        }
+        finally { routingLoading = false; }
+        RenderPage();
+        Screenshot("05-xoauth2-multi-plan-only.png");
+        routingLoading = true;
+        try { oauthSenderMode.SelectedIndex = 0; }
+        finally { routingLoading = false; }
         // Verify the same connection form reflows at the compact window size.
         Size = new Size(760, 700);
         step = 0;
