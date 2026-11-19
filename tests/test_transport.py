@@ -157,6 +157,69 @@ class TransportTests(unittest.TestCase):
             mt.run(['--candidate-config', str(mt.STAGED_CONF_FILES[0]),
                     '--smtp-auth-check', '--recipient', 'recipient@example.org'])
 
+    def test_acceptance_fixed_message_and_single_recipient(self):
+        accepted = []
+        request = {'recipient': 'internal@example.com',
+                   'run_id': 'a' * 32, 'role': 'internal'}
+        with mock.patch.object(mt, 'acquire_token', return_value='shortlived'), \
+             mock.patch.object(mt, 'send_smtp',
+                               side_effect=lambda *a: accepted.append(a)):
+            mt.submit_acceptance_message(self.cfg, request)
+        self.assertEqual(len(accepted), 1)
+        config, recipient, data, token = accepted[0]
+        self.assertEqual(recipient, request['recipient'])
+        self.assertEqual(token, 'shortlived')
+        self.assertIn(b'X-LinuxMailRelay365-Test-ID: ' + b'a' * 32, data)
+        self.assertIn(b'Message-ID: <lmr365-' + b'a' * 32 + b'-internal@example.com>', data)
+        self.assertNotIn(b'Bcc:', data)
+        self.assertLess(len(data), 2048)
+        self.assertNotIn(b'shortlived', data)
+
+    def test_acceptance_rejects_invalid_sender_recipient_role_and_injection(self):
+        bad_requests = [
+            {'recipient': 'external@outside.net', 'run_id': 'a' * 32,
+             'role': 'internal'},
+            {'recipient': 'internal@example.com', 'run_id': 'a' * 32,
+             'role': 'external'},
+            {'recipient': 'a@outside.net\nBcc:evil@outside.net',
+             'run_id': 'a' * 32, 'role': 'external'},
+            {'recipient': 'valid@outside.net', 'run_id': 'not_hex',
+             'role': 'external'},
+            {'recipient': 'valid@outside.net', 'run_id': 'a' * 32,
+             'role': 'external', 'body': 'injected'},
+        ]
+        with mock.patch.object(mt, 'acquire_token') as acquire, \
+             mock.patch.object(mt, 'send_smtp') as send:
+            for case in bad_requests:
+                with self.subTest(case=case), self.assertRaises(mt.PermanentError):
+                    mt.submit_acceptance_message(self.cfg, case)
+            acquire.assert_not_called()
+            send.assert_not_called()
+
+    def test_acceptance_cli_active_only_and_no_recipient_argument(self):
+        request = {'recipient': 'external@outside.net', 'run_id': 'b' * 32,
+                   'role': 'external'}
+        raw = json.dumps(request).encode('ascii')
+        with mock.patch.object(mt, 'load_config', return_value=self.cfg) as load, \
+             mock.patch.object(mt, 'acquire_token', return_value='secret-token'), \
+             mock.patch.object(mt, 'send_smtp') as send, \
+             mock.patch.object(mt.sys, 'stdin',
+                               io.TextIOWrapper(io.BytesIO(raw))), \
+             mock.patch.object(mt.sys, 'stdout', new_callable=io.StringIO) as output:
+            status = mt.run(['--acceptance-test', '--config', str(mt.SIDECAR_CONF_FILE)])
+            self.assertEqual(status, 0)
+            load.assert_called_once_with(str(mt.SIDECAR_CONF_FILE))
+            send.assert_called_once()
+            self.assertNotIn('secret-token', output.getvalue())
+            self.assertIn('recipient delivery not verified', output.getvalue())
+        for disallowed in (
+            ['--acceptance-test', '--recipient', 'victim@example.com'],
+            ['--acceptance-test', '--candidate-config',
+             str(mt.STAGED_CONF_FILES[0])],
+        ):
+            with self.subTest(argv=disallowed), self.assertRaises(SystemExit):
+                mt.run(disallowed)
+
     def test_auth_failure_is_temporary(self):
         FakeSMTP.calls = []
         FakeSMTP.refuse_auth = True
