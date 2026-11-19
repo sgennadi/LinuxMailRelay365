@@ -22,6 +22,7 @@
 | RHEL SELinux custom smtp_port_t label preparation and rollback | Implemented with reviewed SHA and explicit confirmation | Verify `semanage port` change/rollback on a real disposable enforcing host; not a full service acceptance |
 | RHEL-family TPM2 dependency preparation | Read-only RPM preview and SHA-approved DNF install, separate native-provider vs PKCS#11 profiles | Verified real RHEL/Rocky host package transactions and provider availability; RPM scriptlet/service review |
 | Offline TPM/HSM OAuth signing diagnostics | Fixed root-owned active/staged identity audit and PS256 signature check as `m365mailer`; no SMTP | Physical hardware provenance/nonexportability still unverified |
+| TPM/HSM OAuth candidate staging (not key creation) | Reviewed SHA256 for active identity, already provisioned TPM2/PKCS#11 key reference, provider, public certificate and installed binaries; root-only exclusive hardware-staged.json with offline PS256 verification and failure cleanup | Physical TPM/HSM provisioning, public certificate verification, provider accessibility, Entra registration and RHEL Enforcing acceptance still blocked |
 | TPM/HSM identity staged-to-active switch and rollback | SHA-reviewed, operator-approved, pre- and post-activation local PS256+live Entra token check; root-only identity backup; atomic swap and fail-closed rollback; both sidecar and primary targets | Real TPM/HSM and Entra tenant acceptance, concurrent sending, SELinux AVCs, reboot continuity, SMTP delivery and operator change window not yet verified |
 | Microsoft 365 XOAUTH2 sender transport | Preview | Live Entra tenant + Exchange scoped mailbox + delivered test |
 | Microsoft 365 Direct Send | Fresh isolated installation without Entra/OAuth, or guarded route switch of an existing XOAUTH2 sidecar; exact fixed MAIL FROM required | Approved accepted domain, root-owned map/postmap negative tests, real internal recipient receipt |
@@ -309,3 +310,12 @@ Exercise negative cases on a disposable host: mismatching tenant/client/mailbox,
 Independently test the explicit rollback from the listed root-only backup. Verify there were **no changes** to Postfix configuration, service state, mail queues, DNS, firewall, active SMTP port, Entra app registration or private-key storage.
 
 Blocked until actual physical key tests: TPM provenance/attestation, RHEL8 OpenSSL3 limitations, the RHEL9 PKCS#11 module requirements, SELinux Enforcing service-user authorization, real Microsoft 365 SMTP delivery with internal/external recipients, reboot continuity and signed Windows stable acceptance.
+
+
+## TPM/HSM candidate stage acceptance — code complete, physical host pending
+
+Test the Wizard Preview/Stage sequence with both TPM2 and PKCS#11 providers on disposable Linux hosts. The Wizard must refuse PIN-bearing URIs, untrusted provider configs, missing certificate, broken key references, a changed SHA plan, an already staged identity, PEM fallback and any changed tenant/client/mailbox.
+
+Confirm that a successful stage creates only the root:m365mailer `hardware-staged.json` with mode 0640 and a matching offline PS256 signature, while active `app.json`, Postfix, Entra, firewall and SMTP queues remain unchanged. An error during file publication, directory flush or PS256 verification must remove the candidate only if it is still exactly the created candidate; other changes require manual review and may not be overwritten.
+
+Do not interpret a successful software or provider-layer test as hardware attestation. Generate or provision an actual persistent hardware key, register the matching public certificate, test signing as `m365mailer` after reboot and separately validate live Microsoft 365 SMTP delivery before Stable.
