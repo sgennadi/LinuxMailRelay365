@@ -159,6 +159,9 @@ internal sealed class MainForm : Form
     };
     private bool connectionWideLayout;
     private bool resizingConnectionLayout;
+    // Trust-on-first-use pins are never reused for a different Linux endpoint.
+    private (string Host, int Port, string User)? approvedSshIdentity;
+    private string? automaticallyPinnedSshFingerprint;
     private readonly DiagnosticJournal journal = new();
     private readonly TextBox activity = new()
     {
@@ -204,6 +207,8 @@ internal sealed class MainForm : Form
         Directory.CreateDirectory(dataDirectory);
         sshPassword.UseSystemPasswordChar = true;
         sudoPassword.UseSystemPasswordChar = true;
+        foreach (var field in new[] { host, sshPort, sshUser })
+            field.TextChanged += (_, _) => ClearAutomaticSshHostKeyOnIdentityChange();
         specifyHostKeyManually.CheckedChanged += (_, _) =>
         {
             if (step == 0 && !busy) RenderPage();
@@ -738,6 +743,10 @@ internal sealed class MainForm : Form
     private void RenderConnectionStep(TableLayoutPanel page)
     {
         connectionWideLayout = UseWideConnectionLayout(pageHost.Width, DeviceDpi);
+        // Even a single-column card can fit two short input fields at 760px,
+        // avoiding unnecessary vertical scrolling to the primary action.
+        bool pairFields = (long)pageHost.ClientSize.Width * 96 >=
+            690L * Math.Max(DeviceDpi, 96);
         page.MaximumSize = Size.Empty;
         page.Dock = DockStyle.Top;
         page.Padding = new Padding(18, 4, 8, 8);
@@ -775,7 +784,7 @@ internal sealed class MainForm : Form
         AddConnectionPair(form,
             T("Linux: DNS или IPv4", "Linux DNS or IPv4", "כתובת Linux"), host,
             T("SSH-порт", "SSH port", "פורט SSH"), sshPort, 73);
-        if (connectionWideLayout)
+        if (pairFields)
             AddConnectionPair(form,
                 T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser,
                 T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode, 43);
@@ -786,7 +795,7 @@ internal sealed class MainForm : Form
         }
         if (sshAuthMode.SelectedIndex == 1)
         {
-            if (connectionWideLayout)
+            if (pairFields)
                 AddConnectionPair(form,
                     T("SSH-пароль", "SSH password", "סיסמת SSH"), sshPassword,
                     T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 54);
@@ -811,7 +820,7 @@ internal sealed class MainForm : Form
         }
         else
         {
-            if (connectionWideLayout)
+            if (pairFields)
                 AddConnectionPair(form,
                     T("SSH-ключ / ssh-agent", "SSH key / ssh-agent", "מפתח SSH"), sshKey,
                     T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 60);
@@ -1889,6 +1898,23 @@ internal sealed class MainForm : Form
         return Task.CompletedTask;
     }
 
+    private void ClearAutomaticSshHostKeyOnIdentityChange()
+    {
+        var oldIdentity = approvedSshIdentity;
+        if (oldIdentity is null) return;
+        if (string.Equals(oldIdentity.Value.Host, host.Text.Trim(),
+                StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(sshPort.Text, out int port) && port == oldIdentity.Value.Port &&
+            string.Equals(oldIdentity.Value.User, sshUser.Text.Trim(), StringComparison.Ordinal))
+            return;
+        // Operator-entered fingerprints remain untouched.
+        if (string.Equals(sshFingerprint.Text, automaticallyPinnedSshFingerprint,
+                StringComparison.Ordinal))
+            sshFingerprint.Clear();
+        approvedSshIdentity = null;
+        automaticallyPinnedSshFingerprint = null;
+    }
+
     private bool ConfirmFirstUseSshHostKey(SshEndpoint endpoint, string sha256)
     {
         // HostKeyReceived is raised on the SSH worker thread before AUTH.
@@ -1922,6 +1948,8 @@ internal sealed class MainForm : Form
         if (choice != DialogResult.Yes) return false;
         // Session-only pin. Never persist an unverified key to disk.
         sshFingerprint.Text = "SHA256:" + sha256;
+        approvedSshIdentity = (endpoint.Host, endpoint.Port, endpoint.Username);
+        automaticallyPinnedSshFingerprint = sshFingerprint.Text;
         WriteLine("SSH first-use host key approved and pinned in memory for this session.");
         return true;
     }
