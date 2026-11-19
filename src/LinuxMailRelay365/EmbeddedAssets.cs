@@ -20,6 +20,7 @@ internal static class EmbeddedAssets
     internal static string TpmDependencies => Text("LinuxMailRelay365.linux.tpm-dependencies.py");
     internal static string HardwareOAuthDiagnostics => Text("LinuxMailRelay365.linux.hardware-oauth-diagnostics.py");
     internal static string HardwareOAuthCutover => Text("LinuxMailRelay365.linux.hardware-oauth-cutover.py");
+    internal static string DeliveryAcceptance => Text("LinuxMailRelay365.linux.delivery-acceptance.py");
     internal static string TpmOauthProvision => Text("LinuxMailRelay365.linux.tpm-oauth-provision.py");
     internal static string EntraPublicCertificateExporter => Text("LinuxMailRelay365.linux.entra-public-cert-export.py");
     internal static string EntraCertificateManager => Text("LinuxMailRelay365.windows.entra-oauth-cert-manager.ps1");
@@ -118,6 +119,45 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/manage-tpm-oauth-key.py\" <<'LMR365_TPM_PROVISION'\n" +
                Encode(TpmOauthProvision) + "\nLMR365_TPM_PROVISION\n" +
                "python3 \"$work/manage-tpm-oauth-key.py\" " + args + "\n";
+    }
+
+    internal static string BuildDeliveryAcceptanceBundle(
+        string target, string runId, string internalRecipient, string externalRecipient,
+        string? approvalSha = null)
+    {
+        if (target is not ("sidecar" or "primary"))
+            throw new ArgumentException("Unknown active OAuth acceptance target.");
+        if (!Regex.IsMatch(runId, @"\A[a-f0-9]{32}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("Invalid unique acceptance run ID.");
+        const string email = @"\A(?![^@]*\.\.)(?:[A-Za-z0-9](?:[A-Za-z0-9._+-]{0,62}[A-Za-z0-9_+-])?)@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z";
+        if (internalRecipient.Length > 254 || externalRecipient.Length > 254 ||
+            !Regex.IsMatch(internalRecipient, email, RegexOptions.CultureInvariant) ||
+            !Regex.IsMatch(externalRecipient, email, RegexOptions.CultureInvariant) ||
+            string.Equals(internalRecipient, externalRecipient, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Two distinct, well-formed SMTP acceptance recipients are required.");
+        if (approvalSha is not null &&
+            !Regex.IsMatch(approvalSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("Exact reviewed acceptance SHA256 is required for sending.");
+        var request = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["internal"] = internalRecipient,
+            ["external"] = externalRecipient,
+            ["run_id"] = runId
+        });
+        string requestB64 = Encode(request);
+        string args = "--target " + target + (approvalSha is null
+            ? " --plan"
+            : " --apply --approve-sha256 " + approvalSha +
+              " --confirm SEND_TWO_ACCEPTANCE_TESTS");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-delivery.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/manage-m365-delivery-acceptance.py\" <<'LMR365_ACCEPTANCE_SCRIPT'\n" +
+               Encode(DeliveryAcceptance) + "\nLMR365_ACCEPTANCE_SCRIPT\n" +
+               // The actual addresses are sent over SSH stdin inside Base64;
+               // never command arguments or diagnostic logs.
+               "printf '%s' '" + requestB64 + "' | base64 -d | " +
+               "python3 \"$work/manage-m365-delivery-acceptance.py\" " + args + "\n";
     }
 
     internal static string BuildHardwareOAuthCutoverBundle(
