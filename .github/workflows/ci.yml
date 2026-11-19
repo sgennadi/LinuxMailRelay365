@@ -88,7 +88,31 @@ jobs:
           test "$(systemctl is-active postfix.service 2>/dev/null || true)" != active
           ! ss -H -lnt | grep -E ':(25|465|587|2525)[[:space:]]'
           echo 'CLEAN_POSTFIX_UBUNTU_PACKAGE_BOOTSTRAP=passed_real_systemd'
-  
+      - name: Install isolated Direct Send using ONLY the prepared Postfix package
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo bash linux/install-direct-send-sidecar.sh --apply \
+            --smtp-port 2525 \
+            --mx-host example-org.mail.protection.outlook.com \
+            --accepted-domain example.org --fixed-sender alerts@example.org \
+            --confirm-accepted-domain TENANT_DOMAIN_CHECKED \
+            > /tmp/lmr365-clean-isolated
+          grep -Fxq 'DIRECT_SEND_SIDECAR_INSTALLED=yes' /tmp/lmr365-clean-isolated
+          grep -Fxq 'PRIMARY_POSTFIX_CONFIG_UNCHANGED=yes' /tmp/lmr365-clean-isolated
+          systemctl is-active --quiet linuxmailrelay365-sidecar.service
+          test "$(systemctl is-active postfix.service 2>/dev/null || true)" != active
+          ss -H -lnt | grep -E '127[.]0[.]0[.]1:2525[[:space:]]'
+          ! ss -H -lnt | grep -E ':(25|465|587)[[:space:]]'
+          # The clean bootstrap marker is no longer authority to install a
+          # second gateway once port 2525 has become a live SMTP listener.
+          if sudo python3 linux/prepare-clean-postfix.py --verify-prepared --smtp-port 2525 \
+              > /tmp/lmr365-replay 2>&1; then
+            echo 'ERROR: clean-bootstrap marker could be reused after sidecar install' >&2
+            exit 1
+          fi
+          echo 'CLEAN_POSTFIX_TO_ISOLATED_DIRECT_SEND=passed_no_messages_sent'
+
   ubuntu-postfix-smoke:
     # Test both production LTS Dovecot 2.3 and updated Dovecot 2.4 grammar.
     strategy:
