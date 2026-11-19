@@ -21,6 +21,8 @@ internal static class EmbeddedAssets
     internal static string HardwareOAuthDiagnostics => Text("LinuxMailRelay365.linux.hardware-oauth-diagnostics.py");
     internal static string HardwareOAuthCutover => Text("LinuxMailRelay365.linux.hardware-oauth-cutover.py");
     internal static string TpmOauthProvision => Text("LinuxMailRelay365.linux.tpm-oauth-provision.py");
+    internal static string EntraPublicCertificateExporter => Text("LinuxMailRelay365.linux.entra-public-cert-export.py");
+    internal static string EntraCertificateManager => Text("LinuxMailRelay365.windows.entra-oauth-cert-manager.ps1");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarConfigRecovery => Text("LinuxMailRelay365.linux.sidecar-config-recovery.py");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
@@ -59,6 +61,40 @@ internal static class EmbeddedAssets
     internal static string TenantConnectorManager => Text("LinuxMailRelay365.windows.tenant-connector-manager.ps1");
 
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+
+    internal static string BuildEntraPublicCertificateBundle(string target,
+        string? objectId = null, string? activeSha = null,
+        string? stageSha = null, string? activeCertificateSha = null,
+        string? candidateCertificateSha = null)
+    {
+        if (target is not ("sidecar" or "primary"))
+            throw new ArgumentException("Unsupported Entra OAuth certificate source.");
+        string args = "--target " + target + " --inventory";
+        if (objectId is not null)
+        {
+            bool validGuid = Guid.TryParseExact(objectId, "D", out var id) &&
+                             id != Guid.Empty && objectId == id.ToString("D");
+            bool validSha = new[] { activeSha, stageSha, activeCertificateSha, candidateCertificateSha }
+                .All(x => x is not null && Regex.IsMatch(x, @"\A[a-f0-9]{64}\z",
+                                                       RegexOptions.CultureInvariant));
+            if (!validGuid || !validSha)
+                throw new ArgumentException("A matching Entra application object and all reviewed identity hashes are required.");
+            args = "--target " + target + " --proof --object-id " + objectId +
+                   " --expected-active-sha " + activeSha +
+                   " --expected-stage-sha " + stageSha +
+                   " --expected-active-cert-sha " + activeCertificateSha +
+                   " --expected-candidate-cert-sha " + candidateCertificateSha;
+        }
+        else if (activeSha is not null || stageSha is not null ||
+                 activeCertificateSha is not null || candidateCertificateSha is not null)
+            throw new ArgumentException("Partial Entra proof parameters are prohibited.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-entra-export.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/export-hardware-oauth-cert.py\" <<'LMR365_ENTRA_PUBLIC_EXPORT'\n" +
+               Encode(EntraPublicCertificateExporter) + "\nLMR365_ENTRA_PUBLIC_EXPORT\n" +
+               "python3 \"$work/export-hardware-oauth-cert.py\" " + args + "\n";
+    }
 
     internal static string BuildTpmOauthProvisionBundle(string target, string handle,
         string? approvedSha = null)
