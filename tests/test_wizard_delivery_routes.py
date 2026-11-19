@@ -147,6 +147,27 @@ class WizardDeliveryRoutesTests(unittest.TestCase):
         self.assertIn("05-direct-send-diagnostics.png", self.form)
         self.assertIn("05-xoauth2-multi-plan-only.png", self.form)
 
+    def test_automatic_mta_discovery_after_verified_ssh(self):
+        project = ROOT / "src" / "LinuxMailRelay365"
+        advisor = (project / "MailServerDiscoveryDecision.cs").read_text(encoding="utf-8")
+        connect = self.form.split("private async Task CheckSshAndContinueAsync()", 1)[1].split(
+            "internal static bool UseWideDeliveryChoices", 1)[0]
+        self.assertLess(connect.index("await CheckSshAsync();"),
+                        connect.index("await InspectMailRoutingAsync();"))
+        self.assertIn("ShowMailDiscovery(page, true);", self.form)
+        self.assertGreaterEqual(self.form.count("ShowMailDiscovery(page, false);"), 2)
+        self.assertIn("Read-only MTA discovery:", self.form)
+        self.assertIn("HasIsolatedSidecarAsync(", self.form)
+        self.assertIn("no Microsoft 365 delivery mode selected automatically", self.form)
+        self.assertIn("MailServerDiscoveryDecision.Assess(", self.form)
+        for status in ("postfix_active", "foreign_mta_active", "installed_but_not_active",
+                       "suspected_unsafe_relay", "no_standard_mta_detected",
+                       "existing_isolated_relay", "conflicting_or_unknown_mta"):
+            self.assertIn(status, advisor)
+        self.assertIn("MailServerDiscoveryDecision.SelfTest", self.program)
+        self.assertIn("Do not assume an empty mail server", advisor)
+        self.assertIn("No changes were made", advisor)
+
     def test_previous_mail_not_silently_reconfigured(self):
         self.assertIn('KeepExisting', self.flow)
         self.assertIn('mailTransport.SelectedIndex != 1', self.form)

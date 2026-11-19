@@ -1525,3 +1525,29 @@ The main Postfix install button is XOAUTH2-specific. New Connector and
 Direct Send installations use their existing guarded independent-gateway
 Preview/Install actions. Changing an installed EOP route requires Advanced
 SMTP Preview/Apply and its explicit approval path.
+
+
+### Automatic read-only mail server discovery after SSH (Preview)
+
+After a successfully verified SSH login the Wizard runs the existing Linux
+installed-MTA probe plus an independent read-only **active SMTP audit**.
+The audit differentiates active Postfix, Exim, Sendmail, no verified active MTA,
+ambiguous/multiple running MTAs, the relay policy, local SMTP bind/AUTH/TLS
+hints and readable configuration of an existing isolated Relay. The results
+appear immediately on **step 2 (Mail server discovery and optional security)**,
+with a manual *Reinspect* action, and a short recommendation remains visible
+on the route selection and Postfix configuration steps.
+
+The default recommendation for an existing recognized MTA is **Preserve Existing
+Mail** and a separate Postfix listener/queue, not changing the primary service.
+Active Exim or Sendmail is never treated as Postfix merely because postconf
+happens to be installed. With unknown or unsafe service state, the recommendation
+remains manual review. **No outbound Microsoft 365 transport is automatically
+selected**: XOAUTH2, Connector and Direct Send require distinct tenant,
+sender and recipient decisions. Discovery never installs packages, restarts
+services, opens ports, registers connectors or sends mail.
+
+A service-status probe can be incomplete (e.g. inaccessible systemd or root-only
+Relay files). A missing accessible Relay file is NOT proof of absence. The
+installer still requires its separate up-to-date inventory, backup/approval
+and read-only preflight; no discovery advice bypasses safety gates.

@@ -39,6 +39,8 @@ internal sealed class MainForm : Form
     private string? inspectedServerIdentity;
     private ExistingSmtpAudit? existingSmtpAudit;
     private string? existingSmtpAuditIdentity;
+    private bool? discoveredIsolatedRelay;
+    private string? discoveredMailIdentity;
     private readonly ComboBox mailTransport = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox oauthSenderMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
@@ -358,6 +360,13 @@ internal sealed class MainForm : Form
             {
                 oauthSenderAuditSummary = "";
                 oauthIngressAuditSummary = "";
+                // Never show evidence from the previous host as current.
+                discoveredIsolatedRelay = null;
+                discoveredMailIdentity = null;
+                inspectedMail = null;
+                inspectedServerIdentity = null;
+                existingSmtpAudit = null;
+                existingSmtpAuditIdentity = null;
             };
         }
         mailTransport.SelectedIndexChanged += (_, _) => {
@@ -863,6 +872,22 @@ internal sealed class MainForm : Form
     {
         await CheckSshAsync();
         EnsureSecurityLoaded();
+        EnsureRoutingLoaded();
+        // Read-only discovery immediately after a VERIFIED SSH login.
+        // If unavailable, continue with an explicit UNVERIFIED advisory;
+        // all installers already require a successful fresh MTA inventory.
+        try { await InspectMailRoutingAsync(); }
+        catch (Exception error)
+        {
+            inspectedMail = null;
+            inspectedServerIdentity = null;
+            existingSmtpAudit = null;
+            existingSmtpAuditIdentity = null;
+            discoveredIsolatedRelay = null;
+            discoveredMailIdentity = null;
+            WriteLine("Automatic MTA discovery incomplete; manual review required before any installation. " +
+                "Read-only probe failed (" + error.GetType().Name + ").");
+        }
         step = 1;
     }
 
@@ -1000,13 +1025,57 @@ internal sealed class MainForm : Form
         return panel;
     }
 
+
+    private void ShowMailDiscovery(TableLayoutPanel page, bool showRefresh)
+    {
+        bool sameServer = discoveredMailIdentity is not null &&
+            discoveredMailIdentity == TryCurrentIdentity();
+        var inventory = sameServer ? inspectedMail : null;
+        var audit = sameServer ? existingSmtpAudit : null;
+        bool? sidecar = sameServer ? discoveredIsolatedRelay : null;
+        var decision = MailServerDiscoveryDecision.Assess(inventory, audit, sidecar);
+
+        AddLine(page, UiTheme.Text(T("Обнаруженная почтовая конфигурация Linux",
+                                    "Detected Linux mail configuration",
+                                    "תצורת דואר שזוהתה בלינוקס"), true));
+        var overview = new Label
+        {
+            AutoSize = true, MaximumSize = new Size(Math.Max(390, pageHost.ClientSize.Width - 72), 0),
+            Text = decision.Explain(language.SelectedIndex, inventory, audit, sidecar),
+            Font = new Font("Segoe UI", 9.5f),
+            ForeColor = decision.ManualReviewRequired
+                ? Color.FromArgb(143, 72, 22) : UiTheme.Navy,
+            BackColor = Color.White,
+            Padding = new Padding(10, 9, 10, 9),
+            Margin = new Padding(0, 7, 0, 10)
+        };
+        AddLine(page, overview);
+        if (audit is not null)
+        {
+            var details = new Label
+            {
+                AutoSize = true, MaximumSize = new Size(Math.Max(390, pageHost.ClientSize.Width - 72), 0),
+                Text = audit.Summary(language.SelectedIndex),
+                Font = new Font("Segoe UI", 9f),
+                ForeColor = UiTheme.Muted,
+                Margin = new Padding(0, 0, 0, 8)
+            };
+            AddLine(page, details);
+        }
+        if (showRefresh)
+            AddAction(page, T("Повторно проверить работающий MTA, SMTP и Relay (без изменений)",
+                              "Reinspect active MTA, SMTP and Relay (read-only)",
+                              "בדיקה חוזרת של MTA ו-SMTP ללא שינוי"),
+                InspectMailRoutingAsync, false, "check", "mta-discovery");
+    }
+
     private void RenderPage()
     {
         if (IsDisposed) return;
         var titles = new[]
         {
             T("1 · Подключение к Linux", "1 · Linux connection", "1 · חיבור ל-Linux"),
-            T("2 · Проверка защиты (необязательно)", "2 · Optional security checks", "2 · בדיקות אבטחה אופציונליות"),
+            T("2 · Почтовый сервер и защита", "2 · Mail server discovery and security", "2 · גילוי שרת הדואר ואבטחה"),
             T("3 · Способ отправки", "3 · Choose delivery method", "3 · בחירת שיטת שליחה"),
             T("4 · Настройка Postfix", "4 · Configure Postfix", "4 · הגדרת Postfix"),
             T("5 · Проверка и обслуживание", "5 · Diagnostics and updates", "5 · אבחון ועדכונים")
@@ -1017,9 +1086,9 @@ internal sealed class MainForm : Form
             0 => T("Любой Linux с SSH и правами sudo. Пароль Microsoft 365 не нужен.",
                    "Any Linux with SSH and sudo access. No Microsoft 365 mailbox password.",
                    "כל שרת Linux עם SSH ו-sudo. ללא סיסמת Microsoft 365."),
-            1 => T("Проверки не меняют сервер. Установка TPM-пакетов — отдельное подтверждаемое действие.",
-                   "Checks are read-only. TPM package installation requires separate explicit approval.",
-                   "הבדיקות לקריאה בלבד. התקנת חבילות TPM דורשת אישור נפרד."),
+            1 => T("После успешного SSH мастер определяет активный MTA и состояние SMTP без изменений. TPM — отдельно, по желанию.",
+                   "After SSH, read-only discovery checks the active MTA and SMTP. TPM checks are optional.",
+                   "לאחר SSH מתבצעת בדיקת MTA ו-SMTP ללא שינויים. TPM אופציונלי."),
             2 => mailTransport.SelectedIndex is 1 or 2
                 ? T("Для Connector/Direct Send не нужен OAuth или почтовый ящик; укажите домен и MX на следующем шаге.",
                     "Connector / Direct Send requires no OAuth or mailbox; enter the accepted domain and MX next.",
@@ -1056,6 +1125,7 @@ internal sealed class MainForm : Form
                 break;
             case 1:
                 EnsureSecurityLoaded();
+                ShowMailDiscovery(page, true);
                 AddLine(page, UiTheme.Text(T(
                     "Все опции выключены. Выбор сохраняется как ПЛАН — он не меняет Entra, Postfix, сертификат или Linux. Для включения потребуются отдельные подтверждённые действия.",
                     "All options are off. Your selection is saved as a PLAN only: it does not modify Entra, Postfix, certificates or Linux. Activation requires separate approved steps.",
@@ -1272,6 +1342,7 @@ internal sealed class MainForm : Form
             case 2:
                 EnsureRoutingLoaded();
                 LocalizeDeliveryChoices();
+                ShowMailDiscovery(page, false);
                 AddLine(page, UiTheme.Text(T(
                     "Выберите, КАК Linux будет отправлять почту через Microsoft 365",
                     "First select HOW Linux will deliver mail through Microsoft 365",
@@ -1325,6 +1396,7 @@ internal sealed class MainForm : Form
             case 3:
                 EnsureRoutingLoaded();
                 LocalizeDeliveryChoices();
+                ShowMailDiscovery(page, false);
                 AddLine(page, UiTheme.Text(T("Отправка через Microsoft 365", "Microsoft 365 delivery method", "שיטת שליחה דרך Microsoft 365")));
                 AddLine(page, mailTransport);
                 if (mailTransport.SelectedIndex == 0)
@@ -2294,6 +2366,8 @@ internal sealed class MainForm : Form
             reviewedSidecarRestoreIdentity = null;
             existingSmtpAudit = null;
             existingSmtpAuditIdentity = null;
+            discoveredIsolatedRelay = null;
+            discoveredMailIdentity = null;
             routingIdentity = identity;
         }
         finally { routingLoading = false; }
@@ -3954,7 +4028,15 @@ internal sealed class MainForm : Form
 
     private async Task InspectMailRoutingAsync()
     {
+        EnsureRoutingLoaded();
         var endpoint = Endpoint();
+        // A failed or partial read must never leave stale successful evidence.
+        inspectedMail = null;
+        inspectedServerIdentity = null;
+        existingSmtpAudit = null;
+        existingSmtpAuditIdentity = null;
+        discoveredIsolatedRelay = null;
+        discoveredMailIdentity = null;
         var report = await SshRemote.ProbeSecurityAsync(
             endpoint, EmbeddedAssets.SecurityProbe, CancellationToken.None);
         report.EnsureSuccess();
@@ -3978,8 +4060,24 @@ internal sealed class MainForm : Form
             // are unavailable. Preserve the earlier valid MTA inventory.
             existingSmtpAudit = null;
             existingSmtpAuditIdentity = null;
-            WriteLine("Public SMTP audit could not complete; status UNKNOWN and requires manual review. " + error.Message);
+            WriteLine("Public SMTP audit could not complete; status UNKNOWN and requires manual review. " + error.GetType().Name);
         }
+        try
+        {
+            discoveredIsolatedRelay = await SshRemote.HasIsolatedSidecarAsync(
+                endpoint, CancellationToken.None);
+        }
+        catch (Exception error)
+        {
+            discoveredIsolatedRelay = null;
+            WriteLine("Isolated Relay presence unverified (" + error.GetType().Name +
+                      "); do not assume absence.");
+        }
+        discoveredMailIdentity = SecurityOptionsStore.Identity(endpoint);
+        var recommendation = MailServerDiscoveryDecision.Assess(
+            inspectedMail, existingSmtpAudit, discoveredIsolatedRelay);
+        WriteLine("Read-only MTA discovery: " + recommendation.Code +
+                  "; no Microsoft 365 delivery mode selected automatically; no changes made.");
     }
 
 
