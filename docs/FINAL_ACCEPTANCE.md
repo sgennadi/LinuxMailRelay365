@@ -456,8 +456,8 @@ and signed deployment. Do not treat the envelope preflight as Stable evidence.
 ## Full local Postfix message path to loopback-only SMTP sink (CI acceptance)
 
 The previous SMTP smoke tests exercised only EHLO/MAIL/RCPT, avoiding message
-DATA and the independent Postfix queue. The Ubuntu fresh Connector CI matrix
-now includes a bounded **real DATA** test, using an explicitly disposable
+DATA and the independent Postfix queue. The Ubuntu fresh Connector and Direct Send CI matrices
+now include bounded **real DATA** tests, using an explicitly disposable
 GitHub Actions runner and synthetic `example.org` sender/recipient:
 
     bash tests/smoke_local_postfix_delivery.sh 46500
