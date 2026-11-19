@@ -1472,3 +1472,12 @@ does NOT mean any real SMTP login, RFC5322 From filtering, Exchange
 Send As, multi-mailbox selection or external mail delivery is working.
 All multi-mailbox Apply/Send buttons remain disabled. See
 `docs/FINAL_ACCEPTANCE.md` for precise evidence and limitations.
+
+## Read-only exact owner rule matching
+
+The ingress comparison now checks both the literal Postfix sender-owner
+regexp rules and the From Guard service's SHA256-pinned root policy.
+Extra/wildcard map rules, wrong owners or a mismatched service pin are
+reported as **not ready**. These are still only static checks: real
+SMTP login/From rejection, multi-mailbox XOAUTH2 and tenant delivery
+remain disabled until live tests and operator approval.
