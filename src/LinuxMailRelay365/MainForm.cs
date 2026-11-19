@@ -187,12 +187,19 @@ internal sealed class MainForm : Form
             "Masquerade subdomain sender into accepted domain (Connector only)"
         ]);
         tpmDependencyProfile.Items.AddRange([
+            "Automatic TPM2 RPM profile (no third-party repositories)",
             "TPM2 utilities (RHEL/Oracle/Rocky/Alma 8-10)",
             "TPM2 development/build prerequisites (RHEL 8-10)",
             "TPM2 PKCS#11 OpenSSL 3 path (RHEL 9/10)",
             "Native TPM2 OpenSSL provider (RHEL 10 only)"
         ]);
         tpmDependencyProfile.SelectedIndex = 0;
+        tpmDependencyProfile.SelectedIndexChanged += (_, _) =>
+        {
+            reviewedTpmPlanSha = null;
+            reviewedTpmPlanContext = null;
+            tpmPlanSummary = "";
+        };
         tpmKeyHandle.TextChanged += (_, _) =>
         {
             reviewedTpmKeyPlanSha = null;
@@ -3919,10 +3926,11 @@ internal sealed class MainForm : Form
 
     private string SelectedTpmDependencyProfile() => tpmDependencyProfile.SelectedIndex switch
     {
-        0 => "runtime",
-        1 => "build-prereqs",
-        2 => "pkcs11",
-        3 => "native-provider",
+        0 => "auto",
+        1 => "runtime",
+        2 => "build-prereqs",
+        3 => "pkcs11",
+        4 => "native-provider",
         _ => throw new InvalidOperationException("Select a supported TPM dependency profile.")
     };
 
