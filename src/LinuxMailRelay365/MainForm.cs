@@ -1245,6 +1245,88 @@ internal sealed class MainForm : Form
         status.ForeColor = lastFailed ? Color.FromArgb(174, 40, 43) : UiTheme.Muted;
     }
 
+    /// <summary>
+    /// Disposable Windows CI visual QA only. No SSH, Entra or SMTP operations.
+    /// Screens capture the *actual* WinForms controls with factory defaults,
+    /// not an inferred or designed mockup. Production never invokes this.
+    /// </summary>
+    internal int CaptureWizardScreens(string directory)
+    {
+        if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
+            string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("RUNNER_TEMP")))
+            throw new InvalidOperationException("Wizard capture requires a disposable GitHub Actions runner.");
+        if (!Visible || InvokeRequired)
+            throw new InvalidOperationException("Wizard capture must run on its visible UI thread.");
+        string root = Path.GetFullPath(directory);
+        Directory.CreateDirectory(root);
+        Size = new Size(1050, 830);
+        WindowState = FormWindowState.Normal;
+        int captured = 0;
+
+        void Screenshot(string filename)
+        {
+            // Use the application's own real layout and controls at the top of
+            // the scrollable page; do not synthesize labels or completed status.
+            pageHost.AutoScrollPosition = Point.Empty;
+            pageHost.PerformLayout();
+            PerformLayout();
+            Refresh();
+            Application.DoEvents();
+            using var bitmap = new Bitmap(ClientSize.Width, ClientSize.Height);
+            DrawToBitmap(bitmap, new Rectangle(Point.Empty, ClientSize));
+            bitmap.Save(Path.Combine(root, filename),
+                        System.Drawing.Imaging.ImageFormat.Png);
+            captured++;
+        }
+
+        string[] names =
+        [
+            "01-linux-connection.png",
+            "02-optional-security.png",
+            "03-microsoft-365.png",
+            "04-postfix-xoauth2.png",
+            "05-diagnostics.png"
+        ];
+        for (int index = 0; index < 5; index++)
+        {
+            step = index;
+            RenderPage();
+            Screenshot(names[index]);
+            if (index == 3)
+            {
+                try
+                {
+                    routingLoading = true;
+                    mailTransport.SelectedIndex = 1;
+                }
+                finally { routingLoading = false; }
+                RenderPage();
+                Screenshot("04-postfix-connector.png");
+                try
+                {
+                    routingLoading = true;
+                    mailTransport.SelectedIndex = 2;
+                }
+                finally { routingLoading = false; }
+                RenderPage();
+                Screenshot("04-postfix-direct-send.png");
+                try
+                {
+                    routingLoading = true;
+                    mailTransport.SelectedIndex = 0;
+                }
+                finally { routingLoading = false; }
+            }
+        }
+        File.WriteAllText(Path.Combine(root, "README.txt"),
+            "Actual WinForms Preview wizard screenshots from a disposable CI runner.\n" +
+            "Factory defaults only; no real SSH, Microsoft 365 tenant, TPM or SMTP delivery.\n" +
+            "Only the top visible part of each scrollable wizard step is captured.\n");
+        step = 0;
+        RenderPage();
+        return captured;
+    }
+
     private void WriteLine(string message)
     {
         if (InvokeRequired) { BeginInvoke(() => WriteLine(message)); return; }
