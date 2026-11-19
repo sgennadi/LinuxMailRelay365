@@ -1356,3 +1356,26 @@ Postfix queue and retries, tenant Connector permissions or recipient inbox.
 The true end-to-end internal+external two-recipient acceptance using actual
 Postfix DATA/queue remains blocked until a real, approved test tenant, secure
 client credential handling and independently reviewed recipients are available.
+
+
+## Full-message Postfix delivery on an offline CI fixture (Draft)
+
+Ubuntu 24.04 and ubuntu-latest CI now test more than SMTP EHLO/RCPT:
+after installing the independent private Connector fixture, the test sends
+one synthetic **DATA** message into its real Postfix inbound listener, which
+queues and forwards the message to a loopback-only SMTP sink. It asserts
+exact sender, recipient, headers and body, requires the independent queue
+to drain, and restores the byte-identical sidecar configuration. The
+original system Postfix configuration, service and queue remain unchanged.
+
+No message goes to Microsoft 365: the test temporarily stops the isolated
+Postfix, replaces all outbound routes with [127.0.0.1]:46601, disables
+fallback routing, and uses a deliberately private test recipient. A
+failure with a non-empty queue leaves the sidecar stopped with its
+loopback-only routing rather than restoring a real external destination.
+The helper refuses execution outside a disposable GitHub Actions runner.
+
+The **full system path to Exchange Online and actual inbox delivery**
+remains unverified. Production delivery requires separately reviewed
+real-tenant internal and external tests, TPM hardware signing acceptance
+and Linux host-specific verification. See `docs/FINAL_ACCEPTANCE.md`.
