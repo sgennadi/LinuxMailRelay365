@@ -307,7 +307,7 @@ internal sealed class MainForm : Form
                     senderPolicy.SelectedIndex = 0;
             }
             SaveRoutingChoices(); UpdatePreserveFlowPreview();
-            if (step == 3 && !routingLoading && !busy)
+            if (step is 2 or 3 && !routingLoading && !busy)
             {
                 int previousScroll = -pageHost.AutoScrollPosition.Y;
                 RenderPage();
@@ -603,9 +603,13 @@ internal sealed class MainForm : Form
             1 => T("Проверки не меняют сервер. Установка TPM-пакетов — отдельное подтверждаемое действие.",
                    "Checks are read-only. TPM package installation requires separate explicit approval.",
                    "הבדיקות לקריאה בלבד. התקנת חבילות TPM דורשת אישור נפרד."),
-            2 => T("Сертификат создаётся на Linux. В Windows передаётся только открытая часть.",
-                   "The certificate is generated on Linux; only the public part is copied to Windows.",
-                   "האישור נוצר בלינוקס ורק החלק הציבורי מועבר ל-Windows."),
+            2 => mailTransport.SelectedIndex is 1 or 2
+                ? T("Для Connector/Direct Send не нужен OAuth или почтовый ящик; укажите домен и MX на следующем шаге.",
+                    "Connector / Direct Send requires no OAuth or mailbox; enter the accepted domain and MX next.",
+                    "ב-Connector ו-Direct Send אין צורך ב-OAuth או תיבה.")
+                : T("Сертификат создаётся на Linux. В Windows передаётся только открытая часть.",
+                    "The certificate is generated on Linux; only the public part is copied to Windows.",
+                    "האישור נוצר בלינוקס ורק החלק הציבורי מועבר ל-Windows."),
             3 => T("Перед изменением Postfix создаются резервные копии конфигурации.",
                    "Backups are created before Postfix configuration is changed.",
                    "גיבוי תצורת Postfix נוצר לפני כל שינוי."),
@@ -850,6 +854,12 @@ internal sealed class MainForm : Form
                 break;
             case 2:
                 EnsureRoutingLoaded();
+                LocalizeDeliveryChoices();
+                AddLine(page, UiTheme.Text(T(
+                    "Выберите, КАК Linux будет отправлять почту через Microsoft 365",
+                    "First select HOW Linux will deliver mail through Microsoft 365",
+                    "בחרו כיצד Linux ישלח דואר דרך Microsoft 365")));
+                AddLine(page, mailTransport);
                 if (mailTransport.SelectedIndex is 1 or 2)
                 {
                     AddLine(page, UiTheme.Text(T(
@@ -857,9 +867,9 @@ internal sealed class MainForm : Form
                         "Connector and Direct Send do NOT require an Entra application, OAuth token or licensed mailbox. Click Next to enter the tenant-accepted domain and MX. Review Connector authority or internal-only delivery. Public IP or TLS identity is checked separately.",
                         "ב-Connector ו-Direct Send אין צורך ביישום Entra או תיבת דואר. המשיכו להגדרת דומיין ו-MX.")));
                     AddLine(page, UiTheme.Text(T(
-                        "Режим можно изменить на следующем экране. Для XOAUTH2 вернитесь сюда и настройте разрешённый mailbox.",
-                        "Switch delivery mode on the next step. To use XOAUTH2, return here to configure the authorized mailbox.",
-                        "ניתן לשנות מצב בשלב הבא.")));
+                        "На следующем экране задайте порт, MX, домен, отправителя и параметры сохранения текущего почтового сервера.",
+                        "Next configure inbound SMTP port, MX, accepted domain, sender and preservation of the existing mail server.",
+                        "בשלב הבא בחרו יציאה, MX, דומיין, שולח ושמירת שרת הדואר הקיים.")));
                     break;
                 }
                 AddAction(page, "Connect to Microsoft 365 and discover tenants", DiscoverTenantsAsync, true, "cloud", "tenant-discovery");
