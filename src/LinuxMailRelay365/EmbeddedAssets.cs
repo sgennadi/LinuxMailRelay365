@@ -170,6 +170,11 @@ internal static class EmbeddedAssets
                 args += " --token-preflight --approve-sha256 " + approvalSha +
                         " --confirm VERIFY_STAGED_ENTRA_TOKEN";
                 break;
+            case "smtp-auth-preflight" when backupId is null && approvalSha is not null &&
+                                               Regex.IsMatch(approvalSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant):
+                args += " --smtp-auth-preflight --approve-sha256 " + approvalSha +
+                        " --confirm VERIFY_STAGED_SMTP_AUTH";
+                break;
             case "plan" when approvalSha is null && backupId is null:
                 args += " --plan";
                 break;
