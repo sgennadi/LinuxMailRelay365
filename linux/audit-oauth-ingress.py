@@ -207,7 +207,8 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
     for key in (
         "smtpd_sasl_auth_enable", "smtpd_tls_security_level",
         "smtpd_tls_auth_only", "smtpd_sasl_type", "smtpd_sasl_path",
-        "smtpd_relay_restrictions", "smtpd_sender_login_maps",
+        "smtpd_relay_restrictions", "smtpd_client_restrictions",
+        "smtpd_recipient_restrictions", "smtpd_sender_login_maps",
         "smtpd_sender_restrictions", "smtpd_milters", "milter_protocol",
         "milter_default_action", "milter_mail_macros",
         "non_smtpd_milters", "smtpd_milter_maps", "authorized_submit_users",
@@ -221,6 +222,9 @@ def assess(rows, auditor, read_file=None, config=None, active=None,
         ("smtpd_sasl_type", "dovecot"),
         ("smtpd_sasl_path", "private/auth"),
         ("smtpd_relay_restrictions", "permit_sasl_authenticated, reject"),
+        ("smtpd_client_restrictions", "permit_mynetworks, reject"),
+        ("smtpd_recipient_restrictions",
+         "check_recipient_access regexp:" + CONF + "/eop-recipients.regexp, reject"),
     )):
         result["SASL_TLS_CONFIG"] = "configured_only"
     if (values["smtpd_sender_login_maps"] == OWNER_MAP and
@@ -268,11 +272,14 @@ def main(argv=None):
             raise AuditRefused("root_required")
         auditor = auditor_module()
         auditor.allowed_path(args.map_path)
-        structural = auditor.audit(args.map_path)
-        raw = auditor.secure_read(args.map_path, auditor.MAX_MAP, 0o600, None)
-        if hashlib.sha256(raw).hexdigest() != structural["MAP_SHA256"]:
-            raise AuditRefused("sender_map_changed_during_review")
-        rows = auditor.parse_map(raw)
+        try:
+            structural = auditor.audit(args.map_path)
+            raw = auditor.secure_read(args.map_path, auditor.MAX_MAP, 0o600, None)
+            if hashlib.sha256(raw).hexdigest() != structural["MAP_SHA256"]:
+                raise AuditRefused("sender_map_changed_during_review")
+            rows = auditor.parse_map(raw)
+        except auditor.Refused:
+            raise AuditRefused("read_only_inputs_not_valid")
         report = assess(rows, auditor)
         print("OAUTH_INGRESS_REVIEW=read_only")
         print("OAUTH_INGRESS_MAP_SHA256=" + structural["MAP_SHA256"])
@@ -283,6 +290,7 @@ def main(argv=None):
         print("OAUTH_INGRESS_REAL_SMTP_LOGIN_VERIFIED=no")
         print("OAUTH_INGRESS_REAL_FROM_GUARD_MESSAGE_VERIFIED=no")
         print("OAUTH_INGRESS_M365_SENDAS_VERIFIED=no")
+        print("OAUTH_INGRESS_MASTER_CF_OVERRIDES_VERIFIED=no")
         print("OAUTH_INGRESS_MULTI_MAILBOX_ENABLED=no")
         print("OAUTH_INGRESS_POSTFIX_CHANGED=no")
         print("OAUTH_INGRESS_MESSAGES_SENT=no")
