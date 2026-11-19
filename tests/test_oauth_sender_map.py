@@ -209,7 +209,7 @@ class OAuthSenderMapTests(unittest.TestCase):
                   "MAILBOXES": 2, "IDENTITIES": 2, "TENANTS": 1,
                   "SENDAS_DIFFERENT_FROM": 1,
                   "POLICY_SIMULATION_TEST_CASES": 14,
-                  "EXISTING_FROM_GUARD_CAPACITY_COMPATIBLE": "yes"
+                  "EXISTING_FROM_GUARD_CAPACITY_COMPATIBLE": "yes"}
         with mock.patch.object(AUDIT.os, "geteuid", return_value=0), \
              mock.patch.object(AUDIT, "audit", return_value=report) as audited, \
              contextlib.redirect_stdout(io.StringIO()) as out:
