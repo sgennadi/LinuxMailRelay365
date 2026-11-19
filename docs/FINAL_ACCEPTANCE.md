@@ -533,9 +533,11 @@ A future multi-mailbox rollout is blocked until:
 - a reboot test, RHEL 8/9/10 SELinux Enforcing matrix and rollback
   are verified, with signed x64/ARM64 stable package acceptance.
 
-CI screenshot capture exports seven real WinForms PNGs with synthetic
-defaults and no live tenants: five wizard steps and three transport
-variants in step 4. It is only a visual reference and not a DPI/RTL
+CI screenshot capture exports ten real WinForms PNGs with synthetic
+defaults and no live tenants: five base wizard steps, separate early
+Connector/Direct Send selection screens, three transport variants in
+step 4, and the blocked multi-mailbox XOAUTH2 plan with read-only audit
+buttons. It is only a visual reference and not a DPI/RTL
 accessibility certification.
 
 ## Multi-mailbox XOAUTH2 authorization map: read-only structural audit (Draft)
