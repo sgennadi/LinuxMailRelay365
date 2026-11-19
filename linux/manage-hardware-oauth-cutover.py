@@ -274,20 +274,27 @@ def checked_run(plan, candidate, token_check, runner=subprocess.run):
         raise Refused("token_preflight_failed" if token_check else "ps256_preflight_failed")
 
 
-def checked_smtp_auth(plan, runner=subprocess.run):
-    # Only a signed/staged identity may attempt the SMTP AUTH handshake.
-    # No --recipient and no SMTP DATA: the installed transport enforces this.
+def checked_smtp_auth(plan, candidate=True, runner=subprocess.run):
+    """Check Exchange Online STARTTLS and XOAUTH2 for the selected identity.
+
+    --smtp-auth-check cannot accept a recipient and cannot send an email.
+    Precutover: staged only. Postcutover: exactly the activated app.json.
+    """
+    identity_arg = "--candidate-config" if candidate else "--config"
+    identity_path = (plan["directory"] / "hardware-staged.json"
+                     if candidate else plan["directory"] / "app.json")
     command = [plan["runuser"], "-u", "m365mailer", "--", "/usr/bin/python3",
                str(plan["transport"]), "--smtp-auth-check",
-               "--candidate-config",
-               str(plan["directory"] / "hardware-staged.json")]
+               identity_arg, str(identity_path)]
+    failure = ("staged_exchange_smtp_auth_failed" if candidate
+               else "active_exchange_smtp_auth_failed")
     try:
         result = runner(command, stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL, check=False, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
-        raise Refused("staged_exchange_smtp_auth_failed")
+        raise Refused(failure)
     if result.returncode:
-        raise Refused("staged_exchange_smtp_auth_failed")
+        raise Refused(failure)
 
 
 def lock():
@@ -498,7 +505,7 @@ def smtp_auth_preflight(target, approved_sha, confirmation,
         if plan["sha"] != approved_sha:
             raise Refused("smtp_auth_plan_changed_reapprove")
         checked_run(plan, True, False, runner)
-        checked_smtp_auth(plan, runner)
+        checked_smtp_auth(plan, True, runner)
         if prepare(target)["sha"] != approved_sha:
             raise Refused("smtp_auth_plan_changed_after_network")
         say("VERSION", VERSION)
@@ -528,11 +535,12 @@ def apply(target, approved_sha, confirmation, runner=subprocess.run):
         plan = prepare(target)
         if approved_sha != plan["sha"]:
             raise Refused("plan_changed_review_again")
-        # Explicitly check the staged provider against the staged certificate
-        # and obtain an Entra token, without SMTP. This must succeed before
-        # the first active identity byte is changed.
+        # Before changing any live identity, prove the staged provider can
+        # sign, obtain an Entra token AND complete Exchange STARTTLS/XOAUTH2
+        # authentication without sending MAIL, RCPT or DATA.
         checked_run(plan, True, False, runner)
         checked_run(plan, True, True, runner)
+        checked_smtp_auth(plan, True, runner)
         if plan["sha"] != prepare(target)["sha"]:
             raise Refused("plan_changed_during_live_preflight")
         backup_id = new_backup(plan)
@@ -546,6 +554,7 @@ def apply(target, approved_sha, confirmation, runner=subprocess.run):
             replace_identity(active, plan["staged_raw"], plan["gid"])
             checked_run(plan, False, False, runner)
             checked_run(plan, False, True, runner)
+            checked_smtp_auth(plan, False, runner)
         except Exception:
             # Never overwrite changes by another administrator. An
             # unexpected identity requires explicit manual recovery.
@@ -564,7 +573,11 @@ def apply(target, approved_sha, confirmation, runner=subprocess.run):
         say("APPLIED", "yes")
         say("LOCAL_SIGNING_VERIFIED", "yes")
         say("ENTRA_TOKEN_VERIFIED", "yes")
+        say("SMTP_STARTTLS_VERIFIED", "yes")
+        say("SMTP_AUTH_XOAUTH2_VERIFIED", "yes")
         say("MAIL_SENT", "no")
+        say("MAIL_FROM_RCPT_DATA_SENT", "no")
+        say("TOKEN_PRINTED", "no")
         say("PRIMARY_MTA_CHANGES", "no")
         say("RESTART_REQUIRED", "no")
     finally:
