@@ -609,3 +609,15 @@ Milter/header guard, Exchange Send As permissions and actual delivery.
 This **must not** be used to authorize an otherwise untrusted mail sender:
 the simulated login is a trusted test parameter, not an authenticated SMTP
 session identity. Normal multi-mailbox XOAUTH2 Apply/Test remain blocked.
+
+## Existing From Guard mapping capacity boundary
+
+The existing standalone From Guard parser and Dovecot user management accept
+up to 64 explicitly authorized entries/accounts. The planning TSV format
+can describe up to 256 sender entries. The read-only OAuth map audit now
+reports `OAUTH_SENDER_MAP_EXISTING_FROM_GUARD_CAPACITY_COMPATIBLE=yes|no`
+using this 64-entry limit. This is only a capacity comparison, **not**
+proof that the Milter is installed, connected to Postfix or protecting SMTP
+messages. An audit with more than 64 entries may be reviewed but cannot
+be activated through the existing From Guard without a separately tested
+scaling change. No automatic truncation or silent fallback is permitted.
