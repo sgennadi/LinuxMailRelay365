@@ -5,7 +5,7 @@ namespace LinuxMailRelay365;
 
 internal static class UpdateCheck
 {
-    internal const string Version = "0.1.0-preview.17";
+    internal const string Version = "0.1.0-preview.18";
     internal static async Task<(string? url, string message)> QueryAsync(bool includePreview, CancellationToken ct)
     {
         string architecture = UpdateOptions.CurrentWindowsArchitecture();
