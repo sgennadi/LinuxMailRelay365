@@ -41,6 +41,8 @@ internal sealed class MainForm : Form
     private string? existingSmtpAuditIdentity;
     private bool? discoveredIsolatedRelay;
     private string? discoveredMailIdentity;
+    private MailHostInspection? inspectedHost;
+    private string? inspectedHostIdentity;
     private string? previewedCleanBootstrapSha;
     private string? previewedCleanBootstrapIdentity;
     private int previewedCleanBootstrapPort;
@@ -370,6 +372,8 @@ internal sealed class MainForm : Form
                 // Never show evidence from the previous host as current.
                 discoveredIsolatedRelay = null;
                 discoveredMailIdentity = null;
+                inspectedHost = null;
+                inspectedHostIdentity = null;
                 previewedCleanBootstrapSha = null;
                 previewedCleanBootstrapIdentity = null;
                 cleanBootstrapSummary = "";
@@ -1073,6 +1077,32 @@ internal sealed class MainForm : Form
             Margin = new Padding(0, 7, 0, 10)
         };
         AddLine(page, overview);
+        if (sameServer && inspectedHostIdentity == TryCurrentIdentity() &&
+            inspectedHost is not null)
+        {
+            AddLine(page, new Label
+            {
+                AutoSize = true, MaximumSize = new Size(Math.Max(390, pageHost.ClientSize.Width - 72), 0),
+                Text = inspectedHost.Summary(language.SelectedIndex),
+                Font = new Font("Segoe UI", 9f), ForeColor = UiTheme.Muted,
+                BackColor = Color.White, Padding = new Padding(10, 6, 10, 6),
+                Margin = new Padding(0, 4, 0, 10)
+            });
+            if (inspectedHost.HasFqdn)
+                AddAction(page, T("Использовать найденный FQDN в настройках SMTP (без установки)",
+                    "Use detected FQDN for SMTP settings (no install)",
+                    "השתמש בשם המארח שהתגלה בהגדרות SMTP"),
+                    UseDetectedFqdnAsync, false, "check", "mail-hostname");
+            if (inspectedHost.HasDomain)
+                AddAction(page, T("Подставить домен в поле M365 (потребуется подтверждение)",
+                    "Prefill M365 domain (tenant verification still required)",
+                    "מלא דומיין, כפוף לאימות Microsoft 365"),
+                    UseDetectedDomainAsync, false, "check", "mail-domain");
+        }
+        else AddLine(page, UiTheme.Text(T(
+            "Hostname и настройки MTA ещё не проверены.",
+            "OS hostname and MTA-specific settings are not verified.",
+            "שם המארח והגדרות הדואר טרם נבדקו.")));
         if (audit is not null)
         {
             var details = new Label
@@ -1090,6 +1120,52 @@ internal sealed class MainForm : Form
                               "Reinspect active MTA, SMTP and Relay (read-only)",
                               "בדיקה חוזרת של MTA ו-SMTP ללא שינוי"),
                 InspectMailRoutingAsync, false, "check", "mta-discovery");
+    }
+
+    private Task UseDetectedFqdnAsync()
+    {
+        if (inspectedHostIdentity != TryCurrentIdentity() || inspectedHost?.HasFqdn != true)
+            throw new InvalidOperationException("Reinspect Linux hostname first.");
+        string name = inspectedHost.Fqdn;
+        string field = inspectedMail?.Mta is "exim" or "sendmail"
+            ? "foreign sidecar hostname" : "private SMTP TLS hostname";
+        var confirmation = MessageBox.Show(this, T(
+            "Использовать FQDN " + name + " как " + field +
+            "? Для отдельного Postfix может понадобиться другое DNS-имя. Значение Linux не проверяет DNS/TLS.",
+            "Use Linux FQDN " + name + " for " + field +
+            "? An isolated Postfix may need a different DNS name. The Linux hostname does NOT validate DNS/TLS.",
+            "להשתמש בשם המארח " + name + "? יש לבדוק את DNS ואת האישור."),
+            "LinuxMailRelay365 | Use Linux hostname",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Information,
+            MessageBoxDefaultButton.Button2);
+        if (confirmation != DialogResult.Yes) return Task.CompletedTask;
+        if (inspectedMail?.Mta is "exim" or "sendmail")
+            foreignSidecarHostname.Text = name;
+        else
+            privateAuthDns.Text = name;
+        SaveRoutingChoices();
+        RenderPage();
+        return Task.CompletedTask;
+    }
+
+    private Task UseDetectedDomainAsync()
+    {
+        if (inspectedHostIdentity != TryCurrentIdentity() || inspectedHost?.HasDomain != true)
+            throw new InvalidOperationException("Reinspect Linux domain first.");
+        string domain = inspectedHost.Domain;
+        if (MessageBox.Show(this, T(
+            "Подставить " + domain + " в поле домена Microsoft 365? Это НЕ проверка accepted domain в tenant; подтверждение будет сброшено.",
+            "Prefill " + domain + " as the M365 accepted domain? This is NOT tenant verification. Any previous domain approval is cleared.",
+            "למלא " + domain + "? נדרש אישור בעלות ב-Microsoft 365."),
+            "LinuxMailRelay365 | Domain suggestion", MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            return Task.CompletedTask;
+        acceptedDomainApproved.Checked = false;
+        connectorApproved.Checked = false;
+        acceptedDomain.Text = domain;
+        SaveRoutingChoices();
+        RenderPage();
+        return Task.CompletedTask;
     }
 
     private void ShowRecipientAdvice(TableLayoutPanel page)
@@ -2454,6 +2530,8 @@ internal sealed class MainForm : Form
             existingSmtpAuditIdentity = null;
             discoveredIsolatedRelay = null;
             discoveredMailIdentity = null;
+            inspectedHost = null;
+            inspectedHostIdentity = null;
             previewedCleanBootstrapSha = null;
             previewedCleanBootstrapIdentity = null;
             cleanBootstrapSummary = "";
@@ -4242,6 +4320,8 @@ internal sealed class MainForm : Form
         existingSmtpAuditIdentity = null;
         discoveredIsolatedRelay = null;
         discoveredMailIdentity = null;
+        inspectedHost = null;
+        inspectedHostIdentity = null;
         var report = await SshRemote.ProbeSecurityAsync(
             endpoint, EmbeddedAssets.SecurityProbe, CancellationToken.None);
         report.EnsureSuccess();
@@ -4277,6 +4357,23 @@ internal sealed class MainForm : Form
             discoveredIsolatedRelay = null;
             WriteLine("Isolated Relay presence unverified (" + error.GetType().Name +
                       "); do not assume absence.");
+        }
+        try
+        {
+            var detected = await SshRemote.ExecuteAsync(endpoint, "bash -s",
+                EmbeddedAssets.BuildMailHostInspectionBundle(), timeout: TimeSpan.FromSeconds(75));
+            detected.EnsureSuccess();
+            inspectedHost = MailHostInspection.Parse(detected.StdOut);
+            inspectedHostIdentity = SecurityOptionsStore.Identity(endpoint);
+            WriteLine("Read-only Linux hostname and Postfix/Exim/Sendmail settings inspected. " +
+                "Use the wizard buttons to fill fields explicitly; M365 domain ownership is unverified.");
+        }
+        catch (Exception ex)
+        {
+            inspectedHost = null;
+            inspectedHostIdentity = null;
+            WriteLine("Linux hostname/MTA settings could not be read (" +
+                ex.GetType().Name + "); no fields were filled automatically.");
         }
         discoveredMailIdentity = SecurityOptionsStore.Identity(endpoint);
         var recommendation = MailServerDiscoveryDecision.Assess(

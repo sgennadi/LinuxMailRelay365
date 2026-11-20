@@ -59,6 +59,12 @@ internal static class Program
             ("Delivery route chooser guidance", DeliveryModeOverview.SelfTest),
             ("Recipient-aware read-only delivery recommendations", MailDeliveryAdvisor.SelfTest),
             ("Read-only MTA discovery recommendations", MailServerDiscoveryDecision.SelfTest),
+            ("Read-only hostname/domain and MTA settings report", MailHostInspection.SelfTest),
+            ("SSH mail-host inspection embedded resource", () =>
+                EmbeddedAssets.BuildMailHostInspectionBundle().Contains("LMR365_MAIL_HOST",
+                    StringComparison.Ordinal) &&
+                EmbeddedAssets.BuildMailHostInspectionBundle().Contains("--inspect",
+                    StringComparison.Ordinal)),
             ("Clean Postfix bootstrap approval contract", () =>
             {
                 var preview = EmbeddedAssets.BuildCleanPostfixBundle(2525, "check");

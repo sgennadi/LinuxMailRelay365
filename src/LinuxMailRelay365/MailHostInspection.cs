@@ -1,0 +1,107 @@
+using System.Text.RegularExpressions;
+
+namespace LinuxMailRelay365;
+
+// Never treat OS hostname/domain as proof of Exchange tenant ownership.
+internal sealed class MailHostInspection
+{
+    private readonly IReadOnlyDictionary<string, string> values;
+    private MailHostInspection(IReadOnlyDictionary<string, string> items) => values = items;
+    internal string Fqdn => Get("MAIL_HOST_FQDN");
+    internal string Domain => Get("MAIL_HOST_DOMAIN");
+    internal string ShortHostname => Get("MAIL_HOST_SHORT");
+    internal string Mta => Get("MAIL_HOST_MTA");
+    internal string MtaState => Get("MAIL_HOST_MTA_STATE");
+    internal bool HasFqdn => Fqdn != "unavailable";
+    internal bool HasDomain => Domain != "unavailable";
+    internal string Get(string name) => values.TryGetValue(name, out var result) ? result : "unavailable";
+
+    internal static MailHostInspection Parse(string output)
+    {
+        if (output.Length > 8192) throw new InvalidDataException("Oversized hostname report.");
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string raw in output.Split('\n'))
+        {
+            string line = raw.TrimEnd('\r');
+            int n = line.IndexOf('=');
+            if (n is < 1 or > 80 || line.Length > 340) continue;
+            string key = line[..n];
+            string value = line[(n + 1)..];
+            if (!Regex.IsMatch(key, @"\AMAIL_HOST_[A-Z_]+\z", RegexOptions.CultureInvariant) ||
+                !Regex.IsMatch(value, @"\A[A-Za-z0-9_.$/,: @{}\[\]+-]*\z", RegexOptions.CultureInvariant) ||
+                !values.TryAdd(key, value))
+                throw new InvalidDataException("Malformed or duplicate mail-host setting.");
+        }
+        foreach (var key in new[] {
+            "MAIL_HOST_VERSION", "MAIL_HOST_SHORT", "MAIL_HOST_FQDN", "MAIL_HOST_DOMAIN",
+            "MAIL_HOST_MTA", "MAIL_HOST_MTA_STATE", "MAIL_HOST_TRUST", "MAIL_HOST_CHANGES"
+        })
+            if (!values.ContainsKey(key))
+                throw new InvalidDataException("Hostname report incomplete.");
+        if (values["MAIL_HOST_VERSION"] != "1" || values["MAIL_HOST_CHANGES"] != "no" ||
+            values["MAIL_HOST_TRUST"] != "os_report_unverified" ||
+            values["MAIL_HOST_MTA"] is not ("postfix" or "exim" or "sendmail" or "none" or "unknown"))
+            throw new InvalidDataException("Untrusted hostname report.");
+        const string dns = @"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+";
+        foreach (string key in new[] { "MAIL_HOST_FQDN", "MAIL_HOST_DOMAIN" })
+        {
+            string value = values[key];
+            if (value != "unavailable" && (value.Length > 253 ||
+                !Regex.IsMatch(value, "\\A" + dns + "\\z", RegexOptions.CultureInvariant)))
+                throw new InvalidDataException("Remote hostname/domain invalid.");
+        }
+        return new MailHostInspection(values);
+    }
+
+    internal string Summary(int language)
+    {
+        string prefix = language == 0 ? "Linux сообщает" : language == 2
+            ? "שרת Linux מדווח" : "Linux reports";
+        string reminder = language == 0
+            ? "Это не подтверждает DNS, владение доменом M365 или сертификат."
+            : language == 2 ? "זו אינה הוכחה לבעלות על דומיין Microsoft 365."
+            : "This is not proof of DNS, M365 accepted-domain rights or certificate identity.";
+        string config = Mta switch
+        {
+            "postfix" =>
+                "Postfix: myhostname=" + Get("MAIL_HOST_POSTFIX_MYHOSTNAME") +
+                "; mydomain=" + Get("MAIL_HOST_POSTFIX_MYDOMAIN") +
+                "; myorigin=" + Get("MAIL_HOST_POSTFIX_MYORIGIN") +
+                "; mydestination=" + Get("MAIL_HOST_POSTFIX_MYDESTINATION") +
+                "; inet_interfaces=" + Get("MAIL_HOST_POSTFIX_INET_INTERFACES") +
+                "; inet_protocols=" + Get("MAIL_HOST_POSTFIX_INET_PROTOCOLS"),
+            "exim" =>
+                "Exim: primary_hostname=" + Get("MAIL_HOST_EXIM_PRIMARY_HOSTNAME") +
+                "; qualify_domain=" + Get("MAIL_HOST_EXIM_QUALIFY_DOMAIN") +
+                "; local_interfaces=" + Get("MAIL_HOST_EXIM_LOCAL_INTERFACES") +
+                "; local_domains/routers/ACL require manual review.",
+            "sendmail" =>
+                "Sendmail: sendmail.mc=" + Get("MAIL_HOST_SENDMAIL_MC") +
+                "; listener=" + Get("MAIL_HOST_SENDMAIL_LISTENER") +
+                "; masquerade=" + Get("MAIL_HOST_SENDMAIL_MASQUERADE") +
+                "; sendmail.cf=" + Get("MAIL_HOST_SENDMAIL_CF"),
+            _ => "MTA settings not verified."
+        };
+        return prefix + ": FQDN=" + Fqdn + "; domain=" + Domain +
+            "; MTA=" + Mta + " (" + MtaState + ")." +
+            Environment.NewLine + config + Environment.NewLine + reminder;
+    }
+
+    internal static bool SelfTest()
+    {
+        const string valid = "MAIL_HOST_VERSION=1\nMAIL_HOST_SHORT=mail\n" +
+            "MAIL_HOST_FQDN=mail.example.com\nMAIL_HOST_DOMAIN=example.com\n" +
+            "MAIL_HOST_MTA=postfix\nMAIL_HOST_MTA_STATE=active\n" +
+            "MAIL_HOST_TRUST=os_report_unverified\nMAIL_HOST_CHANGES=no\n";
+        var snapshot = Parse(valid);
+        if (!snapshot.HasFqdn || snapshot.Domain != "example.com" ||
+            !snapshot.Summary(0).Contains("Postfix", StringComparison.Ordinal)) return false;
+        try { Parse(valid.Replace("mail.example.com", "mail.example.com;rm")); return false; }
+        catch (InvalidDataException) { }
+        try { Parse(valid + "MAIL_HOST_DOMAIN=evil.example.com\n"); return false; }
+        catch (InvalidDataException) { }
+        try { Parse(valid.Replace("MAIL_HOST_CHANGES=no", "MAIL_HOST_CHANGES=yes")); return false; }
+        catch (InvalidDataException) { }
+        return true;
+    }
+}

@@ -35,6 +35,7 @@ internal static class EmbeddedAssets
     internal static string ForeignMtaGuard => Text("LinuxMailRelay365.linux.foreign-mta-guard.py");
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
+    internal static string MailHostInspector => Text("LinuxMailRelay365.linux.inspect-mail-host.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
     internal static string MtaCoexistenceDoctor => Text("LinuxMailRelay365.linux.mta-coexistence-doctor.py");
     internal static string RhelSelinuxDoctor => Text("LinuxMailRelay365.linux.rhel-selinux-doctor.py");
@@ -524,6 +525,16 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/prepare.py\" <<'LMR365_CLEAN_POSTFIX'\n" +
                Encode(CleanPostfixPreparation) + "\nLMR365_CLEAN_POSTFIX\n" +
                "python3 \"$work/prepare.py\" --smtp-port " + port + " " + action + "\n";
+    }
+
+    internal static string BuildMailHostInspectionBundle()
+    {
+        return "set -Eeuo pipefail\numask 077\n" +
+            "work=$(mktemp -d /tmp/lmr365-mail-host.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n" +
+            "base64 -d > \"$work/inspect-mail-host.py\" <<'LMR365_MAIL_HOST'\n" +
+            Encode(MailHostInspector) + "\nLMR365_MAIL_HOST\n" +
+            "python3 \"$work/inspect-mail-host.py\" --inspect\n";
     }
 
     internal static string BuildExistingSmtpAuditBundle()

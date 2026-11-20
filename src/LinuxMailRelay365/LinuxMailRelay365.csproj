@@ -51,6 +51,7 @@
     <EmbeddedResource Include="../../linux/network-firewall.sh" LogicalName="LinuxMailRelay365.linux.network-firewall.sh" />
     <EmbeddedResource Include="../../linux/manage-public-smtp.py" LogicalName="LinuxMailRelay365.linux.public-smtp-manager.py" />
     <EmbeddedResource Include="../../linux/audit-existing-smtp.py" LogicalName="LinuxMailRelay365.linux.existing-smtp-audit.py" />
+    <EmbeddedResource Include="../../linux/inspect-mail-host.py" LogicalName="LinuxMailRelay365.linux.inspect-mail-host.py" />
     <EmbeddedResource Include="../../linux/platform-compat.py" LogicalName="LinuxMailRelay365.linux.platform-compat.py" />
     <EmbeddedResource Include="../../linux/mta-coexistence-doctor.py" LogicalName="LinuxMailRelay365.linux.mta-coexistence-doctor.py" />
     <EmbeddedResource Include="../../linux/rhel-selinux-doctor.py" LogicalName="LinuxMailRelay365.linux.rhel-selinux-doctor.py" />

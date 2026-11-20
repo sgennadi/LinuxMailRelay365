@@ -738,3 +738,16 @@ application Send As permissions, or any live M365 recipient inbox. The
 test never sends to a real tenant. Hardware TPM, SELinux Enforcing,
 real-system reboot and signed Stable acceptance remain outstanding.
 CI result must be checked for the exact commit; code presence is not a pass.
+
+
+## Linux hostname and Postfix/Sendmail/Exim settings discovery
+
+After SSH MTA discovery, a second **read-only** probe reports hostname -s,
+hostname -f and hostname -d (when resolvable). It summarizes effective
+Postfix myhostname/mydomain/myorigin/mydestination/inet_interfaces/inet_protocols,
+Exim primary_hostname/qualify_domain/local_interfaces or safe Sendmail
+sendmail.mc listener/masquerade presence. It does not dump full mail config
+or assert that Sendmail/Exim ACLs are safe. The GUI offers explicit one-click
+prefill of SMTP hostname and M365 domain, with confirmation; OS DNS information
+does not verify Exchange accepted-domain ownership, DNS, CA, public reachability
+or sender identity. Primary MTA configuration remains unchanged.
