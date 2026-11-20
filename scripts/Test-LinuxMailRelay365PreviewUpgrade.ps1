@@ -94,7 +94,11 @@ try {
     Assert ((Sha $target) -ceq $newHash -and (Sha $backup) -ceq $oldHash) 'Upgrade/backup digest mismatch.'
     Invoke-SelfTest $target
     Write-Output 'PREVIEW16_TO_17_DISPOSABLE_REPLACEMENT=PASS'
-    [IO.File]::Replace($backup, $target, $null, $false)
+    # Match the actual updater: Windows File.Replace needs a real third path.
+    # The consumed .update-new pathname is available for the failed version.
+    $failedVersion = "$target.update-new"
+    [IO.File]::Replace($backup, $target, $failedVersion, $false)
+    Assert ((Sha $failedVersion) -ceq $newHash) 'Preserved failed-version digest mismatch.'
     Assert ((Sha $target) -ceq $oldHash) 'Rollback digest mismatch.'
     Invoke-SelfTest $target
     Write-Output 'PREVIEW17_TO_16_DISPOSABLE_ROLLBACK=PASS'
