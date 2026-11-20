@@ -1,6 +1,6 @@
 #requires -Version 7.0
 <#
-CI-only disposable migration smoke for published Preview 16 -> Preview 17.
+CI-only disposable migration smoke for published Preview 17 -> Preview 18.
 Exercises real release binaries and a replace/backup/rollback transaction.
 This does NOT prove the interactive GUI or non-elevated updater helper.
 No production files, registry, tenant, SMTP or Linux service is modified.
@@ -49,8 +49,8 @@ function Invoke-SelfTest([string]$file) {
 $root = Join-Path $env:RUNNER_TEMP ("LMRPreviewUpgrade-" + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($root) | Out-Null
 try {
-    $releaseJson = gh api 'repos/sgennadi/LinuxMailRelay365/releases/tags/v0.1.0-preview.16'
-    if ($LASTEXITCODE -ne 0) { throw 'Could not query the published Preview 16.' }
+    $releaseJson = gh api 'repos/sgennadi/LinuxMailRelay365/releases/tags/v0.1.0-preview.17'
+    if ($LASTEXITCODE -ne 0) { throw 'Could not query the published Preview 17.' }
     $release = ($releaseJson -join [Environment]::NewLine) | ConvertFrom-Json
     Assert ($release.prerelease -eq $true -and $release.draft -eq $false) 'Previous release is not a published Preview.'
     $assetName = 'LinuxMailRelay365-win-x64.zip'
@@ -58,9 +58,9 @@ try {
     Assert ($assets.Count -eq 1) 'Previous x64 release asset missing or duplicated.'
     $asset = $assets[0]
     Assert ($asset.digest -cmatch '^sha256:[a-f0-9]{64}$') 'Missing source-reported SHA256.'
-    Assert ($asset.browser_download_url -ceq "https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.0-preview.16/$assetName") 'Untrusted asset URL.'
+    Assert ($asset.browser_download_url -ceq "https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.0-preview.17/$assetName") 'Untrusted asset URL.'
     $zipPath = Join-Path $root $assetName
-    gh release download 'v0.1.0-preview.16' --repo sgennadi/LinuxMailRelay365 --pattern $assetName --dir $root
+    gh release download 'v0.1.0-preview.17' --repo sgennadi/LinuxMailRelay365 --pattern $assetName --dir $root
     if ($LASTEXITCODE -ne 0) { throw 'Previous release download failed.' }
     Assert ((Get-Item -LiteralPath $zipPath).Length -eq $asset.size) 'Previous ZIP size mismatch.'
     Assert ((Sha $zipPath) -ceq $asset.digest.Substring(7)) 'Previous ZIP SHA256 mismatch.'
@@ -73,8 +73,8 @@ try {
     }
     finally { $archive.Dispose() }
     $oldExe = Join-Path $oldFolder 'LinuxMailRelay365.exe'
-    Assert ((Version $oldExe) -match '^0\.1\.0-preview\.16(?:\+.*)?$') 'Incorrect old version.'
-    Assert ((Version $CandidateExe) -match '^0\.1\.0-preview\.17(?:\+.*)?$') 'Incorrect new version.'
+    Assert ((Version $oldExe) -match '^0\.1\.0-preview\.17(?:\+.*)?$') 'Incorrect old version.'
+    Assert ((Version $CandidateExe) -match '^0\.1\.0-preview\.18(?:\+.*)?$') 'Incorrect new version.'
     Assert ((PeMachine $oldExe) -eq 0x8664) 'Previous EXE is not x64.'
     Assert ((PeMachine $CandidateExe) -eq 0x8664) 'Candidate EXE is not x64.'
     Invoke-SelfTest $oldExe
@@ -93,7 +93,7 @@ try {
     [IO.File]::Replace($candidate, $target, $backup, $false)
     Assert ((Sha $target) -ceq $newHash -and (Sha $backup) -ceq $oldHash) 'Upgrade/backup digest mismatch.'
     Invoke-SelfTest $target
-    Write-Output 'PREVIEW16_TO_17_DISPOSABLE_REPLACEMENT=PASS'
+    Write-Output 'PUBLISHED_PREVIEW_TO_CANDIDATE_DISPOSABLE_REPLACEMENT=PASS'
     # Match the actual updater: Windows File.Replace needs a real third path.
     # The consumed .update-new pathname is available for the failed version.
     $failedVersion = "$target.update-new"
@@ -101,7 +101,7 @@ try {
     Assert ((Sha $failedVersion) -ceq $newHash) 'Preserved failed-version digest mismatch.'
     Assert ((Sha $target) -ceq $oldHash) 'Rollback digest mismatch.'
     Invoke-SelfTest $target
-    Write-Output 'PREVIEW17_TO_16_DISPOSABLE_ROLLBACK=PASS'
+    Write-Output 'CANDIDATE_TO_PUBLISHED_PREVIEW_DISPOSABLE_ROLLBACK=PASS'
     Write-Output 'REAL_GUI_AND_HELPER_ACCEPTANCE=NOT_TESTED'
 }
 finally {
