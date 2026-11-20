@@ -217,22 +217,17 @@ internal sealed class MailHostInspection
             withNetwork.ActivePrivateIPv4s()[0].Name != "eth0")
             return false;
         string exim = valid.Replace("MAIL_HOST_MTA=postfix", "MAIL_HOST_MTA=exim") +
-            "MAIL_HOST_EXIM_SMTP_PORTS=25,587,2525
-" +
-            "MAIL_HOST_EXIM_BIND_POLICY=loopback_declared
-" +
-            "MAIL_HOST_EXIM_SMARTHOST_HINT=template_declares_smarthost_requires_router_review
-";
+            "MAIL_HOST_EXIM_SMTP_PORTS=25,587,2525\n" +
+            "MAIL_HOST_EXIM_BIND_POLICY=loopback_declared\n" +
+            "MAIL_HOST_EXIM_SMARTHOST_HINT=template_declares_smarthost_requires_router_review\n";
         if (!Parse(exim).Summary(1).Contains("daemon_smtp_ports=25,587,2525",
                 StringComparison.Ordinal)) return false;
         try { Parse(exim.Replace("MAIL_HOST_EXIM_BIND_POLICY=loopback_declared",
             "MAIL_HOST_EXIM_BIND_POLICY=unsafe_verified")); return false; }
         catch (InvalidDataException) { }
         string sendmail = valid.Replace("MAIL_HOST_MTA=postfix", "MAIL_HOST_MTA=sendmail") +
-            "MAIL_HOST_SENDMAIL_CF_LISTENER=loopback_declared
-" +
-            "MAIL_HOST_SENDMAIL_CF_SMARTHOST=declared
-";
+            "MAIL_HOST_SENDMAIL_CF_LISTENER=loopback_declared\n" +
+            "MAIL_HOST_SENDMAIL_CF_SMARTHOST=declared\n";
         if (!Parse(sendmail).Summary(1).Contains(".cf SmartHost=declared",
                 StringComparison.Ordinal)) return false;
         return true;
