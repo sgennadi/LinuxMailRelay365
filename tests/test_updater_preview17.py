@@ -29,6 +29,8 @@ class UpdaterPreview17Contracts(unittest.TestCase):
                        "MANUAL_REVIEW_REQUIRED", "RejectLinks"):
             self.assertIn(marker, UPDATER)
         self.assertIn("!IsNonElevatedWindowsProcess()", UPDATER)
+        self.assertIn("File.Replace(backup, target, next, ignoreMetadataErrors: false)", UPDATER)
+        self.assertNotIn("File.Replace(backup, target, null", UPDATER)
 
 
 if __name__ == "__main__":
