@@ -162,6 +162,8 @@ internal sealed class MainForm : Form
     private readonly Label brandHeading = UiTheme.Text(
         "LINUX MAIL RELAY 365  ·  " + UpdateCheck.Version, true);
     private TableLayoutPanel? footerLayout;
+    private TableLayoutPanel? shellLayout;
+    private TableLayoutPanel? footerStatusLayout;
     private bool relabelingSshMethods;
     private readonly Panel pageHost = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = UiTheme.Canvas };
     private readonly FlowLayoutPanel navigation = new()
@@ -250,6 +252,7 @@ internal sealed class MainForm : Form
                 ? T("Скрыть журнал", "Hide activity", "הסתר יומן")
                 : T("Показать журнал", "Show activity", "הצג יומן");
             footerLayout?.PerformLayout();
+            FitFooterHeight();
         };
         sshFingerprint.AccessibleDescription = "Optional SHA256 fingerprint. Leave blank to review the server key before sending the SSH password.";
         advancedSecurityTools.CheckedChanged += (_, _) =>
@@ -588,6 +591,7 @@ internal sealed class MainForm : Form
         footerStatus.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footerStatus.Controls.Add(status, 0, 0);
         footerStatus.Controls.Add(activityToggle, 1, 0);
+        footerStatusLayout = footerStatus;
         activityPanel.Controls.Add(activity);
         var bottom = new TableLayoutPanel
         {
@@ -612,7 +616,11 @@ internal sealed class MainForm : Form
         shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        // An absolute footer reservation prevents a tall auto-sized Wizard
+        // page (e.g. mail-flow diagrams) from pushing status off-screen.
+        shell.RowStyles.Add(new RowStyle(SizeType.Absolute,
+            (int)Math.Round(118 * Math.Max(1f, DeviceDpi / 96f))));
+        shellLayout = shell;
         shell.Controls.Add(top, 0, 0);
         shell.Controls.Add(header, 0, 1);
         shell.Controls.Add(pageHost, 0, 2);
@@ -626,6 +634,7 @@ internal sealed class MainForm : Form
             try
             {
                 FitHeaderText();
+                FitFooterHeight();
                 ResizePreserveFlowHelp();
                 if (step != 0 || !IsHandleCreated || busy || resizingConnectionLayout ||
                     UseWideConnectionLayout(pageHost.ClientSize.Width, DeviceDpi) == connectionWideLayout)
@@ -642,6 +651,7 @@ internal sealed class MainForm : Form
         pageHost.SizeChanged += (_, _) => ResizeUi();
         ClientSizeChanged += (_, _) => ResizeUi();
         FitHeaderText();
+        FitFooterHeight();
         RenderPage();
         WriteLine("Ready. No user passwords, app secrets, or OAuth tokens are stored by this manager.");
     }
@@ -679,6 +689,29 @@ internal sealed class MainForm : Form
                 Math.Max(360, (int)Math.Round(logicalWidth * scale))),
             Math.Min(Math.Max(300, workingArea.Height - safeMargin * 2),
                 Math.Max(300, (int)Math.Round(logicalHeight * scale))));
+    }
+
+    private void FitFooterHeight()
+    {
+        if (shellLayout is null || footerLayout is null || footerStatusLayout is null ||
+            IsDisposed)
+            return;
+        float scale = Math.Max(1f, DeviceDpi / 96f);
+        int freeWidth = Math.Max(280, ClientSize.Width - 48);
+        int navHeight = Math.Max((int)Math.Round(45 * scale),
+            navigation.GetPreferredSize(new Size(freeWidth, 0)).Height);
+        int statusHeight = Math.Max((int)Math.Round(22 * scale),
+            footerStatusLayout.GetPreferredSize(new Size(freeWidth, 0)).Height);
+        int activityHeight = activityPanel.Visible
+            ? (int)Math.Round(145 * scale) : 0;
+        int desired = navHeight + statusHeight + activityHeight +
+            footerLayout.Padding.Vertical + (int)Math.Round(16 * scale);
+        int minimum = (int)Math.Round(118 * scale);
+        int maximum = Math.Max(minimum, ClientSize.Height * 65 / 100);
+        int footerHeight = Math.Clamp(desired, minimum, maximum);
+        var row = shellLayout.RowStyles[3];
+        if (Math.Abs(row.Height - footerHeight) > 1)
+            row.Height = footerHeight;
     }
 
     private void FitHeaderText()
@@ -2607,6 +2640,7 @@ internal sealed class MainForm : Form
         status.Text = lastStatus ?? T("Готов к работе · Пароли M365 не сохраняются",
             "Ready · M365 mailbox passwords are never stored", "מוכן · סיסמאות M365 אינן נשמרות");
         status.ForeColor = lastFailed ? Color.FromArgb(174, 40, 43) : UiTheme.Muted;
+        FitFooterHeight();
     }
 
     /// <summary>
@@ -2646,6 +2680,17 @@ internal sealed class MainForm : Form
             }
             using var bitmap = new Bitmap(ClientSize.Width, ClientSize.Height);
             DrawToBitmap(bitmap, new Rectangle(Point.Empty, ClientSize));
+            // Drawing can trigger an additional WinForms measure pass.
+            // Validate AFTER painting as well, so a clipped status is a
+            // failing CI test rather than a superficially valid PNG.
+            foreach (Control footerControl in new Control[] { status, activityToggle })
+            {
+                if (!footerControl.Visible) continue;
+                var bottom = PointToClient(footerControl.PointToScreen(Point.Empty)).Y +
+                    footerControl.Height;
+                if (bottom > ClientSize.Height - 9)
+                    throw new InvalidOperationException("Wizard footer overflow after layout.");
+            }
             bitmap.Save(Path.Combine(root, filename),
                         System.Drawing.Imaging.ImageFormat.Png);
             captured++;

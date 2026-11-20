@@ -513,7 +513,8 @@ internal sealed class PreserveMailFlowPreview : Control
         g.FillRectangle(side, x + 1, y + 12, 3, 59);
         DrawText(g, heading, new RectangleF(x + 11, y + 8, 223, 18), 8.4f,
             newLane ? UiTheme.Accent : UiTheme.Muted, bold: true);
-        DrawText(g, main, new RectangleF(x + 11, y + 30, 223, 25), 11, UiTheme.Navy, bold: true);
+        DrawWrappedText(g, main, new RectangleF(x + 11, y + 27, 223, 31),
+            10.2f, UiTheme.Navy, bold: true);
         DrawText(g, detail, new RectangleF(x + 11, y + 61, 223, 16), 8.4f, UiTheme.Muted);
     }
 

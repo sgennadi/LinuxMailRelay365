@@ -846,3 +846,15 @@ its full routing and sender explanation through accessible text. Existing
 MTA statuses, route hints and flow captions have RU/EN/HE variants; the
 universal fourth Wizard step is named SMTP delivery rather than Postfix
 because Exim/Sendmail and clean Linux sidecar routing are supported.
+
+
+## Scroll viewport and footer isolation regression
+
+The Wizard reserves a dedicated bottom row with a dynamically calculated
+navigation/status/activity height instead of relying on AutoSize inference
+from an unbounded scrollable page. The center percent-height scroll viewport
+can now contain a tall 650px vertical mail-flow preview without displacing
+the fixed footer. Width, DPI, wrapped buttons, multi-line status and expanded
+activity are included in the reservation. CI screen capture validates footer
+bounds both before and **after** actual WinForms DrawToBitmap rendering.
+The wide mail-flow cards now wrap long MTA names and route hints.
