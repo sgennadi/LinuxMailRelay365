@@ -27,6 +27,15 @@ internal sealed class MainForm : Form
     private readonly TextBox applicationName = Field("Linux Mail Relay 365");
     private readonly TextBox existingAppId = Field("");
     private readonly TextBox certificateDays = Field("365");
+    private string? reviewedPrimaryRotationPlanSha;
+    private string? reviewedPrimaryRotationPlanContext;
+    private string? reviewedPrimaryRotationStageSha;
+    private string? reviewedPrimaryRotationStageContext;
+    private string? primaryRotationGraphContext;
+    private string? primaryRotationGraphCertificateSha;
+    private string? verifiedPrimaryRotationSmtpSha;
+    private string? verifiedPrimaryRotationSmtpContext;
+    private string primaryRotationSummary = "";
     private readonly TextBox mailbox = Field("");
     private readonly TextBox testRecipient = Field("");
     private readonly CheckBox allowExisting = new() { AutoSize = true };
@@ -126,6 +135,7 @@ internal sealed class MainForm : Form
     private string? reviewedEntraCertPlanSha;
     private string? reviewedEntraCertContext;
     private string? reviewedEntraCertObjectId;
+    private string? reviewedEntraCertTarget;
     private string entraCertificateSummary = "";
     private readonly TextBox tpmKeyHandle = Field("0x81010001");
     private string tpmKeySummary = "";
@@ -5533,16 +5543,19 @@ internal sealed class MainForm : Form
         }
     }
 
-    private async Task PreviewEntraCertificateAsync()
+    private Task PreviewEntraCertificateAsync() =>
+        PreviewEntraCertificateForTargetAsync(SelectedHardwareCutoverTarget());
+
+    private async Task PreviewEntraCertificateForTargetAsync(string target)
     {
-        if (linuxSecurity is null)
+        if (linuxSecurity is null && target != "primary-rotation")
             throw new InvalidOperationException("Run Linux security discovery first.");
         var endpoint = Endpoint();
-        string target = SelectedHardwareCutoverTarget();
         reviewedEntraPublicCertificates = null;
         reviewedEntraCertPlanSha = null;
         reviewedEntraCertContext = null;
         reviewedEntraCertObjectId = null;
+        reviewedEntraCertTarget = null;
         var source = await ReadEntraPublicCertificateAsync(endpoint, target);
         VerifySelectedEntraApplication(source);
         string output = await RunGraphEntraCertificateManagerAsync(source, "Preview");
@@ -5559,6 +5572,7 @@ internal sealed class MainForm : Form
         reviewedEntraPublicCertificates = source;
         reviewedEntraCertPlanSha = sha.Groups[1].Value;
         reviewedEntraCertObjectId = graphId.ToString("D");
+        reviewedEntraCertTarget = target;
         reviewedEntraCertContext = source.Context(SecurityOptionsStore.Identity(endpoint), target);
         entraCertificateSummary = output;
         WriteLine(output);
@@ -5566,14 +5580,18 @@ internal sealed class MainForm : Form
         RenderPage();
     }
 
-    private async Task AddEntraCertificateAsync()
+    private Task AddEntraCertificateAsync() =>
+        AddEntraCertificateForTargetAsync(SelectedHardwareCutoverTarget());
+
+    private async Task AddEntraCertificateForTargetAsync(string target)
     {
-        if (linuxSecurity is null || reviewedEntraPublicCertificates is null ||
+        if ((linuxSecurity is null && target != "primary-rotation") ||
+            reviewedEntraCertTarget != target ||
+            reviewedEntraPublicCertificates is null ||
             reviewedEntraCertPlanSha is null || reviewedEntraCertObjectId is null ||
             reviewedEntraCertContext is null)
-            throw new InvalidOperationException("Review the exact application and public certificate first.");
+            throw new InvalidOperationException("Review the exact target application and public certificate first.");
         var endpoint = Endpoint();
-        string target = SelectedHardwareCutoverTarget();
         var source = await ReadEntraPublicCertificateAsync(endpoint, target);
         VerifySelectedEntraApplication(source);
         if (reviewedEntraCertContext != source.Context(SecurityOptionsStore.Identity(endpoint), target))
@@ -5603,6 +5621,7 @@ internal sealed class MainForm : Form
         reviewedEntraCertPlanSha = null;
         reviewedEntraCertContext = null;
         reviewedEntraCertObjectId = null;
+        reviewedEntraCertTarget = null;
         reviewedEntraPublicCertificates = null;
         string output = await RunGraphEntraCertificateManagerAsync(source, "Apply", sha, proof);
         if (!output.Contains("ENTRA_CERT_ADDED=yes", StringComparison.Ordinal) ||
@@ -5611,7 +5630,17 @@ internal sealed class MainForm : Form
             throw new InvalidDataException("Microsoft Graph did not verify safe addKey completion.");
         entraCertificateSummary = output;
         WriteLine(output);
-        WriteLine("Public TPM/HSM certificate added to existing Entra app. Next: separate Linux staged OAuth token verification and rollback-protected cutover; mail delivery is NOT proven.");
+        if (target == "primary-rotation")
+        {
+            primaryRotationGraphCertificateSha = source.CandidateCertificateSha;
+            primaryRotationGraphContext = source.Context(
+                SecurityOptionsStore.Identity(endpoint), target);
+            verifiedPrimaryRotationSmtpSha = null;
+            verifiedPrimaryRotationSmtpContext = null;
+            WriteLine("Primary PEM rotation: candidate public certificate was added; active key unchanged. Next test staged SMTP AUTH without sending mail.");
+        }
+        else
+            WriteLine("Public TPM/HSM certificate added to existing Entra app. Next: separate Linux staged OAuth token verification and rollback-protected cutover; mail delivery is NOT proven.");
         RenderPage();
     }
 
