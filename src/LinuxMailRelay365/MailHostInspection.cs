@@ -50,6 +50,31 @@ internal sealed class MailHostInspection
                 !Regex.IsMatch(value, "\\A" + dns + "\\z", RegexOptions.CultureInvariant)))
                 throw new InvalidDataException("Remote hostname/domain invalid.");
         }
+        static bool OneOf(IReadOnlyDictionary<string, string> fields,
+            string key, params string[] choices) =>
+            !fields.TryGetValue(key, out var value) || choices.Contains(value, StringComparer.Ordinal);
+        if (!OneOf(values, "MAIL_HOST_EXIM_BIND_POLICY", "unverified",
+                "loopback_declared", "non_loopback_declared_requires_review",
+                "dynamic_or_unverified") ||
+            !OneOf(values, "MAIL_HOST_EXIM_SMARTHOST_HINT", "unverified",
+                "template_declares_smarthost_requires_router_review",
+                "template_only_no_verified_router") ||
+            !OneOf(values, "MAIL_HOST_EXIM_RELAY_POLICY",
+                "routers_transports_and_acl_unverified") ||
+            !OneOf(values, "MAIL_HOST_SENDMAIL_CF_LISTENER", "unverified",
+                "loopback_declared", "non_loopback_or_default_requires_review") ||
+            !OneOf(values, "MAIL_HOST_SENDMAIL_CF_SMARTHOST", "unverified",
+                "declared", "not_declared") ||
+            !OneOf(values, "MAIL_HOST_SENDMAIL_CF_MASQUERADE", "unverified",
+                "declared", "not_declared") ||
+            !OneOf(values, "MAIL_HOST_SENDMAIL_RELAY_POLICY",
+                "access_maps_and_relay_checks_unverified") ||
+            (values.TryGetValue("MAIL_HOST_EXIM_SMTP_PORTS", out var ports) &&
+             ports != "unverified" &&
+             (!Regex.IsMatch(ports, @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z",
+                 RegexOptions.CultureInvariant) ||
+              ports.Split(',').Any(p => !int.TryParse(p, out int n) || n > 65535))))
+            throw new InvalidDataException("Untrusted MTA setting status.");
         return new MailHostInspection(values);
     }
 
@@ -139,12 +164,19 @@ internal sealed class MailHostInspection
                 "Exim: primary_hostname=" + Get("MAIL_HOST_EXIM_PRIMARY_HOSTNAME") +
                 "; qualify_domain=" + Get("MAIL_HOST_EXIM_QUALIFY_DOMAIN") +
                 "; local_interfaces=" + Get("MAIL_HOST_EXIM_LOCAL_INTERFACES") +
-                "; local_domains/routers/ACL require manual review.",
+                "; interface_policy=" + Get("MAIL_HOST_EXIM_BIND_POLICY") +
+                "; daemon_smtp_ports=" + Get("MAIL_HOST_EXIM_SMTP_PORTS") +
+                "; Debian smarthost hint=" + Get("MAIL_HOST_EXIM_SMARTHOST_HINT") +
+                "; effective routers/transports/ACL and SMTP AUTH/TLS require manual review.",
             "sendmail" =>
                 "Sendmail: sendmail.mc=" + Get("MAIL_HOST_SENDMAIL_MC") +
-                "; listener=" + Get("MAIL_HOST_SENDMAIL_LISTENER") +
-                "; masquerade=" + Get("MAIL_HOST_SENDMAIL_MASQUERADE") +
-                "; sendmail.cf=" + Get("MAIL_HOST_SENDMAIL_CF"),
+                "; .mc listener=" + Get("MAIL_HOST_SENDMAIL_LISTENER") +
+                "; .mc masquerade=" + Get("MAIL_HOST_SENDMAIL_MASQUERADE") +
+                "; sendmail.cf=" + Get("MAIL_HOST_SENDMAIL_CF") +
+                "; .cf listener=" + Get("MAIL_HOST_SENDMAIL_CF_LISTENER") +
+                "; .cf SmartHost=" + Get("MAIL_HOST_SENDMAIL_CF_SMARTHOST") +
+                "; .cf masquerade=" + Get("MAIL_HOST_SENDMAIL_CF_MASQUERADE") +
+                "; access maps, relay restrictions, AUTH/TLS require manual review.",
             _ => "MTA settings not verified."
         };
         return prefix + ": FQDN=" + Fqdn + "; domain=" + Domain +
@@ -184,6 +216,25 @@ internal sealed class MailHostInspection
             withNetwork.ActivePrivateIPv4s()[0].Address != "10.0.0.5" ||
             withNetwork.ActivePrivateIPv4s()[0].Name != "eth0")
             return false;
+        string exim = valid.Replace("MAIL_HOST_MTA=postfix", "MAIL_HOST_MTA=exim") +
+            "MAIL_HOST_EXIM_SMTP_PORTS=25,587,2525
+" +
+            "MAIL_HOST_EXIM_BIND_POLICY=loopback_declared
+" +
+            "MAIL_HOST_EXIM_SMARTHOST_HINT=template_declares_smarthost_requires_router_review
+";
+        if (!Parse(exim).Summary(1).Contains("daemon_smtp_ports=25,587,2525",
+                StringComparison.Ordinal)) return false;
+        try { Parse(exim.Replace("MAIL_HOST_EXIM_BIND_POLICY=loopback_declared",
+            "MAIL_HOST_EXIM_BIND_POLICY=unsafe_verified")); return false; }
+        catch (InvalidDataException) { }
+        string sendmail = valid.Replace("MAIL_HOST_MTA=postfix", "MAIL_HOST_MTA=sendmail") +
+            "MAIL_HOST_SENDMAIL_CF_LISTENER=loopback_declared
+" +
+            "MAIL_HOST_SENDMAIL_CF_SMARTHOST=declared
+";
+        if (!Parse(sendmail).Summary(1).Contains(".cf SmartHost=declared",
+                StringComparison.Ordinal)) return false;
         return true;
     }
 }
