@@ -124,6 +124,41 @@ class EntraPublicCertificateTests(unittest.TestCase):
                              x["active_cert_sha"], x["candidate_cert_sha"])
             run.assert_not_called()
 
+    def test_primary_software_rotation_exports_public_cert_only(self):
+        root = M.ROOTS["primary-rotation"]
+        active = {"tenant_id": self.tenant, "client_id": self.client,
+                  "mailbox": "sender@example.org",
+                  "certificate": str(root / "app.crt"),
+                  "private_key": str(root / "app.key")}
+        stem = "app.rotation.20261120T205100Z-001122334455"
+        staged = dict(active, certificate=str(root / (stem + ".crt")),
+                      private_key=str(root / (stem + ".key")))
+        self.read.side_effect = [
+            (json.dumps(active).encode("utf-8"), active),
+            (json.dumps(staged).encode("utf-8"), staged)]
+        def fake_read(path, *args, **kwargs):
+            path = Path(path)
+            if path.name == "app.crt":
+                return pem(self.old_der)
+            if path.name == stem + ".crt":
+                return pem(self.new_der)
+            return b"local-software-key-is-never-returned-to-windows"
+        M.secure_read.side_effect = fake_read
+        fake_public = b"-----BEGIN PUBLIC KEY-----\n" + b"Q" * 240 + b"\n-----END PUBLIC KEY-----\n"
+        with mock.patch.object(M.subprocess, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=fake_public)) as runner:
+            output = M.inventory("primary-rotation")
+        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(output["active_cert_sha"], M.digest(self.old_der))
+        self.assertEqual(output["candidate_cert_sha"], M.digest(self.new_der))
+        self.assertEqual(output["target"], "primary-rotation")
+        with contextlib.redirect_stdout(io.StringIO()) as text:
+            M.print_inventory(output)
+        report = text.getvalue()
+        self.assertIn("ENTRA_OAUTH_PRIVATE_KEY_EXPORTED=no", report)
+        self.assertNotIn("local-software-key-is-never-returned", report)
+        self.assertNotIn(staged["private_key"], report)
+
     def test_hardware_current_identity_is_not_replaced_by_pem_fallback(self):
         x = self.plan()
         x["active"] = dict(x["active"], signer=self.stage["signer"])
