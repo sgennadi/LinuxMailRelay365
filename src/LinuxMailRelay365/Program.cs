@@ -67,6 +67,25 @@ internal static class Program
                     StringComparison.Ordinal) &&
                 EmbeddedAssets.BuildMailHostInspectionBundle(2526, "exim").Contains(
                     "--smtp-port 2526 --mta exim", StringComparison.Ordinal)),
+            ("Guarded primary Postfix main.cf profile bundle", () =>
+            {
+                string preview = EmbeddedAssets.BuildPostfixBasicsBundle(
+                    "mail.example.com", "example.com", "loopback-only");
+                string apply = EmbeddedAssets.BuildPostfixBasicsBundle(
+                    "mail.example.com", "example.com", "loopback-only", new string('a', 64));
+                if (!preview.Contains("--preview", StringComparison.Ordinal) ||
+                    !apply.Contains("--apply --expected-sha256", StringComparison.Ordinal) ||
+                    !apply.Contains("MODIFY_PRIMARY_POSTFIX", StringComparison.Ordinal) ||
+                    !apply.Contains("LMR365_POSTFIX_RECOVERY", StringComparison.Ordinal))
+                    return false;
+                try
+                {
+                    EmbeddedAssets.BuildPostfixBasicsBundle(
+                        "mail.example.com;id", "example.com", "all");
+                    return false;
+                }
+                catch (ArgumentException) { return true; }
+            }),
             ("Clean Postfix bootstrap approval contract", () =>
             {
                 var preview = EmbeddedAssets.BuildCleanPostfixBundle(2525, "check");

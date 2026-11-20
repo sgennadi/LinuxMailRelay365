@@ -767,3 +767,22 @@ Missing `ip`/`ss`, truncated inventories or complex DNS/variable
 listener settings cannot be treated as safe.
 `inet_interfaces = all` does not open firewall/NAT or prove SMTP reachability;
 changing `inet_interfaces` or `inet_protocols` may require Postfix stop/start.
+
+
+## Primary Postfix minimal identity profile (guarded, optional)
+
+The wizard exposes the actual current Postfix values, network-interface and
+SMTP-listener audits, then optionally lets the operator enter `myhostname`
+and `mydomain`. The fixed baseline uses `myorigin = $mydomain`,
+`mydestination = $myhostname, localhost.$mydomain, localhost`,
+`inet_interfaces = loopback-only`, and `inet_protocols = ipv4`.
+This is **not** needed for Preserve Existing Mail. External/wildcard bind
+(`inet_interfaces = all`) can be previewed but is deliberately not
+deployable via this primary-MTA profile; use a separately authenticated
+isolated relay for network clients. Preview does not mutate Linux.
+Apply checks a reviewed SHA256 fingerprint, rejects pre-existing non-loopback
+listeners or custom local delivery destinations, creates a root-only
+verified configuration backup, uses `postconf -e`, verifies `postfix check`
+and restarts an active primary Postfix. On failure the recovery manager attempts
+rollback; delivery checks and independent backups are still mandatory.
+Sendmail/Exim primary configurations are not edited by this action.

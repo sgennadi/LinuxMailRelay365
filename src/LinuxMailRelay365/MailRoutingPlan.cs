@@ -10,6 +10,11 @@ namespace LinuxMailRelay365;
 internal sealed class MailRoutingPlan
 {
     public string Transport { get; set; } = "oauth2";
+    // These host-scoped values are plan input only, NOT permission to edit
+    // primary Postfix or proof of public/tenant SMTP readiness.
+    public string PostfixBasicsHostname { get; set; } = "";
+    public string PostfixBasicsDomain { get; set; } = "";
+    public string PostfixBasicsInterfaces { get; set; } = "loopback-only";
     // Recipient preference only. Never evidence of tenant authorization.
     public string RecipientScope { get; set; } = "unknown";
     public string SenderPolicy { get; set; } = "fixed-mailbox";
@@ -95,6 +100,15 @@ internal static class MailRoutingPlanStore
 
     internal static void Validate(MailRoutingPlan state)
     {
+        const string fqdn = @"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\z";
+        if (state.PostfixBasicsInterfaces is not ("loopback-only" or "all") ||
+            state.PostfixBasicsHostname.Length > 253 ||
+            state.PostfixBasicsDomain.Length > 253 ||
+            (state.PostfixBasicsHostname.Length > 0 &&
+                !Regex.IsMatch(state.PostfixBasicsHostname, fqdn, RegexOptions.CultureInvariant)) ||
+            (state.PostfixBasicsDomain.Length > 0 &&
+                !Regex.IsMatch(state.PostfixBasicsDomain, fqdn, RegexOptions.CultureInvariant)))
+            throw new InvalidDataException("Invalid planned primary Postfix hostname/domain/interface.");
         if (state.SidecarPort is < 1024 or > 65535)
             throw new InvalidDataException("Isolated SMTP port must be between 1024 and 65535.");
         if (state.RecipientScope is not ("unknown" or "internal-only" or "external-needed"))
@@ -182,6 +196,7 @@ internal static class MailRoutingPlanStore
             if (a == b || a != Identity("linux-a.example", "0022", "admin")) return false;
             var defaults = Load(folder, a);
             if (defaults.Transport != "oauth2" || defaults.RecipientScope != "unknown" ||
+                defaults.PostfixBasicsHostname != "" || defaults.PostfixBasicsInterfaces != "loopback-only" ||
                 defaults.SenderPolicy != "fixed-mailbox" ||
                 defaults.OAuthSenderMode != "fixed-mailbox" || defaults.OAuthSenderMapPath != "" ||
                 !defaults.PreserveExistingMail || defaults.SidecarPort != 2525 ||

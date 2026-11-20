@@ -30,6 +30,7 @@ internal static class EmbeddedAssets
     internal static string SidecarConfigRecovery => Text("LinuxMailRelay365.linux.sidecar-config-recovery.py");
     internal static string SidecarInstaller => Text("LinuxMailRelay365.linux.sidecar.sh");
     internal static string CleanPostfixPreparation => Text("LinuxMailRelay365.linux.prepare-clean-postfix.py");
+    internal static string PostfixBasicsManager => Text("LinuxMailRelay365.linux.manage-postfix-basics.py");
     internal static string DirectSendSidecarInstaller => Text("LinuxMailRelay365.linux.direct-send-sidecar.sh");
     internal static string ConnectorSidecarInstaller => Text("LinuxMailRelay365.linux.connector-sidecar.sh");
     internal static string ForeignMtaGuard => Text("LinuxMailRelay365.linux.foreign-mta-guard.py");
@@ -500,6 +501,34 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/m365_hardware_signer.py\" <<'LMR365_HARDWARE_SIGNER'\n" +
                Encode(HardwareSigner) + "\nLMR365_HARDWARE_SIGNER\n" +
                "bash \"$work/install-sidecar.sh\" " + string.Join(" ", args) + "\n";
+    }
+
+    internal static string BuildPostfixBasicsBundle(
+        string hostname, string domain, string listener, string? approvedSha = null)
+    {
+        const string fqdn = @"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\z";
+        if (hostname.Length > 253 || domain.Length > 253 ||
+            !Regex.IsMatch(hostname, fqdn, RegexOptions.CultureInvariant) ||
+            !Regex.IsMatch(domain, fqdn, RegexOptions.CultureInvariant) ||
+            !hostname.EndsWith("." + domain, StringComparison.Ordinal) ||
+            listener is not ("loopback-only" or "all"))
+            throw new ArgumentException("Choose a valid Postfix FQDN, domain and listener.");
+        if (approvedSha is not null &&
+            !Regex.IsMatch(approvedSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("Invalid Postfix baseline approval SHA.");
+        string args = approvedSha is null ? "--preview" :
+            "--apply --expected-sha256 " + approvedSha +
+            " --confirm MODIFY_PRIMARY_POSTFIX --recovery-script \"$work/recovery.sh\"";
+        return "set -Eeuo pipefail\numask 077\n" +
+            "work=$(mktemp -d /tmp/lmr365-postfix-basic.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n" +
+            "base64 -d > \"$work/postfix-basics.py\" <<'LMR365_POSTFIX_BASICS'\n" +
+            Encode(PostfixBasicsManager) + "\nLMR365_POSTFIX_BASICS\n" +
+            "base64 -d > \"$work/recovery.sh\" <<'LMR365_POSTFIX_RECOVERY'\n" +
+            Encode(Recovery) + "\nLMR365_POSTFIX_RECOVERY\n" +
+            "python3 \"$work/postfix-basics.py\" " + args +
+            " --hostname " + hostname + " --domain " + domain +
+            " --listener " + listener + "\n";
     }
 
     internal static string BuildCleanPostfixBundle(

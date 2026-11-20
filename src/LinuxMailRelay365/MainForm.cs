@@ -47,6 +47,11 @@ internal sealed class MainForm : Form
     private string? previewedCleanBootstrapIdentity;
     private int previewedCleanBootstrapPort;
     private string cleanBootstrapSummary = "";
+    // Evidence is bound to the current SSH identity and the exact operator
+    // inputs; no previous preview can authorize a changed Postfix baseline.
+    private string? previewedPostfixBasicsSha;
+    private string? previewedPostfixBasicsContext;
+    private string postfixBasicsSummary = "";
     private readonly ComboBox mailTransport = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox recipientScope = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
@@ -78,6 +83,10 @@ internal sealed class MainForm : Form
     private readonly TextBox smtpTrustedCidrs = Field("");
     private readonly TextBox isolatedSmtpPort = Field("2525");
     private readonly TextBox foreignSidecarHostname = Field("");
+    private readonly TextBox postfixBasicsHostname = Field("");
+    private readonly TextBox postfixBasicsDomain = Field("");
+    private readonly ComboBox postfixBasicsInterfaces = new()
+        { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     // Paths refer to files already prepared on the Linux host. No passwords,
     // private key contents, or hashes are entered into or persisted by the GUI.
     private readonly TextBox privateAuthDns = Field("");
@@ -237,6 +246,11 @@ internal sealed class MainForm : Form
             if (step == 1 && !busy && !securityLoading) RenderPage();
         };
         sshAuthMode.Items.AddRange(["SSH key / ssh-agent", "SSH username + password"]);
+        postfixBasicsInterfaces.Items.AddRange([
+            "loopback-only (local clients only)",
+            "all (PREVIEW ONLY; external/public SMTP needs separate security setup)"
+        ]);
+        postfixBasicsInterfaces.SelectedIndex = 0;
         mailTransport.Items.AddRange([
             "XOAUTH2 · sender mailbox (available)",
             "M365 SMTP Connector · existing tenant Connector (Advanced apply)",
@@ -377,6 +391,9 @@ internal sealed class MainForm : Form
                 previewedCleanBootstrapSha = null;
                 previewedCleanBootstrapIdentity = null;
                 cleanBootstrapSummary = "";
+                previewedPostfixBasicsSha = null;
+                previewedPostfixBasicsContext = null;
+                postfixBasicsSummary = "";
                 inspectedMail = null;
                 inspectedServerIdentity = null;
                 existingSmtpAudit = null;
@@ -449,6 +466,25 @@ internal sealed class MainForm : Form
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
         foreignSidecarHostname.Leave += (_, _) => UpdatePreserveFlowPreview();
+        foreach (var field in new[] { postfixBasicsHostname, postfixBasicsDomain })
+        {
+            field.TextChanged += (_, _) =>
+            {
+                previewedPostfixBasicsSha = null;
+                previewedPostfixBasicsContext = null;
+                postfixBasicsSummary = "";
+            };
+            field.Leave += (_, _) => SaveRoutingChoices();
+        }
+        postfixBasicsInterfaces.SelectedIndexChanged += (_, _) =>
+        {
+            previewedPostfixBasicsSha = null;
+            previewedPostfixBasicsContext = null;
+            postfixBasicsSummary = "";
+            if (routingLoading) return;
+            SaveRoutingChoices();
+            if (step == 3 && !busy) RenderPage();
+        };
         privateAuthDns.Leave += (_, _) => SaveRoutingChoices();
         advancedSmtpTools.CheckedChanged += (_, _) =>
         {
@@ -1168,6 +1204,192 @@ internal sealed class MainForm : Form
         return Task.CompletedTask;
     }
 
+    private void ShowPostfixBasicsSection(TableLayoutPanel page)
+    {
+        if (inspectedMail?.Mta != "postfix" ||
+            inspectedServerIdentity != TryCurrentIdentity())
+        {
+            AddLine(page, UiTheme.Text(T(
+                "Настройка основного Postfix доступна только после его проверки. Exim/Sendmail не меняются: для них предусмотрен независимый Relay.",
+                "Primary Postfix configuration is available only after verified Postfix discovery. Exim/Sendmail remain untouched; use an independent relay.",
+                "הגדרת Postfix הראשי דורשת בדיקה. Exim/Sendmail לא ישונו.")));
+            return;
+        }
+        AddLine(page, UiTheme.Text(T(
+            "Основной Postfix — базовые параметры (отдельная рискованная операция)",
+            "Primary Postfix — basic main.cf profile (separately approved operation)",
+            "הגדרות בסיסיות של Postfix הראשי"), true));
+        AddLine(page, UiTheme.Text(T(
+            "Применение НЕ требуется для режима Preserve Existing Mail. Сначала сравните существующий main.cf, local delivery и активные интерфейсы. Профиль ограничен loopback и IPv4; изменение имени может повлиять на отправителей и сертификаты.",
+            "Preserve Existing Mail does NOT require changing primary main.cf. Review current local delivery and active interfaces first. This fixed profile is loopback/IPv4 only; identity changes can affect sender addresses, TLS and mail delivery.",
+            "השמירה על דואר קיים אינה דורשת שינוי main.cf. יש לבדוק ממשקים, זהות וניתוב.")));
+        AddField(page, T("myhostname (FQDN основного Postfix)",
+                         "myhostname (primary Postfix FQDN)", "שם מלא של Postfix"),
+                 postfixBasicsHostname);
+        AddField(page, T("mydomain (домен основного Postfix)",
+                         "mydomain (primary Postfix domain)", "דומיין Postfix"),
+                 postfixBasicsDomain);
+        AddLine(page, UiTheme.Text(
+            "myorigin = $mydomain; mydestination = $myhostname, localhost.$mydomain, localhost; inet_protocols = ipv4."));
+        AddLine(page, UiTheme.Text(T(
+            "inet_interfaces: loopback-only — только локальный SMTP. all — просмотр возможен, но изменение основного Postfix через этот профиль ЗАБЛОКИРОВАНО. Для локальной сети используйте отдельный SMTP sidecar с AUTH/TLS и доверенными IP.",
+            "inet_interfaces: loopback-only = local SMTP only. all = preview only; primary-Postfix public/wildcard apply is BLOCKED here. Use the authenticated isolated sidecar for network clients.",
+            "loopback-only מקומי בלבד. all לתצוגה בלבד ולא להפעלה.")));
+        AddLine(page, postfixBasicsInterfaces);
+        if (inspectedHostIdentity == TryCurrentIdentity() &&
+            inspectedHost?.HasFqdn == true && inspectedHost.HasDomain)
+            AddAction(page, T(
+                "Подставить обнаруженный Linux FQDN и домен в поля Postfix",
+                "Fill Postfix fields from inspected Linux hostname and domain",
+                "מלא שם מארח ודומיין שנמצאו"),
+                UseDetectedPostfixBasicsAsync, false, "check", "postfix-basics-prefill");
+        AddAction(page, T(
+            "Предпросмотр изменений main.cf (без записи)",
+            "Preview primary main.cf changes (read-only)",
+            "תצוגה מקדימה של main.cf ללא שינוי"),
+            PreviewPostfixBasicsAsync, false, "check", "postfix-basics-preview");
+        if (!string.IsNullOrEmpty(postfixBasicsSummary))
+            AddLine(page, UiTheme.Text(postfixBasicsSummary));
+        if (previewedPostfixBasicsSha is not null &&
+            postfixBasicsInterfaces.SelectedIndex == 0)
+            AddAction(page, T(
+                "Применить проверенную конфигурацию Postfix (backup, restart)...",
+                "Apply reviewed primary Postfix profile (backup, restart)...",
+                "החל הגדרות Postfix לאחר גיבוי ואישור"),
+                ApplyPostfixBasicsAsync, false, "shield", "postfix-basics-apply");
+    }
+
+    private Task UseDetectedPostfixBasicsAsync()
+    {
+        if (inspectedHostIdentity != TryCurrentIdentity() ||
+            inspectedHost?.HasFqdn != true || !inspectedHost.HasDomain ||
+            inspectedMail?.Mta != "postfix")
+            throw new InvalidOperationException("Reinspect Postfix and hostname before copying.");
+        if (MessageBox.Show(this, T(
+                "Скопировать FQDN и домен из Linux в поля основного Postfix? Это только локальные поля Wizard, не проверка DNS/Entra. Конфигурация Linux НЕ изменится.",
+                "Prefill primary Postfix hostname and domain from Linux? This only changes Wizard fields, not Postfix/DNS/Entra, and does NOT prove M365 domain ownership.",
+                "למלא שם מארח ודומיין בלבד? ללא שינוי בשרת."),
+                "LinuxMailRelay365 | Prefill Postfix basics",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Information,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            return Task.CompletedTask;
+        postfixBasicsHostname.Text = inspectedHost.Fqdn;
+        postfixBasicsDomain.Text = inspectedHost.Domain;
+        SaveRoutingChoices();
+        RenderPage();
+        return Task.CompletedTask;
+    }
+
+    private string PostfixBasicsContext()
+    {
+        string name = postfixBasicsHostname.Text.Trim().ToLowerInvariant();
+        string domain = postfixBasicsDomain.Text.Trim().ToLowerInvariant();
+        string listener = postfixBasicsInterfaces.SelectedIndex == 1
+            ? "all" : "loopback-only";
+        var current = TryCurrentIdentity();
+        if (current is null || inspectedServerIdentity != current ||
+            inspectedMail?.Mta != "postfix")
+            throw new InvalidOperationException("Reinspect the selected Postfix host.");
+        return current + "|" + name + "|" + domain + "|" + listener;
+    }
+
+    private async Task<RemoteResult> PostfixBasicsScriptAsync(string? approvalSha)
+    {
+        var endpoint = Endpoint();
+        string listener = postfixBasicsInterfaces.SelectedIndex == 1
+            ? "all" : "loopback-only";
+        string script = EmbeddedAssets.BuildPostfixBasicsBundle(
+            postfixBasicsHostname.Text.Trim().ToLowerInvariant(),
+            postfixBasicsDomain.Text.Trim().ToLowerInvariant(),
+            listener, approvalSha);
+        return endpoint.Username == "root"
+            ? await SshRemote.ExecuteAsync(endpoint, "bash -s", script,
+                timeout: TimeSpan.FromMinutes(approvalSha is null ? 2 : 5))
+            : await SshRemote.RunRootScriptAsync(endpoint, script,
+                TimeSpan.FromMinutes(approvalSha is null ? 2 : 5));
+    }
+
+    private async Task PreviewPostfixBasicsAsync()
+    {
+        EnsureRoutingLoaded();
+        string context = PostfixBasicsContext();
+        if (inspectedHostIdentity != TryCurrentIdentity() ||
+            inspectedHost?.Mta != "postfix" ||
+            existingSmtpAuditIdentity != TryCurrentIdentity() ||
+            existingSmtpAudit is null || existingSmtpAudit.SuspectedUnsafeRelay)
+            throw new InvalidOperationException(
+                "First complete MTA, hostname, public SMTP and relay-safety audits. Unsafe/unknown audits block primary changes.");
+        previewedPostfixBasicsSha = null;
+        previewedPostfixBasicsContext = null;
+        postfixBasicsSummary = "";
+        var report = await PostfixBasicsScriptAsync(null);
+        report.EnsureSuccess();
+        var sha = System.Text.RegularExpressions.Regex.Match(report.StdOut,
+            @"(?m)^POSTFIX_BASICS_PLAN_SHA256=([a-f0-9]{64})\r?$");
+        var reason = System.Text.RegularExpressions.Regex.Match(report.StdOut,
+            @"(?m)^POSTFIX_BASICS_PREFLIGHT=([a-z0-9_]{1,85})\r?$");
+        if (!report.StdOut.Contains("POSTFIX_BASICS_VERSION=1", StringComparison.Ordinal) ||
+            !report.StdOut.Contains("CHANGES_APPLIED=no", StringComparison.Ordinal) ||
+            !sha.Success || !reason.Success)
+            throw new InvalidDataException("Incomplete Postfix baseline preview.");
+        if (reason.Groups[1].Value != "ready")
+        {
+            postfixBasicsSummary = T(
+                "Изменение заблокировано: ", "Primary configuration change blocked: ",
+                "ההגדרה חסומה: ") + reason.Groups[1].Value;
+            WriteLine("Postfix basics read-only preflight: " + reason.Groups[1].Value);
+            RenderPage();
+            return;
+        }
+        previewedPostfixBasicsSha = sha.Groups[1].Value;
+        previewedPostfixBasicsContext = context;
+        postfixBasicsSummary = T(
+            "Preview готов. При применении будет создан проверенный архив /etc/postfix и перезапущен работающий Postfix. Другие MTA, очередь, firewall и M365 не меняются.",
+            "Preview ready. Apply creates a verified /etc/postfix backup and RESTARTS active primary Postfix. It does not modify other MTAs, queues, firewall or Microsoft 365.",
+            "הבדיקה עברה. הפעלה תבצע גיבוי ותאתחל את Postfix.");
+        WriteLine("Primary Postfix main.cf read-only plan checked; no Linux settings changed.");
+        RenderPage();
+    }
+
+    private async Task ApplyPostfixBasicsAsync()
+    {
+        string context = PostfixBasicsContext();
+        if (previewedPostfixBasicsSha is null ||
+            previewedPostfixBasicsContext != context ||
+            postfixBasicsInterfaces.SelectedIndex != 0)
+            throw new InvalidOperationException("Preview must be repeated after changing host, fields or listener.");
+        if (existingSmtpAuditIdentity != TryCurrentIdentity() ||
+            existingSmtpAudit?.SuspectedUnsafeRelay != false)
+            throw new InvalidOperationException("Public SMTP audit not verified or unsafe.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Modify PRIMARY Postfix main.cf",
+            "RISK: this is the PRIMARY Postfix, not the isolated mail relay. " +
+            "Effective myhostname, mydomain, myorigin, mydestination, inet_interfaces and inet_protocols " +
+            "will change. An existing SMTP service on the primary host may restart and interrupt mail. " +
+            "Local mailbox delivery and externally exposed interfaces must be inspected before approval. " +
+            "A root-only verified backup is created before any changes. " +
+            "An automatic rollback is attempted on error; package/delivery state is NOT guaranteed. " +
+            "Public or wildcard SMTP exposure is not supported by this action. " +
+            "If you do not specifically need to reconfigure the PRIMARY MTA, choose Preserve Existing Mail instead.",
+            "MODIFY PRIMARY POSTFIX")) return;
+        string sha = previewedPostfixBasicsSha;
+        previewedPostfixBasicsSha = null;
+        previewedPostfixBasicsContext = null;
+        var report = await PostfixBasicsScriptAsync(sha);
+        report.EnsureSuccess();
+        if (!report.StdOut.Contains("POSTFIX_BASICS_APPLIED=yes", StringComparison.Ordinal))
+            throw new InvalidDataException(
+                "Postfix apply outcome is uncertain. Inspect /var/backups/linuxmailrelay365 and service state.");
+        var backup = System.Text.RegularExpressions.Regex.Match(report.StdOut,
+            @"(?m)^POSTFIX_BASICS_BACKUP_ID=([0-9]{8}T[0-9]{6}Z-[a-f0-9]{12})\r?$");
+        if (!backup.Success)
+            throw new InvalidDataException("Postfix apply returned no verified backup identifier.");
+        postfixBasicsSummary = "Postfix basics applied. Verified restore snapshot: " +
+            backup.Groups[1].Value + ". Review delivery and re-run diagnostics.";
+        WriteLine(postfixBasicsSummary);
+        await InspectMailRoutingAsync();
+        RenderPage();
+    }
+
     private void ShowRecipientAdvice(TableLayoutPanel page)
     {
         bool sameHost = discoveredMailIdentity is not null &&
@@ -1532,6 +1754,7 @@ internal sealed class MainForm : Form
                 ShowMailDiscovery(page, false);
                 AddLine(page, UiTheme.Text(T("Отправка через Microsoft 365", "Microsoft 365 delivery method", "שיטת שליחה דרך Microsoft 365")));
                 AddLine(page, mailTransport);
+                ShowPostfixBasicsSection(page);
                 if (MailDeliveryAdvisor.ConflictsWithRecipients(
                     recipientScope.SelectedIndex == 2 ? "external-needed" : "unknown",
                     mailTransport.SelectedIndex))
@@ -2516,6 +2739,10 @@ internal sealed class MainForm : Form
             privateAuthDns.Text = routingPlan.PrivateSmtpServerName;
             smtpTrustedCidrs.Text = routingPlan.TrustedCidrs;
             isolatedSmtpPort.Text = routingPlan.SidecarPort.ToString();
+            postfixBasicsHostname.Text = routingPlan.PostfixBasicsHostname;
+            postfixBasicsDomain.Text = routingPlan.PostfixBasicsDomain;
+            postfixBasicsInterfaces.SelectedIndex =
+                routingPlan.PostfixBasicsInterfaces == "all" ? 1 : 0;
             publicInternetRequested.Checked = routingPlan.PublicInternetRequested;
             advancedSmtpTools.Checked = routingPlan.ShowAdvancedSmtpTools;
             allowExisting.Checked = false;
@@ -2535,6 +2762,9 @@ internal sealed class MainForm : Form
             previewedCleanBootstrapSha = null;
             previewedCleanBootstrapIdentity = null;
             cleanBootstrapSummary = "";
+            previewedPostfixBasicsSha = null;
+            previewedPostfixBasicsContext = null;
+            postfixBasicsSummary = "";
             routingIdentity = identity;
         }
         finally { routingLoading = false; }
@@ -2574,6 +2804,10 @@ internal sealed class MainForm : Form
             routingPlan.SidecarPort = port;
         routingPlan.PublicInternetRequested = publicInternetRequested.Checked;
         routingPlan.ShowAdvancedSmtpTools = advancedSmtpTools.Checked;
+        routingPlan.PostfixBasicsHostname = postfixBasicsHostname.Text.Trim().ToLowerInvariant();
+        routingPlan.PostfixBasicsDomain = postfixBasicsDomain.Text.Trim().ToLowerInvariant();
+        routingPlan.PostfixBasicsInterfaces = postfixBasicsInterfaces.SelectedIndex == 1
+            ? "all" : "loopback-only";
         // Operators can edit domain while typing. Save only valid completed values.
         try { MailRoutingPlanStore.Save(dataDirectory, routingIdentity, routingPlan); }
         catch (InvalidDataException) { }
