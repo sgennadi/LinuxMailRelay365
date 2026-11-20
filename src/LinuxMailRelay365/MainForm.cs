@@ -162,7 +162,6 @@ internal sealed class MainForm : Form
     private readonly Label brandHeading = UiTheme.Text(
         "LINUX MAIL RELAY 365  ·  " + UpdateCheck.Version, true);
     private TableLayoutPanel? footerLayout;
-    private TableLayoutPanel? shellLayout;
     private TableLayoutPanel? footerStatusLayout;
     private bool relabelingSshMethods;
     private readonly Panel pageHost = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = UiTheme.Canvas };
@@ -595,8 +594,7 @@ internal sealed class MainForm : Form
         activityPanel.Controls.Add(activity);
         var bottom = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Bottom, AutoSize = false,
             RowCount = 3, ColumnCount = 1,
             Padding = new Padding(18, 4, 18, 12)
         };
@@ -612,20 +610,26 @@ internal sealed class MainForm : Form
         bottom.Controls.Add(footerStatus, 0, 1);
         bottom.Controls.Add(activityPanel, 0, 2);
 
-        var shell = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1 };
+        // A separate native Dock=Bottom panel is essential: a tall auto-sized
+        // Wizard page must NEVER participate in the footer's row calculation.
+        // The content shell receives only the space above the pinned footer.
+        var shell = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1,
+            AutoSize = false
+        };
         shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        // An absolute footer reservation prevents a tall auto-sized Wizard
-        // page (e.g. mail-flow diagrams) from pushing status off-screen.
-        shell.RowStyles.Add(new RowStyle(SizeType.Absolute,
-            (int)Math.Round(118 * Math.Max(1f, DeviceDpi / 96f))));
-        shellLayout = shell;
         shell.Controls.Add(top, 0, 0);
         shell.Controls.Add(header, 0, 1);
         shell.Controls.Add(pageHost, 0, 2);
-        shell.Controls.Add(bottom, 0, 3);
-        Controls.Add(shell);
+        var frame = new Panel { Dock = DockStyle.Fill, AutoScroll = false };
+        frame.Controls.Add(shell);
+        frame.Controls.Add(bottom);
+        // Footer must dock first; content fills the remaining rectangle.
+        frame.Controls.SetChildIndex(bottom, 0);
+        Controls.Add(frame);
         bool fittingWindowLayout = false;
         void ResizeUi()
         {
@@ -693,8 +697,7 @@ internal sealed class MainForm : Form
 
     private void FitFooterHeight()
     {
-        if (shellLayout is null || footerLayout is null || footerStatusLayout is null ||
-            IsDisposed)
+        if (footerLayout is null || footerStatusLayout is null || IsDisposed)
             return;
         float scale = Math.Max(1f, DeviceDpi / 96f);
         int freeWidth = Math.Max(280, ClientSize.Width - 48);
@@ -709,9 +712,8 @@ internal sealed class MainForm : Form
         int minimum = (int)Math.Round(118 * scale);
         int maximum = Math.Max(minimum, ClientSize.Height * 65 / 100);
         int footerHeight = Math.Clamp(desired, minimum, maximum);
-        var row = shellLayout.RowStyles[3];
-        if (Math.Abs(row.Height - footerHeight) > 1)
-            row.Height = footerHeight;
+        if (Math.Abs(footerLayout.Height - footerHeight) > 1)
+            footerLayout.Height = footerHeight;
     }
 
     private void FitHeaderText()

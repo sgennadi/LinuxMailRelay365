@@ -858,3 +858,14 @@ the fixed footer. Width, DPI, wrapped buttons, multi-line status and expanded
 activity are included in the reservation. CI screen capture validates footer
 bounds both before and **after** actual WinForms DrawToBitmap rendering.
 The wide mail-flow cards now wrap long MTA names and route hints.
+
+
+## Pinned footer architecture (independent docking)
+
+The top/logo/header and the AutoScroll wizard content now live in a dedicated
+non-AutoSize content shell. The navigation/status/activity footer is a
+separate DockStyle.Bottom panel on a non-scrolling frame, with a calculated
+height to fit wrapped buttons and localized status. This removes the
+TableLayoutPanel auto-size interaction which previously moved status to the
+bottom edge when a long mail-flow diagram was present. No SMTP operation or
+routing behavior is changed by this UI-only change.
