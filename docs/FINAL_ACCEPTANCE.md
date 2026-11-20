@@ -812,3 +812,14 @@ Responsive page labels and form fields reflow without replacing user values or
 SSH secrets. SSH authentication mode labels now follow the selected UI language.
 Windows CI self-tests cover sizes at 96/192 dpi, plus existing real Wizard
 screenshots for the five steps.
+
+
+## Fixed footer for SSH connection action
+
+The SSH "Check connection and continue" action now lives in the always-visible
+footer and is the default Enter action, with "Skip connection check" kept
+separate and non-primary. The old in-card primary action was removed so that
+users at 150–200% DPI no longer have to scroll down to connect. Failed actions
+also reveal the expandable journal without its footer row remaining collapsed.
+CI captures extra compact-size screens for all five Wizard steps and RU/EN/HE
+SSH layouts in addition to its existing 16 snapshots (24 PNGs total).

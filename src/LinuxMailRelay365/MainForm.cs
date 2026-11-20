@@ -613,19 +613,26 @@ internal sealed class MainForm : Form
         shell.Controls.Add(pageHost, 0, 2);
         shell.Controls.Add(bottom, 0, 3);
         Controls.Add(shell);
+        bool fittingWindowLayout = false;
         void ResizeUi()
         {
-            FitHeaderText();
-            ResizePreserveFlowHelp();
-            if (step != 0 || !IsHandleCreated || busy || resizingConnectionLayout ||
-                UseWideConnectionLayout(pageHost.ClientSize.Width, DeviceDpi) == connectionWideLayout)
+            if (fittingWindowLayout) return;
+            fittingWindowLayout = true;
+            try
             {
-                FitCurrentPage();
-                return;
+                FitHeaderText();
+                ResizePreserveFlowHelp();
+                if (step != 0 || !IsHandleCreated || busy || resizingConnectionLayout ||
+                    UseWideConnectionLayout(pageHost.ClientSize.Width, DeviceDpi) == connectionWideLayout)
+                    FitCurrentPage();
+                else
+                {
+                    resizingConnectionLayout = true;
+                    try { RenderPage(); }
+                    finally { resizingConnectionLayout = false; }
+                }
             }
-            resizingConnectionLayout = true;
-            try { RenderPage(); }
-            finally { resizingConnectionLayout = false; }
+            finally { fittingWindowLayout = false; }
         }
         pageHost.SizeChanged += (_, _) => ResizeUi();
         ClientSizeChanged += (_, _) => ResizeUi();
@@ -823,7 +830,7 @@ internal sealed class MainForm : Form
     {
         // Only root wizard controls must fit the scrollable viewport. Nested
         // cards/diagrams keep their own layout, while long labels wrap.
-        if (table.Parent is Panel && table.Parent.AutoScroll)
+        if (table.Parent is Panel scrollingPanel && scrollingPanel.AutoScroll)
         {
             int width = Math.Max(230, table.Width - table.Padding.Horizontal - 18);
             if (control is Label label)
@@ -1043,10 +1050,12 @@ internal sealed class MainForm : Form
                     "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
             }
         }
-        var test = AddAction(form,
-            T("Проверить подключение и продолжить", "Check connection and continue",
-                "בדיקת חיבור והמשך"), CheckSshAndContinueAsync, true, "ssh", "ssh");
-        AcceptButton = test;
+        // The primary SSH action is anchored in the footer so it remains
+        // visible at 100–200% DPI and does not require scrolling the card.
+        AddLine(form, UiTheme.Text(T(
+            "После заполнения полей нажмите «Проверить подключение» внизу окна.",
+            "After entering the details, select Check connection in the fixed footer.",
+            "לאחר הזנת הפרטים לחצו בדיקת חיבור בתחתית החלון.")));
         AddLine(details, UiTheme.Text(T("Как это работает", "What happens next", "כיצד זה עובד"), true));
         AddConnectionHelp(details, sshAuthMode.SelectedIndex == 1
             ? T("1. Введи SSH-пароль. SHA256 вводить необязательно.\n\n2. При первом соединении программа покажет отпечаток сервера. Подтверди его перед входом.\n\n3. После проверки откроется следующий шаг.",
@@ -2541,25 +2550,40 @@ internal sealed class MainForm : Form
         pageHost.ResumeLayout();
 
         navigation.Controls.Clear();
-        var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
-        back.Enabled = step > 0 && !busy;
-        back.Click += (_, _) => { step--; RenderPage(); };
-        var next = UiTheme.Action(step == 0
-            ? T("Пропустить проверку", "Skip connection check", "דלג על בדיקת החיבור")
-            : T("Далее", "Next", "הבא"), primary: step != 0, glyph: "next");
-        next.Enabled = step < 4 && !busy;
-        next.Click += (_, _) =>
+        if (step == 0)
         {
-            if (step == 0)
+            var connect = UiTheme.Action(T(
+                "Проверить подключение и продолжить", "Check connection and continue",
+                "בדיקת חיבור והמשך"), primary: true, glyph: "ssh");
+            connect.Enabled = !busy;
+            connect.Click += async (_, _) => await RunBusyAsync("ssh", CheckSshAndContinueAsync);
+            navigation.Controls.Add(connect);
+            if (!busy) AcceptButton = connect;
+            var skip = UiTheme.Action(T(
+                "Пропустить проверку", "Skip connection check",
+                "דלג על בדיקת החיבור"), glyph: "next");
+            skip.Enabled = !busy;
+            skip.Click += (_, _) =>
             {
                 try { EnsureSecurityLoaded(); }
                 catch (Exception ex) { WriteLine("ERROR: " + ex.Message); return; }
-            }
-            step++;
-            RenderPage();
-        };
-        navigation.Controls.Add(next);
-        navigation.Controls.Add(back);
+                step = 1;
+                RenderPage();
+            };
+            navigation.Controls.Add(skip);
+        }
+        else
+        {
+            var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
+            back.Enabled = !busy;
+            back.Click += (_, _) => { step--; RenderPage(); };
+            var next = UiTheme.Action(T("Далее", "Next", "הבא"),
+                primary: step < 4, glyph: "next");
+            next.Enabled = step < 4 && !busy;
+            next.Click += (_, _) => { step++; RenderPage(); };
+            navigation.Controls.Add(next);
+            navigation.Controls.Add(back);
+        }
         activityToggle.Text = activityPanel.Visible
             ? T("Скрыть журнал", "Hide activity", "הסתר יומן")
             : T("Показать журнал", "Show activity", "הצג יומן");
@@ -2670,6 +2694,31 @@ internal sealed class MainForm : Form
                 finally { routingLoading = false; }
             }
         }
+        // Additional compact-window QA across ALL five pages. These are
+        // captured on actual WinForms controls, not assistant mockups.
+        // A compact viewport exposes text wrapping and footer regressions.
+        Size = new Size(900, 700);
+        for (int index = 0; index < 5; index++)
+        {
+            step = index;
+            RenderPage();
+            Screenshot("compact-0" + (index + 1) + "-wizard.png");
+        }
+        step = 0;
+        foreach (var (lang, name) in new[]
+        {
+            (0, "compact-ru-ssh.png"),
+            (1, "compact-en-ssh.png"),
+            (2, "compact-he-ssh.png")
+        })
+        {
+            language.SelectedIndex = lang;
+            RenderPage();
+            Screenshot(name);
+        }
+        language.SelectedIndex = 0;
+        Size = new Size(1050, 830);
+
         // Visual QA: the final step must offer only valid diagnostics for
         // each route. These screenshots neither connect nor send mail.
         step = 4;
@@ -2756,6 +2805,9 @@ internal sealed class MainForm : Form
             WriteLine("ERROR: " + ex.Message);
             lastFailed = true;
             activityPanel.Visible = true;
+            if (footerLayout is not null)
+                footerLayout.RowStyles[2].Height =
+                    (int)Math.Round(145 * Math.Max(1f, DeviceDpi / 96f));
             lastStatus = T("Ошибка — проверь журнал", "Error — review activity", "שגיאה — בדוק יומן");
         }
         finally { busy = false; RenderPage(); }
