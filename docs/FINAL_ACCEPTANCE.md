@@ -902,3 +902,19 @@ every captured Wizard screen, falsely suggesting that status text was outside
 the form. Runtime client-control bounds remain checked independently of
 screenshots. Full-size PNGs now include the real footer, status and window
 chrome, enabling trustworthy visual review.
+
+
+## Updater safety gate
+
+The standalone public Windows build's Update button is read-only release
+**discovery** plus explicit release-page navigation. No executable gets
+downloaded or replaced. The CI workflow deliberately compiles
+`UseSharedUpdater=false`; the separate pinned UniversalUpdater dependency
+is private. The shared core itself provides staged file verification and
+transaction primitives but does not supply an Authenticode-pinned,
+out-of-process elevation/locked-file swap GUI. Before declaring full
+auto-update, require a verified signed publisher identity, an independent
+same-publisher check of the new executable, exact GitHub release asset and
+archive SHA verification, a trusted external helper with parent-process
+shutdown, tested .bak restore and a failed-health-check hold. Never apply
+an unsigned CI preview automatically.

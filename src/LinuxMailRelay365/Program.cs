@@ -338,6 +338,7 @@ internal static class Program
         };
 #if !USE_UNIVERSAL_UPDATER
         checks.Add(("Release ordering", ReleaseVersion.SelfTest));
+        checks.Add(("Updater release trust and channel rules", UpdateCheck.SelfTest));
 #endif
         var results = new List<string>();
         bool success = true;

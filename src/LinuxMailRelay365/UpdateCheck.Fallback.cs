@@ -39,21 +39,42 @@ internal static class UpdateCheck
         using var doc = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 24 });
         if (doc.RootElement.ValueKind != JsonValueKind.Array)
             throw new InvalidDataException("Unexpected GitHub API response.");
+        var (bestUrl, bestVersion) = SelectRelease(doc.RootElement, expectedAsset, includePreview);
+        return bestUrl is null
+            ? (null, "No newer signed/publisher-approved release has been installed. " +
+                "No eligible published GitHub Release was found; CI preview artifacts are manual builds only.")
+            : (bestUrl, "Version " + bestVersion +
+                " is available. Review the release page; this build cannot install updates automatically.");
+    }
+
+    // Strictly read-only catalog selection. A GitHub-provided SHA is metadata,
+    // not proof of Authenticode or the publisher's trustworthiness.
+    internal static (string? Url, string? Version) SelectRelease(
+        JsonElement releases, string expectedAsset, bool includePreview)
+    {
+        if (releases.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("Expected a GitHub release catalog array.");
         string? bestUrl = null;
         string? bestVersion = null;
-        foreach (var item in doc.RootElement.EnumerateArray())
+        foreach (var item in releases.EnumerateArray())
         {
             if (item.ValueKind != JsonValueKind.Object || Bool(item, "draft")) continue;
-            bool prerelease = Bool(item, "prerelease");
-            if (prerelease && !includePreview) continue;
-            string tag = Str(item, "tag_name").TrimStart('v');
+            string rawTag = Str(item, "tag_name");
+            if (rawTag.StartsWith('v')) rawTag = rawTag[1..];
+            string tag = rawTag;
             if (!ReleaseVersion.IsValid(tag) || ReleaseVersion.Compare(tag, Version) <= 0) continue;
+            bool prerelease = Bool(item, "prerelease") || tag.Contains('-');
+            if (prerelease && !includePreview) continue;
             if (!item.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
                 continue;
             bool hasSafeAsset = false;
+            bool duplicateAsset = false;
+            int matchingAssets = 0;
             foreach (var asset in assets.EnumerateArray())
             {
                 if (!string.Equals(Str(asset, "name"), expectedAsset, StringComparison.Ordinal)) continue;
+                matchingAssets++;
+                if (matchingAssets > 1) { duplicateAsset = true; break; }
                 if (!Regex.IsMatch(Str(asset, "digest"), "^sha256:[A-Fa-f0-9]{64}$")) continue;
                 if (!asset.TryGetProperty("size", out var size) || !size.TryGetInt64(out long count) ||
                     count is < 1 or > 500_000_000) continue;
@@ -62,15 +83,57 @@ internal static class UpdateCheck
                 hasSafeAsset = true;
                 break;
             }
-            if (!hasSafeAsset) continue;
+            if (!hasSafeAsset || duplicateAsset) continue;
             string page = Str(item, "html_url");
             if (!SafeGithubUrl(page, $"/{repository}/releases/tag/{Str(item, "tag_name")}")) continue;
             if (bestVersion is null || ReleaseVersion.Compare(tag, bestVersion) > 0)
             { bestVersion = tag; bestUrl = page; }
         }
-        return bestUrl is null
-            ? (null, "No newer verified GitHub release is available. Installation is not automatic.")
-            : (bestUrl, "Version " + bestVersion + " is available. Review the release before installing.");
+        return (bestUrl, bestVersion);
+    }
+
+    internal static bool SelfTest()
+    {
+        static string Catalog(string tag, bool prerelease, string digest, string asset,
+            string? pageOverride = null, bool duplicate = false)
+        {
+            string fullTag = "v" + tag;
+            string assetUrl = "https://github.com/sgennadi/LinuxMailRelay365/releases/download/" +
+                fullTag + "/" + asset;
+            string page = pageOverride ??
+                "https://github.com/sgennadi/LinuxMailRelay365/releases/tag/" + fullTag;
+            string entry = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                name = asset, digest, size = 10_000L,
+                browser_download_url = assetUrl
+            });
+            return "[{\"draft\":false,\"prerelease\":" +
+                (prerelease ? "true" : "false") +
+                ",\"tag_name\":\"" + fullTag +
+                "\",\"html_url\":\"" + page +
+                "\",\"assets\":[" + entry +
+                (duplicate ? "," + entry : "") + "]}]";
+        }
+        static (string?, string?) Select(string json, bool preview)
+        {
+            using var doc = JsonDocument.Parse(json);
+            return SelectRelease(doc.RootElement, "LinuxMailRelay365-win-x64.zip", preview);
+        }
+        const string name = "LinuxMailRelay365-win-x64.zip";
+        const string sha = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        if (Select(Catalog("0.1.0-preview.16", true, sha, name), false).Item1 is not null ||
+            Select(Catalog("0.1.0-preview.16", true, sha, name), true).Item2 != "0.1.0-preview.16" ||
+            Select(Catalog("0.1.0-preview.16", false, sha, name), false).Item1 is not null ||
+            Select(Catalog("0.1.0-preview.15", true, sha, name), true).Item1 is not null ||
+            Select(Catalog("0.1.1", false, sha, name), false).Item2 != "0.1.1" ||
+            Select(Catalog("0.1.1", false, "sha256:invalid", name), true).Item1 is not null ||
+            Select(Catalog("0.1.1", false, sha, "wrong.zip"), true).Item1 is not null ||
+            Select(Catalog("0.1.1", false, sha, name, duplicate:true), true).Item1 is not null ||
+            Select(Catalog("0.1.1", false, sha, name,
+                "https://attacker@github.com/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1"),
+                true).Item1 is not null)
+            return false;
+        return true;
     }
 
     private static string Str(JsonElement element, string name) =>
@@ -81,9 +144,11 @@ internal static class UpdateCheck
 
     private static bool SafeGithubUrl(string candidate, string exactPath) =>
         Uri.TryCreate(candidate, UriKind.Absolute, out var uri) &&
-        uri.Scheme == Uri.UriSchemeHttps && uri.Host == "github.com" &&
-        uri.Port == 443 && uri.Query.Length == 0 && uri.Fragment.Length == 0 &&
-        uri.AbsolutePath == exactPath;
+        uri.Scheme == Uri.UriSchemeHttps &&
+        string.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase) &&
+        uri.IsDefaultPort && uri.UserInfo.Length == 0 &&
+        uri.Query.Length == 0 && uri.Fragment.Length == 0 &&
+        string.Equals(Uri.UnescapeDataString(uri.AbsolutePath), exactPath, StringComparison.Ordinal);
 }
 
 internal static class ReleaseVersion

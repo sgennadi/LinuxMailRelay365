@@ -1593,3 +1593,22 @@ Postfix servers must not use the clean-bootstrap exception.
 
 No clean Linux route is automatically selected; tenant connector identity
 or internal-only recipient scope still requires independent verification.
+
+
+## Updater status — release metadata, not an installer
+
+The ordinary GitHub Actions Win-x64 and Win-ARM64 builds currently ship
+with the **read-only** updater fallback. The Wizard's Check GitHub Updates
+action inspects only published GitHub Releases, the exact repository/tag
+and architecture ZIP asset, semantic version ordering and the SHA-256
+**metadata field**. It opens the eligible GitHub Release page after user
+confirmation; it does not download, start, replace, self-update, elevate
+or install the EXE. The optional private UniversalUpdater source module is
+only compiled into a trusted development build when separately restored.
+A SHA in GitHub metadata is not Authenticode publisher verification or a
+complete package-install trust chain. The repository currently publishes
+unsigned CI preview EXEs, not eligible signed Stable update releases.
+Do not call the fallback an automatic updater or claim unsigned previews
+can self-install. Windows CI self-tests check malicious URL userinfo,
+duplicate arch assets, bad digest, prerelease/stable separation and
+no-downgrade behavior.

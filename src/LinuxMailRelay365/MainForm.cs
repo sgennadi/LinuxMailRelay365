@@ -6770,10 +6770,18 @@ internal sealed class MainForm : Form
 
     private async Task CheckUpdatesAsync()
     {
-        WriteLine("Checking GitHub Releases using UniversalUpdater...");
+        WriteLine("Checking published GitHub Releases (read-only). " +
+            "Unsigned CI previews are not automatic updates.");
         var (url, message) = await UpdateCheck.QueryAsync(previewUpdates.Checked, CancellationToken.None);
         releaseUrl = url;
         WriteLine(message);
+        if (releaseUrl is null)
+        {
+            WriteLine(T(
+                "Updater: новых подходящих релизов нет. EXE из GitHub Actions нельзя автоматически устанавливать вместо подписанного Stable.",
+                "Updater: no eligible published release. GitHub Actions preview EXEs are not verified signed updates.",
+                "אין גרסה חתומה זמינה. קובצי CI אינם עדכון אוטומטי."));
+        }
         if (releaseUrl is not null)
         {
             var ask = MessageBox.Show(this, T("Открыть страницу релиза?", "Open the release page?", "לפתוח עמוד גרסה?"),
