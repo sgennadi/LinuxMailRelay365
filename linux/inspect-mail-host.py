@@ -24,7 +24,13 @@ def call(argv):
     try:
         p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True, check=False, timeout=6)
-        if p.returncode == 0 and len(p.stdout) <= 4096:
+        # systemctl returns 3 for an inactive service and 4 for an
+        # unknown unit. Those are valid *read-only evidence*, unlike a
+        # failed postconf/exim query which must remain unavailable.
+        inactive_unit = (argv[:2] == ["systemctl", "is-active"] and
+                         p.returncode in (3, 4) and
+                         p.stdout.strip() in ("inactive", "failed", "unknown", "dead"))
+        if (p.returncode == 0 or inactive_unit) and len(p.stdout) <= 4096:
             return p.stdout.strip()
     except (OSError, subprocess.TimeoutExpired, UnicodeError):
         pass
@@ -65,7 +71,10 @@ def service_state(unit, runner=call):
     status = runner(["systemctl", "is-active", unit])
     if status == "active":
         return True
-    if status in ("inactive", "failed", "unknown"):
+    if status == "failed":
+        # A failed primary MTA is not equivalent to a clean unused host.
+        return None
+    if status in ("inactive", "unknown", "dead"):
         return False
     return None
 
