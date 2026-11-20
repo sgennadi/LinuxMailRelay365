@@ -19,7 +19,8 @@ import tempfile
 
 PROVIDERS = ("tpm2", "pkcs11")
 IDENTITIES = (Path("/etc/linuxmailrelay365/sidecar-identity"),
-              Path("/etc/postfix/m365-oauth"))
+              Path("/etc/postfix/m365-oauth"),
+              Path("/etc/linuxmailrelay365/oauth-identities"))
 PKCS11_URI = re.compile(r"\Apkcs11:[A-Za-z0-9%._+;=:@-]{5,230}\Z")
 TPM_HANDLE = re.compile(r"\Ahandle:0x81[a-fA-F0-9]{6}\Z")
 MAX_CONFIG_BYTES = 32768

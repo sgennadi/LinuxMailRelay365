@@ -6,11 +6,14 @@ The private signing key remains usable by a privileged local attacker.
 """
 import argparse
 import base64
+import binascii
+import grp
 import hashlib
 import json
 import os
 import re
 import smtplib
+import tempfile
 import stat
 import ssl
 import subprocess
@@ -28,6 +31,8 @@ from m365_hardware_signer import HardwareSignerError, validate_spec, sign_ps256
 
 CONF_FILE = Path('/etc/postfix/m365-oauth/app.json')
 SIDECAR_CONF_FILE = Path('/etc/linuxmailrelay365/sidecar-identity/app.json')
+MAPPED_IDENTITIES = Path('/etc/linuxmailrelay365/oauth-identities')
+MAPPED_IDENTITY_NAME = re.compile(r'\A[A-Za-z0-9][A-Za-z0-9_.-]{0,90}\.json\Z')
 STAGED_CONF_FILES = (
     Path('/etc/postfix/m365-oauth/hardware-staged.json'),
     Path('/etc/linuxmailrelay365/sidecar-identity/hardware-staged.json'),
@@ -67,9 +72,86 @@ def validate_guid(value):
     return str(uuid.UUID(value))
 
 
+
+def require_mapped_identity_file(path):
+    """Accept mapped identities for OFFLINE diagnostics, never queue delivery."""
+    if not isinstance(path, Path) or path.parent != MAPPED_IDENTITIES or \
+            not MAPPED_IDENTITY_NAME.fullmatch(path.name):
+        raise ValueError('Mapped OAuth identity path not allowlisted')
+    try:
+        group = grp.getgrnam('m365mailer').gr_gid
+        for directory in (Path('/etc'), MAPPED_IDENTITIES.parent, MAPPED_IDENTITIES):
+            info = directory.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or \
+                    info.st_mode & 0o022:
+                raise ValueError('Mapped OAuth identity directory is unsafe')
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or \
+                info.st_gid != group or info.st_nlink != 1 or \
+                stat.S_IMODE(info.st_mode) != 0o640 or \
+                not 1 <= info.st_size <= 8192:
+            raise ValueError('Mapped OAuth identity file is unsafe')
+    except (OSError, KeyError):
+        raise ValueError('Mapped OAuth identity file unavailable') from None
+    return group
+
+
+def check_mapped_credential_file(reference, group, private=False):
+    if not isinstance(reference, str):
+        raise ValueError('Invalid mapped OAuth credential reference')
+    target = Path(reference)
+    if target.parent != MAPPED_IDENTITIES or not target.name or \
+            target.name in ('.', '..'):
+        raise ValueError('Mapped OAuth credential escapes protected directory')
+    try:
+        info = target.lstat()
+        modes = (0o640,) if private else (0o640, 0o644)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or \
+                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) not in modes or \
+                (private and info.st_gid != group) or \
+                not 1 <= info.st_size <= 65536:
+            raise ValueError('Unsafe mapped OAuth credential permissions')
+    except OSError:
+        raise ValueError('Mapped OAuth credential unavailable') from None
+
+
+def verify_assertion_signature(config, assertion):
+    """Verify PS256 against PUBLIC cert; never write private keys or tokens."""
+    try:
+        pieces = assertion.split('.')
+        if len(pieces) != 3 or any(not x for x in pieces):
+            raise ValueError()
+        unsigned = (pieces[0] + '.' + pieces[1]).encode('ascii')
+        signature = base64.urlsafe_b64decode(pieces[2] + '===')
+        if not 128 <= len(signature) <= 1024:
+            raise ValueError()
+    except (ValueError, TypeError, UnicodeError, binascii.Error):
+        raise TransientError('Malformed local OAuth assertion') from None
+    public = run_openssl('x509', '-in', config['certificate'], '-pubkey', '-noout')
+    if b'BEGIN PUBLIC KEY' not in public:
+        raise TransientError('OAuth certificate has no public key')
+    with tempfile.TemporaryDirectory(prefix='lmr365-oauth-verify-') as folder:
+        pub = Path(folder) / 'public.pem'
+        sig = Path(folder) / 'signature.bin'
+        pub.write_bytes(public)
+        sig.write_bytes(signature)
+        pub.chmod(0o600)
+        sig.chmod(0o600)
+        check = subprocess.run(
+            ['/usr/bin/openssl', 'dgst', '-sha256', '-verify', str(pub),
+             '-signature', str(sig), '-sigopt', 'rsa_padding_mode:pss',
+             '-sigopt', 'rsa_pss_saltlen:32'],
+            input=unsigned, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=20, check=False)
+        if check.returncode or b'Verified OK' not in check.stdout:
+            raise TransientError('OAuth signer does not match public certificate')
+
+
 def load_config(path=None):
     path = CONF_FILE if path is None else Path(path)
-    if path not in (CONF_FILE, SIDECAR_CONF_FILE) + STAGED_CONF_FILES:
+    mapped = path.parent == MAPPED_IDENTITIES
+    mapped_group = require_mapped_identity_file(path) if mapped else None
+    if not mapped and path not in (CONF_FILE, SIDECAR_CONF_FILE) + STAGED_CONF_FILES:
         raise ValueError('Unsupported XOAUTH2 configuration path')
     if path == PEM_ROTATION_CONF:
         # This is an explicitly staged software key, never a delivery identity.
@@ -117,6 +199,14 @@ def load_config(path=None):
                 any(active.get(k) != data.get(k) for k in (
                     'tenant_id', 'client_id', 'mailbox'))):
             raise ValueError('Staged PEM cannot change tenant, app or sender')
+    if mapped:
+        required = {'tenant_id', 'client_id', 'mailbox', 'certificate'}
+        extra = {'signer'} if 'signer' in data else {'private_key'}
+        if set(data) != required | extra:
+            raise ValueError('Mapped OAuth identity contains unexpected fields')
+        check_mapped_credential_file(data['certificate'], mapped_group)
+        if 'private_key' in data:
+            check_mapped_credential_file(data['private_key'], mapped_group, private=True)
     if 'signer' in data:
         validate_spec(data, path)
         data['_identity_path'] = str(path)
@@ -329,14 +419,23 @@ def run(argv=None):
                     default=str(CONF_FILE), help='Explicit installed identity configuration')
     ap.add_argument('--candidate-config', choices=[str(x) for x in STAGED_CONF_FILES],
                     help='Root-staged hardware identity, usable only for signing/token checks')
+    ap.add_argument('--mapped-identity-config',
+                    help='Protected mapped OAuth identity for LOCAL diagnostics only')
     args = ap.parse_args(argv)
     try:
         if sum((bool(args.token_check), bool(args.signing_check), bool(args.config_check),
                 bool(args.smtp_auth_check), bool(args.acceptance_test))) > 1:
             ap.error('Select only one non-delivery diagnostic action')
-        if args.acceptance_test and (args.candidate_config is not None or args.recipient):
+        if args.acceptance_test and (args.candidate_config is not None or args.recipient or
+                                     args.mapped_identity_config is not None):
             ap.error('Acceptance delivery may use active identity only, without CLI recipient')
-        if args.candidate_config is not None:
+        if args.mapped_identity_config is not None:
+            if (args.candidate_config is not None or args.recipient or
+                    not (args.config_check or args.signing_check) or
+                    args.token_check or args.smtp_auth_check or args.acceptance_test):
+                ap.error('Mapped identity permits local config/signing checks only')
+            config = load_config(args.mapped_identity_config)
+        elif args.candidate_config is not None:
             if not (args.token_check or args.signing_check or args.config_check or args.smtp_auth_check) or args.recipient:
                 ap.error('Candidate identity cannot send mail or accept a recipient')
             config = load_config(args.candidate_config)
@@ -348,7 +447,8 @@ def run(argv=None):
             print('Local configuration OK (no network connection attempted)')
             return EX_OK
         if args.signing_check:
-            make_client_assertion(config)
+            _, assertion = make_client_assertion(config)
+            verify_assertion_signature(config, assertion)
             print('Local PS256 signing and certificate match verified; no token requested')
             return EX_OK
         if args.token_check:

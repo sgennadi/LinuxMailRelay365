@@ -84,6 +84,50 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(verified.returncode, 0, verified.stderr.decode())
         self.assertIn(b'Verified OK', verified.stdout)
 
+
+    def test_mapped_identity_is_local_only(self):
+        candidate = '/etc/linuxmailrelay365/oauth-identities/box.json'
+        with mock.patch.object(mt, 'load_config', return_value=self.cfg) as load, \
+             mock.patch.object(mt, 'make_client_assertion', return_value=(
+                 'https://login.microsoftonline.com/test/token', 'AA.BB.CC')), \
+             mock.patch.object(mt, 'verify_assertion_signature') as verified, \
+             mock.patch.object(mt, 'acquire_token') as acquire, \
+             mock.patch.object(mt, 'send_smtp') as deliver, \
+             mock.patch('sys.stdout', new_callable=io.StringIO):
+            self.assertEqual(mt.run([
+                '--mapped-identity-config', candidate, '--signing-check']), 0)
+            load.assert_called_once_with(candidate)
+            verified.assert_called_once()
+            acquire.assert_not_called()
+            deliver.assert_not_called()
+        for action in (
+                ['--recipient', 'to@example.org'], ['--token-check'],
+                ['--smtp-auth-check'], ['--acceptance-test'], []):
+            with self.subTest(action=action), \
+                 self.assertRaises(SystemExit), \
+                 mock.patch.object(mt, 'load_config') as load:
+                mt.run(['--mapped-identity-config', candidate] + action)
+            load.assert_not_called()
+
+    def test_ps256_signature_verifies_the_public_certificate(self):
+        _, assertion = mt.make_client_assertion(self.cfg)
+        mt.verify_assertion_signature(self.cfg, assertion)
+        pieces = assertion.split('.')
+        pieces[2] = base64.urlsafe_b64encode(b'x' * 256).decode('ascii').rstrip('=')
+        with self.assertRaises(mt.TransientError):
+            mt.verify_assertion_signature(self.cfg, '.'.join(pieces))
+        with self.assertRaises(mt.TransientError):
+            mt.verify_assertion_signature(self.cfg, 'invalid')
+
+    def test_mapped_identity_paths_refuse_traversal(self):
+        for path in (
+                '/etc/linuxmailrelay365/oauth-identities/../app.json',
+                '/etc/linuxmailrelay365/sidecar-identity/app.json',
+                '/etc/linuxmailrelay365/oauth-identities/non-json.txt',
+                '/tmp/untrusted.json'):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                mt.require_mapped_identity_file(Path(path))
+
     def test_token_scope_and_no_token_dump(self):
         class Reply(io.BytesIO):
             def __enter__(self): return self
