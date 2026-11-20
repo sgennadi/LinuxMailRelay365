@@ -580,8 +580,10 @@ internal static class SignedPortableUpdater
             !File.Exists(target) || !File.Exists(candidate))
             return 2;
         string backup = target + ".bak";
+        string previousBackup = backup + ".prior-" + Guid.NewGuid().ToString("N");
         string next = target + ".update-new";
         string hold = Path.Combine(root, "manual-review.hold");
+        bool movedPreviousBackup = false;
         bool replaced = false;
         bool rolledBack = false;
         try
@@ -624,20 +626,28 @@ internal static class SignedPortableUpdater
             if (File.Exists(backup))
             {
                 RejectLinks(backup);
-                // Do not overwrite a prior manual rollback checkpoint silently.
-                throw new InvalidOperationException(
-                    "Existing backup requires manual review before another update.");
+                File.Move(backup, previousBackup);
+                movedPreviousBackup = true;
             }
             File.Replace(next, target, backup, ignoreMetadataErrors: false);
             replaced = true;
             if (RunInstalledHealth(target) != 0 ||
                 !string.Equals(FileSha256(target), args[3], compare))
                 throw new InvalidOperationException("Installed application health test failed.");
-            WriteStatus(root, "SIGNED_UPDATE_INSTALLED");
-            Process.Start(new ProcessStartInfo(target)
+            var started = Process.Start(new ProcessStartInfo(target)
             {
                 UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(target)!
             });
+            if (started is null)
+                throw new IOException("Updated application could not be started.");
+            WriteStatus(root, "SIGNED_UPDATE_INSTALLED");
+            // The newly created .bak is the immediate rollback checkpoint.
+            // The pre-existing .bak is no longer needed after a healthy start.
+            if (movedPreviousBackup)
+            {
+                try { File.Delete(previousBackup); } catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
             return 0;
         }
         catch (Exception)
@@ -650,6 +660,16 @@ internal static class SignedPortableUpdater
                     rolledBack = true;
                 }
                 catch (Exception) { rolledBack = false; }
+            }
+            if (movedPreviousBackup && File.Exists(previousBackup))
+            {
+                try
+                {
+                    if (!File.Exists(backup))
+                        File.Move(previousBackup, backup);
+                }
+                catch (IOException) { rolledBack = false; }
+                catch (UnauthorizedAccessException) { rolledBack = false; }
             }
             WriteStatus(root, replaced && rolledBack ?
                 "SIGNED_UPDATE_ROLLED_BACK" : "SIGNED_UPDATE_FAILED_MANUAL_REVIEW");
@@ -698,7 +718,8 @@ internal static class SignedPortableUpdater
             return SelectRelease(document.RootElement, allow, "0.1.0-preview.15",
                 "LinuxMailRelay365-win-x64.zip");
         }
-        return Parse(Fixture(asset, hash, true), true)?.Version == "0.1.0-preview.16" &&
+        return ApplyFromHelper(Array.Empty<string>()) == 2 &&
+               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.0-preview.16" &&
                Parse(Fixture(asset, hash, true), false) is null &&
                Parse(Fixture(asset, hash, false), false) is null &&
                Parse(Fixture(asset, hash, true, duplicate: true), true) is null &&

@@ -1632,3 +1632,10 @@ No elevation, tenant changes, network listener changes or silent updates.
 The GitHub Actions previews remain unsigned; they cannot be auto-installed.
 A genuine publisher-signed GitHub Release and live positive-path update/rollback
 tests are needed before describing this as production-tested.
+
+
+The signed helper now preserves an existing .bak in a distinct temporary
+checkpoint during another approved update. After a successful healthy
+replacement and restart, the immediate .bak is kept and older backup
+retention is bounded. On failure, the previous checkpoint is restored
+where possible and a manual-review hold prevents retry loops.

@@ -42,10 +42,10 @@ internal static class UpdateCheck
             throw new InvalidDataException("Unexpected GitHub API response.");
         var (bestUrl, bestVersion) = SelectRelease(doc.RootElement, expectedAsset, includePreview);
         return bestUrl is null
-            ? (null, "No newer signed/publisher-approved release has been installed. " +
-                "No eligible published GitHub Release was found; CI preview artifacts are manual builds only.")
+            ? (null, "No eligible newer published GitHub Release was found. " +
+                "Unsigned CI preview artifacts are manual builds, not signed auto-updates.")
             : (bestUrl, "Version " + bestVersion +
-                " is available. Review the release page; this build cannot install updates automatically.");
+                " is available. Installation requires operator consent and an Authenticode-signed app/update with matching Windows-trusted publisher.");
     }
 
     // Strictly read-only catalog selection. A GitHub-provided SHA is metadata,
@@ -82,7 +82,8 @@ internal static class UpdateCheck
                 if (!SafeGithubUrl(Str(asset, "browser_download_url"),
                     $"/{Repository}/releases/download/{Str(item, "tag_name")}/{expectedAsset}")) continue;
                 hasSafeAsset = true;
-                break;
+                // Continue scanning: duplicate architecture assets make the
+                // release ambiguous even if the first one was valid.
             }
             if (!hasSafeAsset || duplicateAsset) continue;
             string page = Str(item, "html_url");

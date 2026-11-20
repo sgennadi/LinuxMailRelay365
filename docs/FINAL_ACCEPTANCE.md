@@ -933,3 +933,10 @@ rollback and writes a per-user hold. Current unsigned CI artifacts fail
 the signing precondition by design. Positive physical testing still requires
 signing credentials and a published release; keep Draft and do not call it
 a proven production updater until the real install and recovery are exercised.
+
+
+Updater rollback checkpoints: pre-existing .bak is never overwritten in
+place; it is first moved to a unique prior checkpoint. A healthy update
+keeps the most recent .bak, then drops the older prior checkpoint.
+On a failed update the helper restores prior backup where possible and
+sets a persistent manual-review hold.
