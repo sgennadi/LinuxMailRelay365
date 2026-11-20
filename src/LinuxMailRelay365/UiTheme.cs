@@ -43,7 +43,7 @@ internal sealed class ModernActionButton : Button
         Text = title;
         AccessibleName = title;
         AutoSize = true;
-        AutoSizeMode = AutoSizeMode.GrowOnly;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
         UseMnemonic = false;
         MinimumSize = new Size(122, 42);
         Margin = new Padding(0, 5, 8, 5);
@@ -60,12 +60,16 @@ internal sealed class ModernActionButton : Button
     public override Size GetPreferredSize(Size proposedSize)
     {
         float scale = IsHandleCreated ? DeviceDpi / 96f : 1f;
+        int parentWidth = Parent?.ClientSize.Width ?? (int)(720 * scale);
+        int availableTextWidth = Math.Max((int)(170 * scale),
+            Math.Min((int)(570 * scale), parentWidth - (int)(100 * scale)));
         var measured = TextRenderer.MeasureText(Text, Font,
-            new Size((int)(880 * scale), (int)(240 * scale)),
+            new Size(availableTextWidth, (int)(360 * scale)),
             TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak);
         int iconWidth = glyph.Length > 0 ? (int)(23 * scale) : 0;
-        return new Size(Math.Max((int)(122 * scale), measured.Width + iconWidth + (int)(37 * scale)),
-                        Math.Max((int)(42 * scale), measured.Height + (int)(17 * scale)));
+        return new Size(Math.Max((int)(122 * scale),
+                            Math.Min(availableTextWidth, measured.Width) + iconWidth + (int)(37 * scale)),
+                        Math.Max((int)(42 * scale), measured.Height + (int)(19 * scale)));
     }
 
     protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hovered = true; Invalidate(); }
@@ -106,7 +110,7 @@ internal sealed class ModernActionButton : Button
                 Math.Max(1, Width - x - iconSize - (int)(14 * scale)), Math.Max(1, Height - 4));
         }
         TextRenderer.DrawText(g, Text, Font, textBounds, ink,
-            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis |
+            TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak |
             TextFormatFlags.NoPrefix | (glyph.Length == 0 ? TextFormatFlags.HorizontalCenter : TextFormatFlags.Left));
         if (Focused && ShowFocusCues)
             ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(outer, -4, -4), ink, bg);

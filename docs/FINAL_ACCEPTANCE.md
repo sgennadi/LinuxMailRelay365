@@ -797,3 +797,18 @@ RFC1918** addresses; loopback, public IPs and DOWN links are not offered.
 Selecting one merely fills the planned `ListenIpv4` field. There is no
 change to Linux interface state, SMTP bind, access controls or firewall.
 Existing per-host Trusted CIDRs and AUTH/TLS safeguards still apply.
+
+
+## WinForms layout refresh (100–200% DPI)
+
+The main Wizard now opens up to 1220×900 at standard DPI, bounded by the current
+monitor's available working area. High-DPI sizing scales toward the usable
+desktop instead of retaining an undersized 1050px window; the minimum is
+also clamped to the actual monitor. Its title/header supports multiline
+wrapping, center content is independently scrollable, and the bottom navigation,
+status and expandable activity journal use a fixed docked footer.
+Long RU/EN/HE action labels wrap within measured buttons instead of ellipsizing.
+Responsive page labels and form fields reflow without replacing user values or
+SSH secrets. SSH authentication mode labels now follow the selected UI language.
+Windows CI self-tests cover sizes at 96/192 dpi, plus existing real Wizard
+screenshots for the five steps.

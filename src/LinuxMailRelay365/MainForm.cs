@@ -159,6 +159,10 @@ internal sealed class MainForm : Form
     private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
     private readonly Label headline = UiTheme.Text("", true);
     private readonly Label subheading = UiTheme.Text("");
+    private readonly Label brandHeading = UiTheme.Text(
+        "LINUX MAIL RELAY 365  ·  " + UpdateCheck.Version, true);
+    private TableLayoutPanel? footerLayout;
+    private bool relabelingSshMethods;
     private readonly Panel pageHost = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = UiTheme.Canvas };
     private readonly FlowLayoutPanel navigation = new()
     {
@@ -217,12 +221,15 @@ internal sealed class MainForm : Form
         }
         BackColor = UiTheme.Canvas;
         ForeColor = UiTheme.Navy;
-        MinimumSize = new Size(720, 630);
         StartPosition = FormStartPosition.CenterScreen;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = true;
         AutoScaleMode = AutoScaleMode.Dpi;
 
         var work = Screen.FromPoint(Cursor.Position).WorkingArea;
-        Size = new Size(Math.Min(1050, work.Width - 25), Math.Min(850, work.Height - 25));
+        int dpi = Math.Max(96, DeviceDpi);
+        MinimumSize = MinimumWizardSize(work.Size, dpi);
+        Size = PreferredWizardSize(work.Size, dpi);
 
         Directory.CreateDirectory(dataDirectory);
         sshPassword.UseSystemPasswordChar = true;
@@ -236,9 +243,13 @@ internal sealed class MainForm : Form
         activityToggle.LinkClicked += (_, _) =>
         {
             activityPanel.Visible = !activityPanel.Visible;
+            if (footerLayout is not null)
+                footerLayout.RowStyles[2].Height = activityPanel.Visible
+                    ? (int)Math.Round(145 * Math.Max(1f, DeviceDpi / 96f)) : 0;
             activityToggle.Text = activityPanel.Visible
                 ? T("Скрыть журнал", "Hide activity", "הסתר יומן")
                 : T("Показать журнал", "Show activity", "הצג יומן");
+            footerLayout?.PerformLayout();
         };
         sshFingerprint.AccessibleDescription = "Optional SHA256 fingerprint. Leave blank to review the server key before sending the SSH password.";
         advancedSecurityTools.CheckedChanged += (_, _) =>
@@ -535,7 +546,10 @@ internal sealed class MainForm : Form
             }
         };
         sshAuthMode.SelectedIndex = 0;
-        sshAuthMode.SelectedIndexChanged += (_, _) => { if (!busy && step == 0) RenderPage(); };
+        sshAuthMode.SelectedIndexChanged += (_, _) =>
+        {
+            if (!relabelingSshMethods && !busy && step == 0) RenderPage();
+        };
         hardwareRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
         ipRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
         monitoringRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
@@ -552,12 +566,20 @@ internal sealed class MainForm : Form
         var logo = new PictureBox { Width = 42, Height = 42, Margin = new Padding(0, 0, 8, 0),
             SizeMode = PictureBoxSizeMode.Zoom, Image = Icon?.ToBitmap() };
         top.Controls.Add(logo, 0, 0);
-        top.Controls.Add(UiTheme.Text("LINUX MAIL RELAY 365  ·  " + UpdateCheck.Version, true), 1, 0);
+        top.Controls.Add(brandHeading, 1, 0);
         top.Controls.Add(language, 2, 0);
 
-        var header = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Padding = new Padding(18, 0, 18, 6) };
-        header.Controls.Add(headline);
-        header.Controls.Add(subheading);
+        var header = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Padding = new Padding(18, 0, 18, 8)
+        };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        header.Controls.Add(headline, 0, 0);
+        header.Controls.Add(subheading, 0, 1);
 
         // Keep navigation in reach; hide the full log until the operator asks.
         var footerStatus = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2,
@@ -568,10 +590,15 @@ internal sealed class MainForm : Form
         footerStatus.Controls.Add(activityToggle, 1, 0);
         activityPanel.Controls.Add(activity);
         var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3,
-            ColumnCount = 1, Padding = new Padding(18, 0, 18, 9) };
+            ColumnCount = 1, Padding = new Padding(18, 2, 18, 9) };
+        bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        bottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
+        footerLayout = bottom;
+        navigation.WrapContents = true;
+        navigation.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        navigation.Margin = new Padding(0, 2, 0, 5);
         bottom.Controls.Add(navigation, 0, 0);
         bottom.Controls.Add(footerStatus, 0, 1);
         bottom.Controls.Add(activityPanel, 0, 2);
@@ -586,22 +613,114 @@ internal sealed class MainForm : Form
         shell.Controls.Add(pageHost, 0, 2);
         shell.Controls.Add(bottom, 0, 3);
         Controls.Add(shell);
-        pageHost.SizeChanged += (_, _) =>
+        void ResizeUi()
         {
+            FitHeaderText();
             ResizePreserveFlowHelp();
             if (step != 0 || !IsHandleCreated || busy || resizingConnectionLayout ||
-                UseWideConnectionLayout(pageHost.Width, DeviceDpi) == connectionWideLayout)
+                UseWideConnectionLayout(pageHost.ClientSize.Width, DeviceDpi) == connectionWideLayout)
+            {
+                FitCurrentPage();
                 return;
+            }
             resizingConnectionLayout = true;
             try { RenderPage(); }
             finally { resizingConnectionLayout = false; }
-        };
+        }
+        pageHost.SizeChanged += (_, _) => ResizeUi();
+        ClientSizeChanged += (_, _) => ResizeUi();
+        FitHeaderText();
         RenderPage();
         WriteLine("Ready. No user passwords, app secrets, or OAuth tokens are stored by this manager.");
     }
 
     private string T(string russian, string english, string hebrew) =>
         language.SelectedIndex switch { 1 => english, 2 => hebrew, _ => russian };
+
+    // Keep the window usefully large on normal monitors and nearly full-work-
+    // area at high DPI. Never set a minimum larger than the available desktop.
+    internal static Size PreferredWizardSize(Size workingArea, int dpi)
+    {
+        float scale = Math.Max(1f, dpi / 96f);
+        int margin = Math.Max(16, (int)Math.Round(24 * scale));
+        int availableWidth = Math.Max(360, workingArea.Width - 2 * margin);
+        int availableHeight = Math.Max(340, workingArea.Height - 2 * margin);
+        return new Size(Math.Min(availableWidth, (int)Math.Round(1220 * scale)),
+                        Math.Min(availableHeight, (int)Math.Round(900 * scale)));
+    }
+
+    internal static Size MinimumWizardSize(Size workingArea, int dpi)
+    {
+        float scale = Math.Max(1f, dpi / 96f);
+        var maximum = PreferredWizardSize(workingArea, dpi);
+        return new Size(Math.Min(maximum.Width, (int)Math.Round(870 * scale)),
+                        Math.Min(maximum.Height, (int)Math.Round(670 * scale)));
+    }
+
+    private void FitHeaderText()
+    {
+        if (IsDisposed) return;
+        int dpi = Math.Max(96, DeviceDpi);
+        int total = Math.Max(350, ClientSize.Width);
+        int headerWidth = Math.Max(260, total - (int)Math.Round(52 * dpi / 96f));
+        int brandWidth = Math.Max(160, total - (int)Math.Round(235 * dpi / 96f));
+        int footerWidth = Math.Max(240, total - (int)Math.Round(230 * dpi / 96f));
+        brandHeading.MaximumSize = new Size(brandWidth, 0);
+        headline.MaximumSize = new Size(headerWidth, 0);
+        subheading.MaximumSize = new Size(headerWidth, 0);
+        status.MaximumSize = new Size(footerWidth, 0);
+    }
+
+    private void FitCurrentPage()
+    {
+        if (IsDisposed || step == 0 || !IsHandleCreated || busy) return;
+        if (pageHost.Controls.OfType<TableLayoutPanel>().FirstOrDefault() is not { } page)
+            return;
+        int width = Math.Max(270, Math.Min(
+            pageHost.ClientSize.Width - 22,
+            (int)Math.Round(1200 * Math.Max(1f, DeviceDpi / 96f))));
+        if (page.Width != width)
+        {
+            page.MaximumSize = new Size(width, 0);
+            page.Width = width;
+        }
+        int textWidth = Math.Max(230, width - page.Padding.Horizontal - 18);
+        foreach (Control child in page.Controls)
+        {
+            if (child is Label textLabel)
+                textLabel.MaximumSize = new Size(textWidth, 0);
+            else if (child is TextBox or ComboBox)
+                child.Width = Math.Min(Math.Max(180, textWidth), 690);
+        }
+    }
+
+    private void LocalizeSshAuthMethods()
+    {
+        string[] labels = language.SelectedIndex switch
+        {
+            0 => ["SSH-ключ / ssh-agent", "SSH-пользователь и пароль"],
+            2 => ["מפתח SSH / ssh-agent", "שם משתמש וסיסמה ל-SSH"],
+            _ => ["SSH key / ssh-agent", "SSH username + password"]
+        };
+        if (sshAuthMode.Items.Count == labels.Length &&
+            sshAuthMode.Items[0]?.ToString() == labels[0] &&
+            sshAuthMode.Items[1]?.ToString() == labels[1])
+            return;
+        int selected = Math.Clamp(sshAuthMode.SelectedIndex, 0, labels.Length - 1);
+        relabelingSshMethods = true;
+        sshAuthMode.BeginUpdate();
+        try
+        {
+            sshAuthMode.Items.Clear();
+            sshAuthMode.Items.AddRange(labels);
+            sshAuthMode.SelectedIndex = selected;
+        }
+        finally
+        {
+            sshAuthMode.EndUpdate();
+            relabelingSshMethods = false;
+        }
+    }
 
     private void LocalizeDeliveryChoices()
     {
@@ -702,6 +821,16 @@ internal sealed class MainForm : Form
 
     private static void AddLine(TableLayoutPanel table, Control control)
     {
+        // Only root wizard controls must fit the scrollable viewport. Nested
+        // cards/diagrams keep their own layout, while long labels wrap.
+        if (table.Parent is Panel && table.Parent.AutoScroll)
+        {
+            int width = Math.Max(230, table.Width - table.Padding.Horizontal - 18);
+            if (control is Label label)
+                label.MaximumSize = new Size(width, 0);
+            else if (control is TextBox or ComboBox)
+                control.Width = Math.Min(Math.Max(180, width), 690);
+        }
         int row = table.RowCount++;
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         table.Controls.Add(control, 0, row);
@@ -709,15 +838,20 @@ internal sealed class MainForm : Form
 
     private TableLayoutPanel NewPage()
     {
-        return new TableLayoutPanel
+        int pageWidth = Math.Max(280, Math.Min(pageHost.ClientSize.Width - 22,
+            (int)Math.Round(1200 * Math.Max(1f, DeviceDpi / 96f))));
+        var page = new TableLayoutPanel
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1, RowCount = 0,
-            Padding = new Padding(20, 4, 20, 15),
+            Width = pageWidth,
+            Padding = new Padding(20, 6, 20, 20),
             BackColor = UiTheme.Canvas,
-            MaximumSize = new Size(1020, 0)
+            MaximumSize = new Size(pageWidth, 0)
         };
+        page.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        return page;
     }
 
     private void AddField(TableLayoutPanel table, string caption, TextBox input)
@@ -820,15 +954,15 @@ internal sealed class MainForm : Form
 
     private void RenderConnectionStep(TableLayoutPanel page)
     {
-        connectionWideLayout = UseWideConnectionLayout(pageHost.Width, DeviceDpi);
+        connectionWideLayout = UseWideConnectionLayout(pageHost.ClientSize.Width, DeviceDpi);
         // Even a single-column card can fit two short input fields at 760px,
         // avoiding unnecessary vertical scrolling to the primary action.
         bool pairFields = (long)pageHost.ClientSize.Width * 96 >=
             690L * Math.Max(DeviceDpi, 96);
         page.MaximumSize = Size.Empty;
         page.Dock = DockStyle.Top;
-        page.Padding = new Padding(18, 4, 8, 8);
-        int availableWidth = Math.Max(340, pageHost.ClientSize.Width - 38);
+        page.Padding = new Padding(18, 4, 8, 12);
+        int availableWidth = Math.Max(300, pageHost.ClientSize.Width - 38);
         var cards = new TableLayoutPanel
         {
             Dock = DockStyle.Top, AutoSize = true,
@@ -1471,6 +1605,8 @@ internal sealed class MainForm : Form
     private void RenderPage()
     {
         if (IsDisposed) return;
+        LocalizeSshAuthMethods();
+        FitHeaderText();
         var titles = new[]
         {
             T("1 · Подключение к Linux", "1 · Linux connection", "1 · חיבור ל-Linux"),
@@ -2884,7 +3020,8 @@ internal sealed class MainForm : Form
     private void ResizePreserveFlowHelp()
     {
         if (IsDisposed) return;
-        int width = Math.Clamp(pageHost.ClientSize.Width - 54, 640, 890);
+        int width = Math.Clamp(pageHost.ClientSize.Width - 54, 280,
+            (int)Math.Round(1000 * Math.Max(1f, DeviceDpi / 96f)));
         preserveFlowPreview.Width = width;
         preserveMailInstructions.Width = width;
         deliveryModeExplanation.Width = width;

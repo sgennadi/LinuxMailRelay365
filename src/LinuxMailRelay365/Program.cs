@@ -46,6 +46,17 @@ internal static class Program
                 }
                 catch (ArgumentException) { return true; }
             }),
+            ("Responsive window sizing and high-DPI readable wizard", () =>
+            {
+                var fullHd = MainForm.PreferredWizardSize(new Size(1920, 1080), 96);
+                var highDpi = MainForm.PreferredWizardSize(new Size(1920, 1080), 192);
+                var compact = MainForm.PreferredWizardSize(new Size(1000, 730), 96);
+                var minimum = MainForm.MinimumWizardSize(new Size(1000, 730), 96);
+                return fullHd.Width >= 1200 && fullHd.Height >= 860 &&
+                       highDpi.Width > fullHd.Width && highDpi.Height >= 900 &&
+                       compact.Width <= 1000 && compact.Height <= 730 &&
+                       minimum.Width <= compact.Width && minimum.Height <= compact.Height;
+            }),
             ("Responsive SSH layout breakpoints", () =>
                 MainForm.UseWideConnectionLayout(1050, 96) &&
                 !MainForm.UseWideConnectionLayout(760, 96) &&
