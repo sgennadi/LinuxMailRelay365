@@ -71,7 +71,7 @@ class PrimaryOAuthRotationTests(unittest.TestCase):
         def fake_run(args, **kwargs):
             self.assertEqual(args[:4],
                              ["runuser", "-u", "m365mailer", "--"])
-            self.assertEqual(args[-2:], ["--candidate-config", str(M.STAGED)])
+            self.assertEqual(args[-3:-1], ["--candidate-config", str(M.STAGED)])
             self.assertNotIn("--recipient", args)
             self.assertNotIn("--acceptance-test", args)
             self.assertIn("--smtp-auth-check", args)
