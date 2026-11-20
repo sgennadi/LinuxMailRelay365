@@ -311,7 +311,7 @@ jobs:
           if ($testProcess.ExitCode -ne 0) { throw "Windows self-test failed with exit code $($testProcess.ExitCode)." }
           $files = @(Get-ChildItem ./out/win-x64 -Filter '*.exe')
           if ($files.Count -ne 1) { throw 'Expected exactly one EXE in publish output.' }
-      - name: Test real Preview 16 ZIP -> Preview 17 EXE replacement and rollback (disposable)
+      - name: Test published Preview 17 -> candidate Preview 18 backup and rollback (disposable)
         shell: pwsh
         timeout-minutes: 8
         env:
@@ -410,7 +410,7 @@ jobs:
           if-no-files-found: error
 
   preview-release:
-    name: Publish tested Preview 17 (unsigned)
+    name: Publish tested Preview 18 (unsigned)
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature/private-smtp-auth-tls'
     needs:
       - linux-tests
@@ -430,8 +430,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          grep -Fxq '    <Version>0.1.0-preview.17</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
-          grep -Fq 'internal const string Version = "0.1.0-preview.17";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fxq '    <Version>0.1.0-preview.18</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.0-preview.18";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
       - uses: actions/download-artifact@v6
         with:
           name: LinuxMailRelay365-preview-builds
@@ -476,7 +476,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='v0.1.0-preview.17'
+          tag='v0.1.0-preview.18'
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::notice::Preview already published. Bump version to publish another update."
             exit 0
@@ -490,5 +490,5 @@ jobs:
             out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
             out/published/preview-artifact-digests.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "LinuxMailRelay365 v0.1.0-preview.17" --prerelease \
-            --notes "UNSIGNED TEST PREVIEW 17, NOT Stable or production-approved. Updater is available before Linux SSH and shows previous install/rollback status. CI replays Preview 16 -> 17 replacement and rollback in a disposable folder; interactive helper acceptance remains required. SHA256 does not replace Authenticode. M365/SELinux acceptance not implied."
+            --title "LinuxMailRelay365 v0.1.0-preview.18" --prerelease \
+            --notes "UNSIGNED TEST PREVIEW 18, NOT Stable or production approved. Adds read-only effective Sendmail and Exim port, listener, SmartHost status audit and requires a distinct FQDN for foreign-MTA sidecar configuration. CI replays Preview 17 -> 18 replacement and rollback. Interactive GUI acceptance and actual M365/TPM/RHEL integration remain required. SHA256 does NOT replace Authenticode."
