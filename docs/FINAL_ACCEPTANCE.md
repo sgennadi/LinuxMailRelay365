@@ -835,3 +835,14 @@ viewport with a fixed Close footer instead of a 65px bar. The Wizard's
 main footer now reports its true preferred height; CI screen capture checks
 that the visible status and Activity toggle do not extend beyond the client
 area, catching the clipping previously seen in compact screenshots.
+
+
+## Preserve Existing Mail: readable compact diagram
+
+The live route diagram now uses an independent vertical two-lane view under
+790px viewport width instead of shrinking a wide 3-column drawing. It adjusts
+its height to the new view, keeps text at readable point sizes, and exposes
+its full routing and sender explanation through accessible text. Existing
+MTA statuses, route hints and flow captions have RU/EN/HE variants; the
+universal fourth Wizard step is named SMTP delivery rather than Postfix
+because Exim/Sendmail and clean Linux sidecar routing are supported.

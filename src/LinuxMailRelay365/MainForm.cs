@@ -1638,7 +1638,7 @@ internal sealed class MainForm : Form
             T("1 · Подключение к Linux", "1 · Linux connection", "1 · חיבור ל-Linux"),
             T("2 · Почтовый сервер и защита", "2 · Mail server discovery and security", "2 · גילוי שרת הדואר ואבטחה"),
             T("3 · Способ отправки", "3 · Choose delivery method", "3 · בחירת שיטת שליחה"),
-            T("4 · Настройка Postfix", "4 · Configure Postfix", "4 · הגדרת Postfix"),
+            T("4 · Настройка SMTP-маршрута", "4 · Configure SMTP delivery", "4 · הגדרת נתיב SMTP"),
             T("5 · Проверка и обслуживание", "5 · Diagnostics and updates", "5 · אבחון ועדכונים")
         };
         headline.Text = titles[step];
@@ -3099,7 +3099,9 @@ internal sealed class MainForm : Form
         if (IsDisposed) return;
         int width = Math.Clamp(pageHost.ClientSize.Width - 54, 280,
             (int)Math.Round(1000 * Math.Max(1f, DeviceDpi / 96f)));
+        preserveFlowPreview.MinimumSize = new Size(280, 240);
         preserveFlowPreview.Width = width;
+        preserveFlowPreview.Height = width < 790 ? 650 : 286;
         preserveMailInstructions.Width = width;
         deliveryModeExplanation.Width = width;
     }
