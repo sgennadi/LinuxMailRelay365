@@ -5694,6 +5694,209 @@ internal sealed class MainForm : Form
         RenderPage();
     }
 
+    private static string PrimaryRotationCode(string raw, string code)
+    {
+        if (raw.Length > 4096 || raw.Contains('\0') ||
+            !System.Text.RegularExpressions.Regex.IsMatch(
+                code, @"\A[A-Z_]{3,45}\z"))
+            throw new InvalidDataException("Invalid primary OAuth rotation status.");
+        var result = System.Text.RegularExpressions.Regex.Matches(
+            raw, @"(?m)^PRIMARY_OAUTH_ROTATION_" + code + @"=([A-Za-z0-9_:-]{1,128})\r?$");
+        if (result.Count != 1)
+            throw new InvalidDataException("Missing or duplicate primary OAuth rotation status: " + code);
+        return result[0].Groups[1].Value;
+    }
+
+    private static string PrimaryRotationSha(string raw, string code)
+    {
+        string value = PrimaryRotationCode(raw, code);
+        if (!System.Text.RegularExpressions.Regex.IsMatch(value,
+                @"\A[a-f0-9]{64}\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+            throw new InvalidDataException("Invalid primary OAuth rotation SHA256.");
+        return value;
+    }
+
+    private string PrimaryRotationContext(SshEndpoint endpoint) =>
+        SecurityOptionsStore.Identity(endpoint) + "|primary-rotation";
+
+    private void ClearPrimaryRotationReview(bool preserveGraph = false)
+    {
+        reviewedPrimaryRotationPlanSha = null;
+        reviewedPrimaryRotationPlanContext = null;
+        reviewedPrimaryRotationStageSha = null;
+        reviewedPrimaryRotationStageContext = null;
+        verifiedPrimaryRotationSmtpSha = null;
+        verifiedPrimaryRotationSmtpContext = null;
+        if (!preserveGraph)
+        {
+            primaryRotationGraphContext = null;
+            primaryRotationGraphCertificateSha = null;
+        }
+    }
+
+    private async Task<string> RunPrimaryRotationAsync(
+        SshEndpoint endpoint, string action, int days = 365, string? digest = null)
+    {
+        var r = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildPrimaryOAuthRotationBundle(action, days, digest),
+            TimeSpan.FromMinutes(action is "preflight" or "activate" ? 5 : 3));
+        // Failure reports contain ONLY status codes, never private PEM or OAuth tokens.
+        // Do not surface arbitrary SSH stderr in diagnostic logs.
+        if (r.ExitCode != 0)
+            throw new InvalidOperationException(
+                "Primary OAuth rotation refused or failed. Inspect the Linux identity, permissions, " +
+                "existing staged candidate and registration in Entra; current route was not intentionally changed.");
+        return r.StdOut;
+    }
+
+    private async Task PreviewPrimaryOAuthRotationAsync()
+    {
+        var endpoint = Endpoint();
+        if (!int.TryParse(certificateDays.Text, out int days) || days is < 1 or > 365)
+            throw new ArgumentException("Certificate validity must be 1..365 days.");
+        ClearPrimaryRotationReview();
+        var result = await RunPrimaryRotationAsync(endpoint, "plan", days);
+        string sha = PrimaryRotationSha(result, "PLAN_SHA256");
+        if (PrimaryRotationCode(result, "READY_FOR_STAGE") != "yes" ||
+            PrimaryRotationCode(result, "ACTIVE_OAUTH_CHANGED") != "no")
+            throw new InvalidOperationException(
+                "A staged certificate already exists; inspect it before attempting another rotation.");
+        reviewedPrimaryRotationPlanSha = sha;
+        reviewedPrimaryRotationPlanContext = PrimaryRotationContext(endpoint) + "|" + days;
+        primaryRotationSummary = "PRIMARY_OAUTH_ROTATION_PLAN_SHA256=" + sha +
+            Environment.NewLine + "Staging is available. Active mail identity remains unchanged.";
+        WriteLine(primaryRotationSummary);
+        RenderPage();
+    }
+
+    private async Task StagePrimaryOAuthRotationAsync()
+    {
+        var endpoint = Endpoint();
+        if (!int.TryParse(certificateDays.Text, out int days) || days is < 1 or > 365 ||
+            reviewedPrimaryRotationPlanSha is null ||
+            reviewedPrimaryRotationPlanContext != PrimaryRotationContext(endpoint) + "|" + days)
+            throw new InvalidOperationException("Review the exact primary OAuth certificate plan first.");
+        string sha = reviewedPrimaryRotationPlanSha;
+        var fresh = await RunPrimaryRotationAsync(endpoint, "plan", days);
+        if (PrimaryRotationSha(fresh, "PLAN_SHA256") != sha ||
+            PrimaryRotationCode(fresh, "READY_FOR_STAGE") != "yes" ||
+            PrimaryRotationCode(fresh, "ACTIVE_OAUTH_CHANGED") != "no")
+            throw new InvalidOperationException("Primary OAuth identity or staging state changed. Review again.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Stage a new primary OAuth certificate",
+            T("Будет создан НОВЫЙ локальный программный PEM-ключ и публичный сертификат на Linux. Действующий app.json, Postfix, очередь и настройки Entra НЕ меняются. Новый приватный ключ останется на Linux. Подтвердить?",
+              "A NEW software PEM key and public certificate will be staged on Linux. Active app.json, Postfix, queue and Entra stay UNCHANGED. The private key never leaves Linux. Continue?",
+              "יצירת מפתח ואישור חדש ב-Linux ללא הפעלה וללא שינוי ב-Entra."),
+            "STAGE_PRIMARY_OAUTH_CERT")) return;
+        ClearPrimaryRotationReview();
+        string result = await RunPrimaryRotationAsync(endpoint, "stage", days, sha);
+        if (PrimaryRotationCode(result, "STAGED") != "yes" ||
+            PrimaryRotationCode(result, "ACTIVE_OAUTH_CHANGED") != "no" ||
+            PrimaryRotationCode(result, "SMTP_SUBMITTED") != "no")
+            throw new InvalidDataException("Linux did not prove safe staged certificate creation.");
+        reviewedPrimaryRotationStageSha = PrimaryRotationSha(result, "STAGE_SHA256");
+        reviewedPrimaryRotationStageContext = PrimaryRotationContext(endpoint);
+        primaryRotationSummary = "New OAuth certificate staged, but NOT active. " +
+            "Register its public X.509 certificate in Entra; the current mail route is unchanged.";
+        WriteLine(primaryRotationSummary);
+        RenderPage();
+    }
+
+    private async Task InspectPrimaryOAuthRotationAsync()
+    {
+        var endpoint = Endpoint();
+        ClearPrimaryRotationReview();
+        string result = await RunPrimaryRotationAsync(endpoint, "status");
+        if (PrimaryRotationCode(result, "READY_FOR_PREFLIGHT") != "yes" ||
+            PrimaryRotationCode(result, "ACTIVE_OAUTH_CHANGED") != "no")
+            throw new InvalidDataException("Staged OAuth identity was not verified.");
+        reviewedPrimaryRotationStageSha = PrimaryRotationSha(result, "STAGE_SHA256");
+        reviewedPrimaryRotationStageContext = PrimaryRotationContext(endpoint);
+        primaryRotationSummary = "Staged certificate fingerprint checked. SHA256=" +
+            reviewedPrimaryRotationStageSha + Environment.NewLine +
+            "Entra certificate registration and candidate SMTP AUTH are still required.";
+        WriteLine(primaryRotationSummary);
+        RenderPage();
+    }
+
+    private async Task VerifyPrimaryOAuthRotationSmtpAsync()
+    {
+        var endpoint = Endpoint();
+        string context = PrimaryRotationContext(endpoint);
+        if (reviewedPrimaryRotationStageSha is null ||
+            reviewedPrimaryRotationStageContext != context ||
+            primaryRotationGraphCertificateSha is null || primaryRotationGraphContext is null)
+            throw new InvalidOperationException(
+                "Review the staged certificate and register its PUBLIC key in Entra first.");
+        var certs = await ReadEntraPublicCertificateAsync(endpoint, "primary-rotation");
+        if (primaryRotationGraphCertificateSha != certs.CandidateCertificateSha ||
+            primaryRotationGraphContext != certs.Context(
+                SecurityOptionsStore.Identity(endpoint), "primary-rotation"))
+            throw new InvalidOperationException("Linux candidate changed since Entra registration review.");
+        string sha = reviewedPrimaryRotationStageSha;
+        string status = await RunPrimaryRotationAsync(endpoint, "status");
+        if (PrimaryRotationSha(status, "STAGE_SHA256") != sha ||
+            PrimaryRotationCode(status, "ACTIVE_OAUTH_CHANGED") != "no")
+            throw new InvalidOperationException("Staged certificate changed; repeat Entra review.");
+        if (MessageBox.Show(this, T(
+            "Будет установлен реальный STARTTLS-сеанс с Exchange Online и выполнен SMTP AUTH XOAUTH2 новым сертификатом. Письмо НЕ отправляется, Postfix не изменяется. Продолжить?",
+            "This performs a real Exchange Online STARTTLS and SMTP AUTH XOAUTH2 check with the staged certificate. It sends NO MAIL/RCPT/DATA and makes NO Postfix changes. Continue?",
+            "בדיקת התחברות SMTP עם האישור החדש ללא שליחת דואר."),
+            Text, MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+        string response = await RunPrimaryRotationAsync(endpoint, "preflight", digest: sha);
+        if (PrimaryRotationSha(response, "STAGE_SHA256") != sha ||
+            PrimaryRotationCode(response, "CANDIDATE_SMTP_AUTH") != "verified_no_message" ||
+            PrimaryRotationCode(response, "ACTIVE_OAUTH_CHANGED") != "no")
+            throw new InvalidDataException("Staged certificate SMTP AUTH was not verified.");
+        verifiedPrimaryRotationSmtpSha = sha;
+        verifiedPrimaryRotationSmtpContext = context;
+        primaryRotationSummary = "Candidate Exchange Online SMTP AUTH VERIFIED without submitting mail. " +
+            "Review and explicitly approve activation if ready.";
+        WriteLine(primaryRotationSummary);
+        RenderPage();
+    }
+
+    private async Task ActivatePrimaryOAuthRotationAsync()
+    {
+        var endpoint = Endpoint();
+        string context = PrimaryRotationContext(endpoint);
+        if (reviewedPrimaryRotationStageSha is null ||
+            reviewedPrimaryRotationStageContext != context ||
+            reviewedPrimaryRotationStageSha != verifiedPrimaryRotationSmtpSha ||
+            verifiedPrimaryRotationSmtpContext != context ||
+            primaryRotationGraphCertificateSha is null || primaryRotationGraphContext is null)
+            throw new InvalidOperationException(
+                "Review the exact candidate, add its public Entra certificate and verify SMTP AUTH first.");
+        var certificates = await ReadEntraPublicCertificateAsync(endpoint, "primary-rotation");
+        if (primaryRotationGraphCertificateSha != certificates.CandidateCertificateSha ||
+            primaryRotationGraphContext != certificates.Context(
+                SecurityOptionsStore.Identity(endpoint), "primary-rotation"))
+            throw new InvalidOperationException("Primary certificate changed. Recheck Entra registration.");
+        string sha = reviewedPrimaryRotationStageSha;
+        string status = await RunPrimaryRotationAsync(endpoint, "status");
+        if (PrimaryRotationSha(status, "STAGE_SHA256") != sha ||
+            PrimaryRotationCode(status, "ACTIVE_OAUTH_CHANGED") != "no")
+            throw new InvalidOperationException("Staged identity drift detected before activation.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | ACTIVATE primary OAuth certificate",
+            T("РЕАЛЬНОЕ ИЗМЕНЕНИЕ: активный app.json будет переключён на новый ключ. До и после операции повторно проверяется XOAUTH2 SMTP AUTH, без отправки писем. Старый ключ и его резервная копия сохраняются; при ошибке выполняется автоматический откат. Продолжить?",
+              "REAL CHANGE: active app.json will switch to the staged certificate. XOAUTH2 SMTP AUTH will be rechecked before AND after, with NO mail sent. Old keys and a backup are preserved; errors trigger rollback. Continue?",
+              "שינוי אמיתי ב-OAuth עם בדיקת SMTP AUTH, גיבוי ושחזור אוטומטי."),
+            "ACTIVATE_PRIMARY_OAUTH_CERT")) return;
+        verifiedPrimaryRotationSmtpSha = null;
+        verifiedPrimaryRotationSmtpContext = null;
+        string output = await RunPrimaryRotationAsync(endpoint, "activate", digest: sha);
+        if (PrimaryRotationCode(output, "ACTIVATED") != "yes" ||
+            PrimaryRotationCode(output, "OLD_KEYS_PRESERVED") != "yes" ||
+            PrimaryRotationCode(output, "POST_ACTIVATION_SMTP_AUTH") != "verified_no_message" ||
+            PrimaryRotationCode(output, "ROUTING_CHANGED") != "no")
+            throw new InvalidDataException(
+                "Activation needs manual review: verify Linux active identity and backup before retrying.");
+        ClearPrimaryRotationReview();
+        primaryRotationSummary = "Primary OAuth rotation ACTIVATED; previous key retained. " +
+            "Now confirm real test mail end-to-end before retiring any old Entra credential.";
+        WriteLine(primaryRotationSummary);
+        RenderPage();
+    }
+
     private string CurrentTpmKeyContext(SshEndpoint endpoint, string target, string handle) =>
         SecurityOptionsStore.Identity(endpoint) + "|" + target + "|" + handle;
 
