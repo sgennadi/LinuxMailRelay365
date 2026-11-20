@@ -25,6 +25,7 @@ internal static class EmbeddedAssets
     internal static string DeliveryAcceptance => Text("LinuxMailRelay365.linux.delivery-acceptance.py");
     internal static string TpmOauthProvision => Text("LinuxMailRelay365.linux.tpm-oauth-provision.py");
     internal static string EntraPublicCertificateExporter => Text("LinuxMailRelay365.linux.entra-public-cert-export.py");
+    internal static string PrimaryOAuthRotator => Text("LinuxMailRelay365.linux.primary-oauth-rotation.py");
     internal static string EntraCertificateManager => Text("LinuxMailRelay365.windows.entra-oauth-cert-manager.ps1");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
     internal static string SidecarConfigRecovery => Text("LinuxMailRelay365.linux.sidecar-config-recovery.py");
@@ -74,7 +75,7 @@ internal static class EmbeddedAssets
         string? stageSha = null, string? activeCertificateSha = null,
         string? candidateCertificateSha = null)
     {
-        if (target is not ("sidecar" or "primary"))
+        if (target is not ("sidecar" or "primary" or "primary-rotation"))
             throw new ArgumentException("Unsupported Entra OAuth certificate source.");
         string args = "--target " + target + " --inventory";
         if (objectId is not null)
@@ -101,6 +102,43 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/export-hardware-oauth-cert.py\" <<'LMR365_ENTRA_PUBLIC_EXPORT'\n" +
                Encode(EntraPublicCertificateExporter) + "\nLMR365_ENTRA_PUBLIC_EXPORT\n" +
                "python3 \"$work/export-hardware-oauth-cert.py\" " + args + "\n";
+    }
+
+    internal static string BuildPrimaryOAuthRotationBundle(string action,
+        int days = 365, string? approvedSha = null)
+    {
+        if (days is < 1 or > 365)
+            throw new ArgumentOutOfRangeException(nameof(days));
+        string arguments = action switch
+        {
+            "plan" when approvedSha is null =>
+                "--plan --days " + days,
+            "stage" when approvedSha is not null &&
+                Regex.IsMatch(approvedSha, @"\A[a-f0-9]{64}\z",
+                    RegexOptions.CultureInvariant) =>
+                "--stage --days " + days +
+                " --expect-sha256 " + approvedSha +
+                " --confirm STAGE_PRIMARY_OAUTH_CERT",
+            "status" when approvedSha is null && days == 365 =>
+                "--status",
+            "preflight" when days == 365 && approvedSha is not null &&
+                Regex.IsMatch(approvedSha, @"\A[a-f0-9]{64}\z",
+                    RegexOptions.CultureInvariant) =>
+                "--preflight --expect-sha256 " + approvedSha +
+                " --confirm VERIFY_PRIMARY_OAUTH_CANDIDATE",
+            "activate" when days == 365 && approvedSha is not null &&
+                Regex.IsMatch(approvedSha, @"\A[a-f0-9]{64}\z",
+                    RegexOptions.CultureInvariant) =>
+                "--activate --expect-sha256 " + approvedSha +
+                " --confirm ACTIVATE_PRIMARY_OAUTH_CERT",
+            _ => throw new ArgumentException("Invalid primary OAuth rotation action or SHA256.")
+        };
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-pem-rotation.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/manage-primary-oauth-rotation.py\" <<'LMR365_PEM_ROTATOR'\n" +
+               Encode(PrimaryOAuthRotator) + "\nLMR365_PEM_ROTATOR\n" +
+               "python3 \"$work/manage-primary-oauth-rotation.py\" " + arguments + "\n";
     }
 
     internal static string BuildTpmOauthProvisionBundle(string target, string handle,
