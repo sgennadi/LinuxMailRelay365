@@ -164,6 +164,7 @@ internal sealed class MainForm : Form
     private TableLayoutPanel? footerLayout;
     private TableLayoutPanel? footerStatusLayout;
     private bool relabelingSshMethods;
+    private bool localizingAdvancedChoices;
     private readonly Panel pageHost = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = UiTheme.Canvas };
     private readonly FlowLayoutPanel navigation = new()
     {
@@ -302,6 +303,7 @@ internal sealed class MainForm : Form
         hardwareStageProvider.SelectedIndex = 0;
         hardwareStageProvider.SelectedIndexChanged += (_, _) =>
         {
+            if (localizingAdvancedChoices) return;
             reviewedHardwareStageSha = null;
             reviewedHardwareStageContext = null;
             hardwareStageSummary = "";
@@ -329,6 +331,7 @@ internal sealed class MainForm : Form
         hardwareCutoverTarget.SelectedIndex = 0;
         hardwareCutoverTarget.SelectedIndexChanged += (_, _) =>
         {
+            if (localizingAdvancedChoices) return;
             reviewedHardwareCutoverSha = null;
             reviewedHardwareCutoverContext = null;
             hardwareCutoverSummary = "";
@@ -355,6 +358,7 @@ internal sealed class MainForm : Form
         };
         tpmDependencyProfile.SelectedIndexChanged += (_, _) =>
         {
+            if (localizingAdvancedChoices) return;
             reviewedTpmPlanSha = null;
             reviewedTpmPlanContext = null;
             tpmPlanSummary = "";
@@ -491,6 +495,7 @@ internal sealed class MainForm : Form
         }
         postfixBasicsInterfaces.SelectedIndexChanged += (_, _) =>
         {
+            if (localizingAdvancedChoices) return;
             previewedPostfixBasicsSha = null;
             previewedPostfixBasicsContext = null;
             postfixBasicsSummary = "";
@@ -779,6 +784,92 @@ internal sealed class MainForm : Form
             sshAuthMode.EndUpdate();
             relabelingSshMethods = false;
         }
+    }
+
+    private void LocalizeAdvancedChoices()
+    {
+        // Language is presentation-only. Never invalidate a reviewed TPM,
+        // HSM, Postfix or SMTP-account plan just by translating the menu.
+        static void Relabel(ComboBox combo, string[] captions)
+        {
+            if (combo.Items.Count == captions.Length &&
+                Enumerable.Range(0, captions.Length).All(i =>
+                    string.Equals(combo.Items[i]?.ToString(), captions[i],
+                        StringComparison.Ordinal)))
+                return;
+            int selected = Math.Clamp(combo.SelectedIndex, 0, captions.Length - 1);
+            combo.BeginUpdate();
+            try
+            {
+                combo.Items.Clear();
+                combo.Items.AddRange(captions);
+                combo.SelectedIndex = selected;
+                int preferred = captions.Max(text =>
+                    TextRenderer.MeasureText(text, combo.Font).Width) + 46;
+                int screenWidth = Screen.PrimaryScreen?.WorkingArea.Width ?? 1600;
+                combo.DropDownWidth = Math.Min(Math.Max(combo.Width, preferred),
+                    Math.Max(combo.Width, screenWidth - 38));
+            }
+            finally { combo.EndUpdate(); }
+        }
+
+        int lang = language.SelectedIndex;
+        localizingAdvancedChoices = true;
+        try
+        {
+            Relabel(postfixBasicsInterfaces, lang switch
+            {
+                0 => ["loopback-only — только локальный SMTP",
+                      "all — только просмотр, требует отдельной защиты"],
+                2 => ["loopback-only — דואר מקומי בלבד",
+                      "all — תצוגה בלבד; נדרשת אבטחה נפרדת"],
+                _ => ["loopback-only (local clients only)",
+                      "all (PREVIEW ONLY; external/public SMTP needs separate security setup)"]
+            });
+            Relabel(tpmDependencyProfile, lang switch
+            {
+                0 => ["TPM2: автоматический RPM-профиль (без сторонних репозиториев)",
+                      "Утилиты TPM2 (RHEL / Oracle / Rocky / Alma 8–10)",
+                      "TPM2: зависимости разработки и сборки (RHEL 8–10)",
+                      "TPM2: PKCS#11 и OpenSSL 3 (RHEL 9/10)",
+                      "Нативный TPM2 OpenSSL provider (только RHEL 10)"],
+                2 => ["פרופיל RPM אוטומטי עבור TPM2",
+                      "כלי TPM2 עבור RHEL / Oracle / Rocky / Alma",
+                      "תלויות בנייה של TPM2 עבור RHEL",
+                      "TPM2 עם PKCS#11 ו-OpenSSL 3",
+                      "ספק TPM2 OpenSSL מובנה ב-RHEL 10"],
+                _ => ["Automatic TPM2 RPM profile (no third-party repositories)",
+                      "TPM2 utilities (RHEL/Oracle/Rocky/Alma 8-10)",
+                      "TPM2 development/build prerequisites (RHEL 8-10)",
+                      "TPM2 PKCS#11 OpenSSL 3 path (RHEL 9/10)",
+                      "Native TPM2 OpenSSL provider (RHEL 10 only)"]
+            });
+            Relabel(hardwareStageProvider, lang switch
+            {
+                0 => ["TPM2 через OpenSSL (существующий TPM2-ключ)",
+                      "PKCS#11 через OpenSSL (существующий HSM/TPM-ключ)"],
+                2 => ["ספק TPM2 OpenSSL עם מפתח קיים",
+                      "ספק PKCS#11 OpenSSL עם מפתח HSM/TPM קיים"],
+                _ => ["TPM2 OpenSSL provider (existing TPM2 key)",
+                      "PKCS#11 OpenSSL provider (existing HSM/TPM key)"]
+            });
+            Relabel(hardwareCutoverTarget, lang switch
+            {
+                0 => ["Отдельный SMTP Relay (основной Postfix не менять)",
+                      "Основной Postfix XOAUTH2 (расширенный режим)"],
+                2 => ["ממסר SMTP נפרד ללא שינוי Postfix הראשי",
+                      "Postfix הראשי עם XOAUTH2 (מתקדם)"],
+                _ => ["Isolated sidecar (existing primary Postfix untouched)",
+                      "Primary Postfix XOAUTH2 transport (advanced)"]
+            });
+            Relabel(smtpAccountOperation, lang switch
+            {
+                0 => ["Добавить", "Ротация учётных данных", "Отозвать"],
+                2 => ["הוסף", "החלף אישורים", "בטל"],
+                _ => ["Add", "Rotate", "Revoke"]
+            });
+        }
+        finally { localizingAdvancedChoices = false; }
     }
 
     private void LocalizeDeliveryChoices()
@@ -1667,6 +1758,7 @@ internal sealed class MainForm : Form
     {
         if (IsDisposed) return;
         LocalizeSshAuthMethods();
+        LocalizeAdvancedChoices();
         FitHeaderText();
         var titles = new[]
         {
@@ -1692,9 +1784,9 @@ internal sealed class MainForm : Form
                 : T("Сертификат создаётся на Linux. В Windows передаётся только открытая часть.",
                     "The certificate is generated on Linux; only the public part is copied to Windows.",
                     "האישור נוצר בלינוקס ורק החלק הציבורי מועבר ל-Windows."),
-            3 => T("Перед изменением Postfix создаются резервные копии конфигурации.",
-                   "Backups are created before Postfix configuration is changed.",
-                   "גיבוי תצורת Postfix נוצר לפני כל שינוי."),
+            3 => T("Перед изменением SMTP-маршрута проверяем основной MTA и создаём резервные копии.",
+                   "Before changing SMTP delivery, inspect the primary MTA and verify configuration backups.",
+                   "לפני שינוי ניתוב SMTP בודקים את שרת הדואר ומגבים את התצורה."),
             _ => mailTransport.SelectedIndex is 1 or 2
                 ? T("Проверка EOP/MX, отдельного SMTP, очереди и обновлений. Без отправки писем.",
                     "Check EOP/MX, isolated SMTP, queue and updates. No email is sent.",
@@ -6180,15 +6272,30 @@ internal sealed class MainForm : Form
     private Task ShowSecurityHelpAsync()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("OPTIONAL SECURITY — NOTHING ENABLED BY DEFAULT");
+        sb.AppendLine(T(
+            "ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА — ПО УМОЛЧАНИЮ НИЧЕГО НЕ ВКЛЮЧЕНО",
+            "OPTIONAL SECURITY — NOTHING ENABLED BY DEFAULT",
+            "אבטחה נוספת — שום אפשרות לא מופעלת כברירת מחדל"));
         sb.AppendLine();
-        sb.AppendLine("1) TPM 2.0 / HSM: run the Linux read-only probe, check TPM2/P11 signing support, and configure a nonexportable private key using supported vendor tools. The current mail transport signs with a PEM key; hardware discovery alone does not activate hardware signing. Configure and test a hardware signer before switching. Do not delete the working key until a new token and SMTP test succeeds.");
+        sb.AppendLine(T(
+            "1) TPM 2.0 / HSM: сначала выполните безопасную диагностику Linux. Для аппаратного ключа используйте поддерживаемый TPM2 или PKCS#11 provider и проверьте подпись. Обнаружение TPM не активирует аппаратную авторизацию. Не удаляйте работающий ключ, пока не проверены новый токен и SMTP.",
+            "1) TPM 2.0 / HSM: run the Linux read-only probe, check TPM2/PKCS#11 signing support and configure a nonexportable key with supported vendor tools. Discovery never activates hardware signing. Do not delete the working key until token and SMTP tests pass.",
+            "1) TPM 2.0 / HSM: בדקו את תמיכת Linux בקריאה בלבד. נדרש מפתח חומרה מאומת ובדיקת חתימה, אסימון וחיבור SMTP. אין למחוק את המפתח הפעיל לפני אימות מלא."));
         sb.AppendLine();
-        sb.AppendLine("2) Entra IP restriction: requires Entra Workload ID Premium and a Conditional Access policy for workload identities. Restrict only the selected application to approved public egress IPs. Configure Report-only, verify service-principal sign-in results, then enable explicitly in Entra Admin Center. One shared app = a common IP allowlist across Linux servers.");
+        sb.AppendLine(T(
+            "2) Ограничение Entra по IP: требуется соответствующая лицензия Workload ID Premium и Conditional Access для workload identities. Сначала задайте разрешённые исходящие IP, включите Report-only, проверьте входы приложения, а затем отдельно активируйте политику. Если одно приложение используется несколькими Linux, их IP должны входить в общую политику.",
+            "2) Entra IP restriction: requires appropriate Workload ID Premium licensing and Conditional Access for workload identities. Start with approved public egress IPs and Report-only, validate sign-in results, then enable explicitly. Shared applications require a compatible IP allowlist.",
+            "2) הגבלת IP ב-Entra: דרושים רישוי והרשאות מתאימים. התחילו במדיניות Report-only, בדקו כניסות וכתובות יציאה ציבוריות מאושרות, ורק לאחר מכן הפעילו את המדיניות."));
         sb.AppendLine();
-        sb.AppendLine("3) Entra sign-in monitoring: configure sign-in log permissions and alerts explicitly. Log access requires appropriate admin roles/consent. Thumbprint and source IP are audit signals, not a device fingerprint enforcement mechanism.");
+        sb.AppendLine(T(
+            "3) Мониторинг Entra: для чтения журналов входа и оповещений требуются роли администратора и разрешения Graph. Отпечаток сертификата и IP — диагностические признаки, но не гарантия привязки к конкретному устройству.",
+            "3) Entra monitoring: reading sign-in logs and alerts needs appropriate administrative roles and Graph consent. Certificate thumbprints and source IPs are audit signals, not enforcement of a unique device identity.",
+            "3) ניטור Entra: קריאת יומני כניסה והתראות מחייבת הרשאות מנהל ו-Graph. טביעת אישור וכתובת IP הן אינדיקציות ביקורת בלבד."));
         sb.AppendLine();
-        sb.AppendLine("Security choices in this wizard are plans only. They can be selected/cleared later per SSH endpoint. No keys, CA policies, licenses or alert rules are changed by these controls.");
+        sb.AppendLine(T(
+            "Все переключатели сохраняют только план. Они не меняют автоматически ключи, лицензии, Conditional Access, Linux, SMTP или почтовую доставку.",
+            "All security choices are plans only. No keys, licenses, Conditional Access policies, Linux SMTP routes or message delivery change automatically.",
+            "בחירת האפשרויות שומרת תכנון בלבד; אין שינוי אוטומטי במפתחות, ברישיונות, במדיניות או במסירת הדואר."));
         var workArea = Screen.FromControl(this).WorkingArea.Size;
         using var dialog = new Form
         {
@@ -6212,7 +6319,8 @@ internal sealed class MainForm : Form
         {
             Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
             Font = new Font("Segoe UI", 10), Dock = DockStyle.Fill,
-            Text = sb.ToString(), BackColor = Color.White
+            Text = sb.ToString(), BackColor = Color.White,
+            RightToLeft = language.SelectedIndex == 2 ? RightToLeft.Yes : RightToLeft.No
         };
         var close = UiTheme.Action(T("Закрыть", "Close", "סגור"), true);
         close.Click += (_, _) => dialog.Close();

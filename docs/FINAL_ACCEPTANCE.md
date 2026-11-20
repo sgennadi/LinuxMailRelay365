@@ -869,3 +869,14 @@ height to fit wrapped buttons and localized status. This removes the
 TableLayoutPanel auto-size interaction which previously moved status to the
 bottom edge when a long mail-flow diagram was present. No SMTP operation or
 routing behavior is changed by this UI-only change.
+
+
+## Advanced UI localization
+
+The Wizard now translates Postfix listener scope, TPM2 package/dependency
+profiles, TPM/OpenSSL vs PKCS#11 hardware providers, sidecar/primary hardware
+cutover targets, and SMTP account Add/Rotate/Revoke choices for RU/EN/HE.
+Selected indices remain stable during relabeling; translated options must not
+invalidate approval fingerprints or clear staged hardware settings. Combo-box
+popup width expands up to the available desktop for long captions.
+The optional Security Help dialog is now localized and supports RTL Hebrew.
