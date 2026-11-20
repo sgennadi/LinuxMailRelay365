@@ -8,6 +8,7 @@ Python 3.6+ (supports RHEL-family 8-10).
 import argparse
 import pathlib
 import re
+import ipaddress
 import shutil
 import subprocess
 
@@ -113,11 +114,110 @@ def exim_setting(tool, key, runner=call):
     return safe(match.group(1)) if match else "unavailable"
 
 
+def limited_config_text(path, limit=2 * 1024 * 1024):
+    """Never follow a file symlink, execute MTA configuration or emit its body."""
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
+            return None
+        with path.open("r", encoding="utf-8") as source:
+            data = source.read(limit + 1)
+        return data if len(data) <= limit else None
+    except (OSError, UnicodeError):
+        return None
+
+
+def exim_ports(tool, runner=call):
+    """Parse ONLY literal -bP ports. Expanded/macros remain unverified."""
+    raw = exim_setting(tool, "daemon_smtp_ports", runner)
+    if raw == "unavailable":
+        return "unverified"
+    services = {"smtp": 25, "submission": 587, "smtps": 465, "submissions": 465}
+    tokens = [item for item in re.split(r"[\s,:]+", raw.lower()) if item]
+    if not tokens or len(tokens) > 16:
+        return "unverified"
+    numbers = []
+    for item in tokens:
+        if item in services:
+            value = services[item]
+        elif item.isascii() and item.isdigit() and len(item) <= 5:
+            value = int(item)
+        else:
+            return "dynamic_or_unverified"
+        if value < 1 or value > 65535:
+            return "dynamic_or_unverified"
+        numbers.append(value)
+    return ",".join(str(n) for n in sorted(set(numbers)))
+
+
+def exim_bind_policy(raw):
+    """Configured interfaces only; NOT a live socket or a firewall check."""
+    if raw == "unavailable" or not raw.strip():
+        return "unverified"
+    tokens = [part for part in re.split(r"\s+:\s+|[,\s]+", raw) if part]
+    if not tokens or len(tokens) > 16:
+        return "unverified"
+    try:
+        addresses = [ipaddress.ip_address(token.strip("[]")) for token in tokens]
+        return ("loopback_declared" if all(ip.is_loopback for ip in addresses)
+                else "non_loopback_declared_requires_review")
+    except ValueError:
+        return "dynamic_or_unverified"
+
+
+def exim_debian_router_hint(path):
+    """Debian smarthost template is a HINT, never effective Exim routing."""
+    text = limited_config_text(path, 65536)
+    if text is None:
+        return "unverified"
+    values = {}
+    for line in text.splitlines():
+        match = re.fullmatch(
+            r"""\s*(dc_eximconfig_configtype|dc_smarthost)\s*=\s*(['"])(.*?)\2\s*""",
+            line)
+        if match:
+            if match.group(1) in values:
+                return "unverified"
+            values[match.group(1)] = match.group(3)
+    if values.get("dc_eximconfig_configtype") == "smarthost" and values.get("dc_smarthost"):
+        return "template_declares_smarthost_requires_router_review"
+    return "template_only_no_verified_router"
+
+
+def sendmail_cf_summary(path):
+    """Read bounded compiled sendmail.cf. Never expose relay destinations."""
+    text = limited_config_text(path)
+    if text is None:
+        return "unverified", "unverified", "unverified"
+    lines = [line for line in text.splitlines() if line and not line.startswith("#")]
+    daemons = [line for line in lines
+               if re.match(r"^O\s+DaemonPortOptions\s*=", line)]
+    if not daemons:
+        listener = "unverified"
+    else:
+        loopback = True
+        for line in daemons:
+            address = re.search(r"(?:^|,)\s*Addr\s*=\s*([^,\s]+)", line)
+            if not address or address.group(1).strip("[]") not in ("127.0.0.1", "::1"):
+                loopback = False
+                break
+        listener = ("loopback_declared" if loopback
+                    else "non_loopback_or_default_requires_review")
+    ds = [line[2:].strip() for line in lines if line.startswith("DS")]
+    smarthost = ("declared" if len(ds) == 1 and ds[0] else
+                 "not_declared" if len(ds) == 1 else "unverified")
+    dm = [line[2:].strip() for line in lines if line.startswith("DM")]
+    masquerade = ("declared" if len(dm) == 1 and dm[0] else
+                  "not_declared" if len(dm) == 1 else "unverified")
+    return listener, smarthost, masquerade
+
+
 def sendmail_mc_flags(path):
     try:
         if not path.is_file() or path.stat().st_size > 131072:
             return "unavailable", "unverified", "unverified"
-        text = path.read_text(encoding="utf-8")
+        text = limited_config_text(path, 131072)
+        if text is None:
+            return "unavailable", "unverified", "unverified"
     except (OSError, UnicodeError):
         return "unavailable", "unverified", "unverified"
     live = [line.strip() for line in text.splitlines()
@@ -153,14 +253,25 @@ def inspect(runner=call):
         for key in ("primary_hostname", "qualify_domain", "local_interfaces"):
             result["MAIL_HOST_EXIM_" + key.upper()] = exim_setting(tool, key, runner)
         result["MAIL_HOST_EXIM_LOCAL_DOMAINS"] = "routers_and_acls_require_review"
+        result["MAIL_HOST_EXIM_SMTP_PORTS"] = exim_ports(tool, runner)
+        result["MAIL_HOST_EXIM_BIND_POLICY"] = exim_bind_policy(
+            result["MAIL_HOST_EXIM_LOCAL_INTERFACES"])
+        result["MAIL_HOST_EXIM_SMARTHOST_HINT"] = exim_debian_router_hint(
+            pathlib.Path("/etc/exim4/update-exim4.conf.conf"))
+        result["MAIL_HOST_EXIM_RELAY_POLICY"] = "routers_transports_and_acl_unverified"
     elif mta == "sendmail":
         mc, listener, masquerade = sendmail_mc_flags(pathlib.Path("/etc/mail/sendmail.mc"))
+        cf_path = pathlib.Path("/etc/mail/sendmail.cf")
+        effective_listener, smarthost, effective_masquerade = sendmail_cf_summary(cf_path)
         result.update({
             "MAIL_HOST_SENDMAIL_MC": mc,
             "MAIL_HOST_SENDMAIL_LISTENER": listener,
             "MAIL_HOST_SENDMAIL_MASQUERADE": masquerade,
-            "MAIL_HOST_SENDMAIL_CF": "present" if pathlib.Path(
-                "/etc/mail/sendmail.cf").is_file() else "not_found"
+            "MAIL_HOST_SENDMAIL_CF": "present" if cf_path.is_file() and not cf_path.is_symlink() else "unavailable",
+            "MAIL_HOST_SENDMAIL_CF_LISTENER": effective_listener,
+            "MAIL_HOST_SENDMAIL_CF_SMARTHOST": smarthost,
+            "MAIL_HOST_SENDMAIL_CF_MASQUERADE": effective_masquerade,
+            "MAIL_HOST_SENDMAIL_RELAY_POLICY": "access_maps_and_relay_checks_unverified"
         })
     return result
 
@@ -191,6 +302,9 @@ def main(argv=None):
         assert safe("$mydomain") == "$mydomain"
         assert exim_setting("exim", "primary_hostname",
                             lambda _: "primary_hostname = smtp.example.com") == "smtp.example.com"
+        assert exim_ports("exim", lambda _: "daemon_smtp_ports = smtp : submission") == "25,587"
+        assert exim_bind_policy("127.0.0.1 ::1") == "loopback_declared"
+        assert exim_bind_policy("0.0.0.0") == "non_loopback_declared_requires_review"
         print("MAIL_HOST_SELF_TEST=pass")
         return 0
     for key, value in inspect().items():
