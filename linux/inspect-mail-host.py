@@ -121,18 +121,37 @@ def limited_config_text(path, limit=2 * 1024 * 1024):
     fd = None
     try:
         before = os.lstat(str(path))
-        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+        if not stat.S_ISREG(before.st_mode) or not 1 <= before.st_size <= limit:
             return None
         fd = os.open(str(path), os.O_RDONLY |
                      getattr(os, "O_NOFOLLOW", 0) |
                      getattr(os, "O_CLOEXEC", 0))
         after = os.fstat(fd)
         if (not stat.S_ISREG(after.st_mode) or
-                (after.st_dev, after.st_ino, after.st_size) !=
-                (before.st_dev, before.st_ino, before.st_size)):
+                (after.st_dev, after.st_ino, after.st_size,
+                 after.st_mtime_ns, after.st_ctime_ns) !=
+                (before.st_dev, before.st_ino, before.st_size,
+                 before.st_mtime_ns, before.st_ctime_ns)):
             return None
-        raw = os.read(fd, limit + 1)
-        return raw.decode("utf-8") if len(raw) <= limit and b"\x00" not in raw else None
+        remaining = after.st_size
+        pieces = []
+        while remaining:
+            part = os.read(fd, min(65536, remaining))
+            if not part:
+                return None
+            pieces.append(part)
+            remaining -= len(part)
+        # Catch appends after the recorded file size without reading them.
+        if os.read(fd, 1):
+            return None
+        checked = os.fstat(fd)
+        if (checked.st_dev, checked.st_ino, checked.st_size,
+            checked.st_mtime_ns, checked.st_ctime_ns) != (
+                after.st_dev, after.st_ino, after.st_size,
+                after.st_mtime_ns, after.st_ctime_ns):
+            return None
+        raw = b"".join(pieces)
+        return raw.decode("utf-8") if b"\x00" not in raw else None
     except (OSError, UnicodeError, ValueError):
         return None
     finally:

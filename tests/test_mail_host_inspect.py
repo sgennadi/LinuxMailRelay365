@@ -93,6 +93,21 @@ class MailHostInspectorTests(unittest.TestCase):
         self.assertEqual(module.exim_security_declarations("exim", lambda _: None),
                          ("unverified", "unverified"))
 
+    def test_bounded_nofollow_reader_detects_file_change(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            config = pathlib.Path(folder) / "sendmail.cf"
+            config.write_text("O AuthMechanisms=LOGIN\n", encoding="utf-8")
+            self.assertEqual(module.limited_config_text(config),
+                             "O AuthMechanisms=LOGIN\n")
+            self.assertIsNone(module.limited_config_text(config, limit=5))
+            config.write_text("", encoding="utf-8")
+            self.assertIsNone(module.limited_config_text(config))
+            config.write_text("O AuthMechanisms=LOGIN\n", encoding="utf-8")
+            link = pathlib.Path(folder) / "linked"
+            link.symlink_to(config)
+            self.assertIsNone(module.limited_config_text(link))
+
     def test_sendmail_tls_auth_cf_are_declarations_only(self):
         import tempfile
         with tempfile.TemporaryDirectory() as folder:
