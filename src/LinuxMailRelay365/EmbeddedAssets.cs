@@ -18,6 +18,7 @@ internal static class EmbeddedAssets
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
     internal static string OAuthSenderMapAudit => Text("LinuxMailRelay365.linux.oauth-sender-map-audit.py");
     internal static string OAuthIngressAudit => Text("LinuxMailRelay365.linux.oauth-ingress-audit.py");
+    internal static string OAuthIdentitySigningAudit => Text("LinuxMailRelay365.linux.oauth-identity-signing-audit.py");
     internal static string HardwareSigner => Text("LinuxMailRelay365.linux.hardware-signer.py");
     internal static string TpmDependencies => Text("LinuxMailRelay365.linux.tpm-dependencies.py");
     internal static string HardwareOAuthDiagnostics => Text("LinuxMailRelay365.linux.hardware-oauth-diagnostics.py");
@@ -366,6 +367,31 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/audit-oauth-ingress.py\" <<'LMR365_OAUTH_INGRESS_AUDIT'\n" +
                Encode(OAuthIngressAudit) + "\nLMR365_OAUTH_INGRESS_AUDIT\n" +
                "python3 \"$work/audit-oauth-ingress.py\" --map-path " + mapPath + "\n";
+    }
+
+    internal static string BuildOAuthIdentitySigningAuditBundle(string mapPath)
+    {
+        // Bounded root-only map review: the actual PS256 probe runs as
+        // m365mailer. It has no SMTP, Graph, Postfix, or Entra operations.
+        if (mapPath.Length > 256 ||
+            !Regex.IsMatch(mapPath, @"\A/etc/linuxmailrelay365/[A-Za-z0-9_./-]{1,240}\.tsv\z",
+                           RegexOptions.CultureInvariant) ||
+            mapPath.Split('/').Skip(1).Any(part => part is "." or ".." or ""))
+            throw new ArgumentException("Only an absolute /etc/linuxmailrelay365/ map TSV path is allowed.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-offline-signing.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/audit-oauth-sender-map.py\" <<'LMR365_SIGN_MAP'\n" +
+               Encode(OAuthSenderMapAudit) + "\nLMR365_SIGN_MAP\n" +
+               "base64 -d > \"$work/m365_hardware_signer.py\" <<'LMR365_SIGN_BACKEND'\n" +
+               Encode(HardwareSigner) + "\nLMR365_SIGN_BACKEND\n" +
+               "base64 -d > \"$work/m365_xoauth2_transport.py\" <<'LMR365_SIGN_TRANSPORT'\n" +
+               Encode(Transport) + "\nLMR365_SIGN_TRANSPORT\n" +
+               "base64 -d > \"$work/audit-oauth-identity-signing.py\" <<'LMR365_SIGN_AUDITOR'\n" +
+               Encode(OAuthIdentitySigningAudit) + "\nLMR365_SIGN_AUDITOR\n" +
+               "chmod 0755 \"$work\"\n" +
+               "chmod 0644 \"$work\"/*.py\n" +
+               "python3 \"$work/audit-oauth-identity-signing.py\" --map-path " + mapPath + "\n";
     }
 
     internal static string BuildLinuxBundle(string[] args)

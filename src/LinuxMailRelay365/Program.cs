@@ -313,6 +313,26 @@ internal static class Program
                 }
                 return true;
             }),
+            ("Offline mapped OAuth certificate signer bundle", () =>
+            {
+                const string good = "/etc/linuxmailrelay365/oauth-senders.tsv";
+                var bundle = EmbeddedAssets.BuildOAuthIdentitySigningAuditBundle(good);
+                if (!bundle.Contains("LMR365_SIGN_AUDITOR", StringComparison.Ordinal) ||
+                    !bundle.Contains("LMR365_SIGN_TRANSPORT", StringComparison.Ordinal) ||
+                    !bundle.Contains("LMR365_SIGN_BACKEND", StringComparison.Ordinal) ||
+                    !bundle.Contains("--map-path " + good, StringComparison.Ordinal) ||
+                    !bundle.Contains("chmod 0755 \"$work\"", StringComparison.Ordinal))
+                    return false;
+                foreach (string path in new[] {
+                    "/tmp/map.tsv", "/etc/linuxmailrelay365/../etc/passwd.tsv",
+                    "/etc/linuxmailrelay365/m.tsv;id", "/etc/linuxmailrelay365/map.json"
+                })
+                {
+                    try { EmbeddedAssets.BuildOAuthIdentitySigningAuditBundle(path); return false; }
+                    catch (ArgumentException) { }
+                }
+                return true;
+            }),
             ("Preserve mail diagram", PreserveFlowSnapshot.SelfTest),
             ("Live delivery route explanations", MailRoutingGuidance.SelfTest),
             ("Existing public SMTP audit", () =>

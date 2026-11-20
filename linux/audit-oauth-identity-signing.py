@@ -122,7 +122,8 @@ def main(argv=None):
     print("OAUTH_SIGNING_POSTFIX_CHANGED=no")
     print("OAUTH_SIGNING_ENROLLED_OR_ACTIVATED=no")
     print("OAUTH_SIGNING_MAIL_SENT=no")
-    return 0 if report["ALL_SIGNERS_VALID"] == "yes" else 3
+    # An audit with failed signers is a complete report, NOT an enabled route.
+    return 0
 
 
 if __name__ == "__main__":

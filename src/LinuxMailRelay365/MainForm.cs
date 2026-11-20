@@ -68,6 +68,7 @@ internal sealed class MainForm : Form
     private readonly TextBox oauthSenderMapPath = Field("");
     private string oauthSenderAuditSummary = "";
     private string oauthIngressAuditSummary = "";
+    private string oauthSignerAuditSummary = "";
     private readonly TextBox deliveryModeExplanation = new()
     {
         Width = 890, Height = 185, Multiline = true, ReadOnly = true,
@@ -387,7 +388,8 @@ internal sealed class MainForm : Form
             if (!routingLoading)
             {
                 oauthSenderAuditSummary = "";
-                oauthIngressAuditSummary = "";
+                oauthIngressAuditSummary = "";                oauthSignerAuditSummary = "";
+
             }
             SaveRoutingChoices();
             UpdatePreserveFlowPreview();
@@ -403,7 +405,8 @@ internal sealed class MainForm : Form
             if (!routingLoading)
             {
                 oauthSenderAuditSummary = "";
-                oauthIngressAuditSummary = "";
+                oauthIngressAuditSummary = "";                oauthSignerAuditSummary = "";
+
             }
             SaveRoutingChoices();
             UpdatePreserveFlowPreview();
@@ -413,7 +416,8 @@ internal sealed class MainForm : Form
             endpointField.TextChanged += (_, _) =>
             {
                 oauthSenderAuditSummary = "";
-                oauthIngressAuditSummary = "";
+                oauthIngressAuditSummary = "";                oauthSignerAuditSummary = "";
+
                 // Never show evidence from the previous host as current.
                 discoveredIsolatedRelay = null;
                 discoveredMailIdentity = null;
@@ -434,7 +438,8 @@ internal sealed class MainForm : Form
         mailTransport.SelectedIndexChanged += (_, _) => {
             if (!routingLoading) {
                 oauthSenderAuditSummary = "";
-                oauthIngressAuditSummary = "";
+                oauthIngressAuditSummary = "";                oauthSignerAuditSummary = "";
+
                 acceptedDomainApproved.Checked = false;
                 connectorApproved.Checked = false;
                 if (mailTransport.SelectedIndex != 1)
@@ -2232,6 +2237,16 @@ internal sealed class MainForm : Form
                             "Compare sender map with installed SMTP AUTH and From Guard (read-only)",
                             "השוואת המפה עם SMTP AUTH ו-From Guard (קריאה בלבד)"),
                             InspectOAuthIngressAsync, false, "shield", "oauth-ingress-audit");
+                        AddAction(page, T(
+                            "Проверить локальную подпись сертификатов M365 (без отправки)",
+                            "Verify mailbox OAuth certificate signing (offline only)",
+                            "בדיקת חתימת אישורי OAuth ללא שליחה"),
+                            InspectOAuthIdentitySigningAsync, false, "shield", "oauth-signing-audit");
+                        AddLine(page, UiTheme.Text(string.IsNullOrEmpty(oauthSignerAuditSummary)
+                            ? T("Подпись запланированных OAuth-идентичностей ещё не проверена. Отправка заблокирована.",
+                                "Mapped mailbox signer proof not yet reviewed. Delivery remains disabled.",
+                                "חתימות הזהויות טרם נבדקו. שליחה חסומה.")
+                            : oauthSignerAuditSummary));
                         AddLine(page, UiTheme.Text(string.IsNullOrEmpty(oauthSenderAuditSummary)
                             ? T("Карта ещё не проверена. Проверка только чтение; отправка отключена.",
                                 "Map not yet audited. Read-only review; mail delivery disabled.",
@@ -3245,7 +3260,8 @@ internal sealed class MainForm : Form
             oauthSenderMode.SelectedIndex = routingPlan.OAuthSenderMode == "authorized-multiple-mailboxes" ? 1 : 0;
             oauthSenderMapPath.Text = routingPlan.OAuthSenderMapPath;
             oauthSenderAuditSummary = "";
-            oauthIngressAuditSummary = "";
+            oauthIngressAuditSummary = "";            oauthSignerAuditSummary = "";
+
             recipientScope.SelectedIndex = routingPlan.RecipientScope switch
             {
                 "internal-only" => 1, "external-needed" => 2, _ => 0
@@ -4169,6 +4185,69 @@ internal sealed class MainForm : Form
         WriteLine("Structural map review passed; sender authentication, header From ownership, Entra Exchange permissions and SMTP delivery remain NOT VERIFIED. No route was enabled.");
     }
 
+    private async Task InspectOAuthIdentitySigningAsync()
+    {
+        EnsureRoutingLoaded();
+        if (mailTransport.SelectedIndex != 0 || oauthSenderMode.SelectedIndex != 1)
+            throw new InvalidOperationException(
+                "Select the planned XOAUTH2 multi-mailbox policy before verifying local signers.");
+        var endpoint = Endpoint();
+        string auditedPath = oauthSenderMapPath.Text.Trim();
+        string currentIdentity = SecurityOptionsStore.Identity(endpoint);
+        oauthSignerAuditSummary = "";
+        var report = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildOAuthIdentitySigningAuditBundle(auditedPath),
+            TimeSpan.FromMinutes(15));
+        report.EnsureSuccess();
+        var allowed = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["OAUTH_SIGNING_REVIEW"] = @"\Aread_only_offline_only\z",
+            ["OAUTH_SIGNING_MAP_SHA256"] = @"\A[a-f0-9]{64}\z",
+            ["OAUTH_SIGNING_IDENTITIES"] = @"\A[1-9][0-9]{0,2}\z",
+            ["OAUTH_SIGNING_VERIFIED"] = @"\A[0-9]{1,2}\z",
+            ["OAUTH_SIGNING_UNVERIFIED"] = @"\A[0-9]{1,2}\z",
+            ["OAUTH_SIGNING_ALL_SIGNERS_VALID"] = @"\A(?:yes|no)\z",
+            ["OAUTH_SIGNING_HARDWARE_PROVENANCE"] = @"\Anot_verified\z",
+            ["OAUTH_SIGNING_EXCHANGE_SENDAS"] = @"\Anot_verified\z",
+            ["OAUTH_SIGNING_POSTFIX_CHANGED"] = @"\Ano\z",
+            ["OAUTH_SIGNING_ENROLLED_OR_ACTIVATED"] = @"\Ano\z",
+            ["OAUTH_SIGNING_MAIL_SENT"] = @"\Ano\z"
+        };
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string raw in report.StdOut.Split('\n'))
+        {
+            string line = raw.TrimEnd('\r');
+            int equal = line.IndexOf('=');
+            if (equal <= 0) continue;
+            string key = line[..equal];
+            if (!allowed.TryGetValue(key, out string? pattern)) continue;
+            string value = line[(equal + 1)..];
+            if (!System.Text.RegularExpressions.Regex.IsMatch(value, pattern,
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant) ||
+                !values.TryAdd(key, value))
+                throw new InvalidDataException("Invalid or duplicated offline OAuth signing evidence.");
+        }
+        if (values.Count != allowed.Count ||
+            !int.TryParse(values["OAUTH_SIGNING_IDENTITIES"], out int total) ||
+            !int.TryParse(values["OAUTH_SIGNING_VERIFIED"], out int valid) ||
+            !int.TryParse(values["OAUTH_SIGNING_UNVERIFIED"], out int invalid) ||
+            total is < 1 or > 64 || valid + invalid != total ||
+            ((invalid == 0) != (values["OAUTH_SIGNING_ALL_SIGNERS_VALID"] == "yes")))
+            throw new InvalidDataException("Incomplete or inconsistent offline OAuth signer evidence.");
+        if (auditedPath != oauthSenderMapPath.Text.Trim() ||
+            currentIdentity != TryCurrentIdentity() ||
+            mailTransport.SelectedIndex != 0 || oauthSenderMode.SelectedIndex != 1)
+            throw new InvalidOperationException("SSH endpoint or sender map changed during the offline check.");
+        foreach (string key in allowed.Keys)
+            WriteLine(key + "=" + values[key]);
+        oauthSignerAuditSummary = T(
+            $"Офлайн-подпись PS256: {valid} из {total}. Не проверено: {invalid}. Microsoft 365 Send As и доставка НЕ подтверждены.",
+            $"Offline PS256 signer proof: {valid} of {total}. Unverified: {invalid}. Microsoft 365 Send As and delivery are NOT verified.",
+            $"בדיקת חתימת PS256 לא מקוונת: {valid} מתוך {total}. לא אומתו: {invalid}. הרשאות Send As ושליחה לא אומתו.");
+        RenderPage();
+        WriteLine("Offline mailbox signing was reviewed as m365mailer. No Entra token, SMTP message, Postfix change or sender authorization was performed.");
+    }
+
     private async Task InspectOAuthIngressAsync()
     {
         EnsureRoutingLoaded();
@@ -4177,7 +4256,8 @@ internal sealed class MainForm : Form
         var endpoint = Endpoint();
         string auditedPath = oauthSenderMapPath.Text.Trim();
         string auditedIdentity = SecurityOptionsStore.Identity(endpoint);
-        oauthIngressAuditSummary = "";
+        oauthIngressAuditSummary = "";        oauthSignerAuditSummary = "";
+
         var report = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildOAuthIngressAuditBundle(auditedPath), TimeSpan.FromSeconds(110));
         report.EnsureSuccess();

@@ -33,6 +33,7 @@
     <EmbeddedResource Include="../../linux/m365_xoauth2_transport.py" LogicalName="LinuxMailRelay365.linux.transport.py" />
     <EmbeddedResource Include="../../linux/audit-oauth-sender-map.py" LogicalName="LinuxMailRelay365.linux.oauth-sender-map-audit.py" />
     <EmbeddedResource Include="../../linux/audit-oauth-ingress.py" LogicalName="LinuxMailRelay365.linux.oauth-ingress-audit.py" />
+    <EmbeddedResource Include="../../linux/audit-oauth-identity-signing.py" LogicalName="LinuxMailRelay365.linux.oauth-identity-signing-audit.py" />
     <EmbeddedResource Include="../../linux/m365_hardware_signer.py" LogicalName="LinuxMailRelay365.linux.hardware-signer.py" />
     <EmbeddedResource Include="../../linux/manage-tpm-dependencies.py" LogicalName="LinuxMailRelay365.linux.tpm-dependencies.py" />
     <EmbeddedResource Include="../../linux/verify-hardware-oauth.py" LogicalName="LinuxMailRelay365.linux.hardware-oauth-diagnostics.py" />

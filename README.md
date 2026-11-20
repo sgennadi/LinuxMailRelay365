@@ -88,6 +88,25 @@ certificate renewal, physical TPM/PKCS11 and RHEL SELinux Enforcing live
 acceptance, external/public SMTP abuse tests, and signed Stable binaries.
 These are not silently enabled.
 
+## Multi-mailbox OAuth signer proof (development branch, offline only)
+
+The separate mapped identity audit performs an actual PS256 signature test for
+each distinct mailbox identity, using its protected local certificate and
+software PEM or TPM2/PKCS#11 reference. The Windows Wizard offers
+**Verify mailbox OAuth certificate signing (offline only)** from the blocked
+multi-mailbox XOAUTH2 plan. The root-readable map remains protected; signing
+runs as the dedicated Linux service account m365mailer. The Wizard receives
+only fixed status codes, totals and the sender map SHA256, never mailboxes,
+certificates, private keys, token contents or raw script output. The preview
+currently caps one review at 64 identities; a failed signer is reported as
+unverified, never silently skipped or treated as authorization.
+
+This is **NOT** an Exchange Online OAuth SMTP session, Send As entitlement,
+authenticated Postfix queue identity, hardware provenance/attestation, or
+multi-mailbox delivery proof. No token is requested, no SMTP connection made,
+no queue or Postfix config modified. All multi-mailbox Apply/Test paths remain
+disabled until the separately documented live authorization gates pass.
+
 ## New functionality in development branch (not Stable)
 
 See [final acceptance checklist](docs/FINAL_ACCEPTANCE.md) for the complete
