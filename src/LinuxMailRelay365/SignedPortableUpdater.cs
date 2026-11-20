@@ -868,7 +868,10 @@ internal static class SignedPortableUpdater
             {
                 try
                 {
-                    File.Replace(backup, target, null, ignoreMetadataErrors: false);
+                    // Windows File.Replace requires a non-empty backup pathname.
+                    // The previously consumed .update-new name is available and
+                    // will be removed in finally after restoring the old EXE.
+                    File.Replace(backup, target, next, ignoreMetadataErrors: false);
                     rolledBack = true;
                 }
                 catch (Exception) { rolledBack = false; }
