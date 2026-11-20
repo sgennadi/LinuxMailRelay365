@@ -1448,9 +1448,13 @@ internal sealed class MainForm : Form
                 Margin = new Padding(0, 4, 0, 10)
             });
             if (inspectedHost.HasFqdn)
-                AddAction(page, T("Использовать найденный FQDN в настройках SMTP (без установки)",
-                    "Use detected FQDN for SMTP settings (no install)",
-                    "השתמש בשם המארח שהתגלה בהגדרות SMTP"),
+                AddAction(page, inspectedMail?.Mta is "exim" or "sendmail"
+                    ? T("Предложить отдельное DNS-имя для Relay (без установки)",
+                        "Suggest separate Relay DNS name (no install)",
+                        "הצע שם DNS נפרד לממסר")
+                    : T("Использовать найденный FQDN в настройках SMTP (без установки)",
+                        "Use detected FQDN for SMTP settings (no install)",
+                        "השתמש בשם המארח שהתגלה בהגדרות SMTP"),
                     UseDetectedFqdnAsync, false, "check", "mail-hostname");
             if (inspectedHost.HasDomain)
                 AddAction(page, T("Подставить домен в поле M365 (потребуется подтверждение)",
@@ -1485,20 +1489,25 @@ internal sealed class MainForm : Form
     {
         if (inspectedHostIdentity != TryCurrentIdentity() || inspectedHost?.HasFqdn != true)
             throw new InvalidOperationException("Reinspect Linux hostname first.");
-        string name = inspectedHost.Fqdn;
-        string field = inspectedMail?.Mta is "exim" or "sendmail"
-            ? "foreign sidecar hostname" : "private SMTP TLS hostname";
+        bool foreign = inspectedMail?.Mta is "exim" or "sendmail";
+        if (foreign && (inspectedHost.HasDomain != true ||
+            inspectedServerIdentity != TryCurrentIdentity()))
+            throw new InvalidOperationException(
+                "Inspect the active Exim/Sendmail MTA and its domain before suggesting a distinct FQDN.");
+        string name = foreign ? "relay." + inspectedHost.Domain : inspectedHost.Fqdn;
+        if (foreign && string.Equals(name, inspectedHost.Fqdn, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Sidecar FQDN must differ from the existing primary MTA.");
         var confirmation = MessageBox.Show(this, T(
-            "Использовать FQDN " + name + " как " + field +
-            "? Для отдельного Postfix может понадобиться другое DNS-имя. Значение Linux не проверяет DNS/TLS.",
-            "Use Linux FQDN " + name + " for " + field +
-            "? An isolated Postfix may need a different DNS name. The Linux hostname does NOT validate DNS/TLS.",
-            "להשתמש בשם המארח " + name + "? יש לבדוק את DNS ואת האישור."),
+            "Предложить " + name + " для " + (foreign ? "отдельного SMTP Relay" : "SMTP TLS") +
+            "? Это только поле мастера. Перед настройкой обязательно проверьте DNS, сертификат и отсутствие конфликта с текущим MTA.",
+            "Suggest " + name + " for " + (foreign ? "the independent SMTP Relay" : "SMTP TLS") +
+            "? This only fills a Wizard field. Verify DNS, certificate identity and that the primary MTA owns a different name.",
+            "להציע " + name + "? אין שינוי בשרת; יש לבדוק DNS, אישור וזהות נפרדת."),
             "LinuxMailRelay365 | Use Linux hostname",
             MessageBoxButtons.YesNo, MessageBoxIcon.Information,
             MessageBoxDefaultButton.Button2);
         if (confirmation != DialogResult.Yes) return Task.CompletedTask;
-        if (inspectedMail?.Mta is "exim" or "sendmail")
+        if (foreign)
             foreignSidecarHostname.Text = name;
         else
             privateAuthDns.Text = name;
@@ -2335,9 +2344,15 @@ internal sealed class MainForm : Form
                     }
                 }
                 if (inspectedMail?.Mta is "exim" or "sendmail")
+                {
                     AddField(page, T("FQDN отдельного SMTP для Exim/Sendmail (обязательно)",
                                      "Independent Postfix hostname FQDN for Exim/Sendmail (required)",
                                      "שם שרת Postfix עצמאי עבור Exim/Sendmail"), foreignSidecarHostname);
+                    AddLine(page, UiTheme.Text(T(
+                        "ВНИМАНИЕ: DNS-имя отдельного SMTP должно отличаться от имени основного Sendmail/Exim. Подстановка relay.<домен> — только предложение, требуется DNS/TLS проверка; оригинальная служба и очередь не меняются.",
+                        "Separate SMTP must use a DNS name DISTINCT from the active Sendmail/Exim host. Suggested relay.<domain> is only a draft: verify DNS/TLS. The original service and queue remain untouched.",
+                        "לממסר נדרש שם DNS שונה מהשרת הראשי. יש לאמת DNS ו-TLS.")));
+                }
                 AddField(page, T("Порт отдельного SMTP (Preserve Existing Mail; по умолчанию 2525)",
                                  "Isolated SMTP port (Preserve Existing Mail; default 2525)",
                                  "פורט SMTP נפרד (ברירת מחדל 2525)"), isolatedSmtpPort);
@@ -4008,7 +4023,13 @@ internal sealed class MainForm : Form
         {
             if (inspectedServerIdentity != SecurityOptionsStore.Identity(Endpoint()))
                 throw new InvalidOperationException("Reinspect the selected Exim/Sendmail server before using preservation mode.");
-            return (inspectedMail.Mta, foreignSidecarHostname.Text.Trim());
+            string sidecarHostname = foreignSidecarHostname.Text.Trim().TrimEnd('.');
+            if (inspectedHostIdentity != TryCurrentIdentity() ||
+                inspectedHost?.HasFqdn != true ||
+                string.Equals(sidecarHostname, inspectedHost.Fqdn, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "Review active Exim/Sendmail hostname and set a distinct sidecar FQDN before applying any changes.");
+            return (inspectedMail.Mta, sidecarHostname);
         }
         return ("", "");
     }
