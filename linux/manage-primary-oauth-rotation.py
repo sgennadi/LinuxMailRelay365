@@ -24,8 +24,10 @@ ROOT = Path("/etc/postfix/m365-oauth")
 ACTIVE = ROOT / "app.json"
 STAGED = ROOT / "pem-rotation-staged.json"
 LOCK = Path("/run/linuxmailrelay365-hardware-oauth.lock")
-TRANSPORT = Path("/usr/local/libexec/m365_xoauth2_transport.py")
-SIGNER = Path("/usr/local/libexec/m365_hardware_signer.py")
+# Use the checked-in, root-owned preview diagnostic transport in the
+# temporary bundle. Existing production /usr/local/libexec is not modified.
+TRANSPORT = Path(__file__).resolve().parent / "m365_xoauth2_transport.py"
+SIGNER = TRANSPORT.parent / "m365_hardware_signer.py"
 GUID = re.compile(r"\A[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z")
 MAIL = re.compile(r"\A[A-Za-z0-9._+-]+@[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]\Z")
 STAMP = re.compile(r"\Aapp\.rotation\.[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\Z")
