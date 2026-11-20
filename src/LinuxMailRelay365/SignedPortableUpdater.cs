@@ -479,20 +479,24 @@ internal static class SignedPortableUpdater
                 length != offer.ArchiveBytes)
                 throw new InvalidDataException("Published update size differs.");
             await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            await using var output = new FileStream(path, FileMode.CreateNew,
-                FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous);
-            byte[] buffer = new byte[81920];
             long bytes = 0;
-            int count;
-            while ((count = await stream.ReadAsync(buffer.AsMemory(), ct)) > 0)
+            // FileShare.None keeps the partial archive private while writing.
+            // Dispose the writer BEFORE re-opening the file for SHA-256.
+            await using (var output = new FileStream(path, FileMode.CreateNew,
+                FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
             {
-                if (bytes + count > offer.ArchiveBytes || bytes + count > MaximumArchive)
-                    throw new InvalidDataException("Update download exceeded exact published size.");
-                await output.WriteAsync(buffer.AsMemory(0, count), ct);
-                bytes += count;
-                progress?.Report((bytes, offer.ArchiveBytes));
+                byte[] buffer = new byte[81920];
+                int count;
+                while ((count = await stream.ReadAsync(buffer.AsMemory(), ct)) > 0)
+                {
+                    if (bytes + count > offer.ArchiveBytes || bytes + count > MaximumArchive)
+                        throw new InvalidDataException("Update download exceeded exact published size.");
+                    await output.WriteAsync(buffer.AsMemory(0, count), ct);
+                    bytes += count;
+                    progress?.Report((bytes, offer.ArchiveBytes));
+                }
+                await output.FlushAsync(ct);
             }
-            await output.FlushAsync(ct);
             if (bytes != offer.ArchiveBytes ||
                 !string.Equals(FileSha256(path), offer.ArchiveSha,
                     StringComparison.OrdinalIgnoreCase))
