@@ -918,3 +918,18 @@ same-publisher check of the new executable, exact GitHub release asset and
 archive SHA verification, a trusted external helper with parent-process
 shutdown, tested .bak restore and a failed-health-check hold. Never apply
 an unsigned CI preview automatically.
+
+
+## Portable signed update implementation acceptance
+
+The normal Windows x64/ARM64 executable supports optional same-publisher
+signed update staging and externally assisted replacement. The existing
+EXE must be Windows-trusted via WinVerifyTrust. The candidate must match
+its SHA-256 publisher certificate, exact release metadata and SHA256 asset,
+PE machine, informational version, and embedded self-test. A separate
+publisher-verified helper waits for original process exit, revalidates, and
+replaces with a .bak checkpoint. A failed post-install health check attempts
+rollback and writes a per-user hold. Current unsigned CI artifacts fail
+the signing precondition by design. Positive physical testing still requires
+signing credentials and a published release; keep Draft and do not call it
+a proven production updater until the real install and recovery are exercised.

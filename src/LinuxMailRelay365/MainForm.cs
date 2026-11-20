@@ -153,7 +153,7 @@ internal sealed class MainForm : Form
     private string? reviewedHardwareCutoverContext;
     private string? listedHardwareBackupsContext;
     private string cloudSecuritySummary = "Не проверено";
-    private readonly CheckBox previewUpdates = new() { AutoSize = true, Checked = true };
+    private readonly CheckBox previewUpdates = new() { AutoSize = true, Checked = false };
     private readonly CheckBox advancedSecurityTools = new() { AutoSize = true, Checked = false,
         ForeColor = UiTheme.Navy, Margin = new Padding(0, 12, 0, 12) };
     private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
@@ -203,6 +203,7 @@ internal sealed class MainForm : Form
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LinuxMailRelay365");
     private int step;
     private bool busy;
+    private bool updateShuttingDown;
     private string? lastStatus;
     private bool lastFailed;
     private string? publicCertificatePath;
@@ -3019,7 +3020,12 @@ internal sealed class MainForm : Form
                     (int)Math.Round(145 * Math.Max(1f, DeviceDpi / 96f));
             lastStatus = T("Ошибка — проверь журнал", "Error — review activity", "שגיאה — בדוק יומן");
         }
-        finally { busy = false; RenderPage(); }
+        finally
+        {
+            busy = false;
+            if (!IsDisposed && !Disposing && !updateShuttingDown)
+                RenderPage();
+        }
     }
 
     private Task CopySafeReportAsync()
@@ -6770,24 +6776,62 @@ internal sealed class MainForm : Form
 
     private async Task CheckUpdatesAsync()
     {
-        WriteLine("Checking published GitHub Releases (read-only). " +
-            "Unsigned CI previews are not automatic updates.");
-        var (url, message) = await UpdateCheck.QueryAsync(previewUpdates.Checked, CancellationToken.None);
+        WriteLine("Checking published GitHub Releases. CI preview artifacts are not releases.");
+        bool withPreview = previewUpdates.Checked;
+        var (url, message) = await UpdateCheck.QueryAsync(withPreview, CancellationToken.None);
         releaseUrl = url;
         WriteLine(message);
-        if (releaseUrl is null)
+        if (url is null)
         {
             WriteLine(T(
-                "Updater: новых подходящих релизов нет. EXE из GitHub Actions нельзя автоматически устанавливать вместо подписанного Stable.",
-                "Updater: no eligible published release. GitHub Actions preview EXEs are not verified signed updates.",
-                "אין גרסה חתומה זמינה. קובצי CI אינם עדכון אוטומטי."));
+                "Подходящих релизов нет. Неподписанные Preview EXE нельзя устанавливать автоматически.",
+                "No eligible published release. Unsigned CI preview EXEs cannot be installed automatically.",
+                "אין גרסה שפורסמה. קובצי CI לא חתומים אינם מותקנים אוטומטית."));
+            return;
         }
-        if (releaseUrl is not null)
+
+        if (!SignedPortableUpdater.CanInstall(out string publisher, out string reason))
         {
-            var ask = MessageBox.Show(this, T("Открыть страницу релиза?", "Open the release page?", "לפתוח עמוד גרסה?"),
-                Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (ask == DialogResult.Yes)
-                Process.Start(new ProcessStartInfo(releaseUrl) { UseShellExecute = true });
+            WriteLine("Signed automatic update is blocked: " + reason);
+            var open = MessageBox.Show(this, T(
+                "Текущий EXE не подписан доверенным издателем. Автоустановка запрещена. Открыть страницу релиза?",
+                "The installed EXE is not signed by a Windows-trusted publisher. Auto-install is blocked. Open release page?",
+                "קובץ ההפעלה הנוכחי אינו חתום באופן מהימן. התקנה אוטומטית חסומה. לפתוח דף גרסה?"),
+                Text, MessageBoxButtons.YesNo, MessageBoxIcon.Information,
+                MessageBoxDefaultButton.Button2);
+            if (open == DialogResult.Yes)
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            return;
         }
+
+        var action = MessageBox.Show(this, T(
+            "Доступен релиз. Установка будет разрешена только после проверки URL GitHub, SHA-256, архитектуры, Windows Authenticode и ТОГО ЖЕ сертификата издателя. Приложение закроется, проверенный помощник создаст .bak, выполнит self-test и откатит ошибочную замену.\n\nДа — установить, Нет — открыть страницу, Отмена — ничего не делать.",
+            "A published release is available. Before installation, the updater verifies exact GitHub origin, SHA-256, architecture, Windows Authenticode and the SAME publisher certificate. The app will close; a signed helper creates .bak, runs self-test, and rolls back a failed update.\n\nYes: install, No: open page, Cancel: nothing.",
+            "קיים עדכון. לפני ההתקנה ייבדקו מקור GitHub, חתימה, SHA-256 וארכיטקטורה. התוכנה תיסגר והמערכת תגבה ותבדוק את הגרסה."),
+            Text, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button3);
+        if (action == DialogResult.No)
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            return;
+        }
+        if (action != DialogResult.Yes) return;
+        var offer = await SignedPortableUpdater.FindAsync(withPreview, CancellationToken.None);
+        if (offer is null || !string.Equals(offer.PageUrl, url, StringComparison.Ordinal))
+            throw new InvalidDataException("Release metadata changed; repeat the update check.");
+        WriteLine("Downloading published signed update; validating SHA-256, publisher, PE machine and self-test.");
+        var progress = new Progress<(long, long)>(value =>
+        {
+            if (IsDisposed || Disposing) return;
+            int percent = value.Item2 <= 0 ? 0 :
+                (int)Math.Min(100, 100L * value.Item1 / value.Item2);
+            status.Text = T("Загрузка обновления: ", "Downloading update: ", "מוריד עדכון: ") +
+                percent.ToString() + "%";
+        });
+        await SignedPortableUpdater.StageAndLaunchAsync(offer, publisher,
+            CancellationToken.None, progress);
+        WriteLine("Publisher-pinned update verified; closing original EXE for external replacement.");
+        updateShuttingDown = true;
+        Close();
     }
 }

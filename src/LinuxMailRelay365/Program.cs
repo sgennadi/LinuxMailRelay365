@@ -340,6 +340,7 @@ internal static class Program
         checks.Add(("Release ordering", ReleaseVersion.SelfTest));
         checks.Add(("Updater release trust and channel rules", UpdateCheck.SelfTest));
 #endif
+        checks.Add(("Publisher-pinned updater safety contracts", SignedPortableUpdater.SelfTest));
         var results = new List<string>();
         bool success = true;
         foreach (var (name, run) in checks)
@@ -368,6 +369,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--apply-signed-update")
+            return SignedPortableUpdater.ApplyFromHelper(args[1..]);
         if (args.Length > 0 && args[0] == "--self-test")
         {
             if (args.Length == 1) return RunSelfTests(null);

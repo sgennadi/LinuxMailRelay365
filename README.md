@@ -1612,3 +1612,23 @@ Do not call the fallback an automatic updater or claim unsigned previews
 can self-install. Windows CI self-tests check malicious URL userinfo,
 duplicate arch assets, bad digest, prerelease/stable separation and
 no-downgrade behavior.
+
+
+## Signed portable Windows updater — explicit, no unsigned Preview installation
+
+The public Windows EXE now includes an opt-in self-updater path, without
+depending on the private UniversalUpdater. The default release channel is
+Stable. Installation is available only when the **currently running EXE**
+passes Windows Authenticode trust and has an eligible published release.
+The updater checks exact fixed GitHub release URL and asset, newer semantic
+version, ZIP SHA-256, total bytes, single-EXE archive, x64/ARM64 PE
+architecture and a valid Windows Authenticode signature by the **same
+signer certificate** as the installed executable. The candidate self-test
+must pass. Only then a verified separate helper waits for app exit, repeats
+all file signing/hash checks, performs an atomic same-directory replacement
+with a .bak recovery checkpoint, runs the installed self-test, and attempts
+rollback on failure. A failure hold blocks repeated automatic updates.
+No elevation, tenant changes, network listener changes or silent updates.
+The GitHub Actions previews remain unsigned; they cannot be auto-installed.
+A genuine publisher-signed GitHub Release and live positive-path update/rollback
+tests are needed before describing this as production-tested.
