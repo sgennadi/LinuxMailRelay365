@@ -589,8 +589,13 @@ internal sealed class MainForm : Form
         footerStatus.Controls.Add(status, 0, 0);
         footerStatus.Controls.Add(activityToggle, 1, 0);
         activityPanel.Controls.Add(activity);
-        var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3,
-            ColumnCount = 1, Padding = new Padding(18, 2, 18, 9) };
+        var bottom = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            RowCount = 3, ColumnCount = 1,
+            Padding = new Padding(18, 4, 18, 12)
+        };
         bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -662,6 +667,18 @@ internal sealed class MainForm : Form
         var maximum = PreferredWizardSize(workingArea, dpi);
         return new Size(Math.Min(maximum.Width, (int)Math.Round(870 * scale)),
                         Math.Min(maximum.Height, (int)Math.Round(670 * scale)));
+    }
+
+    internal static Size PreferredDialogSize(Size workingArea, int dpi,
+        int logicalWidth, int logicalHeight)
+    {
+        float scale = Math.Max(1f, dpi / 96f);
+        int safeMargin = Math.Max(16, (int)Math.Round(28 * scale));
+        return new Size(
+            Math.Min(Math.Max(340, workingArea.Width - safeMargin * 2),
+                Math.Max(360, (int)Math.Round(logicalWidth * scale))),
+            Math.Min(Math.Max(300, workingArea.Height - safeMargin * 2),
+                Math.Max(300, (int)Math.Round(logicalHeight * scale))));
     }
 
     private void FitHeaderText()
@@ -2619,6 +2636,14 @@ internal sealed class MainForm : Form
             PerformLayout();
             Refresh();
             Application.DoEvents();
+            foreach (Control footerControl in new Control[] { status, activityToggle })
+            {
+                if (!footerControl.Visible) continue;
+                var location = PointToClient(footerControl.PointToScreen(Point.Empty));
+                if (location.Y < 0 ||
+                    location.Y + footerControl.Height > ClientSize.Height - 2)
+                    throw new InvalidOperationException("Wizard footer text extends beyond client area.");
+            }
             using var bitmap = new Bitmap(ClientSize.Width, ClientSize.Height);
             DrawToBitmap(bitmap, new Rectangle(Point.Empty, ClientSize));
             bitmap.Save(Path.Combine(root, filename),
@@ -4865,33 +4890,54 @@ internal sealed class MainForm : Form
 
     private bool ConfirmDestructive(string dialogTitle, string explanation, string phrase)
     {
+        var workArea = Screen.FromControl(this).WorkingArea.Size;
         using var dialog = new Form
         {
             Text = dialogTitle, StartPosition = FormStartPosition.CenterParent,
-            ClientSize = new Size(675, 270), MinimumSize = new Size(560, 270),
+            ClientSize = PreferredDialogSize(workArea, DeviceDpi, 880, 580),
+            MinimumSize = PreferredDialogSize(workArea, DeviceDpi, 630, 450),
             BackColor = UiTheme.Canvas, ForeColor = UiTheme.Navy,
-            AutoScaleMode = AutoScaleMode.Dpi, MaximizeBox = false,
-            MinimizeBox = false
+            Font = new Font("Segoe UI", 10f),
+            AutoScaleMode = AutoScaleMode.Dpi, FormBorderStyle = FormBorderStyle.Sizable,
+            MaximizeBox = true, MinimizeBox = false
         };
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2,
+            Padding = new Padding(14, 12, 14, 12)
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true,
+            BackColor = UiTheme.Canvas };
         var body = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 4,
-            Padding = new Padding(20, 18, 20, 16)
+            Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 0,
+            Padding = new Padding(10, 8, 10, 12)
         };
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var warning = UiTheme.Text(explanation);
-        warning.MaximumSize = new Size(615, 0);
+        warning.MaximumSize = new Size(Math.Max(250, dialog.ClientSize.Width - 80), 0);
         warning.ForeColor = Color.FromArgb(156, 38, 42);
         AddLine(body, warning);
-        AddLine(body, UiTheme.Text(T("Для подтверждения введите: ", "Type to confirm: ", "הקלד לאישור: ") + phrase));
+        var prompt = UiTheme.Text(
+            T("Для подтверждения введите: ", "Type to confirm: ", "הקלד לאישור: ") + phrase);
+        AddLine(body, prompt);
         var input = Field("");
-        input.Width = 610;
+        input.Width = Math.Max(200, dialog.ClientSize.Width - 80);
         input.AccessibleName = "Explicit destructive operation confirmation";
         AddLine(body, input);
         var actions = new FlowLayoutPanel
         {
-            AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.RightToLeft
+            Dock = DockStyle.Fill, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true,
+            FlowDirection = FlowDirection.RightToLeft,
+            Padding = new Padding(4, 6, 4, 4)
         };
-        var approve = UiTheme.Action(T("Подтвердить действие", "Confirm operation", "אישור"), true, "check");
+        var approve = UiTheme.Action(
+            T("Подтвердить действие", "Confirm operation", "אישור"), true, "check");
         approve.Enabled = false;
         approve.BackColor = Color.FromArgb(160, 42, 47);
         approve.ForeColor = Color.White;
@@ -4902,10 +4948,22 @@ internal sealed class MainForm : Form
         cancel.Click += (_, _) => { dialog.DialogResult = DialogResult.Cancel; dialog.Close(); };
         actions.Controls.Add(approve);
         actions.Controls.Add(cancel);
-        AddLine(body, actions);
+        scroll.Controls.Add(body);
+        root.Controls.Add(scroll, 0, 0);
+        root.Controls.Add(actions, 0, 1);
+        dialog.Controls.Add(root);
+        void Fit()
+        {
+            int width = Math.Max(255, scroll.ClientSize.Width - 6);
+            body.Width = width;
+            warning.MaximumSize = new Size(Math.Max(240, width - 24), 0);
+            prompt.MaximumSize = new Size(Math.Max(240, width - 24), 0);
+            input.Width = Math.Max(200, width - body.Padding.Horizontal - 12);
+        }
+        dialog.ClientSizeChanged += (_, _) => Fit();
+        dialog.Shown += (_, _) => { Fit(); input.Focus(); };
         dialog.AcceptButton = approve;
         dialog.CancelButton = cancel;
-        dialog.Controls.Add(body);
         return dialog.ShowDialog(this) == DialogResult.OK;
     }
 
@@ -6082,22 +6140,44 @@ internal sealed class MainForm : Form
         sb.AppendLine("3) Entra sign-in monitoring: configure sign-in log permissions and alerts explicitly. Log access requires appropriate admin roles/consent. Thumbprint and source IP are audit signals, not a device fingerprint enforcement mechanism.");
         sb.AppendLine();
         sb.AppendLine("Security choices in this wizard are plans only. They can be selected/cleared later per SSH endpoint. No keys, CA policies, licenses or alert rules are changed by these controls.");
-        var dialog = new Form {
-            Text = "LinuxMailRelay365 | Optional security", StartPosition = FormStartPosition.CenterParent,
-            Size = new Size(820, 560), MinimumSize = new Size(520, 380),
-            BackColor = UiTheme.Canvas, AutoScaleMode = AutoScaleMode.Dpi
+        var workArea = Screen.FromControl(this).WorkingArea.Size;
+        using var dialog = new Form
+        {
+            Text = T("LinuxMailRelay365 | Защита", "LinuxMailRelay365 | Optional security",
+                     "LinuxMailRelay365 | אבטחה"),
+            StartPosition = FormStartPosition.CenterParent,
+            ClientSize = PreferredDialogSize(workArea, DeviceDpi, 930, 690),
+            MinimumSize = PreferredDialogSize(workArea, DeviceDpi, 600, 430),
+            BackColor = UiTheme.Canvas, AutoScaleMode = AutoScaleMode.Dpi,
+            FormBorderStyle = FormBorderStyle.Sizable, MaximizeBox = true
         };
-        var text = new TextBox {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2,
+            Padding = new Padding(14, 12, 14, 12)
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var text = new TextBox
+        {
             Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
             Font = new Font("Segoe UI", 10), Dock = DockStyle.Fill,
             Text = sb.ToString(), BackColor = Color.White
         };
         var close = UiTheme.Action(T("Закрыть", "Close", "סגור"), true);
         close.Click += (_, _) => dialog.Close();
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 65, Padding = new Padding(10) };
+        var actions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true,
+            FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(6)
+        };
         actions.Controls.Add(close);
-        dialog.Controls.Add(text);
-        dialog.Controls.Add(actions);
+        layout.Controls.Add(text, 0, 0);
+        layout.Controls.Add(actions, 0, 1);
+        dialog.Controls.Add(layout);
+        dialog.AcceptButton = close;
         dialog.ShowDialog(this);
         return Task.CompletedTask;
     }

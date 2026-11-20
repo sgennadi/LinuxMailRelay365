@@ -823,3 +823,15 @@ users at 150–200% DPI no longer have to scroll down to connect. Failed actions
 also reveal the expandable journal without its footer row remaining collapsed.
 CI captures extra compact-size screens for all five Wizard steps and RU/EN/HE
 SSH layouts in addition to its existing 16 snapshots (24 PNGs total).
+
+
+## DPI-friendly modal dialogs and footer visual assertions
+
+Destructive-operation confirmation dialogs now have a scrollable explanation
+with a fixed confirmation/cancel footer; the typed approval is never inferred
+and remains mandatory. They are resizable and stay within the desktop work
+area at higher scaling. Optional Security Help likewise uses a resizable
+viewport with a fixed Close footer instead of a 65px bar. The Wizard's
+main footer now reports its true preferred height; CI screen capture checks
+that the visible status and Activity toggle do not extend beyond the client
+area, catching the clipping previously seen in compact screenshots.

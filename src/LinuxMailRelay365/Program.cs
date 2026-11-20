@@ -57,6 +57,14 @@ internal static class Program
                        compact.Width <= 1000 && compact.Height <= 730 &&
                        minimum.Width <= compact.Width && minimum.Height <= compact.Height;
             }),
+            ("DPI-aware dialogs remain within the working desktop", () =>
+            {
+                var small = MainForm.PreferredDialogSize(new Size(900, 680), 96, 880, 580);
+                var high = MainForm.PreferredDialogSize(new Size(1920, 1080), 192, 880, 580);
+                return small.Width <= 900 && small.Height <= 680 &&
+                       high.Width <= 1920 && high.Height <= 1080 &&
+                       small.Width >= 630 && small.Height >= 500;
+            }),
             ("Responsive SSH layout breakpoints", () =>
                 MainForm.UseWideConnectionLayout(1050, 96) &&
                 !MainForm.UseWideConnectionLayout(760, 96) &&
