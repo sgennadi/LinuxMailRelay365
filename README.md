@@ -1,6 +1,29 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.15 — source and GitHub Actions builds; not a verified production release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.16 — opt-in checksum-verified GitHub prerelease updates; NOT a signed Stable or production-accepted release.**
+
+## Preview 16 updater: published test prerelease
+
+After all 18 GitHub CI jobs pass for an exact development-branch push, the
+release job publishes `v0.1.0-preview.16` as a GitHub **Pre-release** with
+single-EXE x64/ARM64 ZIPs and SHA-256 manifest. GitHub Actions build
+artifacts are not releases.
+
+In the Windows GUI select **Include Preview/RC** and **Check GitHub updates**.
+Non-elevated, unsigned portable Preview EXEs can update only by explicit
+confirmation. Downloads are bound to the repository release URL, GitHub
+asset digest/size, correct PE architecture, version and self-test.
+The helper waits for the running app to exit, backs up the original EXE
+to `.bak`, starts the replacement and rolls back on failed health tests.
+Inspect `%LOCALAPPDATA%\\LinuxMailRelay365\\Updater\\last-update-result.txt`
+for the outcome. A failed update may create `manual-review.hold` in the
+same folder to prevent unsafe retries until reviewed.
+
+**Security limit:** A GitHub SHA-256 digest is NOT a digital publisher
+signature. Preview updating is for NON-ELEVATED TEST desktops only.
+It is not a production authentication guarantee. Stable automatic updates
+still require Windows-trusted Authenticode with the same pinned publisher
+certificate on the old and new executable. No signed Stable is published.
 
 ## New functionality in development branch (not Stable)
 
@@ -1018,7 +1041,7 @@ python3 -m unittest discover -v -s tests
 bash -n linux/probe-linux.sh linux/install-postfix-m365-xoauth2.sh
 ```
 
-Public Windows CI builds **single EXE** self-contained preview artifacts for **win-x64 and win-arm64** without private GitHub secrets and runs `LinuxMailRelay365.exe --self-test` on Windows x64. The optional shared updater is used when restored on the developer's Windows machine. The fallback only checks releases: it does not download or install updates.
+Public Windows CI builds **single EXE** self-contained preview artifacts for **win-x64 and win-arm64** without private GitHub secrets and runs `LinuxMailRelay365.exe --self-test` on Windows x64. The optional shared updater is used when restored on the developer's Windows machine. The fallback discovers releases; the guarded standalone updater can install opt-in unsigned test Previews and publisher-pinned signed releases.
 
 ## Windows interface (Preview 5)
 
@@ -1026,7 +1049,7 @@ Public Windows CI builds **single EXE** self-contained preview artifacts for **w
 - Unified compact HiDPI-aware outlined buttons with vector glyphs (SSH, cloud, shield, upload, diagnostics, refresh).
 - Five-step wizard; one selected Microsoft 365 tenant, password/key-based SSH, optional sudo password.
 - **Diagnostics Journal**: allowlisted operation status events only. `Copy privacy-safe diagnostic report` and `Save privacy-safe JSON report` on the Diagnostics step. Raw activity is only local and is redacted before display.
-- No automatic update installer, no stable production release yet.
+- Opt-in portable Preview updating with backup and rollback; no unattended unsigned installation or signed Stable production release yet.
 
 
 ## GitHub

@@ -6774,15 +6774,17 @@ internal sealed class MainForm : Form
         WriteLine("Verify Exchange delivery; acceptance by a local queue is not final delivery.");
     }
 
-    private async Task StageSignedUpdateWithProgressAsync(
-        SignedUpdateOffer offer, string publisher)
+    private async Task StageUpdateWithProgressAsync(
+        SignedUpdateOffer offer, string publisher, bool unsignedPreview = false)
     {
         using var cancellation = new CancellationTokenSource();
         var working = Screen.FromControl(this).WorkingArea.Size;
         using var dialog = new Form
         {
-            Text = T("Установка подписанного обновления", "Install signed update",
-                "התקנת עדכון חתום"),
+            Text = unsignedPreview
+                ? T("Установка тестовой Preview", "Install test Preview", "התקנת גרסת ניסיון")
+                : T("Установка подписанного обновления", "Install signed update",
+                    "התקנת עדכון חתום"),
             StartPosition = FormStartPosition.CenterParent,
             ClientSize = PreferredDialogSize(working, DeviceDpi, 700, 300),
             MinimumSize = PreferredDialogSize(working, DeviceDpi, 520, 260),
@@ -6802,10 +6804,13 @@ internal sealed class MainForm : Form
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var description = UiTheme.Text(T(
-            "Скачивание. Проверяем SHA-256, Authenticode, сертификат издателя и self-test. Неподписанный EXE не будет запущен.",
-            "Downloading. Checking SHA-256, Authenticode, publisher certificate and self-test. Unsigned EXEs will not execute.",
-            "מוריד ומוודא חתימה, SHA-256 ובדיקת תקינות."));
+        var description = UiTheme.Text(unsignedPreview
+            ? T("Тестовая неподписанная версия: SHA-256 GitHub, архитектура, версия и self-test, резервная копия и откат.",
+                "Unsigned TEST Preview: verify GitHub SHA-256, architecture, version and self-test, then back up and roll back on failure.",
+                "גרסת ניסיון לא חתומה: אימות SHA-256, ארכיטקטורה, גרסה ובדיקת תקינות.")
+            : T("Скачивание. Проверяем SHA-256, Authenticode, сертификат издателя и self-test. Неподписанный EXE не будет запущен.",
+                "Downloading. Checking SHA-256, Authenticode, publisher certificate and self-test. Unsigned EXEs will not execute.",
+                "מוריד ומוודא חתימה, SHA-256 ובדיקת תקינות."));
         description.Dock = DockStyle.Fill;
         var progressText = UiTheme.Text(T(
             "Подготовка загрузки...", "Preparing download...", "מכין הורדה..."));
@@ -6859,7 +6864,7 @@ internal sealed class MainForm : Form
                     percent + "%)";
             });
             await SignedPortableUpdater.StageAndLaunchAsync(
-                offer, publisher, cancellation.Token, progress);
+                offer, publisher, cancellation.Token, progress, unsignedPreview);
         }
         finally
         {
@@ -6887,6 +6892,38 @@ internal sealed class MainForm : Form
             return;
         }
 
+        var offer = await SignedPortableUpdater.FindAsync(withPreview, CancellationToken.None);
+        if (offer is null || !string.Equals(offer.PageUrl, url, StringComparison.Ordinal))
+            throw new InvalidDataException("Release metadata changed; repeat the update check.");
+
+        // Only a non-elevated unsigned Preview can install another test Preview.
+        // Stable and already-signed installations never use this weaker path.
+        if (withPreview && SignedPortableUpdater.IsPreviewRelease(offer) &&
+            SignedPortableUpdater.CanInstallPreview(out _))
+        {
+            var previewAction = MessageBox.Show(this, T(
+                "ВНИМАНИЕ: это НЕПОДПИСАННЫЙ тестовый Preview, НЕ Stable. GitHub SHA-256 проверяет скачанный файл, но НЕ является цифровой подписью издателя. Только тестовый ПК. Сохраните важную работу. После согласия EXE заменится с .bak и откатом при сбое.\n\nДа — установить, Нет — открыть релиз, Отмена — ничего.",
+                "WARNING: this is an UNSIGNED TEST Preview, NOT Stable. GitHub SHA-256 checks downloaded bytes but is NOT a trusted publisher signature. Test PCs only; save important work. With consent the EXE is replaced with .bak and rollback on failure.\n\nYes: install, No: open release, Cancel: do nothing.",
+                "אזהרה: גרסת ניסיון לא חתומה, לא Stable. SHA-256 אינו תחליף לחתימת מפרסם. לבדיקה בלבד."),
+                Text, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button3);
+            if (previewAction == DialogResult.No)
+            {
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                return;
+            }
+            if (previewAction != DialogResult.Yes) return;
+            WriteLine("Installing approved UNSIGNED TEST Preview; validating release SHA-256, architecture and self-test.");
+            await StageUpdateWithProgressAsync(offer, "", unsignedPreview: true);
+            WriteLine("Preview update verified; closing EXE for backup and replacement.");
+            updateShuttingDown = true;
+            Close();
+            return;
+        }
+        if (withPreview && SignedPortableUpdater.IsPreviewRelease(offer) &&
+            !SignedPortableUpdater.CanInstallPreview(out var previewReason))
+            WriteLine("Unsigned Preview update unavailable: " + previewReason);
+
         if (!SignedPortableUpdater.CanInstall(out string publisher, out string reason))
         {
             WriteLine("Signed automatic update is blocked: " + reason);
@@ -6913,11 +6950,8 @@ internal sealed class MainForm : Form
             return;
         }
         if (action != DialogResult.Yes) return;
-        var offer = await SignedPortableUpdater.FindAsync(withPreview, CancellationToken.None);
-        if (offer is null || !string.Equals(offer.PageUrl, url, StringComparison.Ordinal))
-            throw new InvalidDataException("Release metadata changed; repeat the update check.");
         WriteLine("Downloading published signed update; validating SHA-256, publisher, PE machine and self-test.");
-        await StageSignedUpdateWithProgressAsync(offer, publisher);
+        await StageUpdateWithProgressAsync(offer, publisher);
         WriteLine("Publisher-pinned update verified; closing original EXE for external replacement.");
         updateShuttingDown = true;
         Close();

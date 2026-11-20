@@ -12,7 +12,7 @@ namespace LinuxMailRelay365;
 // UniversalUpdater module is present, the full shared verifier is compiled instead.
 internal static class UpdateCheck
 {
-    internal const string Version = "0.1.0-preview.15";
+    internal const string Version = "0.1.0-preview.16";
     private const int MaximumMetadataBytes = 2 * 1024 * 1024;
     private const string Repository = "sgennadi/LinuxMailRelay365";
 
@@ -130,10 +130,10 @@ internal static class UpdateCheck
         }
         const string name = "LinuxMailRelay365-win-x64.zip";
         const string sha = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        if (Select(Catalog("0.1.0-preview.16", true, sha, name), false).Item1 is not null ||
-            Select(Catalog("0.1.0-preview.16", true, sha, name), true).Item2 != "0.1.0-preview.16" ||
-            Select(Catalog("0.1.0-preview.16", false, sha, name), false).Item1 is not null ||
-            Select(Catalog("0.1.0-preview.15", true, sha, name), true).Item1 is not null ||
+        if (Select(Catalog("0.1.0-preview.17", true, sha, name), false).Item1 is not null ||
+            Select(Catalog("0.1.0-preview.17", true, sha, name), true).Item2 != "0.1.0-preview.17" ||
+            Select(Catalog("0.1.0-preview.17", false, sha, name), false).Item1 is not null ||
+            Select(Catalog("0.1.0-preview.16", true, sha, name), true).Item1 is not null ||
             Select(Catalog("0.1.1", false, sha, name), false).Item2 != "0.1.1" ||
             Select(Catalog("0.1.1", false, "sha256:invalid", name), true).Item1 is not null ||
             Select(Catalog("0.1.1", false, sha, "wrong.zip"), true).Item1 is not null ||
@@ -199,8 +199,8 @@ internal static class ReleaseVersion
     internal static bool SelfTest() =>
         Compare("0.1.1", "0.1.1-preview.9") > 0 &&
         Compare("0.1.1-preview.10", "0.1.1-preview.9") > 0 &&
-        Compare("0.1.0-preview.15", "0.1.0-preview.3") > 0 &&
-        Compare("0.1.0", "0.1.0-preview.15") > 0 &&
+        Compare("0.1.0-preview.16", "0.1.0-preview.3") > 0 &&
+        Compare("0.1.0", "0.1.0-preview.16") > 0 &&
         Compare("0.1.0", "0.1.1") < 0;
 }
 #endif

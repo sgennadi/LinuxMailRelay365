@@ -6,15 +6,16 @@ using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace LinuxMailRelay365;
 
-// Publisher-pinned, explicitly approved portable-executable replacement.
-// The unsigned public CI preview NEVER qualifies for this install path.
-// All downloads are restricted to the configured GitHub repository, and the
-// candidate must pass Authenticode + same publisher cert + SHA-256 + PE arch.
+// Stable updates require a trusted and pinned Authenticode publisher.
+// An explicitly approved, non-elevated test Preview can update from a published
+// unsigned GitHub prerelease using its SHA-256 digest; NEVER accept for Stable.
+// Both paths enforce architecture, version, self-test, backup and rollback.
 internal sealed record SignedUpdateOffer(string Version, string Tag, string PageUrl,
     Uri AssetUrl, string AssetName, string ArchiveSha, long ArchiveBytes);
 
@@ -22,6 +23,7 @@ internal static class SignedPortableUpdater
 {
     private const string Repository = "sgennadi/LinuxMailRelay365";
     private const string Executable = "LinuxMailRelay365.exe";
+    private const string PreviewPublisherMarker = "0000000000000000000000000000000000000000000000000000000000000000";
     private const long MaximumArchive = 450L * 1024 * 1024;
     private const long MaximumExecutable = 450L * 1024 * 1024;
     private const int MaximumMetadata = 2 * 1024 * 1024;
@@ -104,6 +106,13 @@ internal static class SignedPortableUpdater
         }
         return aTags.Length.CompareTo(bTags.Length);
     }
+
+    internal static bool IsPreviewRelease(SignedUpdateOffer offer) =>
+        Regex.IsMatch(offer.Tag,
+            @"\Av(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-preview\.(0|[1-9]\d*)\z",
+            RegexOptions.CultureInvariant) &&
+        string.Equals(offer.Tag[1..], offer.Version, StringComparison.Ordinal) &&
+        CompareVersions(offer.Version, UpdateCheck.Version) > 0;
 
     internal static SignedUpdateOffer? SelectRelease(
         JsonElement catalog, bool includePreview, string currentVersion, string expectedAsset)
@@ -246,6 +255,56 @@ internal static class SignedPortableUpdater
             CryptographicException or ArgumentException)
         {
             whyNot = "Current executable publisher trust cannot be verified.";
+            return false;
+        }
+    }
+
+    private static bool IsNonElevatedWindowsProcess()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        return !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+    }
+
+    // Only an unsigned portable Preview running without administrative
+    // privilege can opt in. A signed app cannot downgrade its update policy.
+    internal static bool CanInstallPreview(out string whyNot)
+    {
+        whyNot = "";
+        if (!OperatingSystem.IsWindows() ||
+            !UpdateCheck.Version.Contains("-preview.", StringComparison.Ordinal))
+        {
+            whyNot = "Unsigned Preview updates require a Windows Preview build.";
+            return false;
+        }
+        string? path = Environment.ProcessPath;
+        if (path is null ||
+            !string.Equals(Path.GetFileName(path), Executable,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            whyNot = "A portable LinuxMailRelay365.exe is required.";
+            return false;
+        }
+        try
+        {
+            if (!IsNonElevatedWindowsProcess())
+            {
+                whyNot = "Unsigned Preview updating is blocked when elevated. Restart the GUI without administrator rights.";
+                return false;
+            }
+            RejectLinks(path);
+            if (!CorrectPeMachine(path, Architecture) ||
+                !CorrectVersion(path, UpdateCheck.Version) ||
+                VerifiedPublisher(path) is not null)
+            {
+                whyNot = "The current Preview is signed, changed or has the wrong architecture.";
+                return false;
+            }
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or
+            CryptographicException or ArgumentException or System.Security.SecurityException)
+        {
+            whyNot = "Current Preview executable could not be verified.";
             return false;
         }
     }
@@ -433,6 +492,15 @@ internal static class SignedPortableUpdater
             reader.ReadUInt16() == ExpectedMachine(architecture);
     }
 
+    private static bool TrustedCandidate(string path, string expectedVersion,
+        string publisher, bool unsignedPreview) =>
+        CorrectPeMachine(path, Architecture) &&
+        CorrectVersion(path, expectedVersion) &&
+        (unsignedPreview
+            ? VerifiedPublisher(path) is null
+            : string.Equals(VerifiedPublisher(path), publisher,
+                StringComparison.OrdinalIgnoreCase));
+
     private static string FileSha256(string path)
     {
         using var file = new FileStream(path, FileMode.Open, FileAccess.Read,
@@ -559,19 +627,24 @@ internal static class SignedPortableUpdater
 
     internal static async Task StageAndLaunchAsync(SignedUpdateOffer offer,
         string publisher, CancellationToken ct,
-        IProgress<(long, long)>? progress = null)
+        IProgress<(long, long)>? progress = null, bool unsignedPreview = false)
     {
-        if (!Digest(publisher) ||
-            !CanInstall(out var currentPublisher, out _) ||
-            !string.Equals(currentPublisher, publisher, StringComparison.OrdinalIgnoreCase) ||
+        bool sourceApproved = unsignedPreview
+            ? publisher.Length == 0 && IsPreviewRelease(offer) &&
+              CanInstallPreview(out _)
+            : Digest(publisher) &&
+              CanInstall(out var currentPublisher, out _) &&
+              string.Equals(currentPublisher, publisher, StringComparison.OrdinalIgnoreCase);
+        if (!sourceApproved ||
             CompareVersions(offer.Version, UpdateCheck.Version) <= 0 ||
             offer.AssetName != ExpectedAsset ||
             !TrustedGithubUrl(offer.PageUrl,
                 "/" + Repository + "/releases/tag/" + offer.Tag) ||
             !TrustedGithubUrl(offer.AssetUrl.ToString(),
                 "/" + Repository + "/releases/download/" + offer.Tag + "/" + ExpectedAsset) ||
-            !Digest(offer.ArchiveSha) || offer.ArchiveBytes > MaximumArchive)
-            throw new InvalidOperationException("Signed update review no longer matches the installed app.");
+            !Digest(offer.ArchiveSha) ||
+            offer.ArchiveBytes <= 0 || offer.ArchiveBytes > MaximumArchive)
+            throw new InvalidOperationException("Update review no longer matches the installed app.");
         string original = Environment.ProcessPath!;
         string root = UpdateRoot();
         if (File.Exists(Path.Combine(root, "manual-review.hold")))
@@ -584,19 +657,15 @@ internal static class SignedPortableUpdater
             string zip = Path.Combine(stage, offer.AssetName);
             await DownloadAsync(offer, zip, ct, progress);
             string candidate = ExtractSingleExe(zip, stage);
-            if (!CorrectPeMachine(candidate, Architecture) ||
-                !CorrectVersion(candidate, offer.Version) ||
-                !string.Equals(VerifiedPublisher(candidate), publisher,
-                    StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Update PE architecture, release version or signed publisher mismatch.");
+            if (!TrustedCandidate(candidate, offer.Version, publisher, unsignedPreview))
+                throw new InvalidDataException("Update PE architecture, release version or publisher trust mismatch.");
             if (!await HealthAsync(candidate, ct))
                 throw new InvalidDataException("Staged application self-test failed.");
             string sha = FileSha256(candidate);
             string helper = Path.Combine(stage, "LinuxMailRelay365-UpdateHelper.exe");
             File.Copy(original, helper, overwrite: false);
-            if (!string.Equals(VerifiedPublisher(helper), publisher,
-                StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Update helper signature did not match installed publisher.");
+            if (!TrustedCandidate(helper, UpdateCheck.Version, publisher, unsignedPreview))
+                throw new InvalidDataException("Update helper did not match installed publisher and version.");
             ct.ThrowIfCancellationRequested();
             var info = new ProcessStartInfo(helper)
             {
@@ -605,8 +674,11 @@ internal static class SignedPortableUpdater
             };
             foreach (string argument in new[]
             {
-                "--apply-signed-update", Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
-                original, candidate, sha, publisher, stage, offer.Version
+                unsignedPreview ? "--apply-preview-update" : "--apply-signed-update",
+                Environment.ProcessId.ToString(CultureInfo.InvariantCulture),
+                original, candidate, sha,
+                unsignedPreview ? PreviewPublisherMarker : publisher,
+                stage, offer.Version
             }) info.ArgumentList.Add(argument);
             using var process = Process.Start(info) ??
                 throw new IOException("Cannot start signed update helper.");
@@ -647,12 +719,22 @@ internal static class SignedPortableUpdater
         catch (UnauthorizedAccessException) { }
     }
 
-    internal static int ApplyFromHelper(string[] args)
+    internal static int ApplyFromHelper(string[] args, bool unsignedPreview = false)
     {
         if (!OperatingSystem.IsWindows() || args.Length != 7 ||
             !int.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out int parentId) ||
-            parentId <= 0 || !Digest(args[3]) || !Digest(args[4]) ||
-            !VersionPattern.IsMatch(args[6]))
+            parentId <= 0 || !Digest(args[3]) ||
+            !(unsignedPreview
+                ? string.Equals(args[4], PreviewPublisherMarker, StringComparison.Ordinal)
+                : Digest(args[4])) ||
+            !VersionPattern.IsMatch(args[6]) ||
+            (unsignedPreview &&
+                (!UpdateCheck.Version.Contains("-preview.", StringComparison.Ordinal) ||
+                 !Regex.IsMatch(args[6],
+                     @"\A\d+\.\d+\.\d+-preview\.(0|[1-9]\d*)\z",
+                     RegexOptions.CultureInvariant) ||
+                 CompareVersions(args[6], UpdateCheck.Version) <= 0 ||
+                 !IsNonElevatedWindowsProcess())))
             return 2;
         string target = Path.GetFullPath(args[1]);
         string candidate = Path.GetFullPath(args[2]);
@@ -683,14 +765,10 @@ internal static class SignedPortableUpdater
             RejectLinks(target);
             RejectLinks(Path.GetDirectoryName(target)!);
             if (File.Exists(hold) || File.Exists(next) ||
-                !string.Equals(VerifiedPublisher(Environment.ProcessPath!), args[4],
-                    StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(VerifiedPublisher(target), args[4],
-                    StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(VerifiedPublisher(candidate), args[4],
-                    StringComparison.OrdinalIgnoreCase) ||
-                !CorrectPeMachine(candidate, Architecture) ||
-                !CorrectVersion(candidate, args[6]) ||
+                !TrustedCandidate(Environment.ProcessPath!, UpdateCheck.Version,
+                    args[4], unsignedPreview) ||
+                !TrustedCandidate(target, UpdateCheck.Version, args[4], unsignedPreview) ||
+                !TrustedCandidate(candidate, args[6], args[4], unsignedPreview) ||
                 !string.Equals(FileSha256(candidate), args[3], StringComparison.OrdinalIgnoreCase))
                 return 2;
             try
@@ -701,8 +779,8 @@ internal static class SignedPortableUpdater
             }
             catch (ArgumentException) { /* Already exited. */ }
             // All executable signature/hash checks are repeated AFTER waiting.
-            if (!string.Equals(VerifiedPublisher(target), args[4], compare) ||
-                !string.Equals(VerifiedPublisher(candidate), args[4], compare) ||
+            if (!TrustedCandidate(target, UpdateCheck.Version, args[4], unsignedPreview) ||
+                !TrustedCandidate(candidate, args[6], args[4], unsignedPreview) ||
                 !string.Equals(FileSha256(candidate), args[3], compare))
                 throw new InvalidDataException("Publisher or EXE changed while waiting.");
             // An atomic same-volume File.Replace cannot be performed from the
@@ -711,7 +789,7 @@ internal static class SignedPortableUpdater
                 FileAccess.ReadWrite, FileShare.None);
             File.Copy(candidate, next, overwrite: false);
             if (!string.Equals(FileSha256(next), args[3], compare) ||
-                !string.Equals(VerifiedPublisher(next), args[4], compare))
+                !TrustedCandidate(next, args[6], args[4], unsignedPreview))
                 throw new InvalidDataException("Prepared update copy changed.");
             if (File.Exists(backup))
             {
@@ -730,7 +808,8 @@ internal static class SignedPortableUpdater
             });
             if (started is null)
                 throw new IOException("Updated application could not be started.");
-            WriteStatus(root, "SIGNED_UPDATE_INSTALLED");
+            WriteStatus(root, unsignedPreview ?
+                "UNSIGNED_PREVIEW_UPDATE_INSTALLED" : "SIGNED_UPDATE_INSTALLED");
             // The newly created .bak is the immediate rollback checkpoint.
             // The pre-existing .bak is no longer needed after a healthy start.
             if (movedPreviousBackup)
@@ -762,8 +841,9 @@ internal static class SignedPortableUpdater
                 catch (UnauthorizedAccessException) { rolledBack = false; }
             }
             WriteStatus(root, replaced && rolledBack ?
-                "SIGNED_UPDATE_ROLLED_BACK" : "SIGNED_UPDATE_FAILED_MANUAL_REVIEW");
-            try { File.WriteAllText(hold, "Manual review required before another signed update."); }
+                (unsignedPreview ? "UNSIGNED_PREVIEW_UPDATE_ROLLED_BACK" : "SIGNED_UPDATE_ROLLED_BACK") :
+                (unsignedPreview ? "UNSIGNED_PREVIEW_UPDATE_FAILED_MANUAL_REVIEW" : "SIGNED_UPDATE_FAILED_MANUAL_REVIEW"));
+            try { File.WriteAllText(hold, "Manual review required before another update."); }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
             return replaced && rolledBack ? 4 : 5;
@@ -820,9 +900,9 @@ internal static class SignedPortableUpdater
 
     internal static bool SelfTest()
     {
-        if (CompareVersions("0.1.0", "0.1.0-preview.15") <= 0 ||
-            CompareVersions("0.1.0-preview.16", "0.1.0-preview.15") <= 0 ||
-            CompareVersions("0.1.0-preview.9", "0.1.0-preview.15") >= 0 ||
+        if (CompareVersions("0.1.0", "0.1.0-preview.16") <= 0 ||
+            CompareVersions("0.1.0-preview.17", "0.1.0-preview.16") <= 0 ||
+            CompareVersions("0.1.0-preview.9", "0.1.0-preview.16") >= 0 ||
             TrustedGithubUrl("https://bad.example/test",
                 "/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1"))
             return false;
@@ -832,26 +912,35 @@ internal static class SignedPortableUpdater
             bool duplicate = false)
         {
             string link = "https://github.com/sgennadi/LinuxMailRelay365/releases/download/" +
-                "v0.1.0-preview.16/" + asset;
+                "v0.1.0-preview.17/" + asset;
             string item = JsonSerializer.Serialize(new
             {
                 name = asset, digest = "sha256:" + digest, size = 100L,
                 browser_download_url = link
             });
-            return "[{\"tag_name\":\"v0.1.0-preview.16\",\"draft\":false," +
+            return "[{\"tag_name\":\"v0.1.0-preview.17\",\"draft\":false," +
                 "\"prerelease\":" + (preview ? "true" : "false") +
                 ",\"html_url\":\"https://github.com/sgennadi/LinuxMailRelay365/releases/tag/" +
-                "v0.1.0-preview.16\",\"assets\":[" + item +
+                "v0.1.0-preview.17\",\"assets\":[" + item +
                 (duplicate ? "," + item : "") + "]}]";
         }
         static SignedUpdateOffer? Parse(string json, bool allow)
         {
             using var document = JsonDocument.Parse(json);
-            return SelectRelease(document.RootElement, allow, "0.1.0-preview.15",
+            return SelectRelease(document.RootElement, allow, "0.1.0-preview.16",
                 "LinuxMailRelay365-win-x64.zip");
         }
+        using var previewFixture = JsonDocument.Parse(Fixture(asset, hash, true));
+        var fixtureOffer = SelectRelease(previewFixture.RootElement, true,
+            "0.1.0-preview.16", asset);
         return ApplyFromHelper(Array.Empty<string>()) == 2 &&
-               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.0-preview.16" &&
+               ApplyFromHelper(Array.Empty<string>(), unsignedPreview: true) == 2 &&
+               fixtureOffer is not null && IsPreviewRelease(fixtureOffer) &&
+               !IsPreviewRelease(new SignedUpdateOffer("0.1.1", "v0.1.1",
+                   "https://github.com/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1",
+                   new Uri("https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.1/" + asset),
+                   asset, hash, 100L)) &&
+               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.0-preview.17" &&
                Parse(Fixture(asset, hash, true), false) is null &&
                Parse(Fixture(asset, hash, false), false) is null &&
                Parse(Fixture(asset, hash, true, duplicate: true), true) is null &&

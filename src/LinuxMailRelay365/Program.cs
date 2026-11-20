@@ -371,6 +371,8 @@ internal static class Program
     {
         if (args.Length > 0 && args[0] == "--apply-signed-update")
             return SignedPortableUpdater.ApplyFromHelper(args[1..]);
+        if (args.Length > 0 && args[0] == "--apply-preview-update")
+            return SignedPortableUpdater.ApplyFromHelper(args[1..], unsignedPreview: true);
         if (args.Length > 0 && args[0] == "--self-test")
         {
             if (args.Length == 1) return RunSelfTests(null);
