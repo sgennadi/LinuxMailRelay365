@@ -58,6 +58,45 @@ internal sealed class MailHostInspection
             .OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .Take(count).Select(pair => pair.Value);
 
+    // A suggested listener must be attached to an administratively UP and
+    // operationally UP interface and be RFC1918 IPv4. This is UI intent only,
+    // not authorization to open a network port or trust an SMTP client.
+    internal IReadOnlyList<(string Name, string Address)> ActivePrivateIPv4s()
+    {
+        if (Get("MAIL_HOST_NET_STATE") != "ok" ||
+            Get("MAIL_HOST_NET_AUDIT_VERSION") != "1")
+            return Array.Empty<(string Name, string Address)>();
+        var up = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string row in ReadRows("MAIL_HOST_IFACE_", 16))
+        {
+            string[] parts = row.Split(',');
+            if (parts.Length == 3 && parts[1] == "up" && parts[2] == "up" &&
+                Regex.IsMatch(parts[0], @"\A[A-Za-z0-9_.-]{1,32}\z",
+                    RegexOptions.CultureInvariant))
+                up.Add(parts[0]);
+        }
+        var candidates = new List<(string Name, string Address)>();
+        foreach (string row in ReadRows("MAIL_HOST_ADDR_", 24))
+        {
+            string[] parts = row.Split(',');
+            if (parts.Length != 4 || parts[1] != "ipv4" || !up.Contains(parts[0]))
+                continue;
+            string[] ipAndPrefix = parts[2].Split('/');
+            if (ipAndPrefix.Length != 2 ||
+                !int.TryParse(ipAndPrefix[1], out int prefix) || prefix is < 0 or > 32 ||
+                !System.Net.IPAddress.TryParse(ipAndPrefix[0], out var ip) ||
+                ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+                continue;
+            byte[] b = ip.GetAddressBytes();
+            bool privateV4 = b[0] == 10 ||
+                (b[0] == 172 && b[1] is >= 16 and <= 31) ||
+                (b[0] == 192 && b[1] == 168);
+            if (privateV4 && candidates.All(x => x.Address != ip.ToString()))
+                candidates.Add((parts[0], ip.ToString()));
+        }
+        return candidates;
+    }
+
     private string NetworkSummary(int language)
     {
         if (Get("MAIL_HOST_NET_AUDIT_VERSION") != "1")
@@ -130,12 +169,20 @@ internal sealed class MailHostInspection
         try { Parse(valid.Replace("MAIL_HOST_CHANGES=no", "MAIL_HOST_CHANGES=yes")); return false; }
         catch (InvalidDataException) { }
         const string network = "MAIL_HOST_NET_AUDIT_VERSION=1\n" +
+            "MAIL_HOST_NET_STATE=ok\n" +
             "MAIL_HOST_IFACE_01=eth0,up,up\n" +
+            "MAIL_HOST_IFACE_02=eth1,up,down\n" +
+            "MAIL_HOST_IFACE_03=eth2,up,up\n" +
             "MAIL_HOST_ADDR_01=eth0,ipv4,10.0.0.5/24,global\n" +
+            "MAIL_HOST_ADDR_02=eth1,ipv4,192.168.1.9/24,global\n" +
+            "MAIL_HOST_ADDR_03=eth2,ipv4,8.8.8.8/32,global\n" +
             "MAIL_HOST_SOCKET_01=127.0.0.1:25\n";
         var withNetwork = Parse(valid + network);
         if (!withNetwork.Summary(1).Contains("eth0,up,up", StringComparison.Ordinal) ||
-            !withNetwork.Summary(1).Contains("127.0.0.1:25", StringComparison.Ordinal))
+            !withNetwork.Summary(1).Contains("127.0.0.1:25", StringComparison.Ordinal) ||
+            withNetwork.ActivePrivateIPv4s().Count != 1 ||
+            withNetwork.ActivePrivateIPv4s()[0].Address != "10.0.0.5" ||
+            withNetwork.ActivePrivateIPv4s()[0].Name != "eth0")
             return false;
         return true;
     }

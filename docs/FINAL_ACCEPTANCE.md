@@ -786,3 +786,14 @@ verified configuration backup, uses `postconf -e`, verifies `postfix check`
 and restarts an active primary Postfix. On failure the recovery manager attempts
 rollback; delivery checks and independent backups are still mandatory.
 Sendmail/Exim primary configurations are not edited by this action.
+
+
+## Active Linux network interfaces in the Wizard
+
+In the SMTP Listener section, after a successful read-only Linux inspection,
+the Wizard now offers explicit selection of an IPv4 address assigned to a
+currently administrator-UP, operationally-UP interface. It suggests **only
+RFC1918** addresses; loopback, public IPs and DOWN links are not offered.
+Selecting one merely fills the planned `ListenIpv4` field. There is no
+change to Linux interface state, SMTP bind, access controls or firewall.
+Existing per-host Trusted CIDRs and AUTH/TLS safeguards still apply.

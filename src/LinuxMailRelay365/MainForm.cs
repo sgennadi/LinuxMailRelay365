@@ -1204,6 +1204,53 @@ internal sealed class MainForm : Form
         return Task.CompletedTask;
     }
 
+    private void AddDetectedPrivateInterfacePicker(TableLayoutPanel page)
+    {
+        if (inspectedHostIdentity != TryCurrentIdentity() || inspectedHost is null)
+            return;
+        var candidates = inspectedHost.ActivePrivateIPv4s();
+        if (candidates.Count == 0)
+        {
+            AddLine(page, UiTheme.Text(T(
+                "Подходящих активных частных IPv4 не найдено. Укажите адрес вручную только после проверки ip addr и firewall.",
+                "No eligible UP private IPv4 interfaces found. Enter a listener manually only after checking ip addr and firewall.",
+                "לא נמצא IPv4 פרטי פעיל.")));
+            return;
+        }
+        AddLine(page, UiTheme.Text(T(
+            "Выбрать один из обнаруженных поднятых IPv4 (только заполнить поле)",
+            "Pick a verified UP private IPv4 (prefill listener field only)",
+            "בחר כתובת IPv4 פרטית פעילה"), true));
+        var selector = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 690,
+            Font = new Font("Segoe UI", 9.5f),
+            Margin = new Padding(0, 4, 0, 9),
+            AccessibleName = "Detected active Linux private IPv4 listeners (plan only)"
+        };
+        selector.Items.Add(T("Выберите интерфейс...", "Choose interface...",
+            "בחר ממשק..."));
+        foreach (var item in candidates)
+            selector.Items.Add(item.Name + "  ·  " + item.Address);
+        selector.SelectedIndex = 0;
+        selector.SelectedIndexChanged += (_, _) =>
+        {
+            int index = selector.SelectedIndex - 1;
+            if (index < 0 || index >= candidates.Count) return;
+            if (inspectedHostIdentity != TryCurrentIdentity()) return;
+            smtpListenIp.Text = candidates[index].Address;
+            SaveRoutingChoices();
+            WriteLine("Selected discovered private IPv4 for SMTP plan only. " +
+                      "No Postfix, network listener or firewall changed.");
+        };
+        AddLine(page, selector);
+        AddLine(page, UiTheme.Text(T(
+            "Адрес должен оставаться назначенным и поднятым во время установки. Для клиентов других компьютеров также укажите доверенные CIDR, AUTH/TLS и отдельно проверьте firewall.",
+            "The IP must remain assigned and UP at apply time. Remote clients also require trusted CIDRs, AUTH/TLS and a separately audited firewall.",
+            "הכתובת חייבת להישאר פעילה. נדרשת בדיקת הרשאות ורשת.")));
+    }
+
     private void ShowPostfixBasicsSection(TableLayoutPanel page)
     {
         if (inspectedMail?.Mta != "postfix" ||
@@ -1970,6 +2017,7 @@ internal sealed class MainForm : Form
                 AddField(page, T("Локальный IPv4 для SMTP (пусто = только loopback)",
                                  "Local IPv4 SMTP listener (blank = loopback only)",
                                  "כתובת IPv4 מקומית לקבלת SMTP"), smtpListenIp);
+                AddDetectedPrivateInterfacePicker(page);
                 AddField(page, T("Доверенные сети RFC1918, CIDR через запятую (необязательно)",
                                  "Trusted RFC1918 client CIDRs, comma separated (optional)",
                                  "רשתות מקומיות מורשות, CIDR"), smtpTrustedCidrs);
