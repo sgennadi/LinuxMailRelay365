@@ -1,6 +1,27 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.20 — offline multi-mailbox PS256 certificate proof, hardened network audit and Preview 19 to 20 update test; NOT a signed Stable or production-accepted release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.21 — Exim/Sendmail read-only SMTP TLS/AUTH discovery, hardened MTA coexistence and Preview 20 to 21 update test; NOT a signed Stable or production-accepted release.**
+
+## Preview 21: read-only Exim/Sendmail authentication and TLS discovery
+
+After connecting to Linux, the Wizard reads Exim main-option declarations
+for TLS advertisement, certificate/key references and SMTP AUTH advertisement,
+or Sendmail compiled sendmail.cf server TLS and AUTH mechanism declarations.
+Only allowlisted status codes are displayed. No raw config, key path or
+credentials are returned. Dynamic Exim values and missing config remain
+unverified. Declarations are NOT proof of a live TLS handshake, valid trust
+chain, authenticated client, or a safe public relay.
+
+Read-only config reading now verifies a complete stable bounded read,
+refuses a symlink file and detects changes during reading. The multi-MTA
+coexistence check uses explicit systemd LoadState and ActiveState: unknown,
+failed or transitional states fail closed rather than silently suggesting
+that a server is unused. Existing MTA services, queues, firewall, DNS,
+Microsoft 365 tenant objects and packages remain unchanged.
+
+CI on Windows tests published Preview 20 -> candidate Preview 21
+upgrade, backup and rollback in a disposable test directory. A successful
+test does not prove interactive updater handoff or Authenticode trust.
 
 ## Preview 20: mapped mailbox signer audit and test updater
 

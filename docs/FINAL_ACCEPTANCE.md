@@ -27,6 +27,20 @@ queue-bound sender identity, tenant delivery, TPM nonexportability,
 Entra token acceptance or RHEL SELinux Enforcing. Multi-mailbox Apply/Test
 remain blocked pending each separately documented live acceptance gate.
 
+## Preview 21 read-only Exim/Sendmail acceptance
+
+Review Exim/Sendmail TLS and SMTP AUTH declarations without touching
+primary mail. These checks inspect only declared settings and produce
+fixed non-secret codes, not a verified SMTP AUTH/TLS client session.
+Dynamic values are unverified. Configuration files must be complete,
+stable and no-follow. systemd queries now distinguish loaded, not-found,
+failed and transitioning service states. Unknown means manual review.
+
+Live validation remains required for SMTP AUTH mechanisms, TLS certificate
+trust and names, Exim ACL/routers/transports, Sendmail access maps, MTA
+queue preservation, RHEL SELinux Enforcing and actual Microsoft 365 delivery.
+Neither this inspection nor CI enables native Exim/Sendmail rewriting.
+
 ## What is implemented vs blocked
 
 | Feature | State | Acceptance evidence still needed |
