@@ -64,7 +64,9 @@ internal static class Program
                 EmbeddedAssets.BuildMailHostInspectionBundle().Contains("LMR365_MAIL_HOST",
                     StringComparison.Ordinal) &&
                 EmbeddedAssets.BuildMailHostInspectionBundle().Contains("--inspect",
-                    StringComparison.Ordinal)),
+                    StringComparison.Ordinal) &&
+                EmbeddedAssets.BuildMailHostInspectionBundle(2526, "exim").Contains(
+                    "--smtp-port 2526 --mta exim", StringComparison.Ordinal)),
             ("Clean Postfix bootstrap approval contract", () =>
             {
                 var preview = EmbeddedAssets.BuildCleanPostfixBundle(2525, "check");

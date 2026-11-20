@@ -751,3 +751,19 @@ or assert that Sendmail/Exim ACLs are safe. The GUI offers explicit one-click
 prefill of SMTP hostname and M365 domain, with confirmation; OS DNS information
 does not verify Exchange accepted-domain ownership, DNS, CA, public reachability
 or sender identity. Primary MTA configuration remains unchanged.
+
+
+## Linux network interface and SMTP bind evidence
+
+The read-only post-SSH report now separates (1) configured MTA inbound
+interfaces, (2) administrative link state and kernel operstate from
+`ip -j address show`, (3) assigned IPv4/IPv6 addresses, and (4) actual
+TCP SMTP LISTEN sockets from `ss -H -lnt` on 25, 465, 587 and selected
+custom port (2525 by default). Listener ownership is always **unverified**:
+a socket can belong to another service. If Postfix's explicit
+`inet_interfaces` address is not assigned, the report flags it. A
+configured wildcard with only loopback sockets also requires review.
+Missing `ip`/`ss`, truncated inventories or complex DNS/variable
+listener settings cannot be treated as safe.
+`inet_interfaces = all` does not open firewall/NAT or prove SMTP reachability;
+changing `inet_interfaces` or `inet_protocols` may require Postfix stop/start.

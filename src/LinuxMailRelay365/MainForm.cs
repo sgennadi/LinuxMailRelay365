@@ -4361,7 +4361,10 @@ internal sealed class MainForm : Form
         try
         {
             var detected = await SshRemote.ExecuteAsync(endpoint, "bash -s",
-                EmbeddedAssets.BuildMailHostInspectionBundle(), timeout: TimeSpan.FromSeconds(75));
+                EmbeddedAssets.BuildMailHostInspectionBundle(
+                    int.TryParse(isolatedSmtpPort.Text.Trim(), out int checkPort) &&
+                        checkPort is >= 1024 and <= 65535 ? checkPort : 2525,
+                    inventory.Mta), timeout: TimeSpan.FromSeconds(90));
             detected.EnsureSuccess();
             inspectedHost = MailHostInspection.Parse(detected.StdOut);
             inspectedHostIdentity = SecurityOptionsStore.Identity(endpoint);

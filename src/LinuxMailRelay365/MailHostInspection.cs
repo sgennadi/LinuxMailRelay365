@@ -27,7 +27,7 @@ internal sealed class MailHostInspection
             if (n is < 1 or > 80 || line.Length > 340) continue;
             string key = line[..n];
             string value = line[(n + 1)..];
-            if (!Regex.IsMatch(key, @"\AMAIL_HOST_[A-Z_]+\z", RegexOptions.CultureInvariant) ||
+            if (!Regex.IsMatch(key, @"\AMAIL_HOST_[A-Z0-9_]+\z", RegexOptions.CultureInvariant) ||
                 !Regex.IsMatch(value, @"\A[A-Za-z0-9_.$/,: @{}\[\]+-]*\z", RegexOptions.CultureInvariant) ||
                 !values.TryAdd(key, value))
                 throw new InvalidDataException("Malformed or duplicate mail-host setting.");
@@ -51,6 +51,32 @@ internal sealed class MailHostInspection
                 throw new InvalidDataException("Remote hostname/domain invalid.");
         }
         return new MailHostInspection(values);
+    }
+
+    private IEnumerable<string> ReadRows(string prefix, int count) =>
+        values.Where(pair => pair.Key.StartsWith(prefix, StringComparison.Ordinal))
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Take(count).Select(pair => pair.Value);
+
+    private string NetworkSummary(int language)
+    {
+        if (Get("MAIL_HOST_NET_AUDIT_VERSION") != "1")
+            return language == 0 ? "Сетевые интерфейсы не проверены." :
+                language == 2 ? "ממשקי הרשת לא נבדקו." : "Network interfaces not inspected.";
+        string interfaces = string.Join("; ", ReadRows("MAIL_HOST_IFACE_", 12));
+        string addresses = string.Join("; ", ReadRows("MAIL_HOST_ADDR_", 14));
+        string sockets = string.Join("; ", ReadRows("MAIL_HOST_SOCKET_0", 12));
+        string status = Get("MAIL_HOST_NET_BIND_RESULT");
+        return "Linux interfaces (admin/oper): " + (interfaces.Length == 0 ? "unverified" : interfaces) +
+            Environment.NewLine + "Assigned IPs: " + (addresses.Length == 0 ? "unverified" : addresses) +
+            Environment.NewLine + "SMTP sockets (unattributed): " +
+            (sockets.Length == 0 ? "none observed or unavailable" : sockets) +
+            "; selected port=" + Get("MAIL_HOST_NET_PORT") +
+            Environment.NewLine + "Bind comparison: " + status +
+            "; network=" + Get("MAIL_HOST_NET_STATE") +
+            "; ss=" + Get("MAIL_HOST_SOCKET_STATE") +
+            "; truncated=" + Get("MAIL_HOST_NET_TRUNCATED") + "/" + Get("MAIL_HOST_SOCKET_TRUNCATED") +
+            ". Sockets do NOT prove owning MTA, firewall/NAT access or Internet reachability.";
     }
 
     internal string Summary(int language)
@@ -84,7 +110,8 @@ internal sealed class MailHostInspection
         };
         return prefix + ": FQDN=" + Fqdn + "; domain=" + Domain +
             "; MTA=" + Mta + " (" + MtaState + ")." +
-            Environment.NewLine + config + Environment.NewLine + reminder;
+            Environment.NewLine + config + Environment.NewLine + NetworkSummary(language) +
+            Environment.NewLine + reminder;
     }
 
     internal static bool SelfTest()
@@ -102,6 +129,14 @@ internal sealed class MailHostInspection
         catch (InvalidDataException) { }
         try { Parse(valid.Replace("MAIL_HOST_CHANGES=no", "MAIL_HOST_CHANGES=yes")); return false; }
         catch (InvalidDataException) { }
+        const string network = "MAIL_HOST_NET_AUDIT_VERSION=1\n" +
+            "MAIL_HOST_IFACE_01=eth0,up,up\n" +
+            "MAIL_HOST_ADDR_01=eth0,ipv4,10.0.0.5/24,global\n" +
+            "MAIL_HOST_SOCKET_01=127.0.0.1:25\n";
+        var withNetwork = Parse(valid + network);
+        if (!withNetwork.Summary(1).Contains("eth0,up,up", StringComparison.Ordinal) ||
+            !withNetwork.Summary(1).Contains("127.0.0.1:25", StringComparison.Ordinal))
+            return false;
         return true;
     }
 }
