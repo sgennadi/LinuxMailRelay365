@@ -1,19 +1,19 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.17 — opt-in updater accessible on the first Wizard screen; last-update and rollback status; NOT a signed Stable or production-accepted release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.18 — expanded read-only Exim/Sendmail configuration inspection, distinct Relay FQDN suggestion, and updater regression tests; NOT a signed Stable or production-accepted release.**
 
-## Preview 17 updater: no SSH required to check for updates
+## Preview 18: updated mail-host inspection and updater
 
 After all 18 GitHub CI jobs pass for an exact development-branch push, the
-release job publishes `v0.1.0-preview.17` as a GitHub **Pre-release** with
+release job publishes `v0.1.0-preview.18` as a GitHub **Pre-release** with
 single-EXE x64/ARM64 ZIPs and SHA-256 manifest. GitHub Actions build
 artifacts are not releases.
 
 On the very first Windows Wizard screen (before any SSH/Linux login), select
 **Include Preview/RC** and **Check GitHub updates**. The same controls remain
-under Diagnostics. Published Preview 16 can discover Preview 17; the new
+under Diagnostics. Published Preview 17 can discover Preview 18; the new
 version displays a privacy-safe last-update/rollback/manual-review status.
-The real interactive Preview 16 -> 17 updater remains subject to user
+The real interactive Preview 17 -> 18 updater remains subject to user
 acceptance on a normal non-elevated Windows account.
 Non-elevated, unsigned portable Preview EXEs can update only by explicit
 confirmation. Downloads are bound to the repository release URL, GitHub
@@ -24,7 +24,7 @@ Inspect `%LOCALAPPDATA%\\LinuxMailRelay365\\Updater\\last-update-result.txt`
 for the outcome. A failed update may create `manual-review.hold` in the
 same folder to prevent unsafe retries until reviewed.
 
-CI additionally downloads the previously published Preview 16 x64 ZIP,
+CI additionally downloads the previously published Preview 17 x64 ZIP,
 checks its GitHub asset SHA256/size/PE version, runs the old and new EXE
 self-tests, and exercises File.Replace with a .bak backup and rollback in a
 DISPOSABLE Windows runner folder. This validates the filesystem transaction
@@ -36,6 +36,30 @@ signature. Preview updating is for NON-ELEVATED TEST desktops only.
 It is not a production authentication guarantee. Stable automatic updates
 still require Windows-trusted Authenticode with the same pinned publisher
 certificate on the old and new executable. No signed Stable is published.
+
+### Read-only Exim and Sendmail discovery (Preview 18)
+
+After SSH login, the Windows wizard displays bounded status fields for
+Exim `daemon_smtp_ports` and `local_interfaces`, alongside a Debian Exim
+SmartHost template hint. Sendmail inspection compares source `sendmail.mc`
+and compiled `sendmail.cf` listener, SmartHost and masquerade declarations.
+Raw routing targets and credentials are never printed; ambiguous expansions,
+relays and permissions are reported as *unverified*. The actual socket owner,
+Exim routers/transports/ACL, Sendmail access maps and delivery are not proven
+by static configuration. The original primary MTA remains untouched.
+
+For active Exim/Sendmail the Wizard suggests a separate
+`relay.<detected-domain>` DNS name rather than reusing the active MTA
+hostname, but only as a non-binding draft. It refuses the primary's FQDN for
+an isolated relay. Validate DNS, certificate SAN, sender ownership, SMTP
+permissions and actual listener availability before any approved install.
+
+**Unfinished, blocked until acceptance:** full Entra/Exchange delivery from
+an application SMTP client through local Postfix, safe per-mailbox XOAUTH2
+identity binding at submission and queue time, fully guarded GUI OAuth
+certificate renewal, physical TPM/PKCS11 and RHEL SELinux Enforcing live
+acceptance, external/public SMTP abuse tests, and signed Stable binaries.
+These are not silently enabled.
 
 ## New functionality in development branch (not Stable)
 
