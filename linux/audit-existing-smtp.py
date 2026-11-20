@@ -141,12 +141,14 @@ def assessment(config):
     return "needs_manual_review"
 
 
-def analyze(config, srv, service_override, ports, mta="postfix"):
+def analyze(config, srv, service_override, ports, mta="postfix", selected_port=None):
     output = {
         "SMTP_AUDIT_VERSION": "1",
         "SMTP_AUDIT_MTA": mta,
         "SMTP_PUBLIC_BIND": "unknown",
         "SMTP_STANDARD_PORT_SOCKETS": observed_smtp_ports(ports),
+        "SMTP_SELECTED_PORT": str(selected_port) if selected_port is not None else "none",
+        "SMTP_SELECTED_PORT_SOCKET": selected_port_socket_status(ports, selected_port),
         "SMTP_RELAY_POLICY_RISK": "unknown",
         "SMTP_SMTP_AUTH": "unknown",
         "SMTP_SMTP_TLS": "unknown",
@@ -222,6 +224,10 @@ def self_test():
     assert detect_mta(lambda unit: unit == "sendmail.service") == "sendmail_manual_review"
     assert detect_mta(lambda unit: unit in ("postfix.service", "exim.service")) == "multiple_active_mta_manual_review"
     assert observed_smtp_ports([("0.0.0.0", 25)]) == "potentially_public_unattributed"
+    assert selected_port_socket_status([("0.0.0.0", 2525)], 2525) == "occupied_potentially_public"
+    assert selected_port_socket_status([("127.0.0.1", 2525)], 2525) == "occupied_loopback"
+    assert selected_port_socket_status([("127.0.0.1", 2526)], 2525) == "no_listener_observed"
+    assert selected_port_socket_status(None, 2525) == "scan_unavailable"
     return True
 
 
@@ -246,6 +252,28 @@ def observed_smtp_ports(ports):
     if "loopback" in classes:
         return "loopback_only_unattributed"
     return "no_standard_smtp_listeners_observed"
+
+
+def selected_port_socket_status(ports, selected_port):
+    """Read-only occupancy for the selected inbound SMTP port.
+
+    This cannot identify the process that owns a socket or prove reachability
+    through a firewall/NAT.
+    """
+    if selected_port is None:
+        return "not_checked"
+    if ports is None:
+        return "scan_unavailable"
+    kinds = {bind_class(ip) for ip, port in ports if port == selected_port}
+    if not kinds:
+        return "no_listener_observed"
+    if "potentially_public" in kinds:
+        return "occupied_potentially_public"
+    if "unknown" in kinds:
+        return "occupied_unknown"
+    if "private_or_other" in kinds:
+        return "occupied_private"
+    return "occupied_loopback"
 
 
 MTA_UNITS = {
@@ -298,7 +326,11 @@ def detect_mta(unit_runner=unit_active, finder=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--smtp-port", type=int, default=None,
+                        help="selected custom port 1024..65535 (read-only)")
     args = parser.parse_args()
+    if args.smtp_port is not None and not 1024 <= args.smtp_port <= 65535:
+        parser.error("--smtp-port must be 1024..65535")
     if args.self_test:
         self_test()
         print("SMTP_AUDIT_SELFTEST=pass")
@@ -314,7 +346,8 @@ def main():
         srv = services(run(["postconf", "-M"]))
         service_override = overrides(run(["postconf", "-P"]))
     scanned = analyze(config, srv, service_override,
-                      listeners(run(["ss", "-H", "-lnt"])), mta)
+                      listeners(run(["ss", "-H", "-lnt"])), mta,
+                      selected_port=args.smtp_port)
     for name, value in scanned.items():
         print(name + "=" + value)
 
