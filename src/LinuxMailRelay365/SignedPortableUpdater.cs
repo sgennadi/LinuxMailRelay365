@@ -772,6 +772,48 @@ internal static class SignedPortableUpdater
         }
     }
 
+    private static bool ArchiveAndPeSafetySelfTest()
+    {
+        string folder = Path.Combine(Path.GetTempPath(),
+            "lmr365-updater-safety-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            string traversalZip = Path.Combine(folder, "traversal.zip");
+            using (var archive = ZipFile.Open(traversalZip, ZipArchiveMode.Create))
+                archive.CreateEntry("../untrusted.exe");
+            try { ExtractSingleExe(traversalZip, folder); return false; }
+            catch (InvalidDataException) { }
+
+            string duplicateZip = Path.Combine(folder, "duplicate.zip");
+            using (var archive = ZipFile.Open(duplicateZip, ZipArchiveMode.Create))
+            {
+                archive.CreateEntry(Executable);
+                archive.CreateEntry(Executable);
+            }
+            try { ExtractSingleExe(duplicateZip, folder); return false; }
+            catch (InvalidDataException) { }
+
+            string fakePe = Path.Combine(folder, Executable);
+            byte[] pe = new byte[512];
+            pe[0] = 0x4d; pe[1] = 0x5a; // MZ
+            pe[0x3c] = 0x80;            // e_lfanew
+            pe[0x80] = 0x50; pe[0x81] = 0x45; // PE header
+            pe[0x84] = 0x64; pe[0x85] = 0x86; // x64 machine
+            File.WriteAllBytes(fakePe, pe);
+            return CorrectPeMachine(fakePe, "x64") &&
+                   !CorrectPeMachine(fakePe, "arm64") &&
+                   !CorrectVersion(fakePe, "0.1.1") &&
+                   !File.Exists(Path.Combine(folder, "untrusted.exe"));
+        }
+        finally
+        {
+            try { Directory.Delete(folder, recursive: true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
     internal static bool SelfTest()
     {
         if (CompareVersions("0.1.0", "0.1.0-preview.15") <= 0 ||
@@ -813,6 +855,7 @@ internal static class SignedPortableUpdater
                Parse(Fixture("other.zip", hash, true), true) is null &&
                !TrustedRedirect(new Uri("http://release-assets.githubusercontent.com/x")) &&
                !TrustedRedirect(new Uri("https://attacker@github.com/x")) &&
-               !Digest("not-a-hash");
+               !Digest("not-a-hash") &&
+               ArchiveAndPeSafetySelfTest();
     }
 }
