@@ -27,6 +27,17 @@ class PostfixBaselines(unittest.TestCase):
             mod.apply("mail.example.com", "example.com", "all",
                       "a" * 64, "MODIFY_PRIMARY_POSTFIX", "/tmp/none")
 
+    def test_preflight_guard_blocks_existing_remote_smtp_listener(self):
+        from types import SimpleNamespace
+        with patch.object(mod.os, "geteuid", return_value=0), \
+             patch.object(mod, "file_hash", return_value="a" * 64), \
+             patch.object(mod, "active_units", return_value=[]), \
+             patch.object(mod, "run", side_effect=lambda args, timeout=15:
+                 SimpleNamespace(returncode=0, stdout=(
+                     "all" if args[-1] == "inet_interfaces" else
+                     "$myhostname, localhost.$mydomain, localhost"))):
+            assert not mod.plan("mail.example.com", "example.com", "loopback-only")["ready"]
+
     def test_readonly_plan_on_root_required(self):
         with patch.object(mod.os, "geteuid", return_value=1001):
             with self.assertRaises(mod.Refused):

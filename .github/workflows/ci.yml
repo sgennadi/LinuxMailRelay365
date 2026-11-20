@@ -21,6 +21,8 @@ jobs:
           python3 -m py_compile linux/prepare-clean-postfix.py linux/inspect-mail-host.py linux/audit-mail-bindings.py
           python3 linux/inspect-mail-host.py --self-test
           python3 linux/audit-mail-bindings.py --self-test
+          python3 -W error::DeprecationWarning -m unittest discover -v -s tests -p test_postfix_basics.py
+          python3 linux/manage-postfix-basics.py --self-test
           python3 -m unittest discover -v -s tests -p test_clean_postfix_bootstrap.py
           python3 -m py_compile linux/audit-existing-smtp.py linux/manage-rhel-selinux-port.py linux/manage-public-smtp.py linux/manage-health-alerts.py linux/audit-m365-dns.py
           python3 -m py_compile linux/sidecar-from-owner-milter.py

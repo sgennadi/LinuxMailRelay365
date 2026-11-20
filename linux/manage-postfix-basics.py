@@ -55,7 +55,7 @@ def file_hash(path):
 
 
 def validate_hostname(hostname, domain):
-    if (not HOST.fullmatch(hostname) or not HOST.fullmatch(domain) or
+    if (not HOSTNAME.fullmatch(hostname) or not HOSTNAME.fullmatch(domain) or
             len(hostname) > 253 or len(domain) > 253 or
             not hostname.endswith("." + domain)):
         raise Refused("fqdn_must_be_in_declared_domain")
@@ -97,8 +97,22 @@ def plan(hostname, domain, listener):
                 "desired": desired, "active_units": units}
     digest = hashlib.sha256(json.dumps(
         evidence, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-    return {"sha": digest, "main": main_hash, "desired": desired,
-            "active_units": units, "ready": listener != "all"}
+    # Changing an already public/remote primary listener to loopback drops
+    # existing inbound clients. Never do that in the basic profile.
+    existing_bind = run(["postconf", "-h", "inet_interfaces"])
+    bind = existing_bind.stdout.strip() if existing_bind.returncode == 0 else "unknown"
+    safe_current_bind = bind in ("loopback-only", "localhost", "127.0.0.1")
+    current_dest = run(["postconf", "-h", "mydestination"])
+    destination = current_dest.stdout.strip() if current_dest.returncode == 0 else ""
+    # Changing local delivery domains can black-hole existing local mailbox
+    # delivery. A guarded baseline only operates on the standard default.
+    normalized_dest = " ".join(destination.lower().replace(",", " ").split())
+    standard_dest = " ".join(BASELINE["mydestination"].lower().replace(",", " ").split())
+    safe_local_domains = normalized_dest in ("", standard_dest)
+    ready = listener != "all" and safe_current_bind and safe_local_domains
+    return {"sha": digest, "main": main_hash, "master": master_hash,
+            "desired": desired, "active_units": units, "ready": ready,
+            "current_bind": bind, "safe_local_domains": safe_local_domains}
 
 
 def backup(recovery_path):
@@ -157,7 +171,7 @@ def apply(hostname, domain, listener, expected_sha, confirm, recovery_path):
                     raise Refused("postconf_update_failed")
             if run(["postfix", "check"], timeout=45).returncode:
                 raise Refused("postfix_check_failed")
-            if file_hash(MASTER) != hashlib.sha256(MASTER.read_bytes()).hexdigest():
+            if file_hash(MASTER) != state["master"]:
                 raise Refused("master_cf_changed_during_write")
             # inet_interfaces/inet_protocols need a RESTART (reload is
             # insufficient). The UI displays a strong disruption warning.
@@ -218,10 +232,17 @@ def main(argv=None):
                 raise Refused("preview_must_not_accept_apply_approval")
             result = plan(opts.hostname, opts.domain, opts.listener)
             print("POSTFIX_BASICS_VERSION=1")
-            print("POSTFIX_BASICS_PREFLIGHT=" +
-                  ("ready" if result["ready"] else "blocked_public_listener"))
+            reason = ("public_listener_forbidden" if opts.listener == "all" else
+                      "existing_primary_listener_must_be_loopback" if result["current_bind"] not in (
+                          "loopback-only", "localhost", "127.0.0.1") else
+                      "existing_local_destinations_require_manual_review" if not result[
+                          "safe_local_domains"] else "ready")
+            print("POSTFIX_BASICS_PREFLIGHT=" + reason)
             print("POSTFIX_BASICS_PLAN_SHA256=" + result["sha"])
             print("POSTFIX_BASICS_PRIMARY_MAIN_SHA256=" + result["main"])
+            print("POSTFIX_BASICS_CURRENT_INET_INTERFACES=" + result["current_bind"])
+            print("POSTFIX_BASICS_LOCAL_DOMAINS_SAFE=" +
+                  ("yes" if result["safe_local_domains"] else "no"))
             print("POSTFIX_BASICS_SERVICE_ACTIVE=" +
                   ("yes" if result["active_units"] else "no"))
             print("POSTFIX_BASICS_RESTART_IF_APPLIED=" +
