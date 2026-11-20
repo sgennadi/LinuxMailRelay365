@@ -25,7 +25,9 @@ fi
 # Fail after 3 bounded attempts; never continue with a missing Postfix binary.
 installed=no
 for attempt in 1 2 3; do
-  if sudo apt-get update -qq -o Acquire::Retries=2 &&
+  if sudo apt-get update -qq -o Acquire::Retries=2 \
+         -o APT::Update::Error-Mode=any &&
+     apt-cache show postfix >/dev/null 2>&1 &&
      sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
        -o Acquire::Retries=2 postfix iproute2 openssl; then
     installed=yes
