@@ -139,7 +139,7 @@ def exim_ports(tool, runner=call):
     for item in tokens:
         if item in services:
             value = services[item]
-        elif item.isascii() and item.isdigit() and len(item) <= 5:
+        elif re.fullmatch(r"[0-9]{1,5}", item):
             value = int(item)
         else:
             return "dynamic_or_unverified"
