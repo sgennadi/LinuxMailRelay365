@@ -61,6 +61,18 @@ internal sealed class MailHostInspection
                 "template_only_no_verified_router") ||
             !OneOf(values, "MAIL_HOST_EXIM_RELAY_POLICY",
                 "routers_transports_and_acl_unverified") ||
+            !OneOf(values, "MAIL_HOST_EXIM_TLS_DECLARATION",
+                "unverified", "dynamic_or_unverified", "starttls_not_declared",
+                "starttls_cert_key_declared_unverified", "partial_tls_declaration") ||
+            !OneOf(values, "MAIL_HOST_EXIM_AUTH_DECLARATION",
+                "unverified", "dynamic_or_unverified", "auth_not_advertised",
+                "auth_hosts_declared_backend_unverified") ||
+            !OneOf(values, "MAIL_HOST_SENDMAIL_TLS_DECLARATION",
+                "unverified", "server_tls_not_observed",
+                "server_cert_key_declared_unverified", "partial_tls_declaration") ||
+            !OneOf(values, "MAIL_HOST_SENDMAIL_AUTH_DECLARATION",
+                "unverified", "mechanisms_not_observed",
+                "mechanisms_declared_backend_unverified") ||
             !OneOf(values, "MAIL_HOST_SENDMAIL_CF_LISTENER", "unverified",
                 "loopback_declared", "non_loopback_or_default_requires_review") ||
             !OneOf(values, "MAIL_HOST_SENDMAIL_CF_SMARTHOST", "unverified",
@@ -215,7 +227,9 @@ internal sealed class MailHostInspection
                 "; interface_policy=" + Get("MAIL_HOST_EXIM_BIND_POLICY") +
                 "; daemon_smtp_ports=" + Get("MAIL_HOST_EXIM_SMTP_PORTS") +
                 "; Debian smarthost hint=" + Get("MAIL_HOST_EXIM_SMARTHOST_HINT") +
-                "; effective routers/transports/ACL and SMTP AUTH/TLS require manual review.",
+                "; TLS declaration=" + Get("MAIL_HOST_EXIM_TLS_DECLARATION") +
+                "; AUTH declaration=" + Get("MAIL_HOST_EXIM_AUTH_DECLARATION") +
+                "; effective routers/transports/ACL, SMTP TLS handshake and AUTH require review.",
             "sendmail" =>
                 "Sendmail: sendmail.mc=" + Get("MAIL_HOST_SENDMAIL_MC") +
                 "; .mc listener=" + Get("MAIL_HOST_SENDMAIL_LISTENER") +
@@ -224,7 +238,9 @@ internal sealed class MailHostInspection
                 "; .cf listener=" + Get("MAIL_HOST_SENDMAIL_CF_LISTENER") +
                 "; .cf SmartHost=" + Get("MAIL_HOST_SENDMAIL_CF_SMARTHOST") +
                 "; .cf masquerade=" + Get("MAIL_HOST_SENDMAIL_CF_MASQUERADE") +
-                "; access maps, relay restrictions, AUTH/TLS require manual review.",
+                "; TLS declaration=" + Get("MAIL_HOST_SENDMAIL_TLS_DECLARATION") +
+                "; AUTH declaration=" + Get("MAIL_HOST_SENDMAIL_AUTH_DECLARATION") +
+                "; access maps, relay restrictions, SMTP TLS handshake and AUTH require review.",
             _ => "MTA settings not verified."
         };
         return prefix + ": FQDN=" + Fqdn + "; domain=" + Domain +
@@ -270,15 +286,22 @@ internal sealed class MailHostInspection
         string exim = valid.Replace("MAIL_HOST_MTA=postfix", "MAIL_HOST_MTA=exim") +
             "MAIL_HOST_EXIM_SMTP_PORTS=25,587,2525\n" +
             "MAIL_HOST_EXIM_BIND_POLICY=loopback_declared\n" +
-            "MAIL_HOST_EXIM_SMARTHOST_HINT=template_declares_smarthost_requires_router_review\n";
+            "MAIL_HOST_EXIM_SMARTHOST_HINT=template_declares_smarthost_requires_router_review\n" +
+            "MAIL_HOST_EXIM_TLS_DECLARATION=starttls_cert_key_declared_unverified\n" +
+            "MAIL_HOST_EXIM_AUTH_DECLARATION=auth_hosts_declared_backend_unverified\n";
         if (!Parse(exim).Summary(1).Contains("daemon_smtp_ports=25,587,2525",
                 StringComparison.Ordinal)) return false;
         try { Parse(exim.Replace("MAIL_HOST_EXIM_BIND_POLICY=loopback_declared",
             "MAIL_HOST_EXIM_BIND_POLICY=unsafe_verified")); return false; }
         catch (InvalidDataException) { }
+        try { Parse(exim.Replace("starttls_cert_key_declared_unverified",
+            "tls_live_validated")); return false; }
+        catch (InvalidDataException) { }
         string sendmail = valid.Replace("MAIL_HOST_MTA=postfix", "MAIL_HOST_MTA=sendmail") +
             "MAIL_HOST_SENDMAIL_CF_LISTENER=loopback_declared\n" +
-            "MAIL_HOST_SENDMAIL_CF_SMARTHOST=declared\n";
+            "MAIL_HOST_SENDMAIL_CF_SMARTHOST=declared\n" +
+            "MAIL_HOST_SENDMAIL_TLS_DECLARATION=server_cert_key_declared_unverified\n" +
+            "MAIL_HOST_SENDMAIL_AUTH_DECLARATION=mechanisms_declared_backend_unverified\n";
         if (!Parse(sendmail).Summary(1).Contains(".cf SmartHost=declared",
                 StringComparison.Ordinal)) return false;
         return true;

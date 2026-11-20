@@ -73,6 +73,49 @@ class MailHostInspectorTests(unittest.TestCase):
             self.assertEqual(module.sendmail_cf_summary(link),
                              ("unverified", "unverified", "unverified"))
 
+    def test_exim_tls_auth_statuses_are_not_live_verification(self):
+        options = {"tls_advertise_hosts": "*",
+                   "tls_certificate": "/etc/exim4/mail.pem",
+                   "tls_privatekey": "/etc/exim4/mail.key",
+                   "auth_advertise_hosts": "*"}
+        def runner(argv):
+            return argv[-1] + " = " + options[argv[-1]]
+        self.assertEqual(module.exim_security_declarations("exim", runner),
+                         ("starttls_cert_key_declared_unverified",
+                          "auth_hosts_declared_backend_unverified"))
+        options["tls_privatekey"] = ""
+        options["auth_advertise_hosts"] = ""
+        self.assertEqual(module.exim_security_declarations("exim", runner),
+                         ("partial_tls_declaration", "auth_not_advertised"))
+        options["tls_certificate"] = chr(36) + "{lookup{anything}}"
+        self.assertEqual(module.exim_security_declarations("exim", runner)[0],
+                         "dynamic_or_unverified")
+        self.assertEqual(module.exim_security_declarations("exim", lambda _: None),
+                         ("unverified", "unverified"))
+
+    def test_sendmail_tls_auth_cf_are_declarations_only(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "sendmail.cf"
+            path.write_text("O ServerCertFile=/etc/mail.crt\n"
+                            "O ServerKeyFile=/etc/mail.key\n"
+                            "O AuthMechanisms=PLAIN LOGIN\n", encoding="utf-8")
+            self.assertEqual(module.sendmail_cf_security(path),
+                             ("server_cert_key_declared_unverified",
+                              "mechanisms_declared_backend_unverified"))
+            path.write_text("O ServerCertFile=/etc/mail.crt\n", encoding="utf-8")
+            self.assertEqual(module.sendmail_cf_security(path),
+                             ("partial_tls_declaration", "mechanisms_not_observed"))
+            path.write_text("O AuthMechanisms=PLAIN\n"
+                            "O AuthMechanisms=LOGIN\n", encoding="utf-8")
+            self.assertEqual(module.sendmail_cf_security(path),
+                             ("unverified", "unverified"))
+            link = pathlib.Path(folder) / "linked.cf"
+            link.symlink_to(path)
+            self.assertEqual(module.sendmail_cf_security(link),
+                             ("unverified", "unverified"))
+            self.assertIsNone(module.limited_config_text(link))
+
     def test_exim_debian_hint_is_not_an_effective_route_proof(self):
         import tempfile
         with tempfile.TemporaryDirectory() as temp:

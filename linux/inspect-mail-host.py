@@ -6,6 +6,8 @@ OS hostname/domain are NOT proof of Microsoft 365 accepted-domain ownership.
 Python 3.6+ (supports RHEL-family 8-10).
 """
 import argparse
+import os
+import stat
 import pathlib
 import re
 import ipaddress
@@ -23,7 +25,7 @@ def call(argv):
     if not shutil.which(argv[0]):
         return None
     try:
-        p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                            universal_newlines=True, check=False, timeout=6)
         # systemctl returns 3 for an inactive service and 4 for an
         # unknown unit. Those are valid *read-only evidence*, unlike a
@@ -115,15 +117,27 @@ def exim_setting(tool, key, runner=call):
 
 
 def limited_config_text(path, limit=2 * 1024 * 1024):
-    """Never follow a file symlink, execute MTA configuration or emit its body."""
+    """Bounded race-resistant, no-follow read of Sendmail/Exim config."""
+    fd = None
     try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
+        before = os.lstat(str(path))
+        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
             return None
-        with path.open("r", encoding="utf-8") as source:
-            data = source.read(limit + 1)
-        return data if len(data) <= limit else None
-    except (OSError, UnicodeError):
+        fd = os.open(str(path), os.O_RDONLY |
+                     getattr(os, "O_NOFOLLOW", 0) |
+                     getattr(os, "O_CLOEXEC", 0))
+        after = os.fstat(fd)
+        if (not stat.S_ISREG(after.st_mode) or
+                (after.st_dev, after.st_ino, after.st_size) !=
+                (before.st_dev, before.st_ino, before.st_size)):
+            return None
+        raw = os.read(fd, limit + 1)
+        return raw.decode("utf-8") if len(raw) <= limit and b"\x00" not in raw else None
+    except (OSError, UnicodeError, ValueError):
         return None
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def exim_ports(tool, runner=call):
@@ -147,6 +161,46 @@ def exim_ports(tool, runner=call):
             return "dynamic_or_unverified"
         numbers.append(value)
     return ",".join(str(n) for n in sorted(set(numbers)))
+
+
+def exim_security_declarations(tool, runner=call):
+    """Only MAIN option declarations; never live SMTP AUTH or TLS proof."""
+    def option(key):
+        raw = runner([tool, "-bP", key])
+        if raw is None or not isinstance(raw, str):
+            return None
+        match = re.fullmatch(r"\s*" + re.escape(key) +
+                             r"\s*=\s*(.*?)\s*", raw, flags=re.DOTALL)
+        if not match or len(match.group(1)) > 1024:
+            return None
+        value = match.group(1).strip()
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+            return None
+        return value
+
+    advertised = option("tls_advertise_hosts")
+    cert = option("tls_certificate")
+    key = option("tls_privatekey")
+    auth_hosts = option("auth_advertise_hosts")
+    if None in (advertised, cert, key):
+        tls = "unverified"
+    elif any("$" in v or "\\" in v for v in (advertised, cert, key)):
+        tls = "dynamic_or_unverified"
+    elif not advertised:
+        tls = "starttls_not_declared"
+    elif cert and key:
+        tls = "starttls_cert_key_declared_unverified"
+    else:
+        tls = "partial_tls_declaration"
+    if auth_hosts is None:
+        auth = "unverified"
+    elif "$" in auth_hosts or "\\" in auth_hosts:
+        auth = "dynamic_or_unverified"
+    elif not auth_hosts:
+        auth = "auth_not_advertised"
+    else:
+        auth = "auth_hosts_declared_backend_unverified"
+    return tls, auth
 
 
 def exim_bind_policy(raw):
@@ -211,6 +265,33 @@ def sendmail_cf_summary(path):
     return listener, smarthost, masquerade
 
 
+def sendmail_cf_security(path):
+    """Compiled .cf option declarations only, no TLS session or AUTH proof."""
+    data = limited_config_text(path)
+    if data is None:
+        return "unverified", "unverified"
+    options = {}
+    for line in data.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        match = re.fullmatch(r"O\s+([A-Za-z][A-Za-z0-9]*)\s*=\s*(.*)", line)
+        if match and match.group(1) in (
+                "ServerCertFile", "ServerKeyFile", "AuthMechanisms"):
+            name, val = match.groups()
+            if name in options:
+                return "unverified", "unverified"
+            options[name] = val.strip()
+    cert = options.get("ServerCertFile", "")
+    key = options.get("ServerKeyFile", "")
+    tls = ("server_cert_key_declared_unverified" if cert and key else
+           "partial_tls_declaration" if cert or key else
+           "server_tls_not_observed")
+    auth = ("mechanisms_declared_backend_unverified"
+            if options.get("AuthMechanisms") else
+            "mechanisms_not_observed")
+    return tls, auth
+
+
 def sendmail_mc_flags(path):
     try:
         if not path.is_file() or path.stat().st_size > 131072:
@@ -259,11 +340,17 @@ def inspect(runner=call):
         result["MAIL_HOST_EXIM_SMARTHOST_HINT"] = exim_debian_router_hint(
             pathlib.Path("/etc/exim4/update-exim4.conf.conf"))
         result["MAIL_HOST_EXIM_RELAY_POLICY"] = "routers_transports_and_acl_unverified"
+        tls, auth = exim_security_declarations(tool, runner)
+        result["MAIL_HOST_EXIM_TLS_DECLARATION"] = tls
+        result["MAIL_HOST_EXIM_AUTH_DECLARATION"] = auth
     elif mta == "sendmail":
         mc, listener, masquerade = sendmail_mc_flags(pathlib.Path("/etc/mail/sendmail.mc"))
         cf_path = pathlib.Path("/etc/mail/sendmail.cf")
         effective_listener, smarthost, effective_masquerade = sendmail_cf_summary(cf_path)
+        tls, auth = sendmail_cf_security(cf_path)
         result.update({
+            "MAIL_HOST_SENDMAIL_TLS_DECLARATION": tls,
+            "MAIL_HOST_SENDMAIL_AUTH_DECLARATION": auth,
             "MAIL_HOST_SENDMAIL_MC": mc,
             "MAIL_HOST_SENDMAIL_LISTENER": listener,
             "MAIL_HOST_SENDMAIL_MASQUERADE": masquerade,
