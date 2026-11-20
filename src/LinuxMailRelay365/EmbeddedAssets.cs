@@ -136,8 +136,15 @@ internal static class EmbeddedAssets
         return "set -Eeuo pipefail\numask 077\n" +
                "work=$(mktemp -d /tmp/lmr365-pem-rotation.XXXXXXXX)\n" +
                "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "chgrp m365mailer \"$work\"\n" +
+               "chmod 0750 \"$work\"\n" +
                "base64 -d > \"$work/manage-primary-oauth-rotation.py\" <<'LMR365_PEM_ROTATOR'\n" +
                Encode(PrimaryOAuthRotator) + "\nLMR365_PEM_ROTATOR\n" +
+               "base64 -d > \"$work/m365_xoauth2_transport.py\" <<'LMR365_PEM_TRANSPORT'\n" +
+               Encode(Transport) + "\nLMR365_PEM_TRANSPORT\n" +
+               "base64 -d > \"$work/m365_hardware_signer.py\" <<'LMR365_PEM_SIGNER'\n" +
+               Encode(HardwareSigner) + "\nLMR365_PEM_SIGNER\n" +
+               "chmod 0644 \"$work/m365_xoauth2_transport.py\" \"$work/m365_hardware_signer.py\"\n" +
                "python3 \"$work/manage-primary-oauth-rotation.py\" " + arguments + "\n";
     }
 
