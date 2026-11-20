@@ -891,3 +891,14 @@ reentrancy protection. This avoids platform-dependent DockStyle z-order
 behavior that hid the footer under a long page in visual QA. The screenshot
 test also asserts the footer's rectangle stays within the client frame.
 Nested forms and field layout remain automatic, scaled and responsive.
+
+
+## Real screenshot capture bounds
+
+The CI-only Windows screenshot helper now captures `Form.Size` instead of
+`Form.ClientSize`: WinForms `DrawToBitmap` includes the non-client title bar.
+Using the smaller bitmap clipped about one caption-height from the bottom of
+every captured Wizard screen, falsely suggesting that status text was outside
+the form. Runtime client-control bounds remain checked independently of
+screenshots. Full-size PNGs now include the real footer, status and window
+chrome, enabling trustworthy visual review.

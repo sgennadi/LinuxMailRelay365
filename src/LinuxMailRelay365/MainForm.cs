@@ -2808,8 +2808,13 @@ internal sealed class MainForm : Form
                     location.Y + footerControl.Height > ClientSize.Height - 2)
                     throw new InvalidOperationException("Wizard footer text extends beyond client area.");
             }
-            using var bitmap = new Bitmap(ClientSize.Width, ClientSize.Height);
-            DrawToBitmap(bitmap, new Rectangle(Point.Empty, ClientSize));
+            // Form.DrawToBitmap captures the non-client Windows title bar as
+            // well as the client area. A ClientSize bitmap silently crops the
+            // entire bottom footer by the title-bar/border thickness even when
+            // logical control bounds are correct. Capture the full WINDOW.
+            Size capture = Size;
+            using var bitmap = new Bitmap(capture.Width, capture.Height);
+            DrawToBitmap(bitmap, new Rectangle(Point.Empty, capture));
             // Drawing can trigger an additional WinForms measure pass.
             // Validate AFTER painting as well, so a clipped status is a
             // failing CI test rather than a superficially valid PNG.
