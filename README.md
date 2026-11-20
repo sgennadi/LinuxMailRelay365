@@ -1,19 +1,19 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.18 — expanded read-only Exim/Sendmail configuration inspection, distinct Relay FQDN suggestion, and updater regression tests; NOT a signed Stable or production-accepted release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.19 — reviewed primary Postfix software PEM OAuth certificate renewal and staged XOAUTH2 SMTP AUTH with rollback; NOT a signed Stable or production-accepted release.**
 
-## Preview 18: updated mail-host inspection and updater
+## Preview 19: controlled primary OAuth certificate renewal and updater
 
 After all 18 GitHub CI jobs pass for an exact development-branch push, the
-release job publishes `v0.1.0-preview.18` as a GitHub **Pre-release** with
+release job publishes `v0.1.0-preview.19` as a GitHub **Pre-release** with
 single-EXE x64/ARM64 ZIPs and SHA-256 manifest. GitHub Actions build
 artifacts are not releases.
 
 On the very first Windows Wizard screen (before any SSH/Linux login), select
 **Include Preview/RC** and **Check GitHub updates**. The same controls remain
-under Diagnostics. Published Preview 17 can discover Preview 18; the new
+under Diagnostics. Published Preview 18 can discover Preview 19; the new
 version displays a privacy-safe last-update/rollback/manual-review status.
-The real interactive Preview 17 -> 18 updater remains subject to user
+The real interactive Preview 18 -> 19 updater remains subject to user
 acceptance on a normal non-elevated Windows account.
 Non-elevated, unsigned portable Preview EXEs can update only by explicit
 confirmation. Downloads are bound to the repository release URL, GitHub
@@ -24,7 +24,7 @@ Inspect `%LOCALAPPDATA%\\LinuxMailRelay365\\Updater\\last-update-result.txt`
 for the outcome. A failed update may create `manual-review.hold` in the
 same folder to prevent unsafe retries until reviewed.
 
-CI additionally downloads the previously published Preview 17 x64 ZIP,
+CI additionally downloads the previously published Preview 18 x64 ZIP,
 checks its GitHub asset SHA256/size/PE version, runs the old and new EXE
 self-tests, and exercises File.Replace with a .bak backup and rollback in a
 DISPOSABLE Windows runner folder. This validates the filesystem transaction
@@ -36,6 +36,33 @@ signature. Preview updating is for NON-ELEVATED TEST desktops only.
 It is not a production authentication guarantee. Stable automatic updates
 still require Windows-trusted Authenticode with the same pinned publisher
 certificate on the old and new executable. No signed Stable is published.
+
+### Reviewed primary Postfix OAuth certificate renewal (Preview 19)
+
+From Advanced Security on the Windows wizard, an administrator can review an installed
+primary software-PEM OAuth identity, stage a distinct root-owned RSA-3072 private
+key and public certificate, and inspect immutable SHA256 evidence without
+changing the active Postfix route or Entra application.
+
+To register the new PUBLIC credential, the existing Microsoft Graph addKey
+wizard verifies the exact tenant, existing application and current key;
+the active Linux software key signs a short-lived proof. No private key or
+refresh token is exported. Existing Entra credentials are preserved.
+
+The next approved action contacts Microsoft 365 and performs STARTTLS and
+AUTH XOAUTH2 with the candidate, without SMTP MAIL FROM, RCPT TO or DATA.
+Activation rechecks the same candidate and calls the service-account SMTP
+AUTH diagnostic again before AND after an atomic app.json switch. If the
+postcheck fails, it restores the previous JSON. Previous certs, private
+keys and a root-only JSON backup are retained; do not delete them before
+independent real delivery acceptance.
+
+Legacy installer --rotate-only and --activate-only key-copy shortcuts
+are blocked because they lacked a safe pre-cutover Exchange SMTP AUTH step.
+The hardware TPM2/PKCS11 cutover remains separate. CI includes isolated
+tests and a disposable Preview 18 -> 19 updater ZIP replacement/rollback.
+Live Entra/Exchange, real recipient delivery, hardware TPM and RHEL SELinux
+Enforcing acceptance are not proven by CI. Preview 19 is unsigned, not Stable.
 
 ### Read-only Exim and Sendmail discovery (Preview 18)
 
