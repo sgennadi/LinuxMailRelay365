@@ -282,6 +282,97 @@ internal static class SignedPortableUpdater
     private static extern int WinVerifyTrust(
         IntPtr hWnd, ref Guid actionId, IntPtr trustData);
 
+    [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptQueryObject(uint objectType,
+        [MarshalAs(UnmanagedType.LPWStr)] string filePath,
+        uint expectedContents, uint expectedFormats, uint flags,
+        out uint encoding, out uint contentType, out uint formatType,
+        out IntPtr certStore, out IntPtr cryptMsg, out IntPtr context);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptMsgGetParam(IntPtr cryptMsg,
+        uint parameter, uint index, IntPtr result, ref uint resultSize);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    private static extern IntPtr CertFindCertificateInStore(
+        IntPtr certStore, uint encoding, uint findFlags, uint findType,
+        IntPtr findParameter, IntPtr previousCert);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CertFreeCertificateContext(IntPtr certificate);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CertCloseStore(IntPtr store, uint flags);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptMsgClose(IntPtr cryptMsg);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeCertificateContext
+    {
+        internal uint dwCertEncodingType;
+        internal IntPtr pbCertEncoded;
+        internal uint cbCertEncoded;
+        internal IntPtr pCertInfo;
+        internal IntPtr hCertStore;
+    }
+
+    // WinTrust validates the entire Authenticode signature and trust chain.
+    // CryptoAPI then locates the actual signing leaf by issuer and serial,
+    // not an arbitrary intermediate certificate in the signed PKCS#7 bag.
+    // No obsolete X509Certificate.CreateFromSignedFile API is used.
+    private static string? SignedPublisherCertificateHash(string filePath)
+    {
+        IntPtr store = IntPtr.Zero, message = IntPtr.Zero, context = IntPtr.Zero;
+        if (!CryptQueryObject(1, filePath, 1u << 10, 0x0000000E, 0,
+            out _, out _, out _, out store, out message, out context))
+            return null;
+        try
+        {
+            if (store == IntPtr.Zero || message == IntPtr.Zero)
+                return null;
+            uint signerInfoSize = 0;
+            if (!CryptMsgGetParam(message, 7, 0, IntPtr.Zero, ref signerInfoSize) ||
+                signerInfoSize is < 1 or > 65536)
+                return null;
+            IntPtr info = Marshal.AllocHGlobal((int)signerInfoSize);
+            try
+            {
+                if (!CryptMsgGetParam(message, 7, 0, info, ref signerInfoSize))
+                    return null;
+                // CERT_FIND_SUBJECT_CERT + X509_ASN_ENCODING|PKCS_7_ASN_ENCODING.
+                IntPtr leafContext = CertFindCertificateInStore(
+                    store, 0x00010001, 0, 0x000B0000, info, IntPtr.Zero);
+                if (leafContext == IntPtr.Zero) return null;
+                try
+                {
+                    var native = Marshal.PtrToStructure<NativeCertificateContext>(leafContext);
+                    if (native.cbCertEncoded is < 64 or > 65536 ||
+                        native.pbCertEncoded == IntPtr.Zero)
+                        return null;
+                    byte[] der = new byte[native.cbCertEncoded];
+                    Marshal.Copy(native.pbCertEncoded, der, 0, der.Length);
+                    using var leaf = X509CertificateLoader.LoadCertificate(der);
+                    if (leaf.NotBefore > DateTime.UtcNow || leaf.NotAfter < DateTime.UtcNow)
+                        return null;
+                    return Convert.ToHexStringLower(SHA256.HashData(der));
+                }
+                finally { CertFreeCertificateContext(leafContext); }
+            }
+            finally { Marshal.FreeHGlobal(info); }
+        }
+        finally
+        {
+            if (message != IntPtr.Zero) CryptMsgClose(message);
+            if (store != IntPtr.Zero) CertCloseStore(store, 0);
+        }
+    }
+
     private static string? VerifiedPublisher(string path)
     {
         if (!OperatingSystem.IsWindows() || !File.Exists(path)) return null;
@@ -311,12 +402,7 @@ internal static class SignedPortableUpdater
             var id = GenericVerifyV2;
             if (WinVerifyTrust(IntPtr.Zero, ref id, dataPtr) != 0)
                 return null;
-            using var signer = X509Certificate.CreateFromSignedFile(path);
-            byte[] cert = signer.Export(X509ContentType.Cert);
-            using var leaf = X509CertificateLoader.LoadCertificate(cert);
-            if (leaf.NotBefore > DateTime.UtcNow || leaf.NotAfter < DateTime.UtcNow)
-                return null;
-            return Convert.ToHexStringLower(SHA256.HashData(cert));
+            return SignedPublisherCertificateHash(path);
         }
         finally
         {
