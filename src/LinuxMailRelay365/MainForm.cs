@@ -1846,6 +1846,7 @@ internal sealed class MainForm : Form
         switch (step)
         {
             case 0:
+                AddUpdateAccess(page);
                 RenderConnectionStep(page);
                 break;
             case 1:
@@ -2718,9 +2719,7 @@ internal sealed class MainForm : Form
                                   VerifyRebootContinuityAsync, false, "check", "reboot-verify");
                 AddAction(page, T("Резервные копии и Restore", "Backup & Restore", "גיבוי ושחזור"),
                     OpenBackupStepAsync, false, "shield", "backup");
-                previewUpdates.Text = T("Включая Preview/RC", "Include Preview/RC", "כולל גרסאות ניסיון");
-                AddLine(page, previewUpdates);
-                AddAction(page, T("Проверить обновление GitHub", "Check GitHub updates", "בדיקת עדכוני GitHub"), CheckUpdatesAsync, false, "refresh", "update");
+                AddUpdateAccess(page);
                 AddAction(page, T("Центр защиты: проверить / настроить позже", "Security Center: inspect / configure later", "מרכז אבטחה"), OpenSecurityCenterAsync, false, "shield");
                 AddAction(page, T("Копировать безопасный диагностический отчёт", "Copy privacy-safe diagnostic report", "העתק דוח אבחון בטוח"),
                     CopySafeReportAsync, false, "copy", "diagnostics");
@@ -6874,6 +6873,36 @@ internal sealed class MainForm : Form
             dialog.Close();
             updateShuttingDown = false;
         }
+    }
+
+    private void AddUpdateAccess(TableLayoutPanel page)
+    {
+        string last = SignedPortableUpdater.LastUpdateStatus();
+        if (last.Length > 0)
+        {
+            string summary = last switch
+            {
+                "INSTALLED" => T("Последнее обновление: установлено успешно.",
+                    "Last update: installed successfully.", "העדכון האחרון הותקן בהצלחה."),
+                "ROLLED_BACK" => T("Последнее обновление: выполнен откат.",
+                    "Last update: rolled back.", "העדכון האחרון בוטל."),
+                "MANUAL_REVIEW_REQUIRED" => T(
+                    "Updater заблокирован после ошибки. Проверьте резервную копию.",
+                    "Updater blocked after an error. Review the backup before retrying.",
+                    "העדכון חסום בעקבות תקלה. נדרשת בדיקה ידנית."),
+                "UNAVAILABLE" => T("Статус предыдущего обновления недоступен.",
+                    "Previous update status is unavailable.", "סטטוס העדכון הקודם אינו זמין."),
+                _ => T("Статус предыдущего обновления не распознан.",
+                    "Previous update status was not recognized.", "מצב העדכון הקודם אינו מזוהה.")
+            };
+            AddLine(page, UiTheme.Text(summary));
+        }
+        previewUpdates.Text = T("Включая Preview/RC", "Include Preview/RC",
+            "כולל גרסאות ניסיון");
+        AddLine(page, previewUpdates);
+        AddAction(page, T("Проверить обновление GitHub",
+            "Check GitHub updates", "בדיקת עדכוני GitHub"),
+            CheckUpdatesAsync, false, "refresh", "update");
     }
 
     private async Task CheckUpdatesAsync()

@@ -719,6 +719,49 @@ internal static class SignedPortableUpdater
         catch (UnauthorizedAccessException) { }
     }
 
+    private static string ParseUpdateStatus(string token) => token switch
+    {
+        "SIGNED_UPDATE_INSTALLED" or "UNSIGNED_PREVIEW_UPDATE_INSTALLED" => "INSTALLED",
+        "SIGNED_UPDATE_ROLLED_BACK" or "UNSIGNED_PREVIEW_UPDATE_ROLLED_BACK" => "ROLLED_BACK",
+        "SIGNED_UPDATE_FAILED_MANUAL_REVIEW" or
+            "UNSIGNED_PREVIEW_UPDATE_FAILED_MANUAL_REVIEW" => "MANUAL_REVIEW_REQUIRED",
+        _ => "UNKNOWN"
+    };
+
+    // Status is local and intentionally allowlisted, not rendered from raw file
+    // contents, paths, usernames or error messages.
+    internal static string LastUpdateStatus()
+    {
+        if (!OperatingSystem.IsWindows()) return "";
+        try
+        {
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrWhiteSpace(local)) return "";
+            string app = Path.Combine(local, "LinuxMailRelay365");
+            string root = Path.Combine(app, "Updater");
+            if (!Directory.Exists(root)) return "";
+            RejectLinks(local);
+            RejectLinks(app);
+            RejectLinks(root);
+            string hold = Path.Combine(root, "manual-review.hold");
+            if (File.Exists(hold))
+            {
+                RejectLinks(hold);
+                return "MANUAL_REVIEW_REQUIRED";
+            }
+            string result = Path.Combine(root, "last-update-result.txt");
+            if (!File.Exists(result)) return "";
+            RejectLinks(result);
+            if (new FileInfo(result).Length > 128) return "UNKNOWN";
+            return ParseUpdateStatus(File.ReadAllText(result).Trim());
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or
+            ArgumentException or System.Security.SecurityException)
+        {
+            return "UNAVAILABLE";
+        }
+    }
+
     internal static int ApplyFromHelper(string[] args, bool unsignedPreview = false)
     {
         if (!OperatingSystem.IsWindows() || args.Length != 7 ||
@@ -900,9 +943,9 @@ internal static class SignedPortableUpdater
 
     internal static bool SelfTest()
     {
-        if (CompareVersions("0.1.0", "0.1.0-preview.16") <= 0 ||
-            CompareVersions("0.1.0-preview.17", "0.1.0-preview.16") <= 0 ||
-            CompareVersions("0.1.0-preview.9", "0.1.0-preview.16") >= 0 ||
+        if (CompareVersions("0.1.0", "0.1.0-preview.17") <= 0 ||
+            CompareVersions("0.1.0-preview.18", "0.1.0-preview.17") <= 0 ||
+            CompareVersions("0.1.0-preview.9", "0.1.0-preview.17") >= 0 ||
             TrustedGithubUrl("https://bad.example/test",
                 "/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1"))
             return false;
@@ -912,27 +955,27 @@ internal static class SignedPortableUpdater
             bool duplicate = false)
         {
             string link = "https://github.com/sgennadi/LinuxMailRelay365/releases/download/" +
-                "v0.1.0-preview.17/" + asset;
+                "v0.1.0-preview.18/" + asset;
             string item = JsonSerializer.Serialize(new
             {
                 name = asset, digest = "sha256:" + digest, size = 100L,
                 browser_download_url = link
             });
-            return "[{\"tag_name\":\"v0.1.0-preview.17\",\"draft\":false," +
+            return "[{\"tag_name\":\"v0.1.0-preview.18\",\"draft\":false," +
                 "\"prerelease\":" + (preview ? "true" : "false") +
                 ",\"html_url\":\"https://github.com/sgennadi/LinuxMailRelay365/releases/tag/" +
-                "v0.1.0-preview.17\",\"assets\":[" + item +
+                "v0.1.0-preview.18\",\"assets\":[" + item +
                 (duplicate ? "," + item : "") + "]}]";
         }
         static SignedUpdateOffer? Parse(string json, bool allow)
         {
             using var document = JsonDocument.Parse(json);
-            return SelectRelease(document.RootElement, allow, "0.1.0-preview.16",
+            return SelectRelease(document.RootElement, allow, "0.1.0-preview.17",
                 "LinuxMailRelay365-win-x64.zip");
         }
         using var previewFixture = JsonDocument.Parse(Fixture(asset, hash, true));
         var fixtureOffer = SelectRelease(previewFixture.RootElement, true,
-            "0.1.0-preview.16", asset);
+            "0.1.0-preview.17", asset);
         return ApplyFromHelper(Array.Empty<string>()) == 2 &&
                ApplyFromHelper(Array.Empty<string>(), unsignedPreview: true) == 2 &&
                fixtureOffer is not null && IsPreviewRelease(fixtureOffer) &&
@@ -940,7 +983,7 @@ internal static class SignedPortableUpdater
                    "https://github.com/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1",
                    new Uri("https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.1/" + asset),
                    asset, hash, 100L)) &&
-               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.0-preview.17" &&
+               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.0-preview.18" &&
                Parse(Fixture(asset, hash, true), false) is null &&
                Parse(Fixture(asset, hash, false), false) is null &&
                Parse(Fixture(asset, hash, true, duplicate: true), true) is null &&
@@ -949,6 +992,11 @@ internal static class SignedPortableUpdater
                !TrustedRedirect(new Uri("http://release-assets.githubusercontent.com/x")) &&
                !TrustedRedirect(new Uri("https://attacker@github.com/x")) &&
                !Digest("not-a-hash") &&
+               ParseUpdateStatus("UNSIGNED_PREVIEW_UPDATE_INSTALLED") == "INSTALLED" &&
+               ParseUpdateStatus("UNSIGNED_PREVIEW_UPDATE_ROLLED_BACK") == "ROLLED_BACK" &&
+               ParseUpdateStatus("UNSIGNED_PREVIEW_UPDATE_FAILED_MANUAL_REVIEW") ==
+                   "MANUAL_REVIEW_REQUIRED" &&
+               ParseUpdateStatus("untrusted message\r\nDOWNLOADED") == "UNKNOWN" &&
                ArchiveAndPeSafetySelfTest();
     }
 }
