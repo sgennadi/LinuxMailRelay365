@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "linux" / "mta-coexistence-doctor.py"
@@ -46,6 +47,46 @@ class MultiMtaContracts(unittest.TestCase):
                       runner=lambda *a, **k: "")
         self.assertEqual(r["ACTIVE_PRIMARY_MTA"], "unknown_service_state")
         self.assertEqual(r["MULTI_MTA_READINESS"], "active_mta_unknown_manual_review")
+
+    def test_systemd_unit_status_unknown_never_becomes_inactive(self):
+        def state(raw):
+            return mod.systemd_unit_state(
+                "sendmail.service", runner=lambda *args, **kwargs: raw)
+        self.assertTrue(state("LoadState=loaded\nActiveState=active"))
+        self.assertFalse(state("LoadState=loaded\nActiveState=inactive"))
+        self.assertFalse(state("LoadState=not-found\nActiveState=inactive"))
+        for raw in (None, "", "inactive", "LoadState=loaded",
+                    "LoadState=loaded\nActiveState=failed",
+                    "LoadState=loaded\nActiveState=activating",
+                    "LoadState=masked\nActiveState=inactive",
+                    "LoadState=loaded\nActiveState=active\nActiveState=inactive",
+                    "LoadState=loaded\nActiveState=inactive\nUnknown=x"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(state(raw))
+
+    def test_exim_alias_query_error_fails_closed(self):
+        def runner(argv, **kwargs):
+            if argv[-1] == "exim4.service":
+                return "LoadState=loaded\nActiveState=active"
+            return None
+        with patch.object(mod.shutil, "which", return_value="/usr/bin/systemctl"):
+            self.assertIsNone(mod.active_service("exim", runner))
+        def success(argv, **kwargs):
+            return ("LoadState=loaded\nActiveState=active"
+                    if argv[-1] == "exim4.service" else
+                    "LoadState=not-found\nActiveState=inactive")
+        with patch.object(mod.shutil, "which", return_value="/usr/bin/systemctl"):
+            self.assertTrue(mod.active_service("exim", success))
+
+    def test_unknown_exim_service_blocks_coexistence(self):
+        data = mod.audit(46500,
+            services={"postfix": False, "exim": None, "sendmail": False},
+            binaries={"postfix": True}, paths={"postfix": True},
+            runner=lambda *args, **kwargs: "")
+        self.assertEqual(data["ACTIVE_PRIMARY_MTA"], "unknown_service_state")
+        self.assertEqual(data["MULTI_MTA_READINESS"],
+                         "active_mta_unknown_manual_review")
+        self.assertEqual(data["MTA_PACKAGE_INSTALL_ALLOWED"], "no")
 
     def test_cli_python_36_and_readonly(self):
         proc = subprocess.run([sys.executable, str(SCRIPT), "--self-test"],

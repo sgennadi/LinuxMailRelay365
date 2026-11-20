@@ -29,20 +29,49 @@ def run(argv, timeout=8):
                                 universal_newlines=True, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return result.stdout.strip() if result.returncode == 0 else None
+    if result.returncode != 0 or len(result.stdout) > 65536:
+        return None
+    return result.stdout.strip()
+
+
+def systemd_unit_state(unit, runner=run):
+    """Tri-state systemd readback; a query error never means inactive.
+
+    Only "not-found/inactive" proves absence of a unit. A failed or
+    transitioning service is unverified, requiring manual review.
+    """
+    output = runner(["systemctl", "show", "--property=LoadState",
+                     "--property=ActiveState", unit], timeout=8)
+    if not isinstance(output, str) or len(output) > 512:
+        return None
+    values = {}
+    for line in output.splitlines():
+        if line.count("=") != 1:
+            return None
+        key, value = line.split("=", 1)
+        if key not in ("LoadState", "ActiveState") or key in values:
+            return None
+        values[key] = value
+    if len(values) != 2:
+        return None
+    if values["LoadState"] == "loaded" and values["ActiveState"] == "active":
+        return True
+    if values["ActiveState"] == "inactive" and values["LoadState"] in (
+            "loaded", "not-found"):
+        return False
+    return None
 
 
 def active_service(name, runner=run):
     if not shutil.which("systemctl"):
         return None
     try:
-        for unit in SERVICES[name]:
-            result = runner(["systemctl", "is-active", unit], timeout=8)
-            if result == "active":
-                return True
-    except (OSError, ValueError):
+        states = [systemd_unit_state(unit, runner) for unit in SERVICES[name]]
+    except (OSError, ValueError, KeyError):
         return None
-    return False
+    if any(item is None for item in states):
+        return None
+    return any(states)
 
 
 def port_busy(port, runner=run):
