@@ -1,6 +1,22 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.19 — reviewed primary Postfix software PEM OAuth certificate renewal and staged XOAUTH2 SMTP AUTH with rollback; NOT a signed Stable or production-accepted release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.20 — offline multi-mailbox PS256 certificate proof, hardened network audit and Preview 19 to 20 update test; NOT a signed Stable or production-accepted release.**
+
+## Preview 20: mapped mailbox signer audit and test updater
+
+Preview 20 adds a read-only local PS256 signing proof for each protected
+Microsoft 365 mailbox identity defined by a root-owned sender map.
+The Wizard runs signer tests as the m365mailer Linux service account.
+It does not request tokens, grant Send As, submit SMTP mail, or activate
+multi-mailbox routing. Invalid/missing signers remain unverified.
+
+Published Preview 19 can discover Preview 20 when Include Preview/RC is
+selected on the initial Windows screen. CI verifies replacement and rollback
+of the downloaded Preview 19 x64 EXE with the Preview 20 candidate, including
+SHA256, PE architecture, semantic version and EXE self-test, in a DISPOSABLE
+folder. This does not prove an interactive Windows helper handoff.
+Preview updates remain unsigned and non-elevated TEST ONLY; Stable requires
+Windows-trusted Authenticode and full production acceptance.
 
 ## Preview 19: controlled primary OAuth certificate renewal and updater
 

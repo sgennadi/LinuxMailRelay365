@@ -17,9 +17,9 @@ class UpdaterPreview19Contracts(unittest.TestCase):
         self.assertIn("SignedPortableUpdater.LastUpdateStatus()", MAIN)
 
     def test_release_and_updater_version_are_consistent(self):
-        self.assertIn("<Version>0.1.0-preview.19</Version>", PROJECT)
-        self.assertIn('internal const string Version = "0.1.0-preview.19";', CHECK)
-        self.assertIn("tag='v0.1.0-preview.19'", WORKFLOW)
+        self.assertIn("<Version>0.1.0-preview.20</Version>", PROJECT)
+        self.assertIn('internal const string Version = "0.1.0-preview.20";', CHECK)
+        self.assertIn("tag='v0.1.0-preview.20'", WORKFLOW)
         self.assertIn("Test-LinuxMailRelay365PreviewUpgrade.ps1", WORKFLOW)
 
     def test_preview_does_not_bypass_stable_signature_requirement(self):

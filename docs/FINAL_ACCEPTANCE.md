@@ -13,6 +13,20 @@ clean hosts without a tenant authorization path require manual review. The sugge
 **never an automatic mode selection or tenant authorization**. An explicitly external
 recipient requirement blocks Direct Send Apply before any Linux changes.
 
+## Preview 20 offline mapped OAuth signer acceptance
+
+The Windows Wizard offers a read-only PS256 signing check for mapped M365
+mailbox identities. The root-owned 0600 sender map is reviewed before
+each identity is checked as the dedicated m365mailer service user. Keys
+and certificates must be inside the protected identity directory, and
+each 0640 identity must be root:m365mailer owned. Sensitive material,
+addresses, raw signatures or mail contents are not returned to Windows.
+
+This is NOT evidence of Exchange Send As, authenticated SMTP submission,
+queue-bound sender identity, tenant delivery, TPM nonexportability,
+Entra token acceptance or RHEL SELinux Enforcing. Multi-mailbox Apply/Test
+remain blocked pending each separately documented live acceptance gate.
+
 ## What is implemented vs blocked
 
 | Feature | State | Acceptance evidence still needed |
