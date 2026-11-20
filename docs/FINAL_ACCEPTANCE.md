@@ -940,3 +940,13 @@ place; it is first moved to a unique prior checkpoint. A healthy update
 keeps the most recent .bak, then drops the older prior checkpoint.
 On a failed update the helper restores prior backup where possible and
 sets a persistent manual-review hold.
+
+
+## Signed update UI progress and cancellation
+
+The signed ZIP download now runs in a resizable, DPI-aware progress dialog
+with a byte-count/MiB percent display and a real Cancel action backed by a
+cancellation token. Cancellation or network error disposes incomplete staging
+files and leaves the original EXE unchanged. Only after full downloaded ZIP
+hash, PE architecture, publisher signature and staged self-test verification
+does the signed out-of-process replacement helper start and the app close.

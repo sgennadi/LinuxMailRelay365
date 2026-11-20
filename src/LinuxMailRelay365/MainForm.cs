@@ -6774,6 +6774,103 @@ internal sealed class MainForm : Form
         WriteLine("Verify Exchange delivery; acceptance by a local queue is not final delivery.");
     }
 
+    private async Task StageSignedUpdateWithProgressAsync(
+        SignedUpdateOffer offer, string publisher)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var working = Screen.FromControl(this).WorkingArea.Size;
+        using var dialog = new Form
+        {
+            Text = T("Установка подписанного обновления", "Install signed update",
+                "התקנת עדכון חתום"),
+            StartPosition = FormStartPosition.CenterParent,
+            ClientSize = PreferredDialogSize(working, DeviceDpi, 700, 300),
+            MinimumSize = PreferredDialogSize(working, DeviceDpi, 520, 260),
+            AutoScaleMode = AutoScaleMode.Dpi,
+            BackColor = UiTheme.Canvas,
+            ForeColor = UiTheme.Navy,
+            FormBorderStyle = FormBorderStyle.Sizable,
+            MaximizeBox = false, MinimizeBox = false
+        };
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4,
+            Padding = new Padding(20, 16, 20, 16)
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var description = UiTheme.Text(T(
+            "Скачивание. Проверяем SHA-256, Authenticode, сертификат издателя и self-test. Неподписанный EXE не будет запущен.",
+            "Downloading. Checking SHA-256, Authenticode, publisher certificate and self-test. Unsigned EXEs will not execute.",
+            "מוריד ומוודא חתימה, SHA-256 ובדיקת תקינות."));
+        description.Dock = DockStyle.Fill;
+        var progressText = UiTheme.Text(T(
+            "Подготовка загрузки...", "Preparing download...", "מכין הורדה..."));
+        progressText.Dock = DockStyle.Fill;
+        var bar = new ProgressBar
+        {
+            Dock = DockStyle.Top, Minimum = 0, Maximum = 100,
+            Value = 0, Height = Math.Max(22, (int)Math.Round(25 * Math.Max(1f, DeviceDpi / 96f))),
+            Style = ProgressBarStyle.Continuous
+        };
+        var cancel = UiTheme.Action(T("Отмена", "Cancel", "ביטול"), false, "back");
+        cancel.Click += (_, _) =>
+        {
+            if (cancellation.IsCancellationRequested) return;
+            cancellation.Cancel();
+            cancel.Enabled = false;
+            progressText.Text = T("Отмена загрузки...", "Cancelling download...", "מבטל הורדה...");
+        };
+        dialog.FormClosing += (_, args) =>
+        {
+            if (cancellation.IsCancellationRequested) return;
+            if (updateShuttingDown) return;
+            cancellation.Cancel();
+            args.Cancel = true;
+        };
+        var actions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true,
+            FlowDirection = FlowDirection.RightToLeft, WrapContents = true
+        };
+        actions.Controls.Add(cancel);
+        panel.Controls.Add(description, 0, 0);
+        panel.Controls.Add(progressText, 0, 1);
+        panel.Controls.Add(bar, 0, 2);
+        panel.Controls.Add(actions, 0, 3);
+        dialog.Controls.Add(panel);
+        dialog.CancelButton = cancel;
+        dialog.Show(this);
+        try
+        {
+            var progress = new Progress<(long, long)>(data =>
+            {
+                if (dialog.IsDisposed) return;
+                int percent = data.Item2 <= 0 ? 0 :
+                    (int)Math.Min(100, data.Item1 * 100 / data.Item2);
+                bar.Value = Math.Clamp(percent, 0, 100);
+                double received = data.Item1 / 1048576.0;
+                double total = data.Item2 / 1048576.0;
+                progressText.Text = T("Загружено: ", "Downloaded: ", "הורדו: ") +
+                    received.ToString("F1") + " / " + total.ToString("F1") + " MiB (" +
+                    percent + "%)";
+            });
+            await SignedPortableUpdater.StageAndLaunchAsync(
+                offer, publisher, cancellation.Token, progress);
+        }
+        finally
+        {
+            // The signed helper is either launched or the download failed.
+            // Do not leave a window on screen during parent EXE shutdown.
+            updateShuttingDown = true;
+            dialog.Close();
+            updateShuttingDown = false;
+        }
+    }
+
     private async Task CheckUpdatesAsync()
     {
         WriteLine("Checking published GitHub Releases. CI preview artifacts are not releases.");
@@ -6820,16 +6917,7 @@ internal sealed class MainForm : Form
         if (offer is null || !string.Equals(offer.PageUrl, url, StringComparison.Ordinal))
             throw new InvalidDataException("Release metadata changed; repeat the update check.");
         WriteLine("Downloading published signed update; validating SHA-256, publisher, PE machine and self-test.");
-        var progress = new Progress<(long, long)>(value =>
-        {
-            if (IsDisposed || Disposing) return;
-            int percent = value.Item2 <= 0 ? 0 :
-                (int)Math.Min(100, 100L * value.Item1 / value.Item2);
-            status.Text = T("Загрузка обновления: ", "Downloading update: ", "מוריד עדכון: ") +
-                percent.ToString() + "%";
-        });
-        await SignedPortableUpdater.StageAndLaunchAsync(offer, publisher,
-            CancellationToken.None, progress);
+        await StageSignedUpdateWithProgressAsync(offer, publisher);
         WriteLine("Publisher-pinned update verified; closing original EXE for external replacement.");
         updateShuttingDown = true;
         Close();
