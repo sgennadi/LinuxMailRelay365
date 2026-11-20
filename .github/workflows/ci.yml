@@ -336,14 +336,57 @@ jobs:
       - name: Build portable single EXE ARM64
         shell: pwsh
         run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-arm64 --self-contained true -p:UseSharedUpdater=false -o out/win-arm64
-      - name: Generate SHA256 manifest for both unsigned preview executables
+      - name: Build unsigned release-candidate ZIPs and verify PE architectures
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ./out/release-candidates | Out-Null
+          foreach ($arch in @('x64', 'arm64')) {
+            $exe = (Resolve-Path "./out/win-$arch/LinuxMailRelay365.exe").Path
+            $zip = Join-Path (Resolve-Path ./out/release-candidates).Path "LinuxMailRelay365-win-$arch.zip"
+            $expectedMachine = if ($arch -eq 'x64') { 0x8664 } else { 0xAA64 }
+            $stream = [System.IO.File]::OpenRead($exe)
+            try {
+              $reader = [System.IO.BinaryReader]::new($stream)
+              if ($reader.ReadUInt16() -ne 0x5A4D) { throw "Missing MZ header: $arch" }
+              $stream.Position = 0x3C
+              $offset = $reader.ReadInt32()
+              if ($offset -lt 64 -or $offset -ge $stream.Length - 6) { throw "Invalid PE header offset: $arch" }
+              $stream.Position = $offset
+              if ($reader.ReadUInt32() -ne 0x00004550 -or $reader.ReadUInt16() -ne $expectedMachine) {
+                throw "Incorrect PE machine in $arch update candidate"
+              }
+            }
+            finally { $stream.Dispose() }
+            Compress-Archive -LiteralPath $exe -DestinationPath $zip -CompressionLevel Optimal -Force
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+            try {
+              if ($archive.Entries.Count -ne 1 -or $archive.Entries[0].FullName -cne 'LinuxMailRelay365.exe') {
+                throw "Update ZIP must contain exactly one root LinuxMailRelay365.exe: $arch"
+              }
+              if ($archive.Entries[0].Length -ne (Get-Item -LiteralPath $exe).Length) {
+                throw "Update ZIP EXE size mismatch: $arch"
+              }
+              $payload = $archive.Entries[0].Open()
+              try { $actual = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($payload)).ToLowerInvariant() }
+              finally { $payload.Dispose() }
+              $expected = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+              if ($actual -cne $expected) { throw "ZIP contents SHA256 mismatch: $arch" }
+            }
+            finally { $archive.Dispose() }
+            Write-Host "UNSIGNED_RELEASE_CANDIDATE_VERIFIED=$arch"
+          }
+      - name: Generate SHA256 manifest for unsigned preview EXEs and ZIPs
         shell: pwsh
         run: |
           $x64 = (Get-FileHash -Algorithm SHA256 ./out/win-x64/LinuxMailRelay365.exe).Hash.ToLowerInvariant()
           $arm64 = (Get-FileHash -Algorithm SHA256 ./out/win-arm64/LinuxMailRelay365.exe).Hash.ToLowerInvariant()
+          $zip64 = (Get-FileHash -Algorithm SHA256 ./out/release-candidates/LinuxMailRelay365-win-x64.zip).Hash.ToLowerInvariant()
+          $zipArm = (Get-FileHash -Algorithm SHA256 ./out/release-candidates/LinuxMailRelay365-win-arm64.zip).Hash.ToLowerInvariant()
           @(
             "win-x64 LinuxMailRelay365.exe sha256:$x64",
             "win-arm64 LinuxMailRelay365.exe sha256:$arm64",
+            "win-x64 LinuxMailRelay365-win-x64.zip sha256:$zip64",
+            "win-arm64 LinuxMailRelay365-win-arm64.zip sha256:$zipArm",
             "STATUS=preview_unsigned_not_for_production"
           ) | Set-Content -Path ./out/preview-artifact-digests.txt -Encoding utf8
       - name: Upload preview build (not a stable release)
@@ -353,5 +396,7 @@ jobs:
           path: |
             out/win-x64/LinuxMailRelay365.exe
             out/win-arm64/LinuxMailRelay365.exe
+            out/release-candidates/LinuxMailRelay365-win-x64.zip
+            out/release-candidates/LinuxMailRelay365-win-arm64.zip
             out/preview-artifact-digests.txt
           if-no-files-found: error

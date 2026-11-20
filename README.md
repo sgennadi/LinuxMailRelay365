@@ -1639,3 +1639,18 @@ checkpoint during another approved update. After a successful healthy
 replacement and restart, the immediate .bak is kept and older backup
 retention is bounded. On failure, the previous checkpoint is restored
 where possible and a manual-review hold prevents retry loops.
+
+
+## Architecture-specific signed-release ZIP packaging contract
+
+CI now prepares **unsigned preview** release-candidate ZIP files named
+`LinuxMailRelay365-win-x64.zip` and
+`LinuxMailRelay365-win-arm64.zip`, each with exactly one root
+`LinuxMailRelay365.exe`. The Windows runner inspects MZ/PE machine codes
+(0x8664/0xAA64), verifies the ZIP entry size and SHA-256 against the original
+EXE, and emits SHA-256 checksums for both EXEs and ZIPs in the preview
+manifest. These artifacts are NOT signed or published as a release.
+Before a real signed Stable release the publisher must sign BOTH EXEs,
+rerun self-tests, rebuild both ZIPs, publish the GitHub Release with GitHub
+asset digest metadata and pass the trusted publisher acceptance gate.
+Simply renaming or uploading the unsigned CI ZIPs cannot enable auto-install.

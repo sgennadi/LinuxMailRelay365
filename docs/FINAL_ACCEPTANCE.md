@@ -950,3 +950,12 @@ cancellation token. Cancellation or network error disposes incomplete staging
 files and leaves the original EXE unchanged. Only after full downloaded ZIP
 hash, PE architecture, publisher signature and staged self-test verification
 does the signed out-of-process replacement helper start and the app close.
+
+
+## Release artifact ZIP contract (offline CI only)
+
+Windows x64 and ARM64 builds now include verified single-EXE ZIP candidates
+with exact release asset names, machine header validation and SHA256
+content comparison. No Authenticode signing is fabricated by CI. A production
+release must rebuild each archive around the actually publisher-signed EXE
+and record both archive SHA256 values before trusted updater acceptance.
