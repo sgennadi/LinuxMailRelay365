@@ -20,7 +20,14 @@ internal static class UpdateCheck
         bool includePreview, CancellationToken ct)
     {
         const string repository = Repository;
-        string platform = RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "arm64" : "x64";
+        // Download for the running PE architecture, not the OS: a win-x64
+        // executable can run under ARM64 Windows emulation.
+        string platform = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.X64 => "x64",
+            Architecture.Arm64 => "arm64",
+            _ => throw new PlatformNotSupportedException("Unsupported Windows update architecture.")
+        };
         string expectedAsset = $"LinuxMailRelay365-win-{platform}.zip";
         using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
         { Timeout = TimeSpan.FromSeconds(20), MaxResponseContentBufferSize = MaximumMetadataBytes };
