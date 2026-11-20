@@ -23,7 +23,8 @@ import time
 VERSION = "1"
 ROOTS = {
     "sidecar": Path("/etc/linuxmailrelay365/sidecar-identity"),
-    "primary": Path("/etc/postfix/m365-oauth")
+    "primary": Path("/etc/postfix/m365-oauth"),
+    "primary-rotation": Path("/etc/postfix/m365-oauth")
 }
 GUID = re.compile(r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 SHA = re.compile(r"\A[a-f0-9]{64}\Z")
