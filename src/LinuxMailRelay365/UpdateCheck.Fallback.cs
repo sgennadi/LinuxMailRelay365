@@ -14,11 +14,12 @@ internal static class UpdateCheck
 {
     internal const string Version = "0.1.0-preview.15";
     private const int MaximumMetadataBytes = 2 * 1024 * 1024;
+    private const string Repository = "sgennadi/LinuxMailRelay365";
 
     internal static async Task<(string? url, string message)> QueryAsync(
         bool includePreview, CancellationToken ct)
     {
-        const string repository = "sgennadi/LinuxMailRelay365";
+        const string repository = Repository;
         string platform = RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "arm64" : "x64";
         string expectedAsset = $"LinuxMailRelay365-win-{platform}.zip";
         using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
@@ -79,13 +80,13 @@ internal static class UpdateCheck
                 if (!asset.TryGetProperty("size", out var size) || !size.TryGetInt64(out long count) ||
                     count is < 1 or > 500_000_000) continue;
                 if (!SafeGithubUrl(Str(asset, "browser_download_url"),
-                    $"/{repository}/releases/download/{Str(item, "tag_name")}/{expectedAsset}")) continue;
+                    $"/{Repository}/releases/download/{Str(item, "tag_name")}/{expectedAsset}")) continue;
                 hasSafeAsset = true;
                 break;
             }
             if (!hasSafeAsset || duplicateAsset) continue;
             string page = Str(item, "html_url");
-            if (!SafeGithubUrl(page, $"/{repository}/releases/tag/{Str(item, "tag_name")}")) continue;
+            if (!SafeGithubUrl(page, $"/{Repository}/releases/tag/{Str(item, "tag_name")}")) continue;
             if (bestVersion is null || ReleaseVersion.Compare(tag, bestVersion) > 0)
             { bestVersion = tag; bestUrl = page; }
         }
