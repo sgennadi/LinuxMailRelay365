@@ -38,6 +38,8 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_hardware_oauth_stage.py
           python3 -m py_compile linux/manage-tpm-oauth-key.py
           python3 -m unittest discover -v -s tests -p test_tpm_oauth_key.py
+          python3 -m py_compile linux/manage-primary-oauth-rotation.py
+          python3 -m unittest discover -v -s tests -p test_primary_oauth_rotation.py
           python3 -m py_compile linux/export-hardware-oauth-cert.py
           python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
           python3 -m py_compile linux/audit-oauth-sender-map.py
@@ -196,6 +198,8 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_hardware_oauth_stage.py
           python3 -m py_compile linux/manage-tpm-oauth-key.py
           python3 -m unittest discover -v -s tests -p test_tpm_oauth_key.py
+          python3 -m py_compile linux/manage-primary-oauth-rotation.py
+          python3 -m unittest discover -v -s tests -p test_primary_oauth_rotation.py
           python3 -m py_compile linux/export-hardware-oauth-cert.py
           python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
           python3 -m py_compile linux/m365_xoauth2_transport.py linux/manage-m365-delivery-acceptance.py
@@ -311,7 +315,7 @@ jobs:
           if ($testProcess.ExitCode -ne 0) { throw "Windows self-test failed with exit code $($testProcess.ExitCode)." }
           $files = @(Get-ChildItem ./out/win-x64 -Filter '*.exe')
           if ($files.Count -ne 1) { throw 'Expected exactly one EXE in publish output.' }
-      - name: Test published Preview 17 -> candidate Preview 18 backup and rollback (disposable)
+      - name: Test published Preview 18 -> candidate Preview 19 backup and rollback (disposable)
         shell: pwsh
         timeout-minutes: 8
         env:
@@ -410,7 +414,7 @@ jobs:
           if-no-files-found: error
 
   preview-release:
-    name: Publish tested Preview 18 (unsigned)
+    name: Publish tested Preview 19 (unsigned)
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature/private-smtp-auth-tls'
     needs:
       - linux-tests
@@ -430,8 +434,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          grep -Fxq '    <Version>0.1.0-preview.18</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
-          grep -Fq 'internal const string Version = "0.1.0-preview.18";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fxq '    <Version>0.1.0-preview.19</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.0-preview.19";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
       - uses: actions/download-artifact@v6
         with:
           name: LinuxMailRelay365-preview-builds
@@ -476,7 +480,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='v0.1.0-preview.18'
+          tag='v0.1.0-preview.19'
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::notice::Preview already published. Bump version to publish another update."
             exit 0
@@ -490,5 +494,5 @@ jobs:
             out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
             out/published/preview-artifact-digests.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "LinuxMailRelay365 v0.1.0-preview.18" --prerelease \
-            --notes "UNSIGNED TEST PREVIEW 18, NOT Stable or production approved. Adds read-only effective Sendmail and Exim port, listener, SmartHost status audit and requires a distinct FQDN for foreign-MTA sidecar configuration. CI replays Preview 17 -> 18 replacement and rollback. Interactive GUI acceptance and actual M365/TPM/RHEL integration remain required. SHA256 does NOT replace Authenticode."
+            --title "LinuxMailRelay365 v0.1.0-preview.19" --prerelease \
+            --notes "UNSIGNED TEST PREVIEW 19, NOT Stable/production approved. Adds reviewed primary software PEM certificate renewal: hash-bound staging, Graph addKey public credential approval, staged XOAUTH2 SMTP AUTH without mail, atomic app.json switch with rollback on failed postcheck. Old keys preserved; unsafe legacy key-copy shortcuts blocked. CI verifies offline logic and Preview 18 to 19 upgrade/rollback. Real tenant, RHEL/TPM and end-to-end recipient acceptance remain outstanding. SHA256 does not replace Authenticode."
