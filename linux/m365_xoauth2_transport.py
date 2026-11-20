@@ -11,6 +11,7 @@ import json
 import os
 import re
 import smtplib
+import stat
 import ssl
 import subprocess
 import sys
@@ -30,7 +31,10 @@ SIDECAR_CONF_FILE = Path('/etc/linuxmailrelay365/sidecar-identity/app.json')
 STAGED_CONF_FILES = (
     Path('/etc/postfix/m365-oauth/hardware-staged.json'),
     Path('/etc/linuxmailrelay365/sidecar-identity/hardware-staged.json'),
+    Path('/etc/postfix/m365-oauth/pem-rotation-staged.json'),
 )
+PEM_ROTATION_CONF = STAGED_CONF_FILES[-1]
+PEM_ROTATION_NAME = re.compile(r'\Aapp\.rotation\.[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\Z')
 EX_TEMPFAIL = 75
 EX_OK = 0
 MAX_MESSAGE_BYTES = 25 * 1024 * 1024
@@ -67,6 +71,22 @@ def load_config(path=None):
     path = CONF_FILE if path is None else Path(path)
     if path not in (CONF_FILE, SIDECAR_CONF_FILE) + STAGED_CONF_FILES:
         raise ValueError('Unsupported XOAUTH2 configuration path')
+    if path == PEM_ROTATION_CONF:
+        # This is an explicitly staged software key, never a delivery identity.
+        # It is available only through --candidate-config with a non-delivery
+        # diagnostic action; refuse files/symlinks of unsafe ownership/mode.
+        def protected_file(p, modes, maximum):
+            info = p.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or \
+                    info.st_nlink != 1 or stat.S_IMODE(info.st_mode) not in modes or \
+                    not 0 < info.st_size <= maximum:
+                raise ValueError('Unsafe staged PEM identity file')
+            if not p.parent.is_dir() or p.parent.is_symlink():
+                raise ValueError('Unsafe staged PEM directory')
+            directory = p.parent.lstat()
+            if directory.st_uid != 0 or directory.st_mode & 0o022:
+                raise ValueError('Unsafe staged PEM directory permissions')
+        protected_file(path, (0o640,), 32768)
     data = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(data, dict):
         raise ValueError('Invalid XOAUTH2 JSON identity')
@@ -79,6 +99,24 @@ def load_config(path=None):
         raise ValueError('Invalid configured mailbox')
     if not Path(data['certificate']).is_file():
         raise ValueError('Certificate file is missing')
+    if path == PEM_ROTATION_CONF:
+        if set(data) != {'tenant_id', 'client_id', 'mailbox',
+                         'certificate', 'private_key'}:
+            raise ValueError('Staged software PEM must have exact identity keys')
+        root = CONF_FILE.parent
+        certificate = Path(data['certificate'])
+        key = Path(data['private_key'])
+        if certificate.parent != root or key.parent != root or \
+                not PEM_ROTATION_NAME.fullmatch(certificate.stem) or \
+                key.name != certificate.stem + '.key':
+            raise ValueError('Candidate key or cert escapes fixed versioned identity')
+        protected_file(certificate, (0o640, 0o644), 32768)
+        protected_file(key, (0o640,), 32768)
+        active = json.loads(CONF_FILE.read_text(encoding='utf-8'))
+        if ('signer' in active or
+                any(active.get(k) != data.get(k) for k in (
+                    'tenant_id', 'client_id', 'mailbox'))):
+            raise ValueError('Staged PEM cannot change tenant, app or sender')
     if 'signer' in data:
         validate_spec(data, path)
         data['_identity_path'] = str(path)
@@ -302,7 +340,7 @@ def run(argv=None):
             if not (args.token_check or args.signing_check or args.config_check or args.smtp_auth_check) or args.recipient:
                 ap.error('Candidate identity cannot send mail or accept a recipient')
             config = load_config(args.candidate_config)
-            if 'signer' not in config:
+            if args.candidate_config != str(PEM_ROTATION_CONF) and 'signer' not in config:
                 raise ValueError('Candidate hardware identity missing signer')
         else:
             config = load_config(args.config)
