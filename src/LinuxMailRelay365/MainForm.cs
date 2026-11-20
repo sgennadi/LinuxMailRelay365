@@ -1895,6 +1895,56 @@ internal sealed class MainForm : Form
                         "אפשר להמשיך; הגדרות TPM ו-Entra מתקדמות הן אופציונליות.")));
                     break;
                 }
+                AddLine(page, UiTheme.Text(T(
+                    "OAuth сертификат основного Postfix: безопасная ротация программного PEM-ключа. Потребуется действующая конфигурация и отдельное разрешение для каждого шага. Доставка писем во время проверок не выполняется.",
+                    "Primary Postfix OAuth certificate: guarded software PEM renewal. The installed active identity must already exist. Every change needs an explicit approval. SMTP tests send NO mail.",
+                    "חידוש אישור OAuth ב-Postfix: החלפה מאושרת עם אפשרות שחזור, ללא שליחת הודעות בבדיקה.")));
+                AddAction(page, T("1. Проверить план ротации (только чтение)",
+                                  "1. Review primary OAuth rotation (read-only)",
+                                  "1. בדיקת תוכנית לחידוש אישור"),
+                    PreviewPrimaryOAuthRotationAsync, false, "check", "primary-rotation-plan");
+                if (!string.IsNullOrEmpty(primaryRotationSummary))
+                    AddLine(page, UiTheme.Text(primaryRotationSummary));
+                if (reviewedPrimaryRotationPlanSha is not null)
+                    AddAction(page, T("2. Подготовить новый сертификат (старый остаётся активным)...",
+                                      "2. Stage new certificate (old remains active)...",
+                                      "2. הכנת אישור חדש ללא הפעלה"),
+                        StagePrimaryOAuthRotationAsync, false, "shield", "primary-rotation-stage");
+                AddAction(page, T("3. Проверить подготовленный сертификат и SHA-256",
+                                  "3. Inspect staged certificate and SHA-256",
+                                  "3. בדיקת האישור המוכן"),
+                    InspectPrimaryOAuthRotationAsync, false, "check", "primary-rotation-status");
+                if (reviewedPrimaryRotationStageSha is not null)
+                {
+                    AddAction(page, T("4. Проверить регистрацию PUBLIC сертификата в Entra...",
+                                      "4. Review PUBLIC certificate in Entra...",
+                                      "4. בדיקת רישום אישור ציבורי ב-Entra"),
+                        () => PreviewEntraCertificateForTargetAsync("primary-rotation"),
+                        false, "check", "primary-rotation-entra-preview");
+                    if (reviewedEntraCertTarget == "primary-rotation" &&
+                        reviewedEntraCertPlanSha is not null)
+                        AddAction(page, T("5. Подтвердить добавление PUBLIC сертификата в Entra...",
+                                          "5. Approve PUBLIC certificate registration in Entra...",
+                                          "5. אישור רישום האישור הציבורי"),
+                            () => AddEntraCertificateForTargetAsync("primary-rotation"),
+                            false, "shield", "primary-rotation-entra-apply");
+                }
+                if (primaryRotationGraphCertificateSha is not null &&
+                    reviewedPrimaryRotationStageSha is not null)
+                    AddAction(page, T("6. Проверить XOAUTH2 SMTP AUTH новым ключом (без письма)...",
+                                      "6. Verify staged XOAUTH2 SMTP AUTH (no message sent)...",
+                                      "6. בדיקת SMTP AUTH עם המפתח החדש ללא שליחת דואר"),
+                        VerifyPrimaryOAuthRotationSmtpAsync, false, "shield", "primary-rotation-smtp");
+                if (verifiedPrimaryRotationSmtpSha is not null &&
+                    reviewedPrimaryRotationStageSha == verifiedPrimaryRotationSmtpSha)
+                    AddAction(page, T("7. Активировать новый ключ с резервной копией и откатом...",
+                                      "7. Activate with backup and automatic rollback...",
+                                      "7. הפעלה עם גיבוי ושחזור אוטומטי"),
+                        ActivatePrimaryOAuthRotationAsync, false, "shield", "primary-rotation-activate");
+                AddLine(page, UiTheme.Text(T(
+                    "НЕ удаляйте предыдущий ключ или сертификат Entra до подтверждения реальной доставки. TPM/HSM использует отдельный безопасный процесс переключения.",
+                    "Keep the previous PEM and Entra credentials until actual mail delivery is independently verified. Hardware TPM/HSM uses the separate guarded cutover.",
+                    "יש לשמור את המפתחות הישנים עד לאימות מסירת הדואר. ל-TPM/HSM יש תהליך נפרד.")));
                 if (linuxSecurity?.HasTpm2 == true)
                 {
                     AddLine(page, UiTheme.Text(T(
