@@ -10,6 +10,8 @@ namespace LinuxMailRelay365;
 internal sealed class MailRoutingPlan
 {
     public string Transport { get; set; } = "oauth2";
+    // Recipient preference only. Never evidence of tenant authorization.
+    public string RecipientScope { get; set; } = "unknown";
     public string SenderPolicy { get; set; } = "fixed-mailbox";
     // Operator intent only. Multi-mailbox XOAUTH2 is NOT applied until
     // authenticated sender ownership and Exchange rights are validated.
@@ -95,6 +97,8 @@ internal static class MailRoutingPlanStore
     {
         if (state.SidecarPort is < 1024 or > 65535)
             throw new InvalidDataException("Isolated SMTP port must be between 1024 and 65535.");
+        if (state.RecipientScope is not ("unknown" or "internal-only" or "external-needed"))
+            throw new InvalidDataException("Invalid recipient scope.");
         if (state.Transport is not ("oauth2" or "connector" or "direct-send") ||
             state.SenderPolicy is not ("fixed-mailbox" or "preserve-domain" or "masquerade") ||
             state.OAuthSenderMode is not ("fixed-mailbox" or "authorized-multiple-mailboxes"))
@@ -177,7 +181,8 @@ internal static class MailRoutingPlanStore
             var b = Identity("linux-b.example", "22", "admin");
             if (a == b || a != Identity("linux-a.example", "0022", "admin")) return false;
             var defaults = Load(folder, a);
-            if (defaults.Transport != "oauth2" || defaults.SenderPolicy != "fixed-mailbox" ||
+            if (defaults.Transport != "oauth2" || defaults.RecipientScope != "unknown" ||
+                defaults.SenderPolicy != "fixed-mailbox" ||
                 defaults.OAuthSenderMode != "fixed-mailbox" || defaults.OAuthSenderMapPath != "" ||
                 !defaults.PreserveExistingMail || defaults.SidecarPort != 2525 ||
                 defaults.PublicInternetRequested || defaults.ShowAdvancedSmtpTools) return false;
@@ -211,6 +216,10 @@ internal static class MailRoutingPlanStore
             try { Validate(new MailRoutingPlan {
                 OAuthSenderMode = "authorized-multiple-mailboxes" }); return false;
             } catch (InvalidDataException) { }
+            try { Validate(new MailRoutingPlan { RecipientScope = "invalid" }); return false; }
+            catch (InvalidDataException) { }
+            Save(folder, b, new MailRoutingPlan { RecipientScope = "external-needed" });
+            if (Load(folder, b).RecipientScope != "external-needed") return false;
             Validate(new MailRoutingPlan { SidecarPort = 2526 });
             try { Validate(new MailRoutingPlan { SidecarPort = 25 }); return false; }
             catch (InvalidDataException) { }

@@ -2,6 +2,17 @@
 
 **Development preview only. Do not merge, deploy to production or publish Stable without the evidence below.** The user will run the final acceptance checks after the development work is complete.
 
+## Recipient-aware route advice (Preview)
+
+The SSH wizard now asks whether delivery is tenant-internal only, includes external recipients,
+or is undecided. A read-only MTA inventory plus this declared intent guides the operator:
+Direct Send for internal-only recipients, a verified single-mailbox XOAUTH2 candidate for
+external delivery on a supported Postfix host, and a separately guarded Connector candidate
+for Exim/Sendmail preservation. Existing isolated relays, unknown or risky MTA state and
+clean hosts without a tenant authorization path require manual review. The suggestion is
+**never an automatic mode selection or tenant authorization**. An explicitly external
+recipient requirement blocks Direct Send Apply before any Linux changes.
+
 ## What is implemented vs blocked
 
 | Feature | State | Acceptance evidence still needed |

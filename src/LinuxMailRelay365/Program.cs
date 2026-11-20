@@ -57,6 +57,7 @@ internal static class Program
                 !MainForm.UseWideDeliveryChoices(760, 192) &&
                 MainForm.UseWideDeliveryChoices(1500, 192)),
             ("Delivery route chooser guidance", DeliveryModeOverview.SelfTest),
+            ("Recipient-aware read-only delivery recommendations", MailDeliveryAdvisor.SelfTest),
             ("Read-only MTA discovery recommendations", MailServerDiscoveryDecision.SelfTest),
             ("Clean Postfix bootstrap approval contract", () =>
             {

@@ -46,6 +46,7 @@ internal sealed class MainForm : Form
     private int previewedCleanBootstrapPort;
     private string cleanBootstrapSummary = "";
     private readonly ComboBox mailTransport = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
+    private readonly ComboBox recipientScope = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox senderPolicy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox oauthSenderMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly TextBox oauthSenderMapPath = Field("");
@@ -239,6 +240,8 @@ internal sealed class MainForm : Form
             "M365 SMTP Connector · existing tenant Connector (Advanced apply)",
             "Direct Send · internal recipients only (Advanced apply)"
         ]);
+        recipientScope.Items.AddRange(["Not sure yet", "Internal M365 only", "Internal and external recipients"]);
+        recipientScope.SelectedIndex = 0;
         senderPolicy.Items.AddRange([
             "One fixed approved sender address",
             "Preserve original sender (Connector; SMTP AUTH + From Guard required)",
@@ -392,6 +395,12 @@ internal sealed class MainForm : Form
                 RenderPage();
                 pageHost.AutoScrollPosition = new Point(0, previousScroll);
             }
+        };
+        recipientScope.SelectedIndexChanged += (_, _) =>
+        {
+            if (routingLoading) return;
+            SaveRoutingChoices();
+            if (step is 1 or 2 && !busy) RenderPage();
         };
         senderPolicy.SelectedIndexChanged += (_, _) =>
         {
@@ -633,6 +642,12 @@ internal sealed class MainForm : Form
                 "Multiple authorized mailboxes — preserve From (plan only)"
             }
         };
+        var recipientNames = lang switch
+        {
+            0 => new[] { "Пока не знаю", "Только внутренние M365", "Включая внешних получателей" },
+            2 => new[] { "עדיין לא ידוע", "נמעני M365 פנימיים בלבד", "כולל נמענים חיצוניים" },
+            _ => new[] { "Not sure yet", "Internal M365 recipients only", "Include external recipients" }
+        };
         bool wasLoading = routingLoading;
         routingLoading = true;
         try
@@ -640,6 +655,7 @@ internal sealed class MainForm : Form
             Relabel(mailTransport, transportNames);
             Relabel(senderPolicy, senderNames);
             Relabel(oauthSenderMode, oauthNames);
+            Relabel(recipientScope, recipientNames);
         }
         finally { routingLoading = wasLoading; }
     }
@@ -1076,6 +1092,37 @@ internal sealed class MainForm : Form
                 InspectMailRoutingAsync, false, "check", "mta-discovery");
     }
 
+    private void ShowRecipientAdvice(TableLayoutPanel page)
+    {
+        bool sameHost = discoveredMailIdentity is not null &&
+            discoveredMailIdentity == TryCurrentIdentity();
+        var discovery = MailServerDiscoveryDecision.Assess(
+            sameHost ? inspectedMail : null, sameHost ? existingSmtpAudit : null,
+            sameHost ? discoveredIsolatedRelay : null);
+        string scope = recipientScope.SelectedIndex switch
+        {
+            1 => "internal-only", 2 => "external-needed", _ => "unknown"
+        };
+        var advice = MailDeliveryAdvisor.Assess(scope, discovery,
+            sameHost ? discoveredIsolatedRelay : null);
+        AddLine(page, UiTheme.Text(T("Кому отправлять почту?",
+            "Who should receive the mail?", "למי יישלח הדואר?"), true));
+        AddLine(page, recipientScope);
+        AddLine(page, new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(Math.Max(390, pageHost.ClientSize.Width - 72), 0),
+            Text = advice.Explain(language.SelectedIndex) + Environment.NewLine +
+                T("Совет не меняет выбранный режим и не подтверждает права Microsoft 365.",
+                  "Advice never selects a route or verifies Microsoft 365 permissions.",
+                  "ההמלצה אינה בוחרת מסלול ואינה מאמתת הרשאות."),
+            Font = new Font("Segoe UI", 9.5f),
+            ForeColor = advice.RequiresReview ? Color.FromArgb(143, 72, 22) : UiTheme.Navy,
+            BackColor = Color.White, Padding = new Padding(10, 9, 10, 9),
+            Margin = new Padding(0, 8, 0, 12)
+        });
+    }
+
     private void RenderPage()
     {
         if (IsDisposed) return;
@@ -1132,7 +1179,9 @@ internal sealed class MainForm : Form
                 break;
             case 1:
                 EnsureSecurityLoaded();
+                LocalizeDeliveryChoices();
                 ShowMailDiscovery(page, true);
+                ShowRecipientAdvice(page);
                 AddLine(page, UiTheme.Text(T(
                     "Все опции выключены. Выбор сохраняется как ПЛАН — он не меняет Entra, Postfix, сертификат или Linux. Для включения потребуются отдельные подтверждённые действия.",
                     "All options are off. Your selection is saved as a PLAN only: it does not modify Entra, Postfix, certificates or Linux. Activation requires separate approved steps.",
@@ -1350,6 +1399,7 @@ internal sealed class MainForm : Form
                 EnsureRoutingLoaded();
                 LocalizeDeliveryChoices();
                 ShowMailDiscovery(page, false);
+                ShowRecipientAdvice(page);
                 AddLine(page, UiTheme.Text(T(
                     "Выберите, КАК Linux будет отправлять почту через Microsoft 365",
                     "First select HOW Linux will deliver mail through Microsoft 365",
@@ -1406,6 +1456,13 @@ internal sealed class MainForm : Form
                 ShowMailDiscovery(page, false);
                 AddLine(page, UiTheme.Text(T("Отправка через Microsoft 365", "Microsoft 365 delivery method", "שיטת שליחה דרך Microsoft 365")));
                 AddLine(page, mailTransport);
+                if (MailDeliveryAdvisor.ConflictsWithRecipients(
+                    recipientScope.SelectedIndex == 2 ? "external-needed" : "unknown",
+                    mailTransport.SelectedIndex))
+                    AddLine(page, UiTheme.Text(T(
+                        "ВНИМАНИЕ: Direct Send не доставляет внешним получателям. Выберите Connector/XOAUTH2 либо измените требование к получателям.",
+                        "WARNING: Direct Send rejects external recipients. Choose Connector/XOAUTH2 or change the intended audience.",
+                        "אזהרה: Direct Send אינו שולח לנמענים חיצוניים.")));
                 if (mailTransport.SelectedIndex == 0)
                 {
                     AddLine(page, UiTheme.Text(T("Как обрабатывать отправителей при XOAUTH2",
@@ -2362,6 +2419,10 @@ internal sealed class MainForm : Form
             oauthSenderMapPath.Text = routingPlan.OAuthSenderMapPath;
             oauthSenderAuditSummary = "";
             oauthIngressAuditSummary = "";
+            recipientScope.SelectedIndex = routingPlan.RecipientScope switch
+            {
+                "internal-only" => 1, "external-needed" => 2, _ => 0
+            };
             preserveExistingMail.Checked = routingPlan.PreserveExistingMail;
             acceptedDomain.Text = routingPlan.VerifiedDomain;
             outboundMxHost.Text = routingPlan.EopMxHost;
@@ -2415,6 +2476,10 @@ internal sealed class MainForm : Form
         routingPlan.OAuthSenderMode = oauthSenderMode.SelectedIndex == 1
             ? "authorized-multiple-mailboxes" : "fixed-mailbox";
         routingPlan.OAuthSenderMapPath = oauthSenderMapPath.Text.Trim();
+        routingPlan.RecipientScope = recipientScope.SelectedIndex switch
+        {
+            1 => "internal-only", 2 => "external-needed", _ => "unknown"
+        };
         routingPlan.PreserveExistingMail = preserveExistingMail.Checked;
         routingPlan.VerifiedDomain = acceptedDomain.Text.Trim().ToLowerInvariant();
         routingPlan.EopMxHost = outboundMxHost.Text.Trim().ToLowerInvariant();
@@ -3610,6 +3675,10 @@ internal sealed class MainForm : Form
     {
         if (mailTransport.SelectedIndex is not (1 or 2))
             throw new InvalidOperationException("Select Direct Send or Microsoft 365 Connector.");
+        if (MailDeliveryAdvisor.ConflictsWithRecipients(
+            recipientScope.SelectedIndex == 2 ? "external-needed" : "unknown",
+            mailTransport.SelectedIndex))
+            throw new InvalidOperationException("Direct Send cannot deliver to external recipients. Choose Connector/XOAUTH2 or change the recipient requirement.");
         if (mailTransport.SelectedIndex == 2 && senderPolicy.SelectedIndex != 0)
             throw new NotSupportedException("Direct Send requires a fixed sender. Original sender preservation and masquerading require a verified M365 Connector.");
         if (!preserveExistingMail.Checked)
