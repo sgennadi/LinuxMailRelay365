@@ -1899,6 +1899,9 @@ internal sealed class MainForm : Form
                     "OAuth сертификат основного Postfix: безопасная ротация программного PEM-ключа. Потребуется действующая конфигурация и отдельное разрешение для каждого шага. Доставка писем во время проверок не выполняется.",
                     "Primary Postfix OAuth certificate: guarded software PEM renewal. The installed active identity must already exist. Every change needs an explicit approval. SMTP tests send NO mail.",
                     "חידוש אישור OAuth ב-Postfix: החלפה מאושרת עם אפשרות שחזור, ללא שליחת הודעות בבדיקה.")));
+                AddField(page, T("Срок действия нового OAuth-сертификата (дней, 1–365)",
+                    "New OAuth certificate validity (days, 1–365)",
+                    "תוקף אישור OAuth החדש בימים (1–365)"), certificateDays);
                 AddAction(page, T("1. Проверить план ротации (только чтение)",
                                   "1. Review primary OAuth rotation (read-only)",
                                   "1. בדיקת תוכנית לחידוש אישור"),
