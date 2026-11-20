@@ -35,8 +35,8 @@ Optional: --allow-existing   Legacy advanced flag (not sufficient for replacemen
           --validate-network-only  Validate ingress without modifying anything.
           --prepare-only     Generate certificate and dedicated local account.
           --certificate-days N (1..365, default 365).
-          --rotate-only      Prepare a SECOND certificate without disrupting the old one.
-          --activate-only    After adding the next certificate in Entra, switch keys.
+          --rotate-only      DEPRECATED and blocked; use reviewed Primary OAuth Rotation Wizard.
+          --activate-only    DEPRECATED and blocked; use reviewed Primary OAuth Rotation Wizard.
 This installer never automatically removes an existing Sendmail or Exim MTA.
 
 Does not require or store a Microsoft 365 mailbox password, refresh token,
@@ -82,7 +82,16 @@ if [ "$ACTIVATE_ONLY" -eq 1 ] && [ "$ROTATE_ONLY" -eq 1 ]; then
   echo 'Choose only one lifecycle action.' >&2
   exit 2
 fi
-
+# The legacy direct key-copy sequence switches identities without a separate
+# staged Exchange SMTP AUTH acceptance step. Refuse unsafe shortcuts in Preview.
+if [ "$ROTATE_ONLY" -eq 1 ] || [ "$ACTIVATE_ONLY" -eq 1 ]; then
+  echo 'Deprecated direct PEM rotation refused: use reviewed Primary OAuth Rotation Wizard (plan, stage, Entra addKey, SMTP AUTH, activate).' >&2
+  exit 2
+fi
+if [ "$PREPARE_ONLY" -eq 1 ] && [ -e /etc/postfix/m365-oauth/app.json ]; then
+  echo 'Existing OAuth identity detected. Use reviewed Primary OAuth Rotation instead of initial certificate preparation.' >&2
+  exit 2
+fi
 
 # Validate before touching Postfix, packages, identities or certificates.
 validate_ingress() {
