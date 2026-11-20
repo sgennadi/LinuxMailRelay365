@@ -144,10 +144,15 @@ def configured_addresses(mta, runner=call):
     if raw is None:
         return "unavailable", []
     raw = raw.strip()
-    if not raw or raw in ("all", "loopback-only", "127.0.0.1", "::1"):
-        return raw if raw else "empty", []
+    if not raw:
+        return "empty", []
+    if raw in ("all", "loopback-only"):
+        return raw, []
     addresses = []
-    for token in re.split(r"[\s,:;]+", raw) if mta == "postfix" else re.split(r"[\s,;]+", raw):
+    # Colon belongs to IPv6. Exim separates multiple bind targets by
+    # a *spaced* colon; a bare colon must never split an IPv6 literal.
+    separator = r"[\s,;]+" if mta == "postfix" else r"\s+:\s+|[\s,;]+"
+    for token in re.split(separator, raw):
         token = token.strip("[]")
         if not token:
             continue
@@ -156,19 +161,34 @@ def configured_addresses(mta, runner=call):
         except ValueError:
             # Hostnames, variables, Exim syntax require manual interpretation.
             return "complex_manual_review", []
-    return "explicit_addresses", addresses
+    return ("explicit_addresses", addresses) if addresses else ("complex_manual_review", [])
 
 
 def bind_assessment(mta, configured, wanted, ip_data, socket_data, selected_port):
     if ip_data is None or socket_data is None:
         return "network_or_socket_unverified"
-    _, _, assigned, states, _ = ip_data
-    _, sockets, _ = socket_data
+    _, _, assigned, states, truncated_interfaces = ip_data
+    _, sockets, truncated_sockets = socket_data
+    # Truncation means no absence conclusion can be trusted.
+    if truncated_interfaces or truncated_sockets:
+        return "incomplete_network_or_socket_inventory"
+    if mta not in ("postfix", "exim"):
+        return "mta_bind_configuration_not_applicable"
+    if configured not in ("all", "loopback-only", "explicit_addresses") or (
+            configured == "explicit_addresses" and not wanted):
+        return "mta_bind_configuration_unverified"
     missing = [address for address in wanted if address not in assigned]
     if missing:
         return "configured_ip_not_assigned"
-    if any(states.get(address, ("up", "up"))[0] == "down" for address in wanted):
+    if any(states.get(address, ("unknown", "unknown"))[0] == "down"
+           for address in wanted):
         return "configured_ip_admin_down"
+    if any(states.get(address, ("unknown", "unknown"))[1] in
+           ("down", "lowerlayerdown", "notpresent") for address in wanted):
+        return "configured_ip_oper_down"
+    if any(states.get(address, ("unknown", "unknown"))[1] != "up"
+           for address in wanted):
+        return "configured_ip_oper_unverified"
     if configured == "all":
         if not sockets:
             return "all_configured_no_smtp_socket_observed"

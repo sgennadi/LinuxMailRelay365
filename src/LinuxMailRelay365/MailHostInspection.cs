@@ -89,7 +89,8 @@ internal sealed class MailHostInspection
     internal IReadOnlyList<(string Name, string Address)> ActivePrivateIPv4s()
     {
         if (Get("MAIL_HOST_NET_STATE") != "ok" ||
-            Get("MAIL_HOST_NET_AUDIT_VERSION") != "1")
+            Get("MAIL_HOST_NET_AUDIT_VERSION") != "1" ||
+            Get("MAIL_HOST_NET_TRUNCATED") != "no")
             return Array.Empty<(string Name, string Address)>();
         var up = new HashSet<string>(StringComparer.Ordinal);
         foreach (string row in ReadRows("MAIL_HOST_IFACE_", 16))
@@ -124,23 +125,70 @@ internal sealed class MailHostInspection
 
     private string NetworkSummary(int language)
     {
+        static string Tr(int lang, string ru, string en, string he) =>
+            lang == 0 ? ru : lang == 2 ? he : en;
         if (Get("MAIL_HOST_NET_AUDIT_VERSION") != "1")
-            return language == 0 ? "Сетевые интерфейсы не проверены." :
-                language == 2 ? "ממשקי הרשת לא נבדקו." : "Network interfaces not inspected.";
+            return Tr(language, "Сетевые интерфейсы не проверены.",
+                "Network interfaces not inspected.", "ממשקי הרשת לא נבדקו.");
         string interfaces = string.Join("; ", ReadRows("MAIL_HOST_IFACE_", 12));
         string addresses = string.Join("; ", ReadRows("MAIL_HOST_ADDR_", 14));
         string sockets = string.Join("; ", ReadRows("MAIL_HOST_SOCKET_0", 12));
         string status = Get("MAIL_HOST_NET_BIND_RESULT");
-        return "Linux interfaces (admin/oper): " + (interfaces.Length == 0 ? "unverified" : interfaces) +
-            Environment.NewLine + "Assigned IPs: " + (addresses.Length == 0 ? "unverified" : addresses) +
-            Environment.NewLine + "SMTP sockets (unattributed): " +
-            (sockets.Length == 0 ? "none observed or unavailable" : sockets) +
-            "; selected port=" + Get("MAIL_HOST_NET_PORT") +
-            Environment.NewLine + "Bind comparison: " + status +
-            "; network=" + Get("MAIL_HOST_NET_STATE") +
+        string unknown = Tr(language, "не подтверждено", "unverified", "לא אומת");
+        string noSocket = Get("MAIL_HOST_SOCKET_STATE") == "ok"
+            ? Tr(language, "не обнаружены", "none observed", "לא נמצאו")
+            : unknown;
+        string hint = status switch
+        {
+            "configured_ip_admin_down" => Tr(language,
+                "IP назначен административно отключённому интерфейсу.",
+                "Configured IP belongs to an administratively DOWN interface.",
+                "כתובת ה-IP משויכת לממשק מושבת."),
+            "configured_ip_oper_down" => Tr(language,
+                "IP назначен неработающему интерфейсу (нет carrier).",
+                "Configured IP belongs to an operationally DOWN interface.",
+                "כתובת ה-IP משויכת לממשק שאינו פעיל."),
+            "configured_ip_oper_unverified" => Tr(language,
+                "Рабочее состояние интерфейса не подтверждено.",
+                "Interface operational state is unverified.",
+                "המצב התפעולי של הממשק אינו מאומת."),
+            "incomplete_network_or_socket_inventory" => Tr(language,
+                "Список интерфейсов или портов обрезан: результаты неполные.",
+                "Network or socket inventory truncated: results are incomplete.",
+                "רשימת הממשקים או השקעים חלקית."),
+            "mta_bind_configuration_unverified" => Tr(language,
+                "Настройку привязки MTA нельзя достоверно разобрать.",
+                "MTA bind configuration cannot be verified.",
+                "לא ניתן לאמת את תצורת ההאזנה של שרת הדואר."),
+            _ => ""
+        };
+        return Tr(language, "Интерфейсы Linux (админ./раб.): ",
+                "Linux interfaces (admin/oper): ", "ממשקי Linux (ניהולי/תפעולי): ") +
+            (interfaces.Length == 0 ? unknown : interfaces) +
+            Environment.NewLine +
+            Tr(language, "Назначенные IP: ", "Assigned IPs: ", "כתובות IP שהוקצו: ") +
+            (addresses.Length == 0 ? unknown : addresses) +
+            Environment.NewLine +
+            Tr(language, "Слушающие SMTP-сокеты (владелец неизвестен): ",
+                "SMTP sockets (owner not verified): ", "שקעי SMTP (בעלות לא מאומתת): ") +
+            (sockets.Length == 0 ? noSocket : sockets) +
+            Environment.NewLine +
+            Tr(language, "Порт мастера: ", "Wizard port: ", "פורט האשף: ") +
+            Get("MAIL_HOST_NET_PORT") +
+            "; inet_interfaces/local_interfaces: " + Get("MAIL_HOST_NET_CONFIG_KIND") +
+            Environment.NewLine +
+            Tr(language, "Сравнение привязок: ", "Bind comparison: ", "השוואת כתובות האזנה: ") +
+            status + (hint.Length == 0 ? "" : " — " + hint) +
+            Environment.NewLine +
+            "ip=" + Get("MAIL_HOST_NET_STATE") +
             "; ss=" + Get("MAIL_HOST_SOCKET_STATE") +
-            "; truncated=" + Get("MAIL_HOST_NET_TRUNCATED") + "/" + Get("MAIL_HOST_SOCKET_TRUNCATED") +
-            ". Sockets do NOT prove owning MTA, firewall/NAT access or Internet reachability.";
+            "; truncated=" + Get("MAIL_HOST_NET_TRUNCATED") + "/" +
+            Get("MAIL_HOST_SOCKET_TRUNCATED") +
+            Environment.NewLine +
+            Tr(language,
+                "Сокет не доказывает принадлежность MTA или доступность через firewall/NAT/Интернет.",
+                "A socket does not prove MTA ownership or firewall/NAT/Internet reachability.",
+                "שקע אינו מוכיח בעלות של שרת דואר או גישה דרך חומת אש/אינטרנט.");
     }
 
     internal string Summary(int language)
@@ -202,6 +250,7 @@ internal sealed class MailHostInspection
         catch (InvalidDataException) { }
         const string network = "MAIL_HOST_NET_AUDIT_VERSION=1\n" +
             "MAIL_HOST_NET_STATE=ok\n" +
+            "MAIL_HOST_NET_TRUNCATED=no\n" +
             "MAIL_HOST_IFACE_01=eth0,up,up\n" +
             "MAIL_HOST_IFACE_02=eth1,up,down\n" +
             "MAIL_HOST_IFACE_03=eth2,up,up\n" +
@@ -214,7 +263,9 @@ internal sealed class MailHostInspection
             !withNetwork.Summary(1).Contains("127.0.0.1:25", StringComparison.Ordinal) ||
             withNetwork.ActivePrivateIPv4s().Count != 1 ||
             withNetwork.ActivePrivateIPv4s()[0].Address != "10.0.0.5" ||
-            withNetwork.ActivePrivateIPv4s()[0].Name != "eth0")
+            withNetwork.ActivePrivateIPv4s()[0].Name != "eth0" ||
+            Parse(valid + network.Replace("MAIL_HOST_NET_TRUNCATED=no",
+                "MAIL_HOST_NET_TRUNCATED=yes")).ActivePrivateIPv4s().Count != 0)
             return false;
         string exim = valid.Replace("MAIL_HOST_MTA=postfix", "MAIL_HOST_MTA=exim") +
             "MAIL_HOST_EXIM_SMTP_PORTS=25,587,2525\n" +
