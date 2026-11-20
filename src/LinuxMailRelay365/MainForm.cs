@@ -5804,13 +5804,20 @@ internal sealed class MainForm : Form
     private async Task InspectPrimaryOAuthRotationAsync()
     {
         var endpoint = Endpoint();
-        ClearPrimaryRotationReview();
+        string context = PrimaryRotationContext(endpoint);
         string result = await RunPrimaryRotationAsync(endpoint, "status");
         if (PrimaryRotationCode(result, "READY_FOR_PREFLIGHT") != "yes" ||
             PrimaryRotationCode(result, "ACTIVE_OAUTH_CHANGED") != "no")
             throw new InvalidDataException("Staged OAuth identity was not verified.");
-        reviewedPrimaryRotationStageSha = PrimaryRotationSha(result, "STAGE_SHA256");
-        reviewedPrimaryRotationStageContext = PrimaryRotationContext(endpoint);
+        string latest = PrimaryRotationSha(result, "STAGE_SHA256");
+        // A refresh of the SAME immutable candidate must not lose a verified
+        // Graph registration. Any digest, server or identity change invalidates
+        // all previous approvals and candidate SMTP AUTH evidence.
+        bool same = reviewedPrimaryRotationStageSha == latest &&
+            reviewedPrimaryRotationStageContext == context;
+        ClearPrimaryRotationReview(preserveGraph: same);
+        reviewedPrimaryRotationStageSha = latest;
+        reviewedPrimaryRotationStageContext = context;
         primaryRotationSummary = "Staged certificate fingerprint checked. SHA256=" +
             reviewedPrimaryRotationStageSha + Environment.NewLine +
             "Entra certificate registration and candidate SMTP AUTH are still required.";
