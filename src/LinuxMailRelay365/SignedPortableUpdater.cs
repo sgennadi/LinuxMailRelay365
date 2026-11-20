@@ -946,9 +946,9 @@ internal static class SignedPortableUpdater
 
     internal static bool SelfTest()
     {
-        if (CompareVersions("0.1.0", "0.1.0-preview.19") <= 0 ||
-            CompareVersions("0.1.0-preview.20", "0.1.0-preview.19") <= 0 ||
-            CompareVersions("0.1.0-preview.9", "0.1.0-preview.19") >= 0 ||
+        if (CompareVersions("0.1.0", "0.1.0-preview.20") <= 0 ||
+            CompareVersions("0.1.0-preview.21", "0.1.0-preview.20") <= 0 ||
+            CompareVersions("0.1.0-preview.9", "0.1.0-preview.20") >= 0 ||
             TrustedGithubUrl("https://bad.example/test",
                 "/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1"))
             return false;
@@ -958,27 +958,27 @@ internal static class SignedPortableUpdater
             bool duplicate = false)
         {
             string link = "https://github.com/sgennadi/LinuxMailRelay365/releases/download/" +
-                "v0.1.0-preview.20/" + asset;
+                "v0.1.0-preview.21/" + asset;
             string item = JsonSerializer.Serialize(new
             {
                 name = asset, digest = "sha256:" + digest, size = 100L,
                 browser_download_url = link
             });
-            return "[{\"tag_name\":\"v0.1.0-preview.20\",\"draft\":false," +
+            return "[{\"tag_name\":\"v0.1.0-preview.21\",\"draft\":false," +
                 "\"prerelease\":" + (preview ? "true" : "false") +
                 ",\"html_url\":\"https://github.com/sgennadi/LinuxMailRelay365/releases/tag/" +
-                "v0.1.0-preview.20\",\"assets\":[" + item +
+                "v0.1.0-preview.21\",\"assets\":[" + item +
                 (duplicate ? "," + item : "") + "]}]";
         }
         static SignedUpdateOffer? Parse(string json, bool allow)
         {
             using var document = JsonDocument.Parse(json);
-            return SelectRelease(document.RootElement, allow, "0.1.0-preview.19",
+            return SelectRelease(document.RootElement, allow, "0.1.0-preview.20",
                 "LinuxMailRelay365-win-x64.zip");
         }
         using var previewFixture = JsonDocument.Parse(Fixture(asset, hash, true));
         var fixtureOffer = SelectRelease(previewFixture.RootElement, true,
-            "0.1.0-preview.19", asset);
+            "0.1.0-preview.20", asset);
         return ApplyFromHelper(Array.Empty<string>()) == 2 &&
                ApplyFromHelper(Array.Empty<string>(), unsignedPreview: true) == 2 &&
                fixtureOffer is not null && IsPreviewRelease(fixtureOffer) &&
@@ -986,7 +986,7 @@ internal static class SignedPortableUpdater
                    "https://github.com/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1",
                    new Uri("https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.1/" + asset),
                    asset, hash, 100L)) &&
-               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.0-preview.20" &&
+               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.0-preview.21" &&
                Parse(Fixture(asset, hash, true), false) is null &&
                Parse(Fixture(asset, hash, false), false) is null &&
                Parse(Fixture(asset, hash, true, duplicate: true), true) is null &&
