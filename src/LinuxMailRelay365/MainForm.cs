@@ -163,6 +163,9 @@ internal sealed class MainForm : Form
         "LINUX MAIL RELAY 365  ·  " + UpdateCheck.Version, true);
     private TableLayoutPanel? footerLayout;
     private TableLayoutPanel? footerStatusLayout;
+    private TableLayoutPanel? contentShell;
+    private Panel? wizardFrame;
+    private bool arrangingWizardPanels;
     private bool relabelingSshMethods;
     private bool localizingAdvancedChoices;
     private readonly Panel pageHost = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = UiTheme.Canvas };
@@ -599,7 +602,7 @@ internal sealed class MainForm : Form
         activityPanel.Controls.Add(activity);
         var bottom = new TableLayoutPanel
         {
-            Dock = DockStyle.Bottom, AutoSize = false,
+            Dock = DockStyle.None, AutoSize = false,
             RowCount = 3, ColumnCount = 1,
             Padding = new Padding(18, 4, 18, 12)
         };
@@ -620,7 +623,7 @@ internal sealed class MainForm : Form
         // The content shell receives only the space above the pinned footer.
         var shell = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1,
+            Dock = DockStyle.None, RowCount = 3, ColumnCount = 1,
             AutoSize = false
         };
         shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -632,9 +635,11 @@ internal sealed class MainForm : Form
         var frame = new Panel { Dock = DockStyle.Fill, AutoScroll = false };
         frame.Controls.Add(shell);
         frame.Controls.Add(bottom);
-        // Footer must dock first; content fills the remaining rectangle.
-        frame.Controls.SetChildIndex(bottom, 0);
+        wizardFrame = frame;
+        contentShell = shell;
+        frame.SizeChanged += (_, _) => ArrangeWizardPanels();
         Controls.Add(frame);
+        ArrangeWizardPanels();
         bool fittingWindowLayout = false;
         void ResizeUi()
         {
@@ -719,6 +724,37 @@ internal sealed class MainForm : Form
         int footerHeight = Math.Clamp(desired, minimum, maximum);
         if (Math.Abs(footerLayout.Height - footerHeight) > 1)
             footerLayout.Height = footerHeight;
+        ArrangeWizardPanels();
+    }
+
+    // Explicitly reserve independent bounds. Dock.Fill and Dock.Bottom can
+    // be misordered by WinForms when an AutoScroll child hosts long AutoSize
+    // diagrams. Only these two top-level regions use calculated bounds;
+    // controls inside each region remain layout/DPI-driven.
+    private void ArrangeWizardPanels()
+    {
+        if (arrangingWizardPanels || wizardFrame is null ||
+            contentShell is null || footerLayout is null || IsDisposed)
+            return;
+        int width = wizardFrame.ClientSize.Width;
+        int height = wizardFrame.ClientSize.Height;
+        if (width <= 0 || height <= 0) return;
+        arrangingWizardPanels = true;
+        try
+        {
+            int footerHeight = Math.Min(footerLayout.Height,
+                Math.Max(80, height - 120));
+            var contentArea = new Rectangle(0, 0, width,
+                Math.Max(0, height - footerHeight));
+            var footerArea = new Rectangle(0, height - footerHeight,
+                width, footerHeight);
+            if (contentShell.Bounds != contentArea)
+                contentShell.Bounds = contentArea;
+            if (footerLayout.Bounds != footerArea)
+                footerLayout.Bounds = footerArea;
+            footerLayout.BringToFront();
+        }
+        finally { arrangingWizardPanels = false; }
     }
 
     private void FitHeaderText()
@@ -2777,6 +2813,10 @@ internal sealed class MainForm : Form
             // Drawing can trigger an additional WinForms measure pass.
             // Validate AFTER painting as well, so a clipped status is a
             // failing CI test rather than a superficially valid PNG.
+            if (footerLayout is null || wizardFrame is null ||
+                footerLayout.Bottom > wizardFrame.ClientSize.Height ||
+                footerLayout.Height < 60 || footerLayout.Top <= 0)
+                throw new InvalidOperationException("Fixed footer is not inside the window.");
             foreach (Control footerControl in new Control[] { status, activityToggle })
             {
                 if (!footerControl.Visible) continue;

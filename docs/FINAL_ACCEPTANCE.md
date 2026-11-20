@@ -880,3 +880,14 @@ Selected indices remain stable during relabeling; translated options must not
 invalidate approval fingerprints or clear staged hardware settings. Combo-box
 popup width expands up to the available desktop for long captions.
 The optional Security Help dialog is now localized and supports RTL Hebrew.
+
+
+## Explicit window regions to prevent dock-order occlusion
+
+The body shell (header plus AutoScroll page) and the fixed footer now use
+non-overlapping rectangles calculated from the frame's real client size.
+Their bounds are refreshed on window resize and footer-height changes, with
+reentrancy protection. This avoids platform-dependent DockStyle z-order
+behavior that hid the footer under a long page in visual QA. The screenshot
+test also asserts the footer's rectangle stays within the client frame.
+Nested forms and field layout remain automatic, scaled and responsive.
