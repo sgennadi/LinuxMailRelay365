@@ -136,7 +136,7 @@ def openssl(args, timeout=20):
     return result.stdout
 
 
-def verify_pair(identity):
+def verify_pair(identity, min_valid_seconds=0):
     pub_cert = openssl(["x509", "-pubkey", "-noout", "-in",
                         identity["certificate"]]).strip()
     pub_key = openssl(["pkey", "-pubout", "-in",
@@ -144,7 +144,7 @@ def verify_pair(identity):
     if not pub_cert or pub_cert != pub_key:
         raise Refused("certificate_private_key_mismatch")
     openssl(["x509", "-in", identity["certificate"],
-             "-noout", "-checkend", "86400"])
+             "-noout", "-checkend", str(min_valid_seconds)])
 
 
 def current(group):
@@ -264,7 +264,7 @@ def prepare(active, group, days):
         candidate["certificate"] = str(newcert)
         raw = (json.dumps(candidate, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
         parse_identity(raw, group, True)
-        verify_pair(candidate)
+        verify_pair(candidate, min_valid_seconds=3600)
         write_new(STAGED, raw, group)
         staged = staged_state(group)
         say("STAGED", "yes")
@@ -335,6 +335,7 @@ def activate(staged, group):
 
 
 def main(argv=None):
+    os.umask(0o077)
     ap = argparse.ArgumentParser(description=__doc__)
     actions = ap.add_mutually_exclusive_group(required=True)
     for action in ("plan", "stage", "status", "preflight", "activate"):
