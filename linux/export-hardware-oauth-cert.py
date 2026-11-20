@@ -135,15 +135,53 @@ def inventory(target):
     except KeyError:
         raise Refused("m365mailer_group_missing")
     active_raw, active = read_identity(root / "app.json", root, group)
-    stage_raw, stage = read_identity(root / "hardware-staged.json", root, group)
-    if "signer" not in stage or "private_key" in stage or \
-            not isinstance(stage["signer"], dict) or \
-            stage["signer"].get("provider") not in ("tpm2", "pkcs11"):
-        raise Refused("staged_identity_must_be_hardware_only")
+    if target == "primary-rotation":
+        # This path is intentionally software PEM only, never TPM/HSM.
+        # Keep the existing app identity untouched until Graph registration
+        # and candidate SMTP AUTH both pass.
+        pattern = re.compile(r"\Aapp\.rotation\.[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\Z")
+        active_key = active.get("private_key")
+        if "signer" in active or not isinstance(active_key, str) or \
+                Path(active_key).parent != root or \
+                not ((Path(active_key).name == "app.key" and
+                      Path(active["certificate"]).name == "app.crt") or
+                     (pattern.fullmatch(Path(active["certificate"]).stem) and
+                      Path(active_key).name ==
+                      Path(active["certificate"]).stem + ".key")):
+            raise Refused("software_pem_active_identity_required")
+        stage_raw, stage = read_identity(root / "pem-rotation-staged.json", root, group)
+        if set(stage) != {"tenant_id", "client_id", "mailbox",
+                          "certificate", "private_key"} or \
+                not isinstance(stage["private_key"], str) or \
+                Path(stage["private_key"]).parent != root or \
+                not pattern.fullmatch(Path(stage["certificate"]).stem) or \
+                Path(stage["private_key"]).name != Path(stage["certificate"]).stem + ".key":
+            raise Refused("invalid_primary_pem_candidate")
+        secure_read(active_key, MAX_PEM, group)
+        secure_read(stage["private_key"], MAX_PEM, group)
+        def public_key(*args):
+            try:
+                p = subprocess.run(["/usr/bin/openssl"] + list(args),
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    timeout=25, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                raise Refused("staged_software_key_check_unavailable")
+            if p.returncode or not 200 <= len(p.stdout) <= 4096:
+                raise Refused("staged_software_key_check_failed")
+            return p.stdout.strip()
+        if public_key("pkey", "-in", stage["private_key"], "-pubout") != \
+                public_key("x509", "-in", stage["certificate"], "-pubkey", "-noout"):
+            raise Refused("staged_software_key_certificate_mismatch")
+    else:
+        stage_raw, stage = read_identity(root / "hardware-staged.json", root, group)
+        if "signer" not in stage or "private_key" in stage or \
+                not isinstance(stage["signer"], dict) or \
+                stage["signer"].get("provider") not in ("tpm2", "pkcs11"):
+            raise Refused("staged_identity_must_be_hardware_only")
+        if Path(stage["certificate"]).name != "hardware-app.crt":
+            raise Refused("unexpected_hardware_certificate_name")
     if any(active[x] != stage[x] for x in ("tenant_id", "client_id", "mailbox")):
         raise Refused("active_staged_tenant_client_sender_mismatch")
-    if Path(stage["certificate"]).name != "hardware-app.crt":
-        raise Refused("unexpected_hardware_certificate_name")
     active_der = der_from_pem(secure_read(active["certificate"], MAX_PEM,
                                           modes=(0o640, 0o644)))
     candidate_der = der_from_pem(secure_read(stage["certificate"], MAX_PEM,
