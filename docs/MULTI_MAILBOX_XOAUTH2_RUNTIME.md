@@ -114,3 +114,37 @@ For app-only Microsoft 365 OAuth, Microsoft's Exchange documentation covers
 SMTP.SendAsApp, admin consent, Exchange Online service principal registration,
 mailbox access and separate Send As grants when using another sender. See:
 https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth
+
+## Root-issued ingress proof (supervised test only)
+
+The XOAUTH2 pipe runs under the unprivileged `m365mailer` user. It **must not**
+be added to the `dovecot` or `postfix` groups just to read the SMTP
+password hash database or root:postfix From-Guard policy. The original
+per-message ingress audit would have been denied by Linux permissions; this
+has been replaced by an **expiring privileged receipt**.
+
+With independent Postfix, Dovecot and From-Guard already running, a root
+administrator may request a fresh read-only audit and publish an
+`/etc/linuxmailrelay365/oauth-ingress-proof.json` receipt (root:m365mailer,
+0640). The only write is this privacy-safe receipt. It contains **no
+usernames, addresses, password hashes, OAuth tokens, private keys or message
+contents**. Root verifies the exact active sender map, identities, SMTP
+security policy, pinned From-Guard and configured Postfix pipe. The receipt
+expires after **120 seconds**; the unprivileged transport checks its expiry,
+the runtime sender-map SHA-256 and root-owned Postfix file metadata before
+requesting a token. An absent, stale or changed proof results in a temporary
+SMTP delivery failure, never a fallback to a different mailbox.
+
+For explicit manual acceptance, use the new Wizard diagnostics button
+`Refresh 120-second SMTP AUTH/From Guard proof`, or after reviewing the
+exact map SHA-256 run on Linux:
+
+    sudo python3 /opt/linuxmailrelay365/multi-oauth/refresh-multi-mailbox-proof.py --map-sha256 REVIEWED_MAP_SHA256 --confirm REFRESH_PRIVILEGED_MULTI_INGRESS_PROOF
+
+**No automatic proof timer is installed.** A real production deployment
+needs a root-owned, validated periodic renewal service and an independently
+verified policy revocation/stop pathway; this 120-second manual receipt is
+appropriate only for supervised tests. It does not prove any real SMTP AUTH
+client's identity, Exchange mailbox permissions, external recipient delivery,
+or successful login to Microsoft 365. The sidecar is never started by the
+installer or Wizard.
