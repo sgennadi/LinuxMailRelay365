@@ -2289,6 +2289,23 @@ internal sealed partial class MainForm : Form
                             "3. Apply OFFLINE (services stay STOPPED)...",
                             "3. החלה ללא הפעלת השירותים"),
                             ApplyMultiMailboxRouteOfflineAsync, false, "shield", "multi-mailbox-apply-offline");
+                        AddLine(page, UiTheme.Text(T(
+                            "Восстановление прежнего маршрута: доступно только при точном совпадении активного Multi-mailbox и исходного защищённого архива. Служба остаётся остановленной.",
+                            "Restore original route: available only for an exact active Multi-mailbox marker and verified pre-install backup. The sidecar stays stopped.",
+                            "שחזור רק מתוך גיבוי מאומת. השירות נשאר עצור.")));
+                        AddAction(page, T(
+                            "4. Проверить Restore Multi-mailbox (без изменений)",
+                            "4. Preview Multi-mailbox Restore (read-only)",
+                            "4. בדיקת שחזור ללא שינוי"),
+                            PreviewMultiMailboxRestoreAsync, false, "check", "multi-mailbox-restore-preview");
+                        AddAction(page, T(
+                            "5. Восстановить прежний маршрут OFFLINE...",
+                            "5. Restore original route OFFLINE...",
+                            "5. שחזור נתיב הדואר המקורי ללא הפעלת השירות"),
+                            RestoreMultiMailboxRouteOfflineAsync, false, "rotate-ccw", "multi-mailbox-restore");
+                        if (!string.IsNullOrEmpty(multiMailboxRestoreSummary))
+                            AddLine(page, UiTheme.Text(multiMailboxRestoreSummary));
+
                         AddLine(page, UiTheme.Text(string.IsNullOrEmpty(multiMailboxRouteSummary)
                             ? T("Маршрут не активирован. Отправка Multi-mailbox в этом мастере остаётся заблокирована.",
                                 "Route not activated. Multi-mailbox sending is still blocked in this Wizard.",
