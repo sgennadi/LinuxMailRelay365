@@ -180,7 +180,7 @@ def event(fd, stage, status):
     os.fsync(fd)
 
 
-def inspect_ledger(run_id, root=ROOT):
+def inspect_ledger(run_id, root=ROOT, owner_uid=0):
     """Read-only run recovery after SSH loss. This never retries SMTP."""
     if os.geteuid() != 0 or not isinstance(run_id, str) or \
             not RUN.fullmatch(run_id):
@@ -190,7 +190,7 @@ def inspect_ledger(run_id, root=ROOT):
     parent = root.parent
     for folder in (parent, root):
         info = folder.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or \
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner_uid or \
                 info.st_mode & 0o022:
             raise Refused("untrusted_acceptance_ledger_directory")
     if stat.S_IMODE(root.lstat().st_mode) != 0o700:
@@ -198,7 +198,7 @@ def inspect_ledger(run_id, root=ROOT):
     path = root / (run_id + ".jsonl")
     try:
         before = path.lstat()
-        if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner_uid or
                 before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600 or
                 not 1 <= before.st_size <= 4096):
             raise Refused("untrusted_acceptance_ledger_file")
