@@ -98,7 +98,9 @@ def unit_state(name):
 
 
 def process_context_state():
-    raw = run(["ps", "-eZ", "-o", "label=,comm="])
+    # procps-ng treats -Z as a complete SELinux output format; combining
+    # -eZ with an extra -o causes a format conflict on actual Rocky Linux.
+    raw = run(["ps", "-eZ"])
     if raw is None:
         return "not_available"
     postfix = False

@@ -26,7 +26,7 @@ sudo python3 - <<'PY'
 import subprocess
 import sys
 
-p = subprocess.run(["ps", "-eZ", "-o", "label=,comm="],
+p = subprocess.run(["ps", "-eZ"],
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                    universal_newlines=True, timeout=10, check=True)
 if not any("postfix_master_t" in line and "master" in line for line in p.stdout.splitlines()):

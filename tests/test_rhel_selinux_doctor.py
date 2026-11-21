@@ -67,6 +67,17 @@ class RhelSelinuxDoctorTests(unittest.TestCase):
                     self.assertEqual(report["SELINUX_ACCEPTANCE_STATUS"],
                                      "enforcing_mode_required_for_acceptance")
 
+    def test_selinux_process_inventory_uses_real_procps_format(self):
+        listing = ("LABEL PID TTY TIME CMD\n"
+                   "system_u:system_r:postfix_master_t:s0 100 ? 00:00:01 master\n"
+                   "system_u:system_r:dovecot_t:s0 101 ? 00:00:01 dovecot\n")
+        with patch.object(doctor, "run", return_value=listing) as execution:
+            self.assertEqual(doctor.process_context_state(),
+                             "both_processes_seen_context_not_verified")
+            execution.assert_called_once_with(["ps", "-eZ"])
+        with patch.object(doctor, "run", return_value=None):
+            self.assertEqual(doctor.process_context_state(), "not_available")
+
     def test_invalid_ports_fail_without_system_change(self):
         for port in ("25","587","1023","65536","xyz"):
             r=subprocess.run([sys.executable,str(SCRIPT),"--smtp-port",port],
