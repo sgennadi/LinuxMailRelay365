@@ -88,9 +88,14 @@ EHLO and QUIT, never sends SMTP MAIL FROM or DATA. Primary Postfix
 hashes, queues and port 25 must remain unchanged. The fixture tears down
 all guest-only state and port policy when finished.
 
-The outcome is experimental until a successful exact-HEAD KVM workflow
-proves it. It does not override the production installers' Enforcing
-refusal or prove Microsoft 365 delivery, TPM/OAuth/SMTP relay authorization.
+The KVM run 44934581622 verified a working second Postfix after relabeling
+its newly-created queue subdirectories (public = postfix_public_t,
+private = postfix_private_t). A subsequent regression checks these labels,
+explicitly rejects an external recipient without sending SMTP DATA, and
+requires that stop/cleanup leaves no listener, guest-only directories, unit,
+managed SMTP port or custom SELinux file-context equivalences. This remains
+a lab-level runtime check, not proof that a production installer under
+Enforcing, Microsoft 365 delivery or TPM/OAuth is accepted.
 
 ## Offline SELinux policy packages in real Enterprise Linux containers
 

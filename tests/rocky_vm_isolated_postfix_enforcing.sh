@@ -62,6 +62,46 @@ cleanup() {
         --confirm REMOVE_MANAGED_RHEL_SMTP_PORT >/dev/null 2>&1 || true
     fi
   fi
+  # A green result requires the guest to be restored, not merely that
+  # the service managed to start. All checks execute after cleanup.
+  if test "$result" -eq 0; then
+    if ! sudo systemctl is-active --quiet postfix.service; then
+      echo "LMR365_POSITIVE_SIDECAR_CLEANUP_PRIMARY_STOPPED"
+      result=1
+    fi
+    if test -n "$(sudo ss -H -ltn '( sport = :2526 )')"; then
+      echo "LMR365_POSITIVE_SIDECAR_CLEANUP_PORT_STILL_OPEN"
+      result=1
+    fi
+    for p in "$CONF" "$QUEUE" "$DATA" "$UNIT"; do
+      if sudo test -e "$p" || sudo test -L "$p"; then
+        echo "LMR365_POSITIVE_SIDECAR_CLEANUP_FILE_LEFT_BEHIND"
+        result=1
+      fi
+    done
+    if sudo test -f /var/lib/linuxmailrelay365-selinux-port/active.json; then
+      echo "LMR365_POSITIVE_SIDECAR_CLEANUP_PORT_POLICY_STILL_MANAGED"
+      result=1
+    fi
+    if ! sudo semanage fcontext -l -C > "$work/remaining-fcontext"; then
+      echo "LMR365_POSITIVE_SIDECAR_CLEANUP_CONTEXT_INVENTORY_FAILED"
+      result=1
+    else
+      for p in "$CONF" "$QUEUE" "$DATA"; do
+        if grep -Fq -- "$p" "$work/remaining-fcontext"; then
+          echo "LMR365_POSITIVE_SIDECAR_CLEANUP_CUSTOM_FCONTEXT_LEFT_BEHIND"
+          result=1
+        fi
+      done
+    fi
+    if test "$(getenforce)" != Enforcing; then
+      echo "LMR365_POSITIVE_SIDECAR_CLEANUP_ENFORCING_CHANGED"
+      result=1
+    fi
+    if test "$result" -eq 0; then
+      echo "LMR365_POSITIVE_SIDECAR_TEARDOWN=all_artifacts_and_policy_removed"
+    fi
+  fi
   rm -rf -- "$work"
   exit "$result"
 }
@@ -145,7 +185,9 @@ sudo postfix -c "$CONF" check
 # Relabel only this isolated instance after Postfix has created the layout.
 sudo restorecon -RF "$QUEUE" "$DATA" >/dev/null
 sudo ls -ldZ "$QUEUE/public" "$QUEUE/private" "$QUEUE/maildrop"
-echo "LMR365_POSITIVE_SIDECAR_QUEUE_LABELS=restored_after_queue_creation"
+sudo stat -c '%C' "$QUEUE/public" | grep -Fq ':postfix_public_t:'
+sudo stat -c '%C' "$QUEUE/private" | grep -Fq ':postfix_private_t:'
+echo "LMR365_POSITIVE_SIDECAR_QUEUE_LABELS=verified_public_and_private_types"
 
 cat > "$work/sidecar.service" <<'SERVICE'
 [Unit]
@@ -209,6 +251,22 @@ with socket.create_connection(("127.0.0.1",2526),timeout=8) as sock:
     f.close()
 print("LMR365_POSITIVE_SIDECAR_LISTENERS=127.0.0.1_25_and_2526")
 print("LMR365_POSITIVE_SIDECAR_SMTP=ehlo_quit_only")
+PY
+
+# Verify that even a loopback SMTP client cannot relay an external address.
+# The lab has only error transports; never issue DATA or create a message.
+python3 - <<'PY'
+import smtplib
+
+with smtplib.SMTP("127.0.0.1", 2526, timeout=8) as smtp:
+    if smtp.ehlo("ci.lab.invalid")[0] != 250:
+        raise SystemExit("LMR365_POSITIVE_SIDECAR_LOCAL_EHLO_FAILED")
+    code, _ = smtp.mail("probe@ci.invalid")
+    if code < 400:
+        code, _ = smtp.rcpt("external@recipient.invalid")
+    if code < 400:
+        raise SystemExit("LMR365_POSITIVE_SIDECAR_UNAUTHORIZED_RELAY_ACCEPTED")
+print("LMR365_POSITIVE_SIDECAR_RELAY=refused_without_data")
 PY
 
 test "$(getenforce)" = Enforcing
