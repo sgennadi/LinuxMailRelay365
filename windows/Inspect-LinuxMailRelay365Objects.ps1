@@ -55,7 +55,7 @@ function CredentialRecord($key) {
 if ($SelfTest) {
   $test = ConnectorRecord ([pscustomobject]@{
     Identity='test-connector'; Name='LinuxMailRelay365 Test'
-    ConnectorType='OnPremises'; Enabled=$true
+    Comment=''; ConnectorType='OnPremises'; Enabled=$true
     SenderIPAddresses=@('8.8.8.8'); SenderDomains=@('example.org')
     TlsSenderCertificateName=''
   })
