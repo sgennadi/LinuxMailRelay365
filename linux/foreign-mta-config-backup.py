@@ -304,13 +304,52 @@ def verify(directory, mta, owner_uid=0):
         manifest = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeError):
         raise Refused("bad_snapshot_manifest")
-    if (not isinstance(manifest, dict) or manifest.get("version") != 1 or
+    if (not isinstance(manifest, dict) or
+            manifest.get("version") not in (1, 2) or
+            (manifest["version"] == 2 and mta != "sendmail") or
             manifest.get("mta") != mta or
             not isinstance(manifest.get("files"), dict) or
             not 1 <= len(manifest["files"]) <= MAX_FILES or
             not isinstance(manifest.get("sha256"), str) or
             not SHA.fullmatch(manifest["sha256"])):
         raise Refused("invalid_snapshot_manifest")
+    objects = manifest.get("objects", {})
+    if manifest["version"] == 1:
+        if objects or "objects" in manifest:
+            raise Refused("unexpected_legacy_snapshot_objects")
+    else:
+        if not isinstance(objects, dict) or not objects or len(objects) > MAX_FILES:
+            raise Refused("invalid_package_object_manifest")
+        if "etc/mail" not in objects or objects["etc/mail"].get("kind") != "directory":
+            raise Refused("sendmail_package_root_directory_unrecorded")
+        if len(objects) + len(manifest["files"]) > MAX_FILES:
+            raise Refused("package_snapshot_object_limit")
+        for name, metadata in objects.items():
+            if (not isinstance(name, str) or not name.startswith("etc/mail/")
+                    and name != "etc/mail" or len(name.encode("utf-8")) > 512
+                    or ".." in name.split("/") or name in manifest["files"]
+                    or not isinstance(metadata, dict)):
+                raise Refused("invalid_package_object_path")
+            kind = metadata.get("kind")
+            if (kind not in ("directory", "symlink") or
+                    type(metadata.get("uid")) is not int or
+                    type(metadata.get("gid")) is not int or
+                    not 0 <= metadata["uid"] <= 65535 or
+                    not 0 <= metadata["gid"] <= 65535):
+                raise Refused("invalid_package_object_metadata")
+            if kind == "directory":
+                if (type(metadata.get("mode")) is not int or
+                        not 0 <= metadata["mode"] <= 0o7777 or
+                        metadata["mode"] & 0o022 or
+                        set(metadata) != {"kind", "uid", "gid", "mode"}):
+                    raise Refused("invalid_package_directory_metadata")
+            else:
+                target = metadata.get("target")
+                if (name not in PACKAGE_LINKS or
+                        type(target) is not str or not target or
+                        len(target.encode("utf-8")) > 1024 or
+                        set(metadata) != {"kind", "uid", "gid", "target"}):
+                    raise Refused("invalid_package_symlink_metadata")
     archive = directory / "config.tar.gz"
     digest = hashlib.sha256()
     with archive.open("rb") as reader:
@@ -341,6 +380,14 @@ def verify(directory, mta, owner_uid=0):
                         not isinstance(meta.get("sha256"), str) or
                         not SHA.fullmatch(meta["sha256"])):
                     raise Refused("invalid_snapshot_file_manifest")
+                if manifest["version"] == 2 and (
+                        set(meta) != {"size", "sha256", "uid", "gid", "mode"} or
+                        type(meta["uid"]) is not int or
+                        type(meta["gid"]) is not int or
+                        type(meta["mode"]) is not int or
+                        (member.uid, member.gid, member.mode) != (
+                            meta["uid"], meta["gid"], meta["mode"])):
+                    raise Refused("package_file_metadata_mismatch")
                 total += member.size
                 if total > MAX_BYTES:
                     raise Refused("snapshot_decompressed_size_exceeded")
@@ -365,14 +412,23 @@ def backup(mta, root=ROOT, base=BASE, owner_uid=0):
     staging = Path(tempfile.mkdtemp(prefix=".pending-", dir=str(directory)))
     try:
         safe_dir(staging, owner_uid)
-        manifest = {"version": 1, "mta": mta, "files": {}}
+        package_objects = {} if mta == "sendmail" and owner_uid == 0 else None
+        # Package-native snapshot v2 records symlink metadata ONLY; never
+        # resolves symlinks or imports their potentially external targets.
+        files = selected_files(mta, root, owner_uid, package_objects)
+        manifest = {"version": 2 if package_objects is not None else 1,
+                    "mta": mta, "files": {}}
+        if package_objects is not None:
+            manifest["objects"] = package_objects
         archive = staging / "config.tar.gz"
         with archive.open("xb") as output:
             os.chmod(str(archive), 0o600)
             with tarfile.open(fileobj=output, mode="w:gz") as tar:
                 total = 0
                 for name, path in sorted(files.items()):
-                    current, content = stable_file(path, owner_uid)
+                    current, content = stable_file(
+                        path, snapshot_file_owner(path, mta, root, owner_uid,
+                                                  package_objects is not None))
                     total += len(content)
                     if total > MAX_BYTES:
                         raise Refused("configuration_changed_or_over_limit")
@@ -382,8 +438,12 @@ def backup(mta, root=ROOT, base=BASE, owner_uid=0):
                     entry.uid, entry.gid = current.st_uid, current.st_gid
                     entry.mode, entry.mtime = stat.S_IMODE(current.st_mode), int(current.st_mtime)
                     tar.addfile(entry, io.BytesIO(content))
-                    manifest["files"][name] = {
+                    file_info = {
                         "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+                    if package_objects is not None:
+                        file_info.update({"uid": current.st_uid, "gid": current.st_gid,
+                                          "mode": stat.S_IMODE(current.st_mode)})
+                    manifest["files"][name] = file_info
             output.flush()
             os.fsync(output.fileno())
         manifest["sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -415,17 +475,25 @@ def recovery_preview(mta, snapshot_id, root=ROOT, base=BASE, owner_uid=0):
     verified = verify(directory, mta, owner_uid)
     manifest = json.loads(stable_file(directory / "manifest.json", owner_uid)[1])
     try:
-        files = selected_files(mta, root, owner_uid)
-        same = len(files) == verified["files"]
+        current_objects = {} if manifest["version"] == 2 else None
+        files = selected_files(mta, root, owner_uid, current_objects)
+        same = (len(files) == verified["files"] and
+                (current_objects is None or current_objects == manifest["objects"]))
         if same:
             for name, path in files.items():
                 expected = manifest["files"].get(name)
                 if not expected:
                     same = False
                     break
-                meta, contents = stable_file(path, owner_uid)
+                meta, contents = stable_file(
+                    path, snapshot_file_owner(path, mta, root, owner_uid,
+                                              current_objects is not None))
                 if (meta.st_size != expected["size"] or
-                        hashlib.sha256(contents).hexdigest() != expected["sha256"]):
+                        hashlib.sha256(contents).hexdigest() != expected["sha256"] or
+                        (current_objects is not None and (
+                            meta.st_uid != expected["uid"] or
+                            meta.st_gid != expected["gid"] or
+                            stat.S_IMODE(meta.st_mode) != expected["mode"]))):
                     same = False
                     break
         state = "identical" if same else "different"
@@ -448,6 +516,10 @@ def extract_offline(mta, snapshot_id, base=BASE, owner_uid=0):
     directory = folder / snapshot_id
     accepted = verify(directory, mta, owner_uid)
     manifest = json.loads(stable_file(directory / "manifest.json", owner_uid)[1])
+    # Package v2 may have system service-owned DBs and exact symlink metadata.
+    # Do not silently export an incomplete, regular-file-only recovery tree.
+    if manifest["version"] == 2:
+        raise Refused("package_snapshot_requires_explicit_metadata_aware_export")
     target = Path(tempfile.mkdtemp(prefix=".offline-recovery-", dir=str(folder)))
     try:
         safe_dir(target, owner_uid)
