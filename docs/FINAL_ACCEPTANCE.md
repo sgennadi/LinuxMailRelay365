@@ -63,6 +63,20 @@ deleted Connector is implemented. The manager does not remove Entra
 App Registration, Service Principal, OAuth keys, Exchange Management
 Scopes, role assignments, SMTP mailbox settings or policies.
 
+## After Preview 25 (Draft): read-only Exim/Sendmail native syntax check
+
+The Wizard Backup & Restore step provides a distinct non-mutating native MTA
+syntax check for an SSH-verified Exim/Sendmail host. The same root-only
+Python restoration module is embedded but invoked only with `--static-check`.
+It verifies root-owned configuration inventory and the actual native parser:
+Exim `-bV` or Sendmail `-bt -C` for sendmail.cf and optional submit.cf.
+Native tool stdout/stderr are suppressed; the UI accepts only fixed, bounded
+codes and the same exact SSH/MTA identity. No archive, confirmation, restore,
+service action, queue drain or SMTP message is involved. A parse PASS is a
+limited syntax result, **not** a proof of secure SMTP, effective Exim template
+regeneration, TLS, AUTH, accepted domains, routing, delivery or production
+recoverability. Real Linux cross-distro acceptance remains pending.
+
 ## After Preview 25 (Draft): Exim/Sendmail read-only recovery preflight
 
 The root-only `foreign-mta-config-backup.py --offline-preflight ID` now

@@ -1,5 +1,7 @@
 """Offline Exim/Sendmail configuration restore must remain fail-closed."""
 import importlib.util
+import io
+from contextlib import redirect_stdout, redirect_stderr
 import os
 from pathlib import Path
 import stat
@@ -311,6 +313,63 @@ class ForeignMtaRestoreTests(unittest.TestCase):
                 restore.apply("exim", snap_id, plan["sha"], restore.APPROVAL,
                               **self.kwargs(folder, root, base, uid, preflight=wrong))
             self.assertEqual(edited.read_text(), "new content\n")
+
+    def test_static_check_requires_root_and_never_enters_restore_path(self):
+        captured = io.StringIO()
+        with patch.object(restore.os, "geteuid", return_value=0), \
+             patch.object(restore.backup, "selected_files", return_value={"etc/mail/sendmail.cf": object()}) as files, \
+             patch.object(restore, "native_static_config_check", return_value=True) as checker, \
+             patch.object(restore, "apply", side_effect=AssertionError("restore forbidden")), \
+             redirect_stdout(captured):
+            self.assertEqual(restore.main(["--mta", "sendmail", "--static-check"]), 0)
+        files.assert_called_once()
+        checker.assert_called_once()
+        response = captured.getvalue()
+        for item in ("FOREIGN_STATIC_VERSION=1",
+                     "FOREIGN_STATIC_MTA=sendmail",
+                     "FOREIGN_STATIC_CHECK=passed_partial_parse_only",
+                     "FOREIGN_STATIC_CONFIG_CHANGED=no",
+                     "FOREIGN_STATIC_QUEUE_CHANGED=no",
+                     "FOREIGN_STATIC_SERVICE_CHANGED=no",
+                     "FOREIGN_STATIC_DELIVERY_VERIFIED=no"):
+            self.assertIn(item + "\n", response)
+        self.assertNotIn("FOREIGN_RESTORE_STATUS=config_replaced", response)
+
+    def test_static_check_refuses_approval_and_failed_native_parse(self):
+        for approved in (["--confirm", "RESTORE_STOPPED_FOREIGN_MTA_CONFIG"],
+                         ["--approve-sha256", "0" * 64]):
+            with self.subTest(approved=approved):
+                with patch.object(restore.os, "geteuid", return_value=0), \
+                     patch.object(restore, "native_static_config_check",
+                                       side_effect=AssertionError("must not execute")), \
+                     redirect_stderr(io.StringIO()):
+                    self.assertEqual(restore.main(["--mta", "exim", "--static-check"] +
+                                                  approved), 2)
+        with patch.object(restore.os, "geteuid", return_value=0), \
+             patch.object(restore.backup, "selected_files", return_value={}), \
+             patch.object(restore, "native_static_config_check",
+                          side_effect=restore.Refused("native_check_failed")), \
+             redirect_stderr(io.StringIO()):
+            self.assertEqual(restore.main(["--mta", "exim", "--static-check"]), 2)
+        with patch.object(restore.os, "geteuid", return_value=1000), \
+             patch.object(restore, "native_static_config_check",
+                          side_effect=AssertionError("nonroot execution forbidden")), \
+             redirect_stderr(io.StringIO()):
+            self.assertEqual(restore.main(["--mta", "exim", "--static-check"]), 2)
+
+    def test_wizard_static_check_is_readonly_and_embedded(self):
+        form = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
+        assets = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
+        project = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+        for required in ("CheckForeignMtaNativeSyntaxAsync",
+                         "FOREIGN_STATIC_CHECK=passed_partial_parse_only",
+                         "FOREIGN_STATIC_DELIVERY_VERIFIED=no",
+                         "ConfirmedForeignBackupMta(allowStopped: true)"):
+            self.assertIn(required, form)
+        for required in ("BuildForeignMtaNativeCheckBundle", "ForeignMtaRestore",
+                         "foreign-mta-config-backup.py", "--static-check"):
+            self.assertIn(required, assets)
+        self.assertIn('LogicalName="LinuxMailRelay365.linux.foreign-mta-restore.py"', project)
 
     def test_no_implicit_service_or_queue_changes(self):
         source = SCRIPT.read_text(encoding="utf-8")

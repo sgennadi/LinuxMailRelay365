@@ -2839,6 +2839,15 @@ internal sealed partial class MainForm : Form
                         "Закрытый архив остаётся на Linux: /var/backups/linuxmailrelay365-foreign-mta. Может содержать пароли; не включает очереди, внешние сертификаты и состояние службы. Восстановление автоматически запрещено.",
                         "Root-only archive stays on Linux under /var/backups/linuxmailrelay365-foreign-mta. May contain passwords. Excludes mail queues, external certs and service state. Automatic Restore is DISABLED.",
                         "הגיבוי נשמר בלינוקס בלבד, ללא תור דואר או מצב שירות. השחזור האוטומטי מושבת.")));
+                    AddAction(page, T(
+                        "Проверить синтаксис Exim/Sendmail (без изменений)",
+                        "Validate Exim/Sendmail native configuration (read-only)",
+                        "בדיקת תקינות תצורת Exim/Sendmail ללא שינוי"),
+                        CheckForeignMtaNativeSyntaxAsync, false, "check", "foreign-static-check");
+                    AddLine(page, UiTheme.Text(T(
+                        "Только статическая проверка конфигурации, без отправки почты и перезапуска MTA. Результат не подтверждает TLS, SMTP AUTH, очереди или доставку.",
+                        "Static syntax check only. No mail sent or MTA restarted. This is NOT proof of TLS, SMTP AUTH, queues or delivery.",
+                        "בדיקת תחביר בלבד, ללא שליחת דואר או הפעלה מחדש. זו אינה הוכחה למסירה.")));
                     AddAction(page, T("Создать и проверить архив Exim/Sendmail",
                         "Create and verify Exim/Sendmail archive",
                         "צור ואמת גיבוי Exim/Sendmail"),
@@ -5638,6 +5647,36 @@ internal sealed partial class MainForm : Form
                 StringComparison.Ordinal) &&
             normalized.Contains("FOREIGN_BACKUP_RESTORE_ENABLED=no\n",
                 StringComparison.Ordinal);
+    }
+
+    private async Task CheckForeignMtaNativeSyntaxAsync()
+    {
+        var endpoint = Endpoint();
+        string mta = ConfirmedForeignBackupMta(allowStopped: true);
+        string identity = SecurityOptionsStore.Identity(endpoint);
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaNativeCheckBundle(mta),
+            TimeSpan.FromSeconds(90));
+        response.EnsureSuccess();
+        string normalized = response.StdOut.Replace("\r\n", "\n");
+        string[] required = {
+            "FOREIGN_STATIC_VERSION=1\n",
+            "FOREIGN_STATIC_MTA=" + mta + "\n",
+            "FOREIGN_STATIC_CHECK=passed_partial_parse_only\n",
+            "FOREIGN_STATIC_CONFIG_CHANGED=no\n",
+            "FOREIGN_STATIC_QUEUE_CHANGED=no\n",
+            "FOREIGN_STATIC_SERVICE_CHANGED=no\n",
+            "FOREIGN_STATIC_DELIVERY_VERIFIED=no\n"
+        };
+        if (normalized.Length > 2048 || normalized.Contains('\0') ||
+            required.Any(x => normalized.Split(x).Length != 2) ||
+            identity != TryCurrentIdentity() ||
+            mta != ConfirmedForeignBackupMta(allowStopped: true))
+            throw new InvalidDataException(
+                "Native MTA static validation report is incomplete or SSH identity changed.");
+        WriteLine("Read-only " + mta +
+            " native syntax check passed. No services, queues or configuration changed. " +
+            "This is NOT evidence of SMTP AUTH, TLS, live mail delivery or backup recoverability.");
     }
 
     private async Task BackupForeignMtaAsync()

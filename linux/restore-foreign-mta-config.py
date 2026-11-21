@@ -376,6 +376,7 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--plan", metavar="SNAPSHOT_ID")
     group.add_argument("--apply", metavar="SNAPSHOT_ID")
+    group.add_argument("--static-check", action="store_true")
     parser.add_argument("--approve-sha256", default="")
     parser.add_argument("--confirm", default="")
     args = parser.parse_args(argv)
@@ -383,6 +384,21 @@ def main(argv=None):
         print("FOREIGN_RESTORE_STATUS=root_required", file=sys.stderr)
         return 2
     try:
+        if args.static_check:
+            # This operation does not use a backup, change a configuration,
+            # inspect mail contents, or authorize a Restore.
+            if args.approve_sha256 or args.confirm:
+                raise Refused("approval_not_permitted_during_static_check")
+            backup.selected_files(args.mta)
+            native_static_config_check(args.mta)
+            print("FOREIGN_STATIC_VERSION=1")
+            print("FOREIGN_STATIC_MTA=" + args.mta)
+            print("FOREIGN_STATIC_CHECK=passed_partial_parse_only")
+            print("FOREIGN_STATIC_CONFIG_CHANGED=no")
+            print("FOREIGN_STATIC_QUEUE_CHANGED=no")
+            print("FOREIGN_STATIC_SERVICE_CHANGED=no")
+            print("FOREIGN_STATIC_DELIVERY_VERIFIED=no")
+            return 0
         snapshot_id = args.plan or args.apply
         if args.plan:
             if args.approve_sha256 or args.confirm:

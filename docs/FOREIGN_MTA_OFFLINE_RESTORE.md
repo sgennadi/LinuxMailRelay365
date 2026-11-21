@@ -10,6 +10,12 @@ The LinuxMailRelay365 application previously supported **read-only backup**, SHA
 4. Current and archived allowlisted file sets are identical. New files, deleted files, symlinks, special files, changed identities or unsupported extended attributes are hard refusals.
 5. After file replacement and fresh queue/listener checks, the tool attempts a bounded native static parser gate BEFORE declaring success: Exim -bV or Sendmail -bt -C for both sendmail.cf and any submit.cf. The tool uses only resolved root-managed native MTA executables, refuses Exim/Postfix sendmail alternatives, an empty standard input and no shell; diagnostics are not copied to Windows. Failure triggers attempted rollback. Exim -bV validates the runtime configuration in use (which may be generated from Debian source snippets), and sendmail test mode is only a partial config check. Neither proves actual delivery or full source-to-runtime synchronization. The tool does not restart any service.
 
+## Read-only native syntax validation in the Wizard
+
+After SSH discovery of an exact Exim or Sendmail primary MTA, the Windows Backup & Restore step now provides **Validate Exim/Sendmail native configuration (read-only)** without requiring a snapshot. The bundled Linux script runs `--static-check` as root, rejects all restore/write approvals, checks that the expected native configuration is present, runs the existing bounded Exim `-bV` or Sendmail `-bt -C` static parser and emits only fixed non-secret status codes. The Windows UI requires an exact SSH/MTA match before and after the operation and never prints the native MTA's output. A syntax pass is not evidence that source snippets, TLS, SMTP AUTH, queues, DNS or Microsoft 365 delivery work.
+
+This action is separate from the experimental offline Restore CLI; the Wizard still has no Exim/Sendmail Restore button.
+
 ## Example (manual, Linux root only)
 
 ```sh

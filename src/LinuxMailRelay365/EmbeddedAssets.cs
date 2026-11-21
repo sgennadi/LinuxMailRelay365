@@ -37,6 +37,7 @@ internal static class EmbeddedAssets
     internal static string ConnectorSidecarInstaller => Text("LinuxMailRelay365.linux.connector-sidecar.sh");
     internal static string ForeignMtaGuard => Text("LinuxMailRelay365.linux.foreign-mta-guard.py");
     internal static string ForeignMtaBackup => Text("LinuxMailRelay365.linux.foreign-mta-backup.py");
+    internal static string ForeignMtaRestore => Text("LinuxMailRelay365.linux.foreign-mta-restore.py");
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string MailHostInspector => Text("LinuxMailRelay365.linux.inspect-mail-host.py");
@@ -1426,6 +1427,23 @@ internal static class EmbeddedAssets
             Encode(ForeignMtaBackup) + "\nLMR365_FOREIGN_BACKUP\n" +
             "python3 \"$work/foreign-mta-config-backup.py\" --mta " + mta +
             " " + operation + "\n";
+    }
+
+    internal static string BuildForeignMtaNativeCheckBundle(string mta)
+    {
+        if (mta is not ("exim" or "sendmail"))
+            throw new ArgumentException("Verified Exim/Sendmail selection is required.");
+        // The independent read-only CLI mode never accepts a restore ID,
+        // confirmation, SHA approval or a write switch from Windows.
+        return "set -Eeuo pipefail\numask 077\n" +
+            "work=$(mktemp -d /tmp/lmr365-foreign-static.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n" +
+            "base64 -d > \"$work/foreign-mta-config-backup.py\" <<'LMR365_NATIVE_BACKUP_LIB'\n" +
+            Encode(ForeignMtaBackup) + "\nLMR365_NATIVE_BACKUP_LIB\n" +
+            "base64 -d > \"$work/restore-foreign-mta-config.py\" <<'LMR365_NATIVE_STATIC'\n" +
+            Encode(ForeignMtaRestore) + "\nLMR365_NATIVE_STATIC\n" +
+            "python3 \"$work/restore-foreign-mta-config.py\" --mta " + mta +
+            " --static-check\n";
     }
 
     internal static string BuildRecoveryBundle(string command, string? backupId = null)
