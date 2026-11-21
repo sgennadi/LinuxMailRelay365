@@ -10,14 +10,14 @@ work="$(mktemp -d)"
 cleanup() {
   result=$?
   if test -f "$work/vm.pid"; then
-    pid="$(cat "$work/vm.pid" || true)"
+    pid="$(sudo cat "$work/vm.pid" || true)"
     if [[ "$pid" =~ ^[0-9]+$ ]]; then
       sudo kill "$pid" 2>/dev/null || true
     fi
   fi
   if test "$result" -ne 0 && test -f "$work/console.log"; then
     echo "LMR365_GUEST_SERIAL_TAIL_BEGIN"
-    tail -n 55 "$work/console.log" || true
+    sudo tail -n 55 "$work/console.log" || true
     echo "LMR365_GUEST_SERIAL_TAIL_END"
   fi
   sudo rm -rf -- "$work"
@@ -95,7 +95,7 @@ for i in $(seq 1 100); do
     ready=yes
     break
   fi
-  if ! sudo kill -0 "$(cat "$work/vm.pid")" 2>/dev/null; then
+  if ! sudo kill -0 "$(sudo cat "$work/vm.pid")" 2>/dev/null; then
     echo "LMR365_GUEST_VM_EXITED_BEFORE_SSH"
     exit 1
   fi
