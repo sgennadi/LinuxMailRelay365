@@ -217,6 +217,18 @@ scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'bash /home/ci/lmr365-positive-sidecar.sh'
 echo "LMR365_GUEST_POSITIVE_ISOLATED_POSTFIX=verified_under_enforcing"
+
+# FINAL disposable guest acceptance: real native Sendmail service lifecycle.
+# Run only AFTER the primary Postfix + sidecar tests and their cleanup;
+# Sendmail may replace the default MTA provider, so never run this on a host.
+scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+    tests/rocky_vm_sendmail_systemd_enforcing.sh \
+    ci@127.0.0.1:/home/ci/lmr365-sendmail-systemd-enforcing.sh
+ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    'env GITHUB_ACTIONS=true bash /home/ci/lmr365-sendmail-systemd-enforcing.sh'
+echo "LMR365_GUEST_SENDMAIL_SYSTEMD_ENFORCING=verified"
+
 echo "LMR365_GUEST_MICROSOFT365_DELIVERY_TESTED=no"
 echo "LMR365_GUEST_EXTERNAL_MAIL_DELIVERY_TESTED=no"
 
