@@ -89,7 +89,6 @@ class MultiMailboxWizardRuntimeTests(unittest.TestCase):
         self.assertIn("REFRESH_PRIVILEGED_MULTI_INGRESS_PROOF", ASSETS)
         self.assertIn('MULTI_INGRESS_PROOF_EXPIRES_SECONDS', RUNTIME_GUI)
         self.assertIn('@"\A120\z"', RUNTIME_GUI)
-        self.assertIn("AUTO", "AUTOMATED") if False else None
         self.assertIn("Auto-renewal is NOT installed", GUI)
         self.assertIn("multi-mailbox-ingress-proof.py", ASSETS)
         self.assertIn("LinuxMailRelay365.linux.multi-mailbox-ingress-proof.py", PROJECT)
