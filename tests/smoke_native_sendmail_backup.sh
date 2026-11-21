@@ -14,7 +14,40 @@ test "$(id -u)" -ne 0 || exit 3
 before="$(sudo find /etc/mail -xdev -type f -exec sha256sum {} + | sha256sum | cut -d " " -f 1)"
 test "$before" != "" || exit 3
 
-report="$(sudo python3 linux/foreign-mta-config-backup.py --mta sendmail --backup)"
+if ! report="$(sudo python3 linux/foreign-mta-config-backup.py --mta sendmail --backup)"; then
+  # Disposable CI only: disclose bounded metadata and refusal *category*;
+  # never print mail content, passwords, private keys or SMTP messages.
+  sudo python3 - <<'PY'
+import importlib.util, os, stat
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("lmr365snap", "linux/foreign-mta-config-backup.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.selected_files("sendmail")
+except Exception as error:
+    print("SENDMAIL_BACKUP_CI_REFUSAL=" + type(error).__name__ + ":" + str(error))
+seen = 0
+for base in (Path("/etc/mail"), Path("/etc/aliases"), Path("/etc/aliases.db")):
+    candidates = [base]
+    if base.is_dir() and not base.is_symlink():
+        candidates += list(base.rglob("*"))[:128]
+    for path in candidates:
+        try:
+            m = path.lstat()
+            print("SENDMAIL_CONFIG_META={} kind={} uid={} gid={} mode={:o} symlink={}".format(
+                path, stat.S_IFMT(m.st_mode), m.st_uid, m.st_gid,
+                stat.S_IMODE(m.st_mode), path.is_symlink()))
+            seen += 1
+        except OSError:
+            pass
+        if seen >= 128:
+            break
+    if seen >= 128:
+        break
+PY
+  exit 1
+fi
 printf "%s\n" "$report" | grep -Fxq "FOREIGN_BACKUP_STATUS=verified"
 id="$(printf "%s\n" "$report" | sed -n 's/^FOREIGN_BACKUP_ID=//p')"
 [[ "$id" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ ]] || exit 3
