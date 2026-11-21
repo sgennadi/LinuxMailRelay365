@@ -1,0 +1,94 @@
+"""Multi-mailbox experimental Wizard contract: no accidental live route switch.
+
+Static checks complement the Linux sender/installer unit tests; they do not
+prove GUI layout at 200% DPI or actual Exchange Online SMTP delivery.
+"""
+from pathlib import Path
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src" / "LinuxMailRelay365"
+GUI = (SRC / "MainForm.cs").read_text(encoding="utf-8")
+RUNTIME_GUI = (SRC / "MainForm.MultiMailbox.cs").read_text(encoding="utf-8")
+ASSETS = (SRC / "EmbeddedAssets.cs").read_text(encoding="utf-8")
+PROJECT = (SRC / "LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+
+
+class MultiMailboxWizardRuntimeTests(unittest.TestCase):
+    def test_separate_non_default_route_and_usable_gui_steps(self):
+        for expected in (
+                "StageMultiMailboxRuntimeAsync, false",
+                "PreviewMultiMailboxRouteAsync, false",
+                "ApplyMultiMailboxRouteOfflineAsync, false",
+                "multiMailboxRouteSummary",
+                "if (mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 0)"):
+            self.assertIn(expected, GUI)
+        self.assertIn('Install and configure XOAUTH2 Postfix', GUI)
+        self.assertIn("Multi-mailbox sending is still blocked in this Wizard", GUI)
+
+    def test_embedded_bundle_is_immutable_source_and_not_autostarting(self):
+        for name in (
+                "manage-multi-mailbox-postfix.py",
+                "m365-multi-mailbox-transport.py",
+                "audit-oauth-sender-map.py",
+                "audit-oauth-ingress.py",
+                "m365_xoauth2_transport.py",
+                "m365_hardware_signer.py"):
+            self.assertIn(name, ASSETS)
+        self.assertIn('BuildMultiMailboxRuntimeStageBundle()', ASSETS)
+        self.assertIn('BuildMultiMailboxRouteBundle(string action', ASSETS)
+        self.assertIn('created_no_service_changes', ASSETS)
+        self.assertIn('already_exists_no_overwrite', ASSETS)
+        self.assertIn('--apply-offline --approve-sha256', ASSETS)
+        self.assertIn('INSTALL_MULTI_MAILBOX_OFFLINE', ASSETS)
+        self.assertIn('MultiMailboxPostfixInstaller', ASSETS)
+        self.assertIn('MultiMailboxTransport', ASSETS)
+        for resource in ('LinuxMailRelay365.linux.multi-mailbox-postfix.py',
+                         'LinuxMailRelay365.linux.multi-mailbox-transport.py'):
+            self.assertIn(resource, PROJECT)
+        for forbidden in ('postfix reload', 'systemctl restart',
+                          'systemctl start', 'sudo rm -rf /etc/postfix'):
+            self.assertNotIn(forbidden, ASSETS)
+
+    def test_host_and_plan_sha_guard(self):
+        self.assertIn('SecurityOptionsStore.Identity(endpoint)', RUNTIME_GUI)
+        self.assertIn('oauthSenderMapPath.Text.Trim()', RUNTIME_GUI)
+        self.assertIn('isolatedSmtpPort.Text.Trim()', RUNTIME_GUI)
+        self.assertIn('/etc/linuxmailrelay365/oauth-senders.tsv', RUNTIME_GUI)
+        self.assertIn('reviewedMultiMailboxPlanSha = sha;', RUNTIME_GUI)
+        self.assertIn('reviewedMultiMailboxPlanContext = context;', RUNTIME_GUI)
+        self.assertIn('reviewedMultiMailboxPlanContext != context', RUNTIME_GUI)
+        self.assertIn('ResetMultiMailboxRouteReview();', RUNTIME_GUI)
+        for event in (
+                'oauthSenderMapPath.TextChanged',
+                'oauthSenderMode.SelectedIndexChanged',
+                'mailTransport.SelectedIndexChanged',
+                'isolatedSmtpPort.TextChanged',
+                'endpointField.TextChanged'):
+            self.assertIn(event, GUI)
+        self.assertGreaterEqual(GUI.count('ResetMultiMailboxRouteReview();'), 5)
+
+    def test_stage_and_apply_have_two_explicit_typed_confirmations(self):
+        self.assertIn('ConfirmDestructive("LinuxMailRelay365 | Stage multi-mailbox', RUNTIME_GUI)
+        self.assertIn('"STAGE MULTI MAILBOX"', RUNTIME_GUI)
+        self.assertIn('ConfirmDestructive("LinuxMailRelay365 | Experimental OFFLINE', RUNTIME_GUI)
+        self.assertIn('"INSTALL MULTI MAILBOX OFFLINE"', RUNTIME_GUI)
+        self.assertIn('reviewedMultiMailboxPlanSha = null;', RUNTIME_GUI)
+        self.assertIn('BuildMultiMailboxRouteBundle("apply", sha)', RUNTIME_GUI)
+        self.assertIn('"MULTI_OAUTH_STATUS", @"\\Aoffline_installed_NOT_started\\z"', RUNTIME_GUI)
+        self.assertIn('"MULTI_OAUTH_SERVICES_CHANGED", @"\\Ano\\z"', RUNTIME_GUI)
+        self.assertIn('"MULTI_OAUTH_MESSAGES_SENT", @"\\Ano\\z"', RUNTIME_GUI)
+        self.assertIn('ValidatedMultiMailboxReportValue(', RUNTIME_GUI)
+
+    def test_no_live_send_while_multi_selected(self):
+        section = GUI.split("            case 4:", 1)[1].split(
+            "        pageHost.ResumeLayout();", 1)[0]
+        self.assertIn('oauthSenderMode.SelectedIndex == 0', section)
+        self.assertIn('Multi-mailbox XOAUTH2 is PLAN ONLY', section)
+        self.assertIn('InspectRelayHealthAsync, true', section)
+        self.assertIn('SendTestAsync, false', section)
+        self.assertIn('mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 0',
+                      section)
+
+if __name__ == "__main__":
+    unittest.main()
