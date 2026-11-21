@@ -398,6 +398,16 @@ internal static class EmbeddedAssets
 
 
 
+    internal static string BuildMultiMailboxAcceptanceStatusBundle(string runId)
+    {
+        if (!Regex.IsMatch(runId, @"\A[a-f0-9]{32}\z",
+                RegexOptions.CultureInvariant))
+            throw new ArgumentException("An exact previous acceptance run ID is required.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "python3 /opt/linuxmailrelay365/multi-oauth/manage-multi-mailbox-acceptance.py " +
+               "--status --run-id " + runId + "\n";
+    }
+
     internal static string BuildMultiMailboxAcceptanceBundle(
         string runId, string sender, string internalRecipient, string externalRecipient,
         string? approvedSha = null)
