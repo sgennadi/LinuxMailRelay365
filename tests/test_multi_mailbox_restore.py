@@ -3,6 +3,7 @@
 Uses disposable file fixtures, no systemd, Postfix, Microsoft 365 or SMTP.
 """
 import contextlib
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -122,6 +123,13 @@ class MultiMailboxRestoreTests(unittest.TestCase):
         self.inject(restore.os, "geteuid", lambda: 0)
         self.inject(restore.grp, "getgrnam",
                     lambda name: SimpleNamespace(gr_gid=os.getgid()))
+        # The CI runner is unprivileged. Mock only the root-owned lock
+        # metadata gate; exercise the actual exclusive kernel flock.
+        def fixture_lock():
+            fd = os.open(str(self.lock), os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        self.inject(restore, "locked", fixture_lock)
         self.offline = mock.Mock(return_value=True)
         self.run = mock.Mock(return_value="")
         self.inject(install, "offline", self.offline)
