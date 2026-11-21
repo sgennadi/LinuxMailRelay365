@@ -15,10 +15,11 @@ The LinuxMailRelay365 application previously supported **read-only backup**, SHA
 After SSH discovery of an exact Exim or Sendmail primary MTA, the Windows Backup & Restore step now provides **Validate Exim/Sendmail native configuration (read-only)** without requiring a snapshot. The bundled Linux script runs `--static-check` as root, rejects all restore/write approvals, validates the native executable and Sendmail compiled .cf files independently of stricter archive directory rules, then runs the existing bounded Exim `-bV` or Sendmail `-bt -C` static parser and emits only fixed non-secret status codes. The Windows UI requires an exact SSH/MTA match before and after the operation and never prints the native MTA's output. A syntax pass is not evidence that source snippets, TLS, SMTP AUTH, queues, DNS or Microsoft 365 delivery work.
 
 This action is separate from the experimental offline Restore CLI; the Wizard still has no Exim/Sendmail Restore button. On Ubuntu Sendmail may
-install /etc/mail with the dedicated smmta (or smmsp) service account and directory mode 2755;
-the **read-only parser gate only** accepts registered smmta/smmsp account
-UID and primary group with exactly this mode (as well as normal root-owned
-directories), with root-owned, non-writable compiled
+install /etc/mail with the dedicated smmta:smmsp (or other exact registered Sendmail service account/group) and directory mode 2755;
+the **read-only parser gate only** accepts the registered smmta UID with
+its primary group or the registered smmsp group (or smmsp's own UID/GID),
+with exactly mode 2755, as well as normal root-owned directories and
+root-owned, non-writable compiled
 .cf files. The separate backup/restore allowlist is NOT weakened.
 
 GitHub CI also provisions **real Exim and Sendmail packages in separate disposable

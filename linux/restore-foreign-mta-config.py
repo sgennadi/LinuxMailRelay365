@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import pwd
+import grp
 from pathlib import Path
 import shutil
 import stat
@@ -169,7 +170,14 @@ def safe_native_sendmail_directory(directory, root, owner_uid=0):
                 account = pwd.getpwnam(principal)
             except KeyError:
                 continue
-            if info.st_uid == account.pw_uid and info.st_gid == account.pw_gid:
+            group_ids = {account.pw_gid}
+            if principal == "smmta":
+                # Debian/Ubuntu package layout is smmta:smmsp 2755.
+                try:
+                    group_ids.add(grp.getgrnam("smmsp").gr_gid)
+                except KeyError:
+                    pass
+            if info.st_uid == account.pw_uid and info.st_gid in group_ids:
                 return True
     raise Refused("native_mta_config_directory_untrusted")
 

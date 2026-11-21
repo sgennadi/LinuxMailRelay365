@@ -226,6 +226,33 @@ class ForeignMtaRestoreTests(unittest.TestCase):
                     with self.assertRaises(restore.Refused):
                         restore.safe_native_sendmail_directory(config.parent, root, 0)
 
+    def test_native_directory_supports_debian_smmta_smmsp_group(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config = root / "etc" / "mail"
+            config.parent.mkdir()
+            config.mkdir()
+            value = SimpleNamespace(st_mode=stat.S_IFDIR | 0o2755,
+                                    st_uid=109, st_gid=119)
+            def passwd(name):
+                if name == "smmta":
+                    return SimpleNamespace(pw_uid=109, pw_gid=111)
+                raise KeyError(name)
+            with patch.object(restore.pwd, "getpwnam", side_effect=passwd), \
+                 patch.object(restore.grp, "getgrnam",
+                              return_value=SimpleNamespace(gr_gid=119)), \
+                 patch.object(Path, "lstat", return_value=value):
+                self.assertTrue(restore.safe_native_sendmail_directory(
+                    config, root, 0))
+            invalid = SimpleNamespace(st_mode=stat.S_IFDIR | 0o2755,
+                                      st_uid=109, st_gid=211)
+            with patch.object(restore.pwd, "getpwnam", side_effect=passwd), \
+                 patch.object(restore.grp, "getgrnam",
+                              return_value=SimpleNamespace(gr_gid=119)), \
+                 patch.object(Path, "lstat", return_value=invalid):
+                with self.assertRaises(restore.Refused):
+                    restore.safe_native_sendmail_directory(config, root, 0)
+
     def test_native_static_check_uses_only_compiler_parse_modes(self):
         with tempfile.TemporaryDirectory() as folder:
             root, base, tree, snap_id, uid = self.fixture(folder, "sendmail")
