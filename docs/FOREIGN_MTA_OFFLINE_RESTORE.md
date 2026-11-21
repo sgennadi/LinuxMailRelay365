@@ -30,6 +30,26 @@ does not transmit messages. This tests native package compatibility on Ubuntu;
 it does **not** establish RHEL/Oracle/Rocky/Alma syntax compatibility, queue
 restoration, real mail delivery or production safety.
 
+## Native RPM checks on RHEL-compatible distributions
+
+Existing read-only CI covers Rocky, Alma and Oracle Linux 8/9/10. Additional
+package-level smoke jobs check real RPM-installed Exim/Sendmail:
+
+- Rocky Linux 8 and 9: Exim from EPEL and Sendmail from distro repositories
+- AlmaLinux 9 and Oracle Linux 9: Sendmail from distribution repositories
+
+These are disposable containers (no real systemd, SELinux Enforcing or TPM).
+The parser check is run with a closed stdin, with no message delivery.
+Configuration and queue hashes must remain unchanged; no standard SMTP
+listeners may appear. The probe rejects wrong-MTA binaries and Restore
+confirmation. Real SSH/systemd/firewall and signed enterprise RHEL acceptance
+remain outstanding.
+
+Sendmail was deprecated in RHEL 9 and removed from the official RHEL 10
+package set. Exim comes via EPEL, not the standard Red Hat repositories.
+An installed legacy MTA remains discoverable; the Wizard must not promise
+these packages on every RHEL release.
+
 ## Example (manual, Linux root only)
 
 ```sh
