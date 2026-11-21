@@ -205,11 +205,19 @@ class ForeignMtaRestoreTests(unittest.TestCase):
                                                     st_uid=112, st_gid=122),
                                     SimpleNamespace(st_mode=stat.S_IFDIR | 0o2777,
                                                     st_uid=112, st_gid=122)):
-                        with patch.object(Path, "lstat", autospec=True,
-                                          return_value=invalid):
+                        with patch.object(Path, "lstat", return_value=invalid):
                             with self.assertRaises(restore.Refused):
                                 restore.safe_native_sendmail_directory(
                                     config, root, 0)
+            # Debian's smmta account is also recognized by its exact UID/GID.
+            with patch.object(restore.pwd, "getpwnam",
+                              side_effect=lambda name:
+                              SimpleNamespace(pw_uid=112, pw_gid=122)
+                              if name == "smmta" else
+                              (_ for _ in ()).throw(KeyError(name))):
+                with patch.object(Path, "lstat", return_value=synthetic):
+                    self.assertTrue(restore.safe_native_sendmail_directory(
+                        config, root, 0))
             # The same foreign-owner exception must not work on /etc.
             with patch.object(Path, "lstat", autospec=True,
                               return_value=synthetic):

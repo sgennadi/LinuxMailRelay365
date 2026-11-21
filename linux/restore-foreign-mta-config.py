@@ -158,16 +158,19 @@ def safe_native_sendmail_directory(directory, root, owner_uid=0):
         raise Refused("native_mta_config_directory_untrusted")
     if info.st_uid == owner_uid:
         return True
-    # Debian packages can install /etc/mail as smmsp:smmsp mode 2755.
-    # Never generalize this to other directories, owners or permissions.
+    # Debian packages can install /etc/mail as smmta:smmta 2755
+    # (mail transfer agent), while some installations use smmsp.
+    # Validate the actual registered system principal and primary group,
+    # never accept an arbitrary numeric UID or nonstandard permissions.
     if owner_uid == 0 and directory == root / "etc" / "mail" and \
             stat.S_IMODE(info.st_mode) == 0o2755:
-        try:
-            account = pwd.getpwnam("smmsp")
-        except KeyError:
-            raise Refused("native_mta_config_directory_untrusted")
-        if info.st_uid == account.pw_uid and info.st_gid == account.pw_gid:
-            return True
+        for principal in ("smmta", "smmsp"):
+            try:
+                account = pwd.getpwnam(principal)
+            except KeyError:
+                continue
+            if info.st_uid == account.pw_uid and info.st_gid == account.pw_gid:
+                return True
     raise Refused("native_mta_config_directory_untrusted")
 
 
