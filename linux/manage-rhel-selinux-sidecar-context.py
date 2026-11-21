@@ -122,11 +122,13 @@ def verify_custom(raw, expected, unrelated):
 
 
 def safe_parent():
+    # All command entrypoints require EUID 0. Using EUID here also allows
+    # non-root isolated unit fixtures to exercise the same ownership guards.
     if ROOT.is_symlink():
         raise Refused("unsafe_journal_root_symlink")
     if ROOT.exists():
         st = ROOT.lstat()
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
             raise Refused("unsafe_journal_root")
     else:
         ROOT.mkdir(parents=True, mode=0o700)
@@ -140,7 +142,7 @@ def read_journal():
         raise Refused("unsafe_journal_symlink")
     safe_parent()
     st = ACTIVE.lstat()
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
         raise Refused("unsafe_journal_permissions")
     try:
         data = json.loads(ACTIVE.read_text(encoding="utf-8"))
@@ -175,7 +177,7 @@ def write_journal(data):
 def acquire_lock():
     fd = os.open(str(LOCK), os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     st = os.fstat(fd)
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
         os.close(fd)
         raise Refused("unsafe_operation_lock")
     fcntl.flock(fd, fcntl.LOCK_EX)
