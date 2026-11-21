@@ -104,7 +104,7 @@ and disaster recovery tests are signed off.
 
 ## Sendmail package ownership and backup-only exception (Draft)
 
-Ubuntu/Debian Sendmail may install `/etc/mail` as `smmta:smmsp` mode `2755` while retaining root-owned regular `.cf` and map files. Configuration-only BACKUP/VERIFY on Linux now recognizes that **exact package-managed directory** only after matching the registered `smmta`/`smmsp` account and group; `/etc`, nested configuration directories, each file, Exim and all other paths keep their original root-only checks. Symlinks, unsafe writable modes, unknown owners, unexpected file links, incomplete reads, and unbounded snapshots remain hard refusals. No mail queue, message, service or SMTP configuration is changed by Backup.
+Ubuntu/Debian Sendmail may install `/etc/mail` as `smmta:smmsp` mode `2755` while retaining root-owned regular `.cf` and map files. Configuration-only BACKUP/VERIFY on Linux now recognizes that **exact package-managed directory** only after matching the registered `smmta`/`smmsp` account and group; `/etc`, nested configuration directories, each file, Exim and all other paths keep their original root-only checks. Unknown symlinks, unsafe writable modes, unknown owners, unexpected file links, incomplete reads, and unbounded snapshots remain hard refusals. Exact native Sendmail links are recorded as inert metadata only. No mail queue, message, service or SMTP configuration is changed by Backup.
 
 A separate **write gate** keeps Exim/Sendmail file Restore disabled for non-root-owned Sendmail `/etc/mail`: `restore-foreign-mta-config.py --apply` refuses before any file modification, even when the snapshot can be read and verified. This is intentional. The Windows Wizard still has no Exim/Sendmail Restore action. Disposable Ubuntu CI exercises packaged Sendmail backup, SHA-256 verify and unchanged configuration/services and the offline unit suite confirms unsafe paths and restore refusal. Do not treat package ownership alone as recoverability proof; a full VM backup and a service/queue/SELinux restoration drill are still required.
 
@@ -130,15 +130,40 @@ remain root-owned mode 0600 on the Linux host and can contain credentials.
 
 `--verify` validates TAR regular files, manifest metadata and the archive
 digest; `--preview-recovery` compares file and object metadata without
-replacing files. **V2 snapshots cannot be applied by Restore or flattened
-by --export-offline**. That prevents incomplete recovery that silently
-discards symlinks, permissions or service-account metadata. Use a manual
-system backup and explicit package-aware restore procedure until real VM
-recovery and security tests are approved. Existing v1 Exim functionality
+replacing files. **V2 snapshots cannot be automatically applied to active
+/etc/mail.** An explicitly approved `--export-offline` creates a NEW private
+rehearsal directory under /var/backups. Regular data files are mode 0600,
+directories mode 0700, while original permissions, owners, service-owned DBs
+and known package symlinks are recorded in `PACKAGE_RECOVERY_METADATA.json`.
+The symlinks remain **inert metadata** and are NOT created, followed or used
+for any reads. The verified archive and manifest remain available alongside
+`READ_ME_BEFORE_RECOVERY.txt`. The export cannot safely be copied over
+active /etc/mail or used as a ready-to-run MTA installation: this is a
+reviewable offline recovery rehearsal ONLY. Use a full VM/system backup and
+separate approved service/queue/SELinux recovery validation before production. Existing v1 Exim functionality
 is unchanged.
 
 Native CI must show `SENDMAIL_BACKUP_LAB_SNAPSHOT=verified_root_only`,
 `SENDMAIL_BACKUP_LAB_V2_RESTORE=blocked_as_designed` and unchanged file
 hashes/daemon state before this block can be marked accepted. The dedicated
 offline v2 unit suite includes tampered TAR, altered objects, symlink drift
-and blocked export/restore cases.
+and safe private v2 export plus blocked active Restore cases.
+
+### Review export (never live Restore)
+
+For a validated snapshot, run on a disposable or explicitly approved server:
+
+```shell
+sudo python3 linux/foreign-mta-config-backup.py --mta sendmail --verify SNAPSHOT_ID
+sudo python3 linux/foreign-mta-config-backup.py --mta sendmail --export-offline SNAPSHOT_ID --confirm EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT
+```
+
+The Linux command reports `FOREIGN_BACKUP_FORMAT=v2_package_metadata`,
+`FOREIGN_BACKUP_OFFLINE_LINKS_MATERIALIZED=no` and the new private directory.
+The Windows Wizard uses a separate `EXPORT INERT SENDMAIL SNAPSHOT` typed
+confirmation and warns that the directory is not a restored MTA. The original
+/etc/mail, mail queues, services, external certificates, Entra tenant and
+Microsoft 365 routing are untouched. Only copy data out of this private
+directory using an independently reviewed recovery procedure; it may contain
+secrets. The native Ubuntu and RPM smoke checks require verified file hashes,
+private modes and no materialized symlinks; this is NOT disaster-recovery signoff.
