@@ -68,6 +68,20 @@ class MultiMailboxWizardRuntimeTests(unittest.TestCase):
             self.assertIn(event, GUI)
         self.assertGreaterEqual(GUI.count('ResetMultiMailboxRouteReview();'), 5)
 
+    def test_language_relabel_does_not_discard_reviewed_sha(self):
+        sender_event = GUI.split("oauthSenderMode.SelectedIndexChanged += (_, _) =>", 1)[1].split(
+            "oauthSenderMapPath.TextChanged", 1)[0]
+        route_event = GUI.split("mailTransport.SelectedIndexChanged += (_, _) =>", 1)[1].split(
+            "recipientScope.SelectedIndexChanged", 1)[0]
+        self.assertIn("if (!routingLoading)\n            {\n                ResetMultiMailboxRouteReview();",
+                      sender_event)
+        self.assertIn("if (!routingLoading) {\n                ResetMultiMailboxRouteReview();",
+                      route_event)
+        self.assertNotIn("ResetMultiMailboxRouteReview();\n            if (!routingLoading)",
+                         sender_event)
+        self.assertNotIn("ResetMultiMailboxRouteReview();\n            if (!routingLoading)",
+                         route_event)
+
     def test_stage_and_apply_have_two_explicit_typed_confirmations(self):
         self.assertIn('ConfirmDestructive("LinuxMailRelay365 | Stage multi-mailbox', RUNTIME_GUI)
         self.assertIn('"STAGE MULTI MAILBOX"', RUNTIME_GUI)
