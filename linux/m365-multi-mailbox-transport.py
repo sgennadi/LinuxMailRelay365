@@ -3,8 +3,9 @@
 
 This script is NOT an SMTP login/authenticator. The isolated SMTP ingress must
 already enforce SMTP AUTH + sender-login ownership + From-Guard Milter and
-disable non-SMTP submissions. An exact static ingress audit is required before
-each delivery; it cannot prove live Exchange Send As grants or inbox arrival.
+disable non-SMTP submissions. A fresh, root-issued 120-second ingress
+receipt is required before token acquisition; the unprivileged transport
+never reads Dovecot password hashes. No inbox delivery proof is implied.
 
 Install together with audit-oauth-sender-map.py, audit-oauth-ingress.py,
 m365_xoauth2_transport.py and m365_hardware_signer.py. Python 3.6+.
