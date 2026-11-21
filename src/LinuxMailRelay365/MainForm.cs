@@ -296,7 +296,7 @@ internal sealed partial class MainForm : Form
         ]);
         oauthSenderMode.Items.AddRange([
             "One M365 mailbox for all local mail (current implementation; rewrites From)",
-            "Preserve multiple users' From with authorized mailbox mapping (plan only)"
+            "Preserve multiple users' From (experimental offline configuration)"
         ]);
         oauthSenderMode.SelectedIndex = 0;
         tpmDependencyProfile.Items.AddRange([
@@ -999,17 +999,17 @@ internal sealed partial class MainForm : Form
             0 => new[]
             {
                 "Один почтовый ящик для всех — From заменяется",
-                "Несколько почтовых ящиков — сохранить From (только план)"
+                "Несколько почтовых ящиков — From без замены (офлайн, эксперимент)"
             },
             2 => new[]
             {
                 "תיבה אחת לכולם — כתובת From תוחלף",
-                "תיבות מרובות — שמירת From (תכנון בלבד)"
+                "תיבות מרובות — שמירת From (התקנה ניסיונית בלבד)"
             },
             _ => new[]
             {
                 "One mailbox for all messages — From rewritten",
-                "Multiple authorized mailboxes — preserve From (plan only)"
+                "Multiple authorized mailboxes — offline experiment only"
             }
         };
         var recipientNames = lang switch
