@@ -244,6 +244,35 @@ internal static class Program
                        !signing.Contains("--inventory-only", StringComparison.Ordinal);
             }),
             ("Mail routing safety", MailRoutingPlanStore.SelfTest),
+            ("Foreign primary MTA config backup is only backup/list/verify", () =>
+            {
+                foreach (string mta in new[] { "exim", "sendmail" })
+                {
+                    foreach (string action in new[] { "backup", "list", "verify" })
+                    {
+                        string? id = action == "verify" ?
+                            "20261121T005501Z-abcdef012345" : null;
+                        string bundle = EmbeddedAssets.BuildForeignMtaBackupBundle(mta, action, id);
+                        if (!bundle.Contains("LMR365_FOREIGN_BACKUP", StringComparison.Ordinal) ||
+                            !bundle.Contains("--mta " + mta, StringComparison.Ordinal) ||
+                            !bundle.Contains("--" + action, StringComparison.Ordinal) ||
+                            bundle.Contains("--restore", StringComparison.Ordinal))
+                            return false;
+                    }
+                }
+                foreach (var (mta, action, id) in new[] {
+                    ("postfix", "backup", (string?)null),
+                    ("exim", "restore", (string?)null),
+                    ("exim", "verify", (string?)null),
+                    ("sendmail", "backup", (string?)"20261121T005501Z-abcdef012345"),
+                    ("exim", "verify", (string?)"../../tmp")
+                })
+                {
+                    try { EmbeddedAssets.BuildForeignMtaBackupBundle(mta, action, id); return false; }
+                    catch (ArgumentException) { }
+                }
+                return true;
+            }),
             ("Embedded backup / restore", () =>
             {
                 var listing = EmbeddedAssets.BuildRecoveryBundle("--list");

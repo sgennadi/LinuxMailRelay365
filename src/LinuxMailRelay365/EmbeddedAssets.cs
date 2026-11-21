@@ -36,6 +36,7 @@ internal static class EmbeddedAssets
     internal static string DirectSendSidecarInstaller => Text("LinuxMailRelay365.linux.direct-send-sidecar.sh");
     internal static string ConnectorSidecarInstaller => Text("LinuxMailRelay365.linux.connector-sidecar.sh");
     internal static string ForeignMtaGuard => Text("LinuxMailRelay365.linux.foreign-mta-guard.py");
+    internal static string ForeignMtaBackup => Text("LinuxMailRelay365.linux.foreign-mta-backup.py");
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string MailHostInspector => Text("LinuxMailRelay365.linux.inspect-mail-host.py");
@@ -1225,6 +1226,32 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/platform-compat.py\" <<'LMR365_PLATFORM'\n" +
                Encode(PlatformCompat) + "\nLMR365_PLATFORM\n" +
                "python3 \"$work/platform-compat.py\" --smtp-port " + smtpPort.ToString() + "\n";
+    }
+
+    internal static string BuildForeignMtaBackupBundle(string mta,
+        string action, string? backupId = null)
+    {
+        if (mta is not ("exim" or "sendmail") ||
+            action is not ("backup" or "list" or "verify"))
+            throw new ArgumentException("Unsupported foreign MTA backup operation.");
+        if ((action == "verify") != (backupId is not null) ||
+            (backupId is not null && !Regex.IsMatch(backupId,
+                @"\A[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\z",
+                RegexOptions.CultureInvariant)))
+            throw new ArgumentException("Backup identifier is valid only for verification.");
+        string operation = action switch
+        {
+            "backup" => "--backup",
+            "list" => "--list",
+            _ => "--verify " + backupId
+        };
+        return "set -Eeuo pipefail\numask 077\n" +
+            "work=$(mktemp -d /tmp/lmr365-foreign-backup.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n" +
+            "base64 -d > \"$work/foreign-mta-config-backup.py\" <<'LMR365_FOREIGN_BACKUP'\n" +
+            Encode(ForeignMtaBackup) + "\nLMR365_FOREIGN_BACKUP\n" +
+            "python3 \"$work/foreign-mta-config-backup.py\" --mta " + mta +
+            " " + operation + "\n";
     }
 
     internal static string BuildRecoveryBundle(string command, string? backupId = null)
