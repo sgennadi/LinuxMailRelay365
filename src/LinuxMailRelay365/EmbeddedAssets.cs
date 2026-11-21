@@ -391,6 +391,18 @@ internal static class EmbeddedAssets
         return script.ToString();
     }
 
+
+    internal static string BuildMultiMailboxProofRefreshBundle(string senderMapSha)
+    {
+        if (!Regex.IsMatch(senderMapSha, @"\A[a-f0-9]{64}\z",
+                RegexOptions.CultureInvariant))
+            throw new ArgumentException("Reviewed sender map SHA-256 required.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "python3 /opt/linuxmailrelay365/multi-oauth/refresh-multi-mailbox-proof.py " +
+               "--map-sha256 " + senderMapSha +
+               " --confirm REFRESH_PRIVILEGED_MULTI_INGRESS_PROOF\n";
+    }
+
     internal static string BuildMultiMailboxRouteBundle(string action, string? reviewedSha = null)
     {
         string parameters = action switch
