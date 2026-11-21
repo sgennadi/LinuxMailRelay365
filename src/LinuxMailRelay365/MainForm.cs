@@ -3060,13 +3060,15 @@ internal sealed partial class MainForm : Form
         WindowState = FormWindowState.Normal;
         int captured = 0;
 
-        void Screenshot(string filename)
+        void Screenshot(string filename, bool bottom = false)
         {
-            // Use the application's own real layout and controls at the top of
-            // the scrollable page; do not synthesize labels or completed status.
+            // Capture the real top OR bottom of the scrollable step using
+            // actual WinForms widgets. Never synthesize labels or status.
             pageHost.AutoScrollPosition = Point.Empty;
             pageHost.PerformLayout();
             PerformLayout();
+            if (bottom && pageHost.VerticalScroll.Visible)
+                pageHost.AutoScrollPosition = new Point(0, pageHost.VerticalScroll.Maximum);
             Refresh();
             Application.DoEvents();
             foreach (Control footerControl in new Control[] { status, activityToggle })
@@ -3117,6 +3119,7 @@ internal sealed partial class MainForm : Form
             step = index;
             RenderPage();
             Screenshot(names[index]);
+            Screenshot("0" + (index + 1) + "-wizard-bottom.png", bottom: true);
             if (index == 2)
             {
                 // The operator can choose Connector/Direct Send BEFORE
@@ -3145,6 +3148,7 @@ internal sealed partial class MainForm : Form
                 finally { routingLoading = false; }
                 RenderPage();
                 Screenshot("04-postfix-xoauth2-multi-plan.png");
+                Screenshot("04-postfix-xoauth2-multi-bottom.png", bottom: true);
                 routingLoading = true;
                 try { oauthSenderMode.SelectedIndex = 0; }
                 finally { routingLoading = false; }
@@ -3242,7 +3246,7 @@ internal sealed partial class MainForm : Form
         File.WriteAllText(Path.Combine(root, "README.txt"),
             "Actual WinForms Preview wizard screenshots from a disposable CI runner.\n" +
             "Factory defaults only; no real SSH, Microsoft 365 tenant, TPM or SMTP delivery.\n" +
-            "Only the top visible part of each scrollable wizard step is captured.\n");
+            "Captures top and bottom of all five scrollable pages and Multi-mailbox; no real 200% DPI monitor is emulated.\n");
         step = 0;
         RenderPage();
         return captured;
