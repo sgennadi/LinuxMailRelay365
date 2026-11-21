@@ -30,3 +30,6 @@ jobs:
       - name: Inspect kernel KVM and perform real KVM ioctl
         shell: bash
         run: bash tests/rocky_vm_kvm_probe.sh
+      - name: Boot official checksum-verified Rocky 9.9 VM and verify SELinux Enforcing
+        shell: bash
+        run: bash tests/rocky_vm_boot_enforcing.sh
