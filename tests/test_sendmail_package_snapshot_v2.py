@@ -69,8 +69,13 @@ class V2SnapshotTests(unittest.TestCase):
         os.chmod(str(self.manifest_path), 0o600)
 
     def test_cli_verify_identifies_v2_metadata_only(self):
+        # The actual v2 archive and its owner permissions are checked above
+        # as the nonroot CI user. Root CLI output is tested separately with
+        # that same pre-verified result, not by bypassing on-disk ACLs.
+        preverified = m.verify(self.folder, "sendmail", self.uid)
         output = io.StringIO()
         with patch.object(m, "BASE", self.base), \
+             patch.object(m, "verify", return_value=preverified), \
              patch.object(m.os, "geteuid", return_value=0), \
              redirect_stdout(output):
             result = m.main(["--mta", "sendmail", "--verify", self.folder.name])
