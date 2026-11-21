@@ -1,6 +1,29 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.22 — protected root-only Exim/Sendmail config archives and Wizard backup safety; NOT signed Stable or production-accepted.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.23 — read-only Exim/Sendmail recovery comparison and protected offline extraction; NOT signed Stable or production-accepted.**
+
+## Preview 23: safe Exim/Sendmail offline recovery preparation
+
+After creating a verified root-only Exim/Sendmail snapshot, Windows Wizard
+now offers **Compare active configuration with snapshot (read-only)**. The
+Linux check validates the archive SHA-256, compares the allowlisted active
+/etc configuration file hashes and returns only identical/different/
+unverified status. No file paths, SMTP passwords or archived contents
+are sent to the GUI.
+
+An additional explicitly confirmed action **Extract verified files to a
+separate protected Linux directory** verifies the archive contents and
+extracts into a newly-created 0700 directory beneath the root-only backup
+root. Extracted files use 0600 permissions and remain on Linux. No primary
+Exim/Sendmail configuration, MTA process, queue, systemd unit or firewall
+is changed. This is NOT live restore, nor a complete disaster-recovery
+backup (external TLS keys, packages, queues and service state are excluded).
+
+CI tests the positive, changed, missing and unsafe-archive cases in
+temporary directories, and published Preview 22 -> candidate Preview 23
+replacement and rollback on a disposable Windows runner. Never treat
+this result as live MTA recovery, signed software trust, or tenant SMTP
+delivery acceptance.
 
 ## Preview 22: verified primary Exim/Sendmail config-only archives
 

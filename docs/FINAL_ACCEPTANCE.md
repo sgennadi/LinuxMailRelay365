@@ -41,6 +41,25 @@ trust and names, Exim ACL/routers/transports, Sendmail access maps, MTA
 queue preservation, RHEL SELinux Enforcing and actual Microsoft 365 delivery.
 Neither this inspection nor CI enables native Exim/Sendmail rewriting.
 
+## Preview 23: Exim/Sendmail offline recovery preview and extraction
+
+On a verified Exim or Sendmail host, the Wizard may compare each root-only
+configuration archive against active /etc file SHA-256 hashes, reporting
+only identical / different / unverified (and the reviewed archive digest).
+It cannot prove a complete or restorable mail installation. The Wizard
+also supports typed-confirmed export to a fresh 0700 root-only staging
+directory inside /var/backups/linuxmailrelay365-foreign-mta, with only
+0600 extracted regular files. Archive contents, SMTP credentials,
+private keys and raw configuration are never copied to Windows.
+
+**No live Exim/Sendmail Restore:** this operation does not overwrite
+/etc/exim*, /etc/mail, queues, service files, systemd state or firewall.
+A separate isolated VM acceptance plan is required for true recovery:
+capture and test the actual primary service and queues, external TLS
+keys/certificates, package versions, aliases, permissions, enabled service
+state, DNS, relay ACLs, authenticated clients and real M365 recipient
+receipt. No production cutover is authorized by these tests.
+
 ## Preview 22: primary Exim/Sendmail configuration archive, no restore
 
 The Backup & Restore step now splits Postfix and non-Postfix primary MTA
