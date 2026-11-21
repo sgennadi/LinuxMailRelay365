@@ -147,6 +147,18 @@ class MultiMailboxWizardRuntimeTests(unittest.TestCase):
         self.assertIn('LinuxMailRelay365.linux.multi-mailbox-acceptance.py', PROJECT)
         self.assertNotIn('systemctl restart', RUNTIME_GUI)
 
+    def test_acceptance_ledger_readonly_recovery_after_uncertain_ssh(self):
+        self.assertIn("InspectLastMultiMailboxDeliveryTestAsync, false", GUI)
+        self.assertIn('"multi-mailbox-delivery-ledger"', GUI)
+        self.assertIn("BuildMultiMailboxAcceptanceStatusBundle(", ASSETS)
+        self.assertIn("MULTI_ACCEPTANCE_LEDGER_STATE", RUNTIME_GUI)
+        self.assertIn("lastMultiTestRunId = runId;", RUNTIME_GUI)
+        self.assertIn("lastMultiTestContext = context;", RUNTIME_GUI)
+        self.assertIn("ResetMultiMailboxTestApproval();", RUNTIME_GUI)
+        self.assertIn("MULTI_ACCEPTANCE_AUTOMATIC_RETRY", RUNTIME_GUI)
+        self.assertIn("no inbox delivery proven", RUNTIME_GUI)
+        self.assertIn("--status --run-id", ASSETS)
+
     def test_no_live_send_while_multi_selected(self):
         section = GUI.split("            case 4:", 1)[1].split(
             "        pageHost.ResumeLayout();", 1)[0]
