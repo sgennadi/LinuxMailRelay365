@@ -397,12 +397,20 @@ def listed(mta, base=BASE, owner_uid=0):
 def read_only_probe(args, timeout=8):
     """Bounded commands from a fixed allowlist; no shell or output forwarding."""
     if not args or args[0] not in ("systemctl", "pgrep", "exim", "exim4",
-                                  "sendmail"):
+                                  "sendmail", "ss"):
         raise Refused("unsafe_mta_preflight_probe")
     binary = shutil.which(args[0])
     if not binary or not os.path.isabs(binary):
         return None
+    # Root must not execute an attacker-supplied PATH executable, even for
+    # a read-only status query. Resolve distribution-managed alternatives.
+    resolved = os.path.realpath(binary)
+    if not resolved.startswith(("/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/")):
+        return None
     try:
+        meta = os.stat(resolved)
+        if not stat.S_ISREG(meta.st_mode) or meta.st_uid != 0 or                 meta.st_mode & 0o022:
+            return None
         result = subprocess.run(
             [binary] + list(args[1:]), stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, timeout=timeout, check=False,
@@ -470,6 +478,29 @@ def offline_process_state(mta, probe=read_only_probe):
     return "none_observed"
 
 
+def offline_listener_state(mta, probe=read_only_probe):
+    """Bounded TCP listener/process hint; never a port ownership guarantee."""
+    result = probe(["ss", "-ltnp"])
+    if result is None or result[0] != 0:
+        return "unverified"
+    lines = result[1].splitlines()
+    if not lines or len(lines) > 256 or "State" not in lines[0]:
+        return "unverified"
+    for line in lines[1:]:
+        if not line.startswith("LISTEN "):
+            return "unverified"
+        match = re.search(r'users:\(\("(exim4?|sendmail)",pid=[0-9]{1,10},fd=[0-9]{1,10}\)', line)
+        if match and ((mta == "exim" and match.group(1) in ("exim", "exim4")) or
+                      (mta == "sendmail" and match.group(1) == "sendmail")):
+            return "running"
+        # If another process holds a standard SMTP listener we cannot
+        # infer that a reconfiguration would be safe. On a custom port,
+        # process discovery remains only a hint, never a recovery permit.
+        if re.search(r'(?<![0-9]):(?:25|465|587|2525)\s', line):
+            return "unverified"
+    return "none_observed"
+
+
 def offline_queue_state(mta, probe=read_only_probe):
     """Only a bounded *hint*; aliases, spool paths and client queue need QA."""
     if mta == "exim":
@@ -513,14 +544,15 @@ def offline_recovery_preflight(mta, snapshot_id, root=ROOT, base=BASE,
     service = offline_service_state(mta, probe)
     processes = offline_process_state(mta, probe)
     queue = offline_queue_state(mta, probe)
+    listener = offline_listener_state(mta, probe)
     # Even all-green preflight is not a recoverability guarantee: it doesn't
     # validate external certs, aliases, unit files, DNS or custom queue paths.
-    if service == "running" or processes == "running":
+    if service == "running" or processes == "running" or listener == "running":
         gate = "blocked_running"
     elif queue == "nonempty_reported":
         gate = "blocked_nonempty_queue"
     elif service != "stopped_declared" or processes != "none_observed" or \
-            queue != "empty_reported":
+            queue != "empty_reported" or listener != "none_observed":
         gate = "blocked_unverified"
     elif comparison == "unverified":
         gate = "blocked_unverified"
@@ -529,13 +561,14 @@ def offline_recovery_preflight(mta, snapshot_id, root=ROOT, base=BASE,
     digest_data = json.dumps({
         "mta": mta, "snapshot_id": snapshot_id, "archive": evidence["sha256"],
         "current": comparison, "service": service,
-        "processes": processes, "queue": queue, "gate": gate
+        "processes": processes, "queue": queue, "listener": listener,
+        "gate": gate
     }, sort_keys=True, separators=(",", ":")).encode("ascii")
     return {
         "mta": mta, "snapshot_id": snapshot_id, "archive_sha256": evidence["sha256"],
         "preflight_sha256": hashlib.sha256(digest_data).hexdigest(),
         "current": comparison, "service": service, "processes": processes,
-        "queue": queue, "gate": gate
+        "queue": queue, "listener": listener, "gate": gate
     }
 
 
@@ -591,6 +624,7 @@ def main(argv=None):
             print("FOREIGN_PREFLIGHT_SERVICE=" + info["service"])
             print("FOREIGN_PREFLIGHT_PROCESSES=" + info["processes"])
             print("FOREIGN_PREFLIGHT_QUEUE=" + info["queue"])
+            print("FOREIGN_PREFLIGHT_LISTENER=" + info["listener"])
             print("FOREIGN_PREFLIGHT_CONFIG_MATCH=" + info["current"])
             print("FOREIGN_PREFLIGHT_ARCHIVE_SHA256=" + info["archive_sha256"])
             print("FOREIGN_PREFLIGHT_PLAN_SHA256=" + info["preflight_sha256"])
