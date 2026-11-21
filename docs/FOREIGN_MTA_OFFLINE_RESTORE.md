@@ -76,3 +76,27 @@ The operation does not open firewall rules, enable SMTP AUTH, change M365 object
 - Extend the new Exim/Sendmail static parse stage to validate generated Exim configuration provenance and all included files on each distribution, without automatic daemon restart. Regress non-native sendmail alternative targets and malformed generated config.
 - Verify forced rollback, systemd aliases, package update interactions, SELinux file contexts and queue preservation on disposable real hosts.
 - Provide explicit emergency instructions when rollback cannot safely write, and preserve the identity and content of the original safety snapshot.
+
+
+## Experimental native Exim offline restore drill (Draft)
+
+The disposable Ubuntu 24.04 CI job for Debian-packaged Exim now runs
+`tests/smoke_native_exim_offline_restore.sh` after its independent
+read-only native syntax check. The experiment runs only on a GitHub-hosted
+fresh runner with Exim installed but its services held stopped by the
+package-start suppression policy; it requires an empty queue and no SMTP
+listeners. No Microsoft 365 tenant, client message or SMTP DATA is used.
+
+The drill takes a root-only verified Exim /etc snapshot, appends one
+harmless comment to an existing packaged Exim configuration file,
+requires a fresh reviewed SHA-256 Restore plan, proves stale SHA refusal
+without write, performs explicitly approved offline file-only restore,
+validates the restored file digest and native parser and rechecks service
+stop state, empty queue and absence of SMTP listeners.
+
+**This is an experimental host-specific smoke test, not production
+recoverability evidence.** It does not restore service state, queued mail,
+external credentials/certificates or Debian generated Exim runtime
+config provenance. Do not enable GUI native Exim/Sendmail Restore or
+publish Stable until real VM service/rollback, cross-distro, SELinux
+and disaster recovery tests are signed off.
