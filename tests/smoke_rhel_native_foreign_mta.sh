@@ -137,6 +137,72 @@ if python3 linux/restore-foreign-mta-config.py --mta "$mta" \
   echo "EL_NATIVE_STATIC_ACCEPTED_RESTORE_APPROVAL" >&2; exit 1
 fi
 
+# A native Sendmail backup must be usable on the RPM package layout too.
+# This is an ephemeral container only (real host systemd was rejected above).
+# No SMTP messages, runtime service or tenant are ever used here.
+if test "$mta" = sendmail; then
+  native_config_digest() {
+    python3 - <<'PY'
+import hashlib
+import os
+from pathlib import Path
+
+hasher = hashlib.sha256()
+for base in (Path("/etc/mail"), Path("/etc/aliases")):
+    if base.is_dir() and not base.is_symlink():
+        paths = [base] + sorted(base.rglob("*"), key=str)
+    elif base.exists() or base.is_symlink():
+        paths = [base]
+    else:
+        paths = []
+    for path in paths:
+        st = path.lstat()
+        hasher.update(str(path).encode("utf-8"))
+        hasher.update(b"\0")
+        for number in (st.st_uid, st.st_gid, st.st_mode, st.st_size):
+            hasher.update(str(number).encode("ascii") + b"\0")
+        if path.is_symlink():
+            hasher.update(os.readlink(str(path)).encode("utf-8"))
+        elif path.is_file():
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(65536), b""):
+                    hasher.update(chunk)
+print(hasher.hexdigest())
+PY
+  }
+  before_native="$(native_config_digest)"
+  report="$(python3 linux/foreign-mta-config-backup.py --mta sendmail --backup)"
+  printf '%s\n' "$report" | grep -Fxq 'FOREIGN_BACKUP_STATUS=verified'
+  printf '%s\n' "$report" | grep -Fxq 'FOREIGN_BACKUP_FORMAT=v2_package_metadata'
+  backup_id="$(printf '%s\n' "$report" | sed -n 's/^FOREIGN_BACKUP_ID=//p')"
+  [[ "$backup_id" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ ]] || {
+    echo "EL_SENDMAIL_INVALID_BACKUP_ID" >&2; exit 1;
+  }
+  python3 linux/foreign-mta-config-backup.py --mta sendmail \
+    --verify "$backup_id" | grep -Fxq 'FOREIGN_BACKUP_STATUS=verified'
+  preview="$(python3 linux/foreign-mta-config-backup.py \
+    --mta sendmail --preview-recovery "$backup_id")"
+  printf '%s\n' "$preview" | grep -Fxq \
+    'FOREIGN_BACKUP_CURRENT_CONFIG_MATCH=identical'
+  printf '%s\n' "$preview" | grep -Fxq \
+    'FOREIGN_BACKUP_FORMAT=v2_package_metadata'
+  if python3 linux/restore-foreign-mta-config.py --mta sendmail \
+      --plan "$backup_id" >/dev/null 2>&1; then
+    echo "EL_SENDMAIL_V2_RESTORE_UNEXPECTEDLY_ALLOWED" >&2; exit 1
+  fi
+  if python3 linux/foreign-mta-config-backup.py --mta sendmail \
+      --export-offline "$backup_id" \
+      --confirm EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT >/dev/null 2>&1; then
+    echo "EL_SENDMAIL_V2_FLATTENED_EXPORT_UNEXPECTEDLY_ALLOWED" >&2; exit 1
+  fi
+  test "$(native_config_digest)" = "$before_native" || {
+    echo "EL_SENDMAIL_NATIVE_CONFIG_CHANGED_BY_BACKUP" >&2; exit 1;
+  }
+  no_smtp_listeners
+  test ! -e /run/systemd/system
+  echo 'EL_NATIVE_SENDMAIL_PACKAGE_V2=verified_readonly_restore_blocked'
+fi
+
 snapshot_state > "$state/after"
 # EL minimal containers use coreutils-single: cmp is not necessarily present.
 # Compare complete snapshot bytes using the already-required Python runtime.
