@@ -11,6 +11,7 @@ m365_xoauth2_transport.py and m365_hardware_signer.py. Python 3.6+.
 """
 import argparse
 import grp
+import json
 import hashlib
 import importlib.util
 import os
@@ -18,8 +19,11 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 
 RUNTIME_MAP = "/etc/linuxmailrelay365/oauth-runtime-senders.tsv"
+PROOF_FILE = "/etc/linuxmailrelay365/oauth-ingress-proof.json"
+PROOF_TTL = 120
 AUDITOR = Path(__file__).with_name("audit-oauth-sender-map.py")
 INGRESS = Path(__file__).with_name("audit-oauth-ingress.py")
 TRANSPORT = Path(__file__).with_name("m365_xoauth2_transport.py")
@@ -80,13 +84,61 @@ def secure_runtime_map(auditor, gid, expected_sha):
     return rows
 
 
+def config_metadata(path):
+    """Public stat metadata, never root-only credential or Milter file bytes."""
+    try:
+        meta = Path(path).lstat()
+    except OSError:
+        raise Unverified("postfix_config_stat_unavailable")
+    if not stat.S_ISREG(meta.st_mode) or meta.st_uid != 0 or \
+            meta.st_nlink != 1 or meta.st_mode & 0o022:
+        raise Unverified("postfix_config_changed_or_untrusted")
+    return [meta.st_dev, meta.st_ino, meta.st_size, meta.st_mtime_ns,
+            meta.st_ctime_ns, meta.st_mode, meta.st_uid, meta.st_gid]
+
+
 def ingress_ready(rows, auditor):
-    """Defense-in-depth runtime check; trusted SMTP provenance is upstream."""
-    module = load_source(INGRESS, "lmr365_ingress_guard")
-    result = module.assess(rows, auditor)
-    if result.get("OVERALL") != "ingress_config_consistent_not_live_verified":
-        raise Unverified("smtp_auth_sender_and_header_guard_not_ready")
-    return True
+    """Check a fresh privileged receipt, not root:dovecot SMTP password hashes.
+
+    A short-lived root-managed audit proves the protected SMTP AUTH/Milter
+    policy was consistent when the receipt was issued. Postfix itself must
+    still enforce SMTP AUTH and From-Guard before queueing. No local user
+    can force-refresh the receipt or use a stale receipt for token issuance.
+    """
+    try:
+        service_gid = grp.getgrnam("m365mailer").gr_gid
+        raw = auditor.secure_read(PROOF_FILE, 2048, 0o640, service_gid)
+        receipt = json.loads(raw.decode("ascii"))
+        expected = {"version", "map_sha256", "issued_at", "expires_at",
+                    "mailboxes", "main_meta", "master_meta", "ingress"}
+        if not isinstance(receipt, dict) or set(receipt) != expected or \
+                receipt["version"] != 1 or \
+                receipt["ingress"] != "root_static_audit_consistent_not_live_delivery":
+            raise Unverified("privileged_ingress_receipt_invalid")
+        now = int(time.time())
+        issued, expires = receipt["issued_at"], receipt["expires_at"]
+        if (type(issued) is not int or type(expires) is not int or
+                issued > now + 5 or now >= expires or expires - issued != PROOF_TTL or
+                now < issued - 5):
+            raise Unverified("privileged_ingress_receipt_expired")
+        map_bytes = auditor.secure_read(RUNTIME_MAP, auditor.MAX_MAP, 0o640,
+                                        service_gid)
+        if (not isinstance(receipt["map_sha256"], str) or
+                not SHA.fullmatch(receipt["map_sha256"]) or
+                hashlib.sha256(map_bytes).hexdigest() != receipt["map_sha256"]):
+            raise Unverified("privileged_ingress_receipt_map_changed")
+        if (type(receipt["mailboxes"]) is not int or
+                receipt["mailboxes"] != len(set(row[2] for row in rows))):
+            raise Unverified("privileged_ingress_receipt_mailboxes_changed")
+        conf = Path("/etc/linuxmailrelay365/sidecar-postfix")
+        for field, path in (("main_meta", conf / "main.cf"),
+                            ("master_meta", conf / "master.cf")):
+            if receipt[field] != config_metadata(path):
+                raise Unverified("privileged_ingress_receipt_postfix_changed")
+        return True
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError,
+            auditor.Refused):
+        raise Unverified("privileged_ingress_receipt_unavailable_or_invalid") from None
 
 
 def single_header(message, auditor, expected):
