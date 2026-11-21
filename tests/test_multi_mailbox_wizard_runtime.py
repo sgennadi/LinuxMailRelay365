@@ -128,6 +128,25 @@ class MultiMailboxWizardRuntimeTests(unittest.TestCase):
         self.assertNotIn('systemctl restart', RUNTIME_GUI)
         self.assertNotIn('postfix reload', RUNTIME_GUI)
 
+    def test_two_real_acceptance_emits_only_explicitly_reviewed_sender_and_recipients(self):
+        self.assertIn('PreviewMultiMailboxDeliveryTestAsync, false', GUI)
+        self.assertIn('ApplyMultiMailboxDeliveryTestAsync, false', GUI)
+        self.assertIn('if (reviewedMultiTestSha is not null)', GUI)
+        self.assertIn('multiTestSender.TextChanged', GUI)
+        self.assertIn('multiTestInternal.TextChanged', GUI)
+        self.assertIn('multiTestExternal.TextChanged', GUI)
+        self.assertIn('private async Task PreviewMultiMailboxDeliveryTestAsync()', RUNTIME_GUI)
+        self.assertIn('private async Task ApplyMultiMailboxDeliveryTestAsync()', RUNTIME_GUI)
+        self.assertIn('BuildMultiMailboxAcceptanceBundle(', ASSETS)
+        self.assertIn('MULTI_ACCEPTANCE_PLAN_SHA256', RUNTIME_GUI)
+        self.assertIn('SEND TWO MULTI MAILBOX TESTS', RUNTIME_GUI)
+        self.assertIn('MULTI_ACCEPTANCE_RECIPIENT_INBOX_VERIFIED', RUNTIME_GUI)
+        self.assertIn('MULTI_ACCEPTANCE_EXCHANGE_TRACE_VERIFIED', RUNTIME_GUI)
+        self.assertIn('ResetMultiMailboxTestReview();', RUNTIME_GUI)
+        self.assertIn('multi-mailbox-acceptance.py', ASSETS)
+        self.assertIn('LinuxMailRelay365.linux.multi-mailbox-acceptance.py', PROJECT)
+        self.assertNotIn('systemctl restart', RUNTIME_GUI)
+
     def test_no_live_send_while_multi_selected(self):
         section = GUI.split("            case 4:", 1)[1].split(
             "        pageHost.ResumeLayout();", 1)[0]
