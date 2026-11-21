@@ -171,4 +171,61 @@ internal sealed partial class MainForm
                   "No inbox delivery or production readiness proven.");
         RenderPage();
     }
+
+    private async Task RefreshMultiMailboxIngressProofAsync()
+    {
+        string context = CurrentMultiMailboxContext();
+        if (!ConfirmDestructive("LinuxMailRelay365 | Refresh experimental ingress proof",
+            T("Только для контролируемого тестирования: обновляется root-only проверка SMTP AUTH и From Guard, " +
+              "действительная всего 120 секунд. Отдельный Postfix, Dovecot и From-Guard должны уже работать. " +
+              "Операция НЕ отправляет письма и НЕ запускает службы. Для production нужен отдельный мониторинг и реальные тесты.",
+              "SUPERVISED TESTS ONLY: refresh a root-issued SMTP AUTH/From Guard proof valid for 120 seconds. " +
+              "The independent Postfix, Dovecot and From Guard must already be RUNNING. " +
+              "No mail is sent and no service is started. Production requires a vetted renewal timer and live acceptance.",
+              "בדיקה מבוקרת בלבד. אישור אבטחה ל-120 שניות, ללא שליחת דואר או הפעלת שירותים."),
+            "REFRESH MULTI INGRESS PROOF")) return;
+        var endpoint = Endpoint();
+        string map = oauthSenderMapPath.Text.Trim();
+        var audit = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildOAuthSenderMapAuditBundle(map),
+            TimeSpan.FromSeconds(90));
+        audit.EnsureSuccess();
+        _ = ValidatedMultiMailboxReportValue(audit.StdOut,
+            "OAUTH_SENDER_MAP_RESULT", @"\Astructural_review_only\z");
+        string sha = ValidatedMultiMailboxReportValue(audit.StdOut,
+            "OAUTH_SENDER_MAP_MAP_SHA256", @"\A[a-f0-9]{64}\z");
+        _ = ValidatedMultiMailboxReportValue(audit.StdOut,
+            "OAUTH_SENDER_MAP_SENDAS_DIFFERENT_FROM", @"\A0\z");
+        _ = ValidatedMultiMailboxReportValue(audit.StdOut,
+            "OAUTH_SENDER_MAP_MESSAGES_SENT", @"\Ano\z");
+        if (context != CurrentMultiMailboxContext())
+            throw new InvalidOperationException("The approved SSH host or sender map changed during read-only review.");
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildMultiMailboxProofRefreshBundle(sha),
+            TimeSpan.FromMinutes(2));
+        result.EnsureSuccess();
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_INGRESS_PROOF", @"\Arefreshed_static_audit_only\z");
+        string seconds = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_INGRESS_PROOF_EXPIRES_SECONDS", @"\A120\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_INGRESS_MAILBOXES", @"\A(?:[1-9]|[1-5][0-9]|6[0-4])\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_INGRESS_MESSAGES_SENT", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_INGRESS_MTA_SERVICES_CHANGED", @"\Ano\z");
+        if (context != CurrentMultiMailboxContext())
+            throw new InvalidOperationException(
+                "SSH host or multi-mailbox route changed; do not rely on the previous proof.");
+        multiMailboxRouteSummary = T(
+            "Привилегированная проверка активных SMTP AUTH/From Guard завершена. " +
+              "Действует " + seconds + " секунд. Доставка Microsoft 365 НЕ подтверждена.",
+            "Live service configuration proof refreshed for " + seconds +
+              " seconds. No SMTP message or recipient delivery is verified.",
+            "אישור תצורה זמני ל-" + seconds + " שניות. שליחת דואר לא אומתה.");
+        WriteLine("Privileged multi-mailbox ingress receipt refreshed for supervised tests only. " +
+            "No message transmitted; never interpret the receipt as Exchange delivery proof.");
+        RenderPage();
+    }
+
 }
