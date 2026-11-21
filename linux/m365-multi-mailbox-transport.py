@@ -225,6 +225,34 @@ def deliver(sender, recipient, sasl_login, sasl_method, map_hash, raw,
 
 
 
+def require_privileged_acceptance_parent():
+    """Only the root-owned acceptance manager may launch direct test mail.
+
+    A compromised unprivileged account must not use --acceptance-test to
+    bypass SMTP AUTH via arbitrary direct M365 submissions. The manager
+    launches this one-shot process as root-owned runuser -> m365mailer.
+    /proc inspection is Linux-only and fails closed on hidepid/unknown.
+    """
+    try:
+        parent = os.getppid()
+        if parent <= 1:
+            raise Denied("direct_acceptance_requires_root_runuser")
+        proc = Path("/proc") / str(parent)
+        exe = os.readlink(str(proc / "exe"))
+        if exe not in ("/usr/sbin/runuser", "/usr/bin/runuser"):
+            raise Denied("direct_acceptance_requires_root_runuser")
+        raw = (proc / "status").read_text(encoding="ascii")
+        uids = [line for line in raw.splitlines() if line.startswith("Uid:")]
+        if len(uids) != 1:
+            raise Denied("acceptance_parent_uid_unverifiable")
+        values = uids[0].split()[1:]
+        if len(values) != 4 or any(value != "0" for value in values):
+            raise Denied("direct_acceptance_parent_not_root")
+        return True
+    except (OSError, UnicodeError, ValueError):
+        raise Denied("direct_acceptance_parent_unverifiable") from None
+
+
 def acceptance_single(request_data, expected_sha, auditor,
                       gid=None, ingress_checker=ingress_ready, transport=None):
     """One explicitly reviewed DIRECT M365 SMTP acceptance, not Postfix ingress.
@@ -300,6 +328,7 @@ def main(argv=None):
             if (opts.check_only or opts.recipient or opts.envelope_sender or
                     opts.sasl_login or opts.sasl_method):
                 raise Denied("acceptance_has_no_postfix_sender_arguments")
+            require_privileged_acceptance_parent()
             acceptance_single(sys.stdin.buffer.read(4097),
                               opts.expected_map_sha256, auditor, gid=gid)
             print("2.0.0 Direct M365 SMTP acceptance; mailbox delivery unverified")
