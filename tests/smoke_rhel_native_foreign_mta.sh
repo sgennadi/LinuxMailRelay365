@@ -138,8 +138,18 @@ if python3 linux/restore-foreign-mta-config.py --mta "$mta" \
 fi
 
 snapshot_state > "$state/after"
-cmp "$state/before" "$state/after" ||
-  { echo "EL_NATIVE_CONFIG_OR_QUEUE_CHANGED" >&2; exit 1; }
+# EL minimal containers use coreutils-single: cmp is not necessarily present.
+# Compare complete snapshot bytes using the already-required Python runtime.
+python3 - "$state/before" "$state/after" <<'PY'
+from pathlib import Path
+import sys
+
+before = Path(sys.argv[1]).read_bytes()
+after = Path(sys.argv[2]).read_bytes()
+if before != after:
+    raise SystemExit("EL_NATIVE_CONFIG_OR_QUEUE_CHANGED")
+print("EL_NATIVE_CONFIG_AND_QUEUE_HASHES=unchanged")
+PY
 no_smtp_listeners
 test ! -e /run/systemd/system
 echo "EL_NATIVE_$mta=passed_real_package_without_delivery"
