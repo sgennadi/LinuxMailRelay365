@@ -328,6 +328,15 @@ def apply(mta, snapshot_id, approved_sha, confirm,
         raise Refused("primary_mta_not_stopped")
     lock_handle = take_lock(lock_path, uid)
     try:
+        # Backup may read the distro's smmta-owned /etc/mail directory,
+        # but automatic Restore must NOT write inside a non-root-owned path.
+        # A packaged Sendmail installation therefore remains read-only
+        # until explicit real-host ownership and rollback acceptance exists.
+        if mta == "sendmail":
+            try:
+                backup.safe_dir(root / "etc" / "mail", uid)
+            except (Refused, OSError):
+                raise Refused("sendmail_nonroot_config_directory_restore_not_approved")
         require_offline_preflight(mta, snapshot_id, root, base, uid,
                                   preflight_check)
         state = preview(mta, snapshot_id, root, base, uid)
