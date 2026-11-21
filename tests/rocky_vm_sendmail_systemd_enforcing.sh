@@ -13,6 +13,21 @@ test "$(uname -m)" = x86_64
 test "$(cat /proc/1/comm)" = systemd
 test "$(getenforce)" = Enforcing
 test "$(cat /sys/fs/selinux/enforce)" = 1
+# A disposable-guest marker is provisioned by our KVM boot harness only.
+# It is bound to this kernel boot ID, root-owned, private and not a symlink.
+sudo python3 - <<'PY'
+from pathlib import Path
+import socket
+import stat
+p = Path("/run/lmr365-disposable-sendmail-vm")
+info = p.lstat()
+if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or
+        stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or
+        p.read_text(encoding="ascii").strip() !=
+        Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip() or
+        socket.gethostname().split(".")[0] != "rocky-selinux-ci"):
+    raise SystemExit("LMR365_SENDMAIL_VM_MISSING_DISPOSABLE_KVM_ATTESTATION")
+PY
 sudo systemctl is-active --quiet postfix.service
 test -z "$(sudo postqueue -j)"
 sudo test -f /etc/postfix/main.cf
@@ -33,6 +48,7 @@ cleanup() {
   fi
   sudo systemctl stop sendmail.service >/dev/null 2>&1 || true
   sudo systemctl stop sm-client.service >/dev/null 2>&1 || true
+  sudo rm -f -- /run/lmr365-disposable-sendmail-vm || true
   if sudo rpm -q postfix >/dev/null 2>&1; then
     if ! sudo systemctl start postfix.service; then
       echo "LMR365_SENDMAIL_VM_POSTFIX_RESTART_FAILED"
