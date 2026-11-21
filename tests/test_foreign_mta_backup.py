@@ -303,6 +303,20 @@ class ForeignMtaBackupTests(unittest.TestCase):
             self.assertIn(key, form)
         self.assertIn("Manual recovery only.", form)
 
+    def test_gui_readonly_operations_allow_verified_inactive_mta(self):
+        gui = (ROOT / 'src/LinuxMailRelay365/MainForm.cs').read_text()
+        self.assertIn('private string ConfirmedForeignBackupMta(bool allowStopped = false)', gui)
+        self.assertIn('inspectedHost.MtaState == "installed_inactive"', gui)
+        for method in ('ListForeignMtaBackupsAsync',
+                       'VerifyForeignMtaBackupAsync',
+                       'PreviewForeignMtaRecoveryAsync',
+                       'PreflightForeignMtaRecoveryAsync',
+                       'ExportForeignMtaOfflineAsync'):
+            section = gui.split('private async Task ' + method + '()', 1)[1]
+            self.assertIn('ConfirmedForeignBackupMta(allowStopped: true);',
+                          section[:260], method)
+        active_backup = gui.split('private async Task BackupForeignMtaAsync()', 1)[1]
+        self.assertIn('ConfirmedForeignBackupMta();', active_backup[:260])
     def test_preflight_never_runs_shell_or_untrusted_path(self):
         for value in (['bash', '-c', 'cat /etc/shadow'],
                       ['sh', '-c', 'systemctl status sendmail']):
