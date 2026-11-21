@@ -132,5 +132,14 @@ grep -Fxq 'SMTP_AUTH_ENFORCING_TESTED=no' "$work/doctor"
 grep -Fxq 'CHANGES_APPLIED=no' "$work/doctor"
 grep -Eq '^SELINUX_ACCEPTANCE_STATUS=(smtp_port_policy_review|file_context_review|manual_avc_and_runtime_test_required)$' "$work/doctor"
 echo "LMR365_GUEST_DOCTOR_ENFORCING=verified_read_only"
+
+# Test an actual guest Postfix daemon under SELinux Enforcing. Its SMTP
+# listener is loopback-only; do not create mail or contact any relay.
+scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+    tests/rocky_vm_postfix_enforcing.sh ci@127.0.0.1:/tmp/lmr365-postfix-smoke.sh
+ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    'bash /tmp/lmr365-postfix-smoke.sh'
+
 echo "LMR365_GUEST_MAIL_DELIVERY_TESTED=no"
 echo "LMR365_GUEST_SMTP_AUTH_TESTED=no"
