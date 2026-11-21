@@ -2339,7 +2339,15 @@ internal sealed partial class MainForm : Form
                                 ApplyMultiMailboxDeliveryTestAsync, false, "shield", "multi-mailbox-delivery-apply");
                         if (!string.IsNullOrEmpty(multiTestSummary))
                             AddLine(page, UiTheme.Text(multiTestSummary));
-
+                        if (lastMultiTestRunId is not null)
+                            AddAction(page, T(
+                                "8. Проверить журнал последней SMTP-попытки (без отправки)",
+                                "8. Inspect last SMTP attempt ledger (read-only)",
+                                "8. בדיקת יומן ניסיון SMTP ללא שליחה"),
+                                InspectLastMultiMailboxDeliveryTestAsync, false, "check",
+                                "multi-mailbox-delivery-ledger");
+                        if (!string.IsNullOrEmpty(multiTestLedgerSummary))
+                            AddLine(page, UiTheme.Text(multiTestLedgerSummary));
 
                         AddLine(page, UiTheme.Text(string.IsNullOrEmpty(multiMailboxRouteSummary)
                             ? T("Маршрут не активирован. Отправка Multi-mailbox в этом мастере остаётся заблокирована.",
