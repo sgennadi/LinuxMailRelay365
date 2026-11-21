@@ -61,6 +61,49 @@ def safe_dir(path, owner_uid=0):
     return info
 
 
+def safe_packaged_sendmail_dir(path, owner_uid=0):
+    """Only package-native /etc/mail 2755 smmta/smmsp may differ from root.
+
+    All backup *files* and other directories still require root ownership;
+    this exception cannot be used for arbitrary paths or for writes.
+    """
+    try:
+        return safe_dir(path, owner_uid)
+    except Refused:
+        if owner_uid != 0:
+            raise
+    metadata = path.lstat()  # A symlink is never accepted.
+    if (not stat.S_ISDIR(metadata.st_mode) or
+            stat.S_IMODE(metadata.st_mode) != 0o2755 or
+            metadata.st_mode & 0o022):
+        raise Refused("unsafe_sendmail_package_directory")
+    import pwd
+    import grp
+    try:
+        smmsp_gid = grp.getgrnam("smmsp").gr_gid
+    except KeyError:
+        smmsp_gid = None
+    for account_name in ("smmta", "smmsp"):
+        try:
+            account = pwd.getpwnam(account_name)
+        except KeyError:
+            continue
+        accepted_gids = {account.pw_gid}
+        if account_name == "smmta" and smmsp_gid is not None:
+            accepted_gids.add(smmsp_gid)
+        if metadata.st_uid == account.pw_uid and metadata.st_gid in accepted_gids:
+            return metadata
+    raise Refused("untrusted_sendmail_package_directory_owner")
+
+
+def safe_config_dir(directory, mta, root, owner_uid):
+    # The sole exception is /etc/mail on an actual root-owned package host;
+    # /etc, subdirectories and Exim remain root-only.
+    if mta == "sendmail" and directory == root / "etc" / "mail":
+        return safe_packaged_sendmail_dir(directory, owner_uid)
+    return safe_dir(directory, owner_uid)
+
+
 def stable_file(path, owner_uid=0):
     before = safe_regular(path, owner_uid)
     fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
@@ -100,12 +143,12 @@ def selected_files(mta, root=ROOT, owner_uid=0):
         safe_dir(root / "etc", owner_uid)
         st = source.lstat()
         if stat.S_ISDIR(st.st_mode):
-            safe_dir(source, owner_uid)
+            safe_config_dir(source, mta, root, owner_uid)
             found += 1 if name in MANDATORY[mta] else 0
             pending = [source]
             while pending:
                 directory = pending.pop()
-                safe_dir(directory, owner_uid)
+                safe_config_dir(directory, mta, root, owner_uid)
                 for path in sorted(directory.iterdir(), key=lambda p: p.name):
                     if path.is_symlink():
                         raise Refused("symlink_in_existing_mta_configuration")
