@@ -32,6 +32,8 @@ class V2SnapshotTests(unittest.TestCase):
         (self.root / "etc" / "mail" / "smrsh").mkdir(parents=True)
         (self.root / "etc" / "mail" / "sendmail.cf").write_text(
             "O DaemonPortOptions=Addr=127.0.0.1\n", encoding="utf-8")
+        self.large_name = "etc/mail/access.db"
+        (self.root / self.large_name).write_bytes(b"Q" * (m.MAX_MANIFEST + 1024))
         (self.root / "etc" / "mail" / "smrsh" / "procmail").symlink_to(
             "/usr/bin/procmail")
         (self.root / "etc" / "aliases").write_text("postmaster: root\n")
@@ -173,6 +175,36 @@ class V2SnapshotTests(unittest.TestCase):
         self.assertTrue((self.root / "etc/mail/smrsh/procmail").is_symlink())
         self.assertIn("OFFLINE REVIEW ONLY",
                       (folder / "READ_ME_BEFORE_RECOVERY.txt").read_text())
+
+    def test_package_export_retains_data_above_json_manifest_size_limit(self):
+        export, _ = m.extract_offline(
+            "sendmail", self.folder.name, self.base, self.uid)
+        actual = Path(export) / self.large_name
+        self.assertEqual(actual.stat().st_size, m.MAX_MANIFEST + 1024)
+        self.assertEqual(hashlib.sha256(actual.read_bytes()).hexdigest(),
+                         hashlib.sha256((self.root / self.large_name).read_bytes()).hexdigest())
+        self.assertEqual(stat.S_IMODE(actual.stat().st_mode), 0o600)
+
+    def test_package_export_fails_closed_and_cleans_partial_written_files(self):
+        writer = m._write_private_export_file
+        def corrupt_after_write(path, contents, owner_uid, maximum=m.MAX_MANIFEST):
+            writer(path, contents, owner_uid, maximum=maximum)
+            if path.name == "sendmail.cf":
+                path.write_bytes(b"invalid-after-write")
+        with patch.object(m, "_write_private_export_file",
+                          side_effect=corrupt_after_write):
+            with self.assertRaisesRegex(m.Refused, "private_export_readback_digest_mismatch"):
+                m.extract_offline("sendmail", self.folder.name, self.base, self.uid)
+        self.assertFalse(any(self.folder.parent.glob(".offline-recovery-*")))
+        self.assertEqual((self.root / "etc/mail/sendmail.cf").read_text(),
+                         "O DaemonPortOptions=Addr=127.0.0.1\\n")
+
+    def test_symlinked_archive_base_is_refused_before_read(self):
+        renamed = self.base.with_name("archived-safe-base")
+        self.base.rename(renamed)
+        self.base.symlink_to(renamed, target_is_directory=True)
+        with self.assertRaisesRegex(m.Refused, "unsafe_snapshot_directory"):
+            m.verify(self.folder, "sendmail", self.uid)
 
     def test_package_export_refuses_corrupted_snapshot(self):
         self.archive.write_bytes(self.archive.read_bytes() + b"corrupt")
