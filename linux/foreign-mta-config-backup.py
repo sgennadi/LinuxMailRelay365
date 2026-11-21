@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import secrets
 import shutil
 import stat
@@ -392,6 +393,152 @@ def listed(mta, base=BASE, owner_uid=0):
     return results
 
 
+
+def read_only_probe(args, timeout=8):
+    """Bounded commands from a fixed allowlist; no shell or output forwarding."""
+    if not args or args[0] not in ("systemctl", "pgrep", "exim", "exim4",
+                                  "sendmail"):
+        raise Refused("unsafe_mta_preflight_probe")
+    binary = shutil.which(args[0])
+    if not binary or not os.path.isabs(binary):
+        return None
+    try:
+        result = subprocess.run(
+            [binary] + list(args[1:]), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=timeout, check=False,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
+        if len(result.stdout) > 8192:
+            return None
+        return result.returncode, result.stdout.decode("ascii", errors="replace")
+    except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError):
+        return None
+
+
+def offline_service_state(mta, probe=read_only_probe):
+    """Inactive is advisory, not proof no worker remains or no TCP listener."""
+    units = (("exim.service", "exim4.service") if mta == "exim"
+             else ("sendmail.service", "sm-client.service"))
+    loaded = 0
+    active = False
+    for unit in units:
+        result = probe(["systemctl", "show", "--property=LoadState",
+                        "--property=ActiveState", unit])
+        if result is None or result[0] != 0:
+            return "unverified"
+        values = {}
+        for line in result[1].splitlines():
+            if "=" not in line:
+                return "unverified"
+            key, value = line.split("=", 1)
+            if key in values or key not in ("LoadState", "ActiveState"):
+                return "unverified"
+            values[key] = value
+        if set(values) != {"LoadState", "ActiveState"}:
+            return "unverified"
+        if values["LoadState"] == "not-found":
+            if values["ActiveState"] not in ("inactive", "unknown"):
+                return "unverified"
+            continue
+        if values["LoadState"] != "loaded":
+            return "unverified"
+        loaded += 1
+        if values["ActiveState"] in ("active", "activating", "reloading",
+                                     "deactivating"):
+            active = True
+        elif values["ActiveState"] != "inactive":
+            return "unverified"  # failed/masked/unknown need human review
+    if active:
+        return "running"
+    return "stopped_declared" if loaded else "unverified"
+
+
+def offline_process_state(mta, probe=read_only_probe):
+    names = ("exim", "exim4") if mta == "exim" else ("sendmail",)
+    for name in names:
+        result = probe(["pgrep", "-x", name])
+        if result is None:
+            return "unverified"
+        code, output = result
+        if code == 0:
+            lines = [x.strip() for x in output.splitlines()]
+            if not lines or any(not re.fullmatch(r"[0-9]{1,10}", x)
+                                for x in lines):
+                return "unverified"
+            return "running"
+        if code != 1 or output.strip():
+            return "unverified"
+    return "none_observed"
+
+
+def offline_queue_state(mta, probe=read_only_probe):
+    """Only a bounded *hint*; aliases, spool paths and client queue need QA."""
+    if mta == "exim":
+        result = probe(["exim4", "-bpc"])
+        if result is None:
+            result = probe(["exim", "-bpc"])
+        if result is None or result[0] != 0:
+            return "unverified"
+        value = result[1].strip()
+        if not re.fullmatch(r"[0-9]{1,9}", value):
+            return "unverified"
+        return "empty_reported" if int(value) == 0 else "nonempty_reported"
+    states = []
+    for argv in (["sendmail", "-bp"], ["sendmail", "-Ac", "-bp"]):
+        result = probe(argv)
+        if result is None or result[0] != 0:
+            return "unverified"
+        text = result[1].strip()
+        if len(text) > 8192 or not text:
+            return "unverified"
+        if re.search(r"(?im)^(?:Mail queue is empty|/[^\r\n]+ is empty)\.?$", text):
+            states.append("empty")
+        elif re.search(r"(?im)^Total requests:\s*0\s*$", text):
+            states.append("empty")
+        elif re.search(r"(?im)^Total requests:\s*[1-9][0-9]*\s*$", text):
+            states.append("nonempty")
+        else:
+            return "unverified"
+    return "empty_reported" if states == ["empty", "empty"] else "nonempty_reported"
+
+
+def offline_recovery_preflight(mta, snapshot_id, root=ROOT, base=BASE,
+                               owner_uid=0, probe=read_only_probe):
+    """Read-only safety report. Does NOT enable or authorize primary MTA restore."""
+    if mta not in ALLOWED or not isinstance(snapshot_id, str) or \
+            not ID.fullmatch(snapshot_id):
+        raise Refused("invalid_mta_offline_preflight_selection")
+    snapshot = base / mta / snapshot_id
+    evidence = verify(snapshot, mta, owner_uid)
+    comparison = recovery_preview(mta, snapshot_id, root, base, owner_uid)["current"]
+    service = offline_service_state(mta, probe)
+    processes = offline_process_state(mta, probe)
+    queue = offline_queue_state(mta, probe)
+    # Even all-green preflight is not a recoverability guarantee: it doesn't
+    # validate external certs, aliases, unit files, DNS or custom queue paths.
+    if service == "running" or processes == "running":
+        gate = "blocked_running"
+    elif queue == "nonempty_reported":
+        gate = "blocked_nonempty_queue"
+    elif service != "stopped_declared" or processes != "none_observed" or \
+            queue != "empty_reported":
+        gate = "blocked_unverified"
+    elif comparison == "unverified":
+        gate = "blocked_unverified"
+    else:
+        gate = "offline_candidate_manual_recovery_only"
+    digest_data = json.dumps({
+        "mta": mta, "snapshot_id": snapshot_id, "archive": evidence["sha256"],
+        "current": comparison, "service": service,
+        "processes": processes, "queue": queue, "gate": gate
+    }, sort_keys=True, separators=(",", ":")).encode("ascii")
+    return {
+        "mta": mta, "snapshot_id": snapshot_id, "archive_sha256": evidence["sha256"],
+        "preflight_sha256": hashlib.sha256(digest_data).hexdigest(),
+        "current": comparison, "service": service, "processes": processes,
+        "queue": queue, "gate": gate
+    }
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Verified root-only Exim/Sendmail config backup")
     ap.add_argument("--mta", choices=("exim", "sendmail"), required=True)
@@ -400,6 +547,7 @@ def main(argv=None):
     actions.add_argument("--list", action="store_true")
     actions.add_argument("--verify")
     actions.add_argument("--preview-recovery")
+    actions.add_argument("--offline-preflight")
     actions.add_argument("--export-offline")
     actions.add_argument("--self-test", action="store_true")
     ap.add_argument("--confirm", default="")
@@ -438,6 +586,16 @@ def main(argv=None):
             print("FOREIGN_BACKUP_CURRENT_CONFIG_MATCH=" + state["current"])
             print("FOREIGN_BACKUP_ARCHIVE_SHA256=" + state["snapshot"]["sha256"])
             print("FOREIGN_BACKUP_STATUS=recovery_preview_only")
+        elif opts.offline_preflight is not None:
+            info = offline_recovery_preflight(opts.mta, opts.offline_preflight)
+            print("FOREIGN_PREFLIGHT_SERVICE=" + info["service"])
+            print("FOREIGN_PREFLIGHT_PROCESSES=" + info["processes"])
+            print("FOREIGN_PREFLIGHT_QUEUE=" + info["queue"])
+            print("FOREIGN_PREFLIGHT_CONFIG_MATCH=" + info["current"])
+            print("FOREIGN_PREFLIGHT_ARCHIVE_SHA256=" + info["archive_sha256"])
+            print("FOREIGN_PREFLIGHT_PLAN_SHA256=" + info["preflight_sha256"])
+            print("FOREIGN_PREFLIGHT_GATE=" + info["gate"])
+            print("FOREIGN_PREFLIGHT_STATUS=read_only_no_restore")
         elif opts.export_offline is not None:
             path, info = extract_offline(opts.mta, opts.export_offline)
             print("FOREIGN_BACKUP_OFFLINE_DIRECTORY=" + path)
