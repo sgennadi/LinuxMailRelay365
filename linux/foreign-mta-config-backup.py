@@ -61,7 +61,7 @@ def safe_dir(path, owner_uid=0):
     return info
 
 
-def safe_packaged_sendmail_dir(path, owner_uid=0):
+def safe_packaged_sendmail_dir(path, owner_uid=0, modes=(0o2755,)):
     """Only package-native /etc/mail 2755 smmta/smmsp may differ from root.
 
     All backup *files* and other directories still require root ownership;
@@ -74,7 +74,7 @@ def safe_packaged_sendmail_dir(path, owner_uid=0):
             raise
     metadata = path.lstat()  # A symlink is never accepted.
     if (not stat.S_ISDIR(metadata.st_mode) or
-            stat.S_IMODE(metadata.st_mode) != 0o2755 or
+            stat.S_IMODE(metadata.st_mode) not in modes or
             metadata.st_mode & 0o022):
         raise Refused("unsafe_sendmail_package_directory")
     import pwd
@@ -99,8 +99,15 @@ def safe_packaged_sendmail_dir(path, owner_uid=0):
 def safe_config_dir(directory, mta, root, owner_uid):
     # The sole exception is /etc/mail on an actual root-owned package host;
     # /etc, subdirectories and Exim remain root-only.
-    if mta == "sendmail" and directory == root / "etc" / "mail":
-        return safe_packaged_sendmail_dir(directory, owner_uid)
+    if mta == "sendmail":
+        mail = root / "etc" / "mail"
+        if directory == mail:
+            return safe_packaged_sendmail_dir(directory, owner_uid)
+        # These three package-managed subdirectories may be owned by the
+        # registered service account; arbitrary subdirectories never may.
+        if directory.parent == mail and directory.name in ("m4", "smrsh", "tls"):
+            return safe_packaged_sendmail_dir(directory, owner_uid,
+                                             modes=(0o0755, 0o2755))
     return safe_dir(directory, owner_uid)
 
 
@@ -129,8 +136,75 @@ def stable_file(path, owner_uid=0):
         os.close(fd)
 
 
-def selected_files(mta, root=ROOT, owner_uid=0):
-    """Strict allowlisted tree walk. A symlink anywhere is a hard refusal."""
+# In package-native Sendmail snapshots a few generated DBs belong to the
+# registered service user. Back them up AS DATA, never execute or restore them.
+PACKAGE_LINKS = frozenset((
+    "etc/mail/aliases", "etc/mail/smrsh/procmail",
+    "etc/mail/smrsh/mail.local",
+))
+
+
+def _package_principals():
+    import pwd
+    import grp
+    accounts = {}
+    for account_name in ("smmta", "smmsp"):
+        try:
+            account = pwd.getpwnam(account_name)
+        except KeyError:
+            continue
+        accounts[account.pw_uid] = account.pw_gid
+    try:
+        smmsp = grp.getgrnam("smmsp").gr_gid
+    except KeyError:
+        smmsp = None
+    return accounts, smmsp
+
+
+def snapshot_file_owner(path, mta, root, owner_uid, package=False):
+    info = path.lstat()
+    if info.st_uid == owner_uid:
+        safe_regular(path, owner_uid)
+        return owner_uid
+    if not package or mta != "sendmail" or owner_uid != 0:
+        raise Refused("untrusted_package_generated_file")
+    if (path.parent != root / "etc" / "mail" or
+            not re.fullmatch(r"[A-Za-z0-9_-]+\.db", path.name)):
+        raise Refused("nonroot_file_not_known_generated_sendmail_database")
+    principals, smmsp = _package_principals()
+    if info.st_uid not in principals or info.st_gid not in (
+            principals[info.st_uid], smmsp):
+        raise Refused("untrusted_sendmail_generated_db_owner")
+    safe_regular(path, info.st_uid)
+    return info.st_uid
+
+
+def checked_package_link(path, root, owner_uid):
+    relative = path.relative_to(root).as_posix()
+    if relative not in PACKAGE_LINKS:
+        raise Refused("unrecognized_sendmail_package_symlink")
+    before = path.lstat()
+    if (not stat.S_ISLNK(before.st_mode) or before.st_uid != owner_uid or
+            before.st_nlink != 1):
+        raise Refused("untrusted_sendmail_package_symlink")
+    target = os.readlink(str(path))  # Never resolve, open, or follow the link.
+    after = path.lstat()
+    evidence = lambda info: (info.st_dev, info.st_ino, info.st_uid,
+                             info.st_gid, info.st_size, info.st_ctime_ns)
+    if evidence(before) != evidence(after) or not target or len(target) > 1024:
+        raise Refused("sendmail_link_changed_during_inventory")
+    return {"kind": "symlink", "target": target, "uid": before.st_uid,
+            "gid": before.st_gid}
+
+
+def package_directory_metadata(path):
+    info = path.lstat()
+    return {"kind": "directory", "uid": info.st_uid, "gid": info.st_gid,
+            "mode": stat.S_IMODE(info.st_mode)}
+
+
+def selected_files(mta, root=ROOT, owner_uid=0, package_metadata=None):
+    """Strict allowlisted walk; package metadata only in explicit backup mode."""
     if mta not in ALLOWED:
         raise Refused("invalid_mta")
     entries = {}
@@ -144,23 +218,32 @@ def selected_files(mta, root=ROOT, owner_uid=0):
         st = source.lstat()
         if stat.S_ISDIR(st.st_mode):
             safe_config_dir(source, mta, root, owner_uid)
+            if package_metadata is not None:
+                package_metadata[name] = package_directory_metadata(source)
             found += 1 if name in MANDATORY[mta] else 0
             pending = [source]
             while pending:
                 directory = pending.pop()
                 safe_config_dir(directory, mta, root, owner_uid)
                 for path in sorted(directory.iterdir(), key=lambda p: p.name):
-                    if path.is_symlink():
-                        raise Refused("symlink_in_existing_mta_configuration")
-                    if len(str(path.relative_to(root)).encode("utf-8")) > 512:
+                    relative = path.relative_to(root).as_posix()
+                    if len(relative.encode("utf-8")) > 512:
                         raise Refused("configuration_path_too_long")
-                    if path.is_dir():
-                        safe_dir(path, owner_uid)
+                    if path.is_symlink():
+                        if package_metadata is None or mta != "sendmail":
+                            raise Refused("symlink_in_existing_mta_configuration")
+                        package_metadata[relative] = checked_package_link(
+                            path, root, owner_uid)
+                    elif path.is_dir():
+                        safe_config_dir(path, mta, root, owner_uid)
+                        if package_metadata is not None:
+                            package_metadata[relative] = package_directory_metadata(path)
                         pending.append(path)
                     else:
-                        safe_regular(path, owner_uid)
-                        relative = path.relative_to(root).as_posix()
-                        if relative in entries:
+                        snapshot_file_owner(path, mta, root, owner_uid,
+                                            package_metadata is not None)
+                        if relative in entries or (package_metadata is not None and
+                                                   relative in package_metadata):
                             raise Refused("duplicate_configuration_path")
                         entries[relative] = path
         elif stat.S_ISREG(st.st_mode) and name in MANDATORY[mta]:
@@ -168,13 +251,15 @@ def selected_files(mta, root=ROOT, owner_uid=0):
             # A file in their place is not a valid complete MTA snapshot.
             raise Refused("primary_mta_config_root_not_directory")
         elif stat.S_ISREG(st.st_mode):
-            safe_regular(source, owner_uid)
+            snapshot_file_owner(source, mta, root, owner_uid,
+                                package_metadata is not None)
             entries[name] = source
         else:
             raise Refused("nonregular_configuration_object")
     if found == 0 or not entries:
         raise Refused("existing_mta_configuration_not_found")
-    if len(entries) > MAX_FILES or sum(p.lstat().st_size for p in entries.values()) > MAX_BYTES:
+    if len(entries) + len(package_metadata or {}) > MAX_FILES or sum(
+            p.lstat().st_size for p in entries.values()) > MAX_BYTES:
         raise Refused("configuration_snapshot_limits_exceeded")
     return entries
 
