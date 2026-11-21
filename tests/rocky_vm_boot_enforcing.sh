@@ -229,6 +229,15 @@ scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
     tests/rocky_vm_sendmail_systemd_enforcing.sh \
     ci@127.0.0.1:/home/ci/lmr365-sendmail-systemd-enforcing.sh
+# Recovery fixture is CI-only; install both Python scripts as root-owned in
+# an isolated guest path, with no production installer integration.
+scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+    linux/foreign-mta-config-backup.py \
+    tests/rocky_vm_sendmail_stopped_config_restore.py \
+    ci@127.0.0.1:/home/ci/
+ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    'sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-sendmail-recovery && sudo install -o root -g root -m 0755 /home/ci/foreign-mta-config-backup.py /home/ci/rocky_vm_sendmail_stopped_config_restore.py /usr/local/libexec/lmr365-kvm-sendmail-recovery/'
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'env GITHUB_ACTIONS=true bash /home/ci/lmr365-sendmail-systemd-enforcing.sh'
 echo "LMR365_GUEST_SENDMAIL_SYSTEMD_ENFORCING=verified"
