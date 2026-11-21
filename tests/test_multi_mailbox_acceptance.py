@@ -84,8 +84,11 @@ class MultiAcceptanceTests(unittest.TestCase):
     def _ledger(self, run_id):
         folder = Path(self.temp.name) / "ledger"
         folder.mkdir(exist_ok=True)
-        return os.open(str(folder / (run_id + ".jsonl")),
-                       os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            return os.open(str(folder / (run_id + ".jsonl")),
+                           os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            raise M.Refused("test_run_already_reserved_never_auto_retry")
 
     def _apply(self, runner, approve=None, confirm=None):
         with mock.patch.object(M.shutil, "which", return_value="/usr/sbin/runuser"):
