@@ -245,3 +245,39 @@ relay delivery, Dovecot TLS client trust or a recipient's inbox.
 These require separate supervised client-to-Postfix SMTP tests and
 independent Exchange message-trace evidence. No production rollout or
 Stable release is authorized by a green CI or a successful test submission.
+
+
+## Two fixed M365 acceptance messages and read-only status after SSH loss
+
+In the development Windows Wizard, choose an explicitly authorized sender
+mailbox already present in the active protected runtime map, one internal test
+recipient in that sender's domain, and an external test recipient in another
+domain. **Preview** calculates a SHA-256 bound to those three addresses, the
+active route identity and the generated unique run ID without sending mail.
+**Apply** requires typed permission to send exactly two fixed text test messages.
+This is a **direct OAuth2/XOAUTH2 acceptance test**, not an end-to-end test of
+the application's inbound local Postfix SMTP AUTH, and neither SMTP acceptance
+nor the tool proves recipient inbox arrival.
+
+Before each send the root-only controller verifies the active route and
+short-lived SMTP ingress proof and reserves a new private append-only ledger
+under /var/lib/linuxmailrelay365-multi-acceptance/<run-id>.jsonl. A reservation
+or attempted-send record is fsynced **before** the helper opens an outbound
+connection. The unprivileged direct test helper additionally verifies it was
+launched by a root-owned Linux runuser process; other unprivileged
+invocations are denied. There is no automatic retry after SSH disconnect,
+timeout or partial delivery, even if the second send has not started.
+
+A read-only ledger query never opens the network, sends mail or reveals
+addresses/tokens:
+
+    sudo python3 /opt/linuxmailrelay365/multi-oauth/manage-multi-mailbox-acceptance.py --status --run-id 0123456789abcdef0123456789abcdef
+
+The Wizard displays this through **Inspect last SMTP attempt ledger**. Ledger
+states distinguish reserved, internal attempted (outcome uncertain), internal
+SMTP accepted, external attempted (outcome uncertain), both SMTP accepted but
+final journal write missing, and fully recorded dual SMTP submission. This
+record still cannot show Exchange transport or inbox delivery. Check both
+test inboxes and Microsoft 365 Exchange message trace independently before
+treating an interrupted or partial attempt as finished; start a **new reviewed
+test with a new run ID** only after deciding deliberately whether to retry.
