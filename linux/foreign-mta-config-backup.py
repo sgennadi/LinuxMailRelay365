@@ -405,7 +405,9 @@ def verify(directory, mta, owner_uid=0):
     if seen != set(manifest["files"]):
         raise Refused("missing_snapshot_members")
     return {"files": len(seen), "bytes": total,
-            "sha256": manifest["sha256"], "mta": mta}
+            "sha256": manifest["sha256"], "mta": mta,
+            "format": ("v2_package_metadata" if manifest["version"] == 2
+                       else "v1_regular_files")}
 
 
 def backup(mta, root=ROOT, base=BASE, owner_uid=0):
@@ -826,6 +828,7 @@ def main(argv=None):
             print("FOREIGN_BACKUP_ID=" + backup_id)
             print("FOREIGN_BACKUP_ARCHIVE_SHA256=" + result["sha256"])
             print("FOREIGN_BACKUP_FILE_COUNT=" + str(result["files"]))
+            print("FOREIGN_BACKUP_FORMAT=" + result["format"])
             print("FOREIGN_BACKUP_STATUS=verified")
         elif opts.list:
             items = listed(opts.mta)
@@ -837,6 +840,7 @@ def main(argv=None):
             state = recovery_preview(opts.mta, opts.preview_recovery)
             print("FOREIGN_BACKUP_CURRENT_CONFIG_MATCH=" + state["current"])
             print("FOREIGN_BACKUP_ARCHIVE_SHA256=" + state["snapshot"]["sha256"])
+            print("FOREIGN_BACKUP_FORMAT=" + state["snapshot"]["format"])
             print("FOREIGN_BACKUP_STATUS=recovery_preview_only")
         elif opts.offline_preflight is not None:
             info = offline_recovery_preflight(opts.mta, opts.offline_preflight)
@@ -860,6 +864,7 @@ def main(argv=None):
                 raise Refused("invalid_backup_identifier")
             result = verify(BASE / opts.mta / opts.verify, opts.mta)
             print("FOREIGN_BACKUP_ARCHIVE_SHA256=" + result["sha256"])
+            print("FOREIGN_BACKUP_FORMAT=" + result["format"])
             print("FOREIGN_BACKUP_STATUS=verified")
         print("FOREIGN_BACKUP_MTA=" + opts.mta)
         print("FOREIGN_BACKUP_PRIMARY_CONFIG_CHANGED=no")
