@@ -52,21 +52,15 @@ class PostRebootReadOnlyGuardTests(unittest.TestCase):
                     reboot.snapshot_id_from_root_file(module)
 
     def test_wrong_snapshot_identity_is_rejected_without_archive_reads(self):
-        with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / "identity"
-            path.write_text("../etc/mail\\n", encoding="ascii")
-            os.chmod(path, 0o600)
-            module = SimpleNamespace(ID=re.compile(
-                r"^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$"))
-            original_lstat = path.lstat
-            def root_owned_lstat():
-                st = original_lstat()
-                return SimpleNamespace(st_mode=st.st_mode, st_uid=0,
-                                       st_nlink=1, st_size=st.st_size)
-            with mock.patch.object(reboot, "ID_FILE", path):
-                with mock.patch.object(path, "lstat", side_effect=root_owned_lstat):
-                    with self.assertRaisesRegex(RuntimeError, "SNAPSHOT_ID_INVALID"):
-                        reboot.snapshot_id_from_root_file(module)
+        fake = SimpleNamespace(
+            lstat=lambda: SimpleNamespace(st_mode=stat.S_IFREG | 0o600,
+                                          st_uid=0, st_nlink=1, st_size=12),
+            read_text=lambda encoding="ascii": "../etc/mail\\n")
+        module = SimpleNamespace(ID=re.compile(
+            r"^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$"))
+        with mock.patch.object(reboot, "ID_FILE", fake):
+            with self.assertRaisesRegex(RuntimeError, "SNAPSHOT_ID_INVALID"):
+                reboot.snapshot_id_from_root_file(module)
 
 
 class DisposableRecoveryGuardTests(unittest.TestCase):
