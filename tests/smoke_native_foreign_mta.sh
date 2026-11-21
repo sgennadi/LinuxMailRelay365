@@ -39,6 +39,14 @@ if sudo ss -H -lnt | grep -E ':(25|465|587|2525)[[:space:]]'; then
   exit 1
 fi
 
+# Record only path metadata, never config text, on the disposable runner.
+if test "$mta" = sendmail; then
+  sudo stat -c 'NATIVE_SENDMAIL_DIR_META=%n %F uid=%u mode=%a' /etc /etc/mail
+  sudo stat -c 'NATIVE_SENDMAIL_CF_META=%n %F uid=%u mode=%a' /etc/mail/sendmail.cf /etc/mail/submit.cf
+  sudo readlink -f /etc/mail
+  sudo readlink -f /usr/sbin/sendmail
+fi
+
 # Root-only dry diagnostic: no backup, restore, SMTP send, service restart or queue mutation.
 log="$(mktemp)"
 trap 'rm -f "$log"; sudo rm -f /usr/sbin/policy-rc.d' EXIT
