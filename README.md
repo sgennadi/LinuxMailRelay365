@@ -2,6 +2,22 @@
 
 Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.25 — guarded Multi-mailbox XOAUTH2 offline configuration, Restore and approved SMTP acceptance; UNSIGNED TEST Preview, NOT Stable or production-accepted.**
 
+## Development after published Preview 25 (Draft PR; not yet an update)
+
+- Exim/Sendmail recovery readiness: added read-only root-only preflight for
+  verified archive SHA, current-config drift, systemd state, running MTA
+  processes, TCP listener hints and Exim/Sendmail server/client queue status.
+  Unknown, running or nonempty results are blocked. Even a clean result is
+  **manual recovery only**; the application does NOT modify primary Exim or
+  Sendmail configuration, restart their services or touch queued messages.
+- Windows CI screenshot coverage now includes the top and bottom of each
+  scrollable Wizard step plus the bottom of the Multi-mailbox setup step
+  (30 real WinForms screenshots). It does not emulate a physical 200%-DPI
+  Windows session; a real high-DPI display and RU/EN/HE review are outstanding.
+
+Published Preview 25 remains immutable. Changes in this section are present
+only in the Draft development branch until a later separately tested Preview.
+
 ## Preview 25: Multi-mailbox XOAUTH2 and safe test delivery (UNSIGNED TEST ONLY)
 
 The Windows Wizard can Stage -> Preview -> Apply OFFLINE and separately
