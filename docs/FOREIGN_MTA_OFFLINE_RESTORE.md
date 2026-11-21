@@ -16,6 +16,14 @@ After SSH discovery of an exact Exim or Sendmail primary MTA, the Windows Backup
 
 This action is separate from the experimental offline Restore CLI; the Wizard still has no Exim/Sendmail Restore button.
 
+GitHub CI also provisions **real Exim and Sendmail packages in separate disposable
+Ubuntu 24.04 runners** with service startup explicitly disabled, executes the
+root-only static check and rejects inappropriate MTA selection or restore
+confirmation. The workflow asserts that common SMTP ports remain unbound and
+does not transmit messages. This tests native package compatibility on Ubuntu;
+it does **not** establish RHEL/Oracle/Rocky/Alma syntax compatibility, queue
+restoration, real mail delivery or production safety.
+
 ## Example (manual, Linux root only)
 
 ```sh
