@@ -128,6 +128,7 @@ class MultiMailboxTests(unittest.TestCase):
         self.assertNotIn("token", [event[0] for event in self.transport.events])
 
     def test_secure_map_pins_sha_and_refuses_send_as(self):
+        self.map_patch.stop()  # Exercise the real parser and SHA gate, not setUp's delivery fixture.
         original_map = (auditor.HEADER + "\n" + "\n".join(
             "\t".join(item) for item in ROWS) + "\n").encode("ascii")
         sha = hashlib.sha256(original_map).hexdigest()
