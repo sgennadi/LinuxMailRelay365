@@ -5768,6 +5768,8 @@ internal sealed partial class MainForm : Form
             "running|none_observed|unverified");
         string queue = Value("FOREIGN_PREFLIGHT_QUEUE",
             "empty_reported|nonempty_reported|unverified");
+        string listener = Value("FOREIGN_PREFLIGHT_LISTENER",
+            "running|none_observed|unverified");
         string config = Value("FOREIGN_PREFLIGHT_CONFIG_MATCH",
             "identical|different|unverified");
         string archiveSha = Value("FOREIGN_PREFLIGHT_ARCHIVE_SHA256", "[a-f0-9]{64}");
@@ -5781,7 +5783,7 @@ internal sealed partial class MainForm : Form
             throw new InvalidOperationException("SSH server, MTA or selected backup changed during preflight.");
         WriteLine("Read-only " + mta + " recovery preflight: service=" + service +
             ", processes=" + processes + ", queue=" + queue +
-            ", config=" + config + ", gate=" + gate +
+            ", listener=" + listener + ", config=" + config + ", gate=" + gate +
             ", snapshot SHA256=" + archiveSha + ", evidence SHA256=" + planSha +
             ". No Restore, service action, SMTP send or queue change. Manual recovery only.");
     }
