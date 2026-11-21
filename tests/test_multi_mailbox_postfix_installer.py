@@ -69,8 +69,15 @@ class MultiPostfixInstallerTests(unittest.TestCase):
             with self.assertRaisesRegex(mod.Refused, "queue_not_empty"):
                 mod.offline()
         with mock.patch.object(mod, "run", side_effect=[
-                "LoadState=loaded\nActiveState=inactive", ""]):
+                "LoadState=loaded\nActiveState=inactive", "", ""]), \
+             mock.patch.object(mod, "read", return_value=(None, b"2525\n")):
             self.assertTrue(mod.offline())
+        with mock.patch.object(mod, "run", side_effect=[
+                "LoadState=loaded\nActiveState=inactive", "",
+                "LISTEN 0 128 127.0.0.1:2525 0.0.0.0:*"]), \
+             mock.patch.object(mod, "read", return_value=(None, b"2525\n")):
+            with self.assertRaisesRegex(mod.Refused, "still_listening"):
+                mod.offline()
 
     def test_offline_never_fakes_success_when_loadstate_missing(self):
         for result in ("ActiveState=inactive", "LoadState=not-found\nActiveState=inactive",
