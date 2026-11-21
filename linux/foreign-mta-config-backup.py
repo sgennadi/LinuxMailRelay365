@@ -512,6 +512,166 @@ def recovery_preview(mta, snapshot_id, root=ROOT, base=BASE, owner_uid=0):
     return {"snapshot": verified, "current": state}
 
 
+def _copy_verified_snapshot_member(source, dest, owner_uid, maximum):
+    """Copy a private snapshot file without following links or changing owners."""
+    original = safe_regular(source, owner_uid, mode=0o600, maximum=maximum)
+    identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mode,
+                           st.st_uid, st.st_gid, st.st_nlink,
+                           st.st_mtime_ns, st.st_ctime_ns)
+    fd = os.open(str(source), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_CLOEXEC", 0))
+    try:
+        if identity(os.fstat(fd)) != identity(original):
+            raise Refused("snapshot_source_changed_before_export")
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                 getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_CLOEXEC", 0))
+        out = os.open(str(dest), flags, 0o600)
+        try:
+            copied = 0
+            with os.fdopen(out, "wb") as writer:
+                while copied < original.st_size:
+                    chunk = os.read(fd, min(65536, original.st_size - copied))
+                    if not chunk:
+                        raise Refused("snapshot_source_short_during_export")
+                    writer.write(chunk)
+                    copied += len(chunk)
+                if os.read(fd, 1):
+                    raise Refused("snapshot_source_grew_during_export")
+                writer.flush()
+                os.fsync(writer.fileno())
+        finally:
+            # fdopen closed its descriptor, even on a failed write.
+            pass
+        if (identity(os.fstat(fd)) != identity(original) or
+                identity(source.lstat()) != identity(original)):
+            raise Refused("snapshot_source_changed_during_export")
+        safe_regular(dest, owner_uid, mode=0o600, maximum=maximum)
+    finally:
+        os.close(fd)
+
+
+def _private_export_parent(target, components, owner_uid):
+    """Create only private directories, never link targets or active /etc."""
+    dest = target
+    for part in components:
+        if (not part or part in (".", "..") or len(part) > 255
+                or "/" in part):
+            raise Refused("unsafe_package_export_component")
+        dest = dest / part
+        if not dest.exists() and not dest.is_symlink():
+            dest.mkdir(mode=0o700)
+        safe_dir(dest, owner_uid)
+    return dest
+
+
+def _write_private_export_file(path, contents, owner_uid):
+    if not isinstance(contents, bytes):
+        raise Refused("invalid_export_payload")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(path), flags, 0o600)
+    with os.fdopen(fd, "wb") as output:
+        output.write(contents)
+        output.flush()
+        os.fsync(output.fileno())
+    safe_regular(path, owner_uid, mode=0o600, maximum=MAX_MANIFEST)
+
+
+def _export_sendmail_package_v2(directory, folder, manifest, accepted, owner_uid):
+    """Rehearsal-only export with inert symlink metadata, NOT active recovery.
+
+    The original verified archive and its manifest are preserved alongside
+    private 0600 data copies. Package symlinks are represented as JSON, never
+    materialized; original owner/mode is recorded, never applied to files.
+    """
+    target = Path(tempfile.mkdtemp(prefix=".offline-recovery-", dir=str(folder)))
+    try:
+        safe_dir(target, owner_uid)
+        _copy_verified_snapshot_member(
+            directory / "manifest.json", target / "manifest.json",
+            owner_uid, MAX_MANIFEST)
+        _copy_verified_snapshot_member(
+            directory / "config.tar.gz", target / "config.tar.gz",
+            owner_uid, MAX_BYTES + 2 * 1024 * 1024)
+        sealed = verify(target, "sendmail", owner_uid)
+        if sealed != accepted or json.loads(stable_file(
+                target / "manifest.json", owner_uid)[1]) != manifest:
+            raise Refused("snapshot_changed_between_review_and_export")
+
+        # Recreate directory layout PRIVATELY as 0700 even if original was
+        # service-owned. Never apply arbitrary packaged permissions or ownership.
+        for name, metadata in sorted(manifest["objects"].items()):
+            parts = name.split("/")
+            if metadata["kind"] == "directory":
+                _private_export_parent(target, parts, owner_uid)
+
+        seen = set()
+        with tarfile.open(str(target / "config.tar.gz"), "r:gz") as tar:
+            for member in tar:
+                name = member.name
+                parts = name.split("/")
+                if (name not in manifest["files"] or member.type != tarfile.REGTYPE
+                        or not parts or any(not part or part in (".", "..") or
+                                            len(part) > 255 for part in parts)
+                        or name in seen):
+                    raise Refused("unsafe_package_export_member")
+                seen.add(name)
+                parent = _private_export_parent(target, parts[:-1], owner_uid)
+                final = parent / parts[-1]
+                stream = tar.extractfile(member)
+                if stream is None:
+                    raise Refused("package_export_member_unreadable")
+                payload = stream.read(member.size + 1)
+                evidence = manifest["files"][name]
+                if (len(payload) != member.size or
+                        hashlib.sha256(payload).hexdigest() != evidence["sha256"]):
+                    raise Refused("package_export_digest_mismatch")
+                if len(payload) > MAX_SINGLE:
+                    raise Refused("package_export_member_too_large")
+                _write_private_export_file(final, payload, owner_uid)
+        if seen != set(manifest["files"]):
+            raise Refused("package_export_missing_regular_files")
+
+        # Missing symlinks are deliberate: their targets may be absolute paths
+        # outside /etc/mail and must NOT be opened or followed during export.
+        for name, metadata in manifest["objects"].items():
+            if metadata["kind"] == "symlink":
+                link_path = target.joinpath(*name.split("/"))
+                _private_export_parent(target, name.split("/")[:-1], owner_uid)
+                if os.path.lexists(str(link_path)):
+                    raise Refused("package_symlink_was_materialized_or_overlapped")
+
+        record = {
+            "format": "sendmail_v2_inert_metadata_only",
+            "source_archive_sha256": sealed["sha256"],
+            "files": manifest["files"],
+            "objects": manifest["objects"],
+            "symlinks_materialized": False,
+            "original_permissions_or_owners_applied": False,
+            "active_etc_modified": False,
+            "automatic_live_restore_supported": False,
+        }
+        _write_private_export_file(
+            target / "PACKAGE_RECOVERY_METADATA.json",
+            json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            owner_uid)
+        _write_private_export_file(
+            target / "READ_ME_BEFORE_RECOVERY.txt",
+            b"OFFLINE REVIEW ONLY. Do NOT copy this tree over /etc/mail.\n"
+            b"Original owner/mode and package links are in "
+            b"PACKAGE_RECOVERY_METADATA.json and manifest.json.\n"
+            b"Files are private 0600, directories private 0700; links "
+            b"have NOT been created. Queue, service and certificates "
+            b"outside the allowlist are NOT backed up.\n",
+            owner_uid)
+        if verify(target, "sendmail", owner_uid) != accepted:
+            raise Refused("package_export_archive_postcheck_failed")
+        return str(target), sealed
+    except Exception:
+        shutil.rmtree(str(target), ignore_errors=True)
+        raise
+
+
 def extract_offline(mta, snapshot_id, base=BASE, owner_uid=0):
     """Extract ONLY into a new 0700 backup-area directory, never /etc.
 
@@ -526,10 +686,11 @@ def extract_offline(mta, snapshot_id, base=BASE, owner_uid=0):
     directory = folder / snapshot_id
     accepted = verify(directory, mta, owner_uid)
     manifest = json.loads(stable_file(directory / "manifest.json", owner_uid)[1])
-    # Package v2 may have system service-owned DBs and exact symlink metadata.
-    # Do not silently export an incomplete, regular-file-only recovery tree.
+    # V2 export is explicit, private and metadata-complete, but never an
+    # automatic Restore. Symlink targets are recorded as inert JSON only.
     if manifest["version"] == 2:
-        raise Refused("package_snapshot_requires_explicit_metadata_aware_export")
+        return _export_sendmail_package_v2(
+            directory, folder, manifest, accepted, owner_uid)
     target = Path(tempfile.mkdtemp(prefix=".offline-recovery-", dir=str(folder)))
     try:
         safe_dir(target, owner_uid)
@@ -858,6 +1019,8 @@ def main(argv=None):
             print("FOREIGN_BACKUP_OFFLINE_DIRECTORY=" + path)
             print("FOREIGN_BACKUP_ARCHIVE_SHA256=" + info["sha256"])
             print("FOREIGN_BACKUP_FILE_COUNT=" + str(info["files"]))
+            print("FOREIGN_BACKUP_FORMAT=" + info["format"])
+            print("FOREIGN_BACKUP_OFFLINE_LINKS_MATERIALIZED=no")
             print("FOREIGN_BACKUP_STATUS=exported_offline_only")
         else:
             if not ID.fullmatch(opts.verify):
