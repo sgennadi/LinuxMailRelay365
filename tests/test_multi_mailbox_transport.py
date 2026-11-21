@@ -1,5 +1,6 @@
 """No-network, fail-closed multi-mailbox XOAUTH2 pipe transport tests."""
 import hashlib
+import json
 import importlib.util
 import re
 from pathlib import Path
@@ -156,15 +157,52 @@ class MultiMailboxTests(unittest.TestCase):
                 with self.assertRaises(dispatch.Unverified):
                     dispatch.secure_runtime_map(auditor, 4242, sha)
 
-    def test_ingress_guard_requires_exact_readback(self):
-        fake = SimpleNamespace(assess=lambda rows, auditor: {"OVERALL": "not_ready"})
-        with mock.patch.object(dispatch, "load_source", return_value=fake):
+    def test_ingress_guard_requires_fresh_protected_privileged_receipt(self):
+        from types import SimpleNamespace
+        metadata = [1, 2, 3, 4, 5, 33188, 0, 0]
+        body = (auditor.HEADER + "\n" +
+                "\n".join("\t".join(r) for r in ROWS) + "\n").encode("ascii")
+        stamp = 1000
+        proof = {
+            "version": 1,
+            "map_sha256": hashlib.sha256(body).hexdigest(),
+            "issued_at": stamp,
+            "expires_at": stamp + dispatch.PROOF_TTL,
+            "mailboxes": 2,
+            "main_meta": metadata,
+            "master_meta": metadata,
+            "ingress": "root_static_audit_consistent_not_live_delivery"
+        }
+        requested = []
+        def read(path, limit, mode, gid):
+            requested.append((path, mode, gid))
+            if path == dispatch.PROOF_FILE:
+                return json.dumps(proof, sort_keys=True).encode("ascii")
+            if path == dispatch.RUNTIME_MAP:
+                return body
+            raise AssertionError("transport must not read root:dovecot credentials")
+        with mock.patch.object(auditor, "secure_read", side_effect=read), \
+             mock.patch.object(dispatch.grp, "getgrnam",
+                               return_value=SimpleNamespace(gr_gid=4242)), \
+             mock.patch.object(dispatch, "config_metadata", return_value=metadata), \
+             mock.patch.object(dispatch.time, "time", return_value=stamp):
+            self.assertTrue(dispatch.ingress_ready(ROWS, auditor))
+            self.assertEqual(
+                {x[0] for x in requested},
+                {dispatch.PROOF_FILE, dispatch.RUNTIME_MAP})
+            self.assertTrue(all(gid == 4242 and mode == 0o640
+                                for _, mode, gid in requested))
+            proof["expires_at"] = stamp - 1
             with self.assertRaises(dispatch.Unverified):
                 dispatch.ingress_ready(ROWS, auditor)
-        fake.assess = lambda rows, auditor: {
-            "OVERALL": "ingress_config_consistent_not_live_verified"}
-        with mock.patch.object(dispatch, "load_source", return_value=fake):
-            self.assertTrue(dispatch.ingress_ready(ROWS, auditor))
+            proof["expires_at"] = stamp + dispatch.PROOF_TTL
+            proof["map_sha256"] = "a" * 64
+            with self.assertRaises(dispatch.Unverified):
+                dispatch.ingress_ready(ROWS, auditor)
+            proof["map_sha256"] = hashlib.sha256(body).hexdigest()
+            proof["main_meta"] = ["wrong"]
+            with self.assertRaises(dispatch.Unverified):
+                dispatch.ingress_ready(ROWS, auditor)
 
     def test_run_never_prints_token_sender_or_message_on_refusal(self):
         with mock.patch.object(dispatch, "require_service_account", return_value=4242), \
