@@ -340,6 +340,7 @@ internal static class EmbeddedAssets
     internal static string MultiMailboxTransport => Text("LinuxMailRelay365.linux.multi-mailbox-transport.py");
     internal static string MultiMailboxIngressProof => Text("LinuxMailRelay365.linux.multi-mailbox-ingress-proof.py");
     internal static string MultiMailboxRestore => Text("LinuxMailRelay365.linux.multi-mailbox-restore.py");
+    internal static string MultiMailboxAcceptance => Text("LinuxMailRelay365.linux.multi-mailbox-acceptance.py");
 
     // Explicitly stage code only. This is a Linux filesystem change, not
     // an SMTP route change. Never install into an existing directory.
@@ -351,6 +352,7 @@ internal static class EmbeddedAssets
             ("restore-multi-mailbox-postfix.py", MultiMailboxRestore),
             ("m365-multi-mailbox-transport.py", MultiMailboxTransport),
             ("refresh-multi-mailbox-proof.py", MultiMailboxIngressProof),
+            ("manage-multi-mailbox-acceptance.py", MultiMailboxAcceptance),
             ("audit-oauth-sender-map.py", OAuthSenderMapAudit),
             ("audit-oauth-ingress.py", OAuthIngressAudit),
             ("m365_xoauth2_transport.py", Transport),
@@ -394,6 +396,49 @@ internal static class EmbeddedAssets
     }
 
 
+
+
+    internal static string BuildMultiMailboxAcceptanceBundle(
+        string runId, string sender, string internalRecipient, string externalRecipient,
+        string? approvedSha = null)
+    {
+        const string email =
+            @"\A(?![^@]*\.\.)(?:[A-Za-z0-9](?:[A-Za-z0-9._+-]{0,62}[A-Za-z0-9_+-])?)@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z";
+        if (!Regex.IsMatch(runId, @"\A[a-f0-9]{32}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("A fresh unique acceptance run ID is required.");
+        if (sender.Length > 254 || internalRecipient.Length > 254 || externalRecipient.Length > 254 ||
+            !Regex.IsMatch(sender, email, RegexOptions.CultureInvariant) ||
+            !Regex.IsMatch(internalRecipient, email, RegexOptions.CultureInvariant) ||
+            !Regex.IsMatch(externalRecipient, email, RegexOptions.CultureInvariant))
+            throw new ArgumentException("All reviewed sender/recipient addresses must be well formed.");
+        if (string.Equals(sender, internalRecipient, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(sender, externalRecipient, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(internalRecipient, externalRecipient, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Sender, internal and external test recipients must be distinct.");
+        string domain = sender.Split('@')[1].ToLowerInvariant();
+        if (!string.Equals(domain, internalRecipient.Split('@')[1], StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(domain, externalRecipient.Split('@')[1], StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Internal recipient must share sender domain; external must differ.");
+        if (approvedSha is not null &&
+            !Regex.IsMatch(approvedSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("Reviewed Multi-mailbox acceptance SHA-256 required.");
+        var request = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["sender"] = sender.ToLowerInvariant(),
+            ["internal"] = internalRecipient.ToLowerInvariant(),
+            ["external"] = externalRecipient.ToLowerInvariant(),
+            ["run_id"] = runId
+        });
+        string action = approvedSha is null ? "--plan" :
+            "--apply --approve-sha256 " + approvedSha +
+            " --confirm SEND_MULTI_MAILBOX_TWO_TESTS";
+        // Recipient values never become shell command arguments or log lines.
+        // Root validates and SHA-binds the request again before issuing a token.
+        return "set -Eeuo pipefail\numask 077\n" +
+               "printf '%s' '" + Encode(request) + "' | base64 -d | " +
+               "python3 /opt/linuxmailrelay365/multi-oauth/manage-multi-mailbox-acceptance.py " +
+               action + "\n";
+    }
 
     internal static string BuildMultiMailboxRestoreBundle(
         string action, string? approvedSha = null, string? backupId = null)
