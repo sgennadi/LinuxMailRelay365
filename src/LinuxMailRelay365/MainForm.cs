@@ -387,9 +387,9 @@ internal sealed partial class MainForm : Form
         senderPolicy.SelectedIndex = 0;
         oauthSenderMode.SelectedIndexChanged += (_, _) =>
         {
-            ResetMultiMailboxRouteReview();
             if (!routingLoading)
             {
+                ResetMultiMailboxRouteReview();
                 oauthSenderAuditSummary = "";
                 oauthIngressAuditSummary = "";                oauthSignerAuditSummary = "";
 
@@ -444,8 +444,8 @@ internal sealed partial class MainForm : Form
             };
         }
         mailTransport.SelectedIndexChanged += (_, _) => {
-            ResetMultiMailboxRouteReview();
             if (!routingLoading) {
+                ResetMultiMailboxRouteReview();
                 oauthSenderAuditSummary = "";
                 oauthIngressAuditSummary = "";                oauthSignerAuditSummary = "";
 
