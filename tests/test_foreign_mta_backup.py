@@ -94,6 +94,21 @@ class ForeignMtaBackupTests(unittest.TestCase):
                 "exim", base=absent, owner_uid=os.getuid()), [])
             self.assertFalse(absent.exists())
 
+    def test_wizard_reports_v2_package_snapshot_and_blocks_flattened_export(self):
+        source = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text(
+            encoding="utf-8")
+        snapshot = (ROOT / "linux/foreign-mta-config-backup.py").read_text(
+            encoding="utf-8")
+        self.assertIn("private static string ParseForeignBackupFormat(", source)
+        self.assertIn("FOREIGN_BACKUP_FORMAT=(v1_regular_files|v2_package_metadata)",
+                      source)
+        self.assertIn('format == "v2_package_metadata"', source)
+        self.assertIn("Offline Export blocked: Sendmail package Snapshot v2", source)
+        self.assertIn('BuildForeignMtaBackupBundle(mta, "verify", id)', source)
+        self.assertIn('print("FOREIGN_BACKUP_FORMAT=" + result["format"])', snapshot)
+        self.assertIn('"format": ("v2_package_metadata"', snapshot)
+        self.assertNotIn("RestoreForeignMtaAsync(", source)
+
     def test_wizard_excludes_postfix_recovery_for_foreign_mta(self):
         source = (ROOT / "src" / "LinuxMailRelay365" / "MainForm.cs").read_text()
         resources = (ROOT / "src" / "LinuxMailRelay365" / "EmbeddedAssets.cs").read_text()
