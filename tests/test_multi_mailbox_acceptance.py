@@ -214,6 +214,79 @@ class MultiAcceptanceTests(unittest.TestCase):
         self.restorer.locked.assert_not_called()
         self.assertFalse((Path(self.temp.name) / "ledger").exists())
 
+    def test_readonly_ledger_status_classifies_uncertain_and_complete_runs(self):
+        folder = Path(self.temp.name) / "status-ledger"
+        folder.mkdir(mode=0o700)
+        sequence = [
+            ("run", "reserved"),
+            ("internal", "attempted"),
+            ("internal", "smtp_accepted_not_inbox_verified"),
+            ("external", "attempted"),
+            ("external", "smtp_accepted_not_inbox_verified"),
+            ("run", "smtp_submissions_complete"),
+        ]
+        states = [
+            "reserved_no_send_recorded",
+            "internal_attempted_result_uncertain",
+            "internal_smtp_accepted_external_not_attempted",
+            "external_attempted_result_uncertain",
+            "both_smtp_accepted_completion_not_recorded",
+            "smtp_submissions_complete_not_inbox_verified",
+        ]
+        for index in range(len(sequence)):
+            run_id = "{:032x}".format(index + 1)
+            path = folder / (run_id + ".jsonl")
+            path.write_bytes(b"".join(
+                (json.dumps({"stage": stage, "status": status}) + "\n").encode()
+                for stage, status in sequence[:index + 1]))
+            path.chmod(0o600)
+            with self.subTest(events=index + 1):
+                state = M.inspect_ledger(run_id, root=folder,
+                                          owner_uid=os.getuid())
+                self.assertEqual(state["state"], states[index])
+                self.assertEqual(state["events"], index + 1)
+                self.assertEqual(state["run_id"], run_id)
+        self.assertEqual(len(list(folder.glob("*.jsonl"))), 6)
+
+    def test_status_refuses_invalid_transitions_duplicate_or_symlink(self):
+        folder = Path(self.temp.name) / "status-ledger"
+        folder.mkdir(mode=0o700)
+        run_id = "e" * 32
+        path = folder / (run_id + ".jsonl")
+        invalid_records = (
+            b'{"stage":"external","status":"attempted"}\n',
+            b'{"stage":"run","status":"reserved","status":"reserved"}\n',
+            b'{"stage":"run","status":"reserved"}',
+            b'{"stage":"run","status":"reserved","recipient":"some@example.org"}\n',
+        )
+        for data in invalid_records:
+            path.write_bytes(data)
+            path.chmod(0o600)
+            with self.subTest(data=data), self.assertRaises(M.Refused):
+                M.inspect_ledger(run_id, root=folder, owner_uid=os.getuid())
+        path.unlink()
+        path.symlink_to(Path(self.temp.name) / "untrusted")
+        with self.assertRaises(M.Refused):
+            M.inspect_ledger(run_id, root=folder, owner_uid=os.getuid())
+
+    def test_status_rejects_send_flags_without_reading_stdin(self):
+        with mock.patch.object(M, "inspect_ledger", return_value={
+            "run_id": self.request["run_id"], "state": "internal_attempted_result_uncertain",
+            "events": 2}) as status, \
+             mock.patch.object(M, "read_request") as req, \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            result = M.main(["--status", "--run-id", self.request["run_id"]])
+        self.assertEqual(result, 0)
+        self.assertIn("MULTI_ACCEPTANCE_LEDGER_STATE=internal_attempted_result_uncertain",
+                      out.getvalue())
+        self.assertIn("MULTI_ACCEPTANCE_RECIPIENT_INBOX_VERIFIED=no", out.getvalue())
+        status.assert_called_once_with(self.request["run_id"])
+        req.assert_not_called()
+        with mock.patch.object(M, "inspect_ledger") as status:
+            self.assertEqual(M.main(["--status", "--run-id", self.request["run_id"],
+                                     "--confirm", M.CONFIRM]), 2)
+            status.assert_not_called()
+
     def test_no_network_on_import_or_preview_no_auto_mta_changes(self):
         source = (BASE / "manage-multi-mailbox-acceptance.py").read_text()
         self.assertNotIn("systemctl restart", source)
