@@ -23,6 +23,34 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
 
+class RehearsalSafetyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        rehearsal_spec = importlib.util.spec_from_file_location(
+            "lmr365_v2_rehearsal_safety",
+            str(ROOT / "tests" / "rehearse_sendmail_v2_metadata.py"))
+        cls.rehearsal = importlib.util.module_from_spec(rehearsal_spec)
+        rehearsal_spec.loader.exec_module(cls.rehearsal)
+
+    def test_rehearsal_rejects_all_path_traversal(self):
+        for path in ("", "/etc/mail", "etc/../etc/mail", "etc//mail",
+                     "etc/./mail", "etc\\\\mail", "../var/backups"):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(RuntimeError, "BAD_PATH"):
+                    self.rehearsal.relative_parts(path)
+
+    def test_rehearsal_rejects_writable_mode_before_chown(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "untrusted"
+            path.write_bytes(b"test")
+            entry = {"uid": os.getuid(), "gid": os.getgid(),
+                     "mode": 0o777}
+            with patch.object(self.rehearsal.os, "chown") as chown:
+                with self.assertRaisesRegex(RuntimeError, "UNSAFE_PACKAGE_MODE"):
+                    self.rehearsal.preserve_metadata(path, entry)
+                chown.assert_not_called()
+
+
 class V2SnapshotTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
