@@ -55,6 +55,17 @@ sudo python3 linux/foreign-mta-config-backup.py --mta sendmail --verify "$id" |
   grep -Fxq "FOREIGN_BACKUP_STATUS=verified"
 comparison="$(sudo python3 linux/foreign-mta-config-backup.py --mta sendmail --preview-recovery "$id")"
 printf "%s\n" "$comparison" | grep -Fxq "FOREIGN_BACKUP_CURRENT_CONFIG_MATCH=identical"
+# A valid v2 snapshot is verify-only; no silent flattened recovery.
+if sudo python3 linux/restore-foreign-mta-config.py --mta sendmail \
+    --plan "$id" >/dev/null 2>&1; then
+  echo "SENDMAIL_BACKUP_LAB_V2_PLAN_UNEXPECTEDLY_ALLOWED"; exit 1
+fi
+if sudo python3 linux/foreign-mta-config-backup.py --mta sendmail \
+    --export-offline "$id" --confirm EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT \
+    >/dev/null 2>&1; then
+  echo "SENDMAIL_BACKUP_LAB_INCOMPLETE_EXPORT_ALLOWED"; exit 1
+fi
+echo "SENDMAIL_BACKUP_LAB_V2_RESTORE=blocked_as_designed"
 test "$(sudo find /etc/mail -xdev -type f -exec sha256sum {} + | sha256sum | cut -d " " -f 1)" = "$before" || {
   echo "SENDMAIL_BACKUP_LAB_SOURCE_MUTATED"; exit 1;
 }
