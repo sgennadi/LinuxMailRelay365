@@ -237,7 +237,16 @@ quarantines now-unused OAuth runtime/config, and leaves services stopped.
 The EOP route manager will not overwrite an owned active Multi-mailbox
 route. Automatic EOP <-> XOAUTH2 migration remains blocked.
 
-See [experimental runtime and Restore guide](docs/MULTI_MAILBOX_XOAUTH2_RUNTIME.md).
+The same Wizard includes a separate supervised **two-message Microsoft 365
+SMTP acceptance** for one selected authorized Multi-mailbox sender: read-only
+SHA-256 Preview, explicit typed consent, root-only unique run ledger, one
+internal and one external test recipient, protected per-mailbox identity and
+no automatic resends. This direct test uses Microsoft 365 STARTTLS/XOAUTH2;
+it does not prove inbound Postfix SMTP AUTH/From-Guard or recipient inbox
+delivery. Every test requires independent Exchange Message Trace and both
+test-inbox reviews before marking delivery confirmed.
+
+See [experimental runtime, Restore and delivery acceptance guide](docs/MULTI_MAILBOX_XOAUTH2_RUNTIME.md).
 Automated CI testing is not proof of M365 token rights, internal/external
 mail delivery, live SELinux/TPM or production recovery acceptance. This
 work is in Draft PR only; published Preview 24 is unchanged.
