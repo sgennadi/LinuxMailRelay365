@@ -53,6 +53,25 @@ class ForeignMtaRestoreTests(unittest.TestCase):
                 "static_check": lambda mta, root, uid: True,
                 "lock_path": Path(folder) / "restore.lock"}
 
+    def test_sendmail_package_directory_is_backup_only_not_restorable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, snap_id, uid = self.fixture(folder, "sendmail")
+            config = tree / "sendmail.cf"
+            config.write_text("live edit remains\n")
+            review = restore.preview("sendmail", snap_id, root, base, uid)
+            original_dir_check = snapshot.safe_dir
+            def reject_nonroot_package_owner(path, owner_uid=0):
+                if path == root / "etc" / "mail":
+                    raise snapshot.Refused("unsafe_snapshot_directory")
+                return original_dir_check(path, owner_uid)
+            with patch.object(snapshot, "safe_dir", side_effect=reject_nonroot_package_owner):
+                with self.assertRaisesRegex(restore.Refused, "nonroot_config_directory"):
+                    restore.apply("sendmail", snap_id, review["sha"],
+                                  restore.APPROVAL,
+                                  **self.kwargs(folder, root, base, uid))
+            self.assertEqual(config.read_text(), "live edit remains\n")
+            self.assertEqual(snapshot.listed("sendmail", base, uid), [snap_id])
+
     def test_preview_has_no_side_effects_and_changes_bind_review_sha(self):
         for mta in ("exim", "sendmail"):
             with self.subTest(mta=mta), tempfile.TemporaryDirectory() as folder:
