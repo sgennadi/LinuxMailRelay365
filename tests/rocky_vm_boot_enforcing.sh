@@ -235,12 +235,49 @@ scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
     linux/foreign-mta-config-backup.py \
     tests/rocky_vm_sendmail_stopped_config_restore.py \
+    tests/rocky_vm_sendmail_post_reboot_check.py \
     ci@127.0.0.1:/home/ci/
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
-    'sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-sendmail-recovery && sudo install -o root -g root -m 0755 /home/ci/foreign-mta-config-backup.py /home/ci/rocky_vm_sendmail_stopped_config_restore.py /usr/local/libexec/lmr365-kvm-sendmail-recovery/'
+    'sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-sendmail-recovery && sudo install -o root -g root -m 0755 /home/ci/foreign-mta-config-backup.py /home/ci/rocky_vm_sendmail_stopped_config_restore.py /home/ci/rocky_vm_sendmail_post_reboot_check.py /usr/local/libexec/lmr365-kvm-sendmail-recovery/'
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'env GITHUB_ACTIONS=true bash /home/ci/lmr365-sendmail-systemd-enforcing.sh'
 echo "LMR365_GUEST_SENDMAIL_SYSTEMD_ENFORCING=verified"
+
+# Confirm the validated full-tree Sendmail v2 snapshot, restored sendmail.cf,
+# SELinux label, idle queues, and original Postfix service before and after
+# a SECOND real guest reboot. This is READ-ONLY; no SMTP DATA or test mails.
+reboot_check='sudo env GITHUB_ACTIONS=true python3 /usr/local/libexec/lmr365-kvm-sendmail-recovery/rocky_vm_sendmail_post_reboot_check.py'
+ssh "${ssh_opts[@]}" ci@127.0.0.1 "$reboot_check" > "$work/sendmail-before-reboot"
+grep -Fxq "LMR365_VM_REBOOT_SNAPSHOT_MATCH=identical" "$work/sendmail-before-reboot"
+grep -Fxq "LMR365_VM_REBOOT_POSTFIX=active" "$work/sendmail-before-reboot"
+grep -Fxq "LMR365_VM_REBOOT_SENDMAIL=stopped" "$work/sendmail-before-reboot"
+grep -Fxq "LMR365_VM_REBOOT_SELINUX=enforcing" "$work/sendmail-before-reboot"
+recovery_boot_id="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 'cat /proc/sys/kernel/random/boot_id')"
+[[ "$recovery_boot_id" =~ ^[0-9a-f-]{36}$ ]] || { echo "LMR365_GUEST_RECOVERY_BOOT_ID_INVALID"; exit 1; }
+ssh "${ssh_opts[@]}" ci@127.0.0.1 'sudo systemctl reboot' >/dev/null 2>&1 || true
+recovered_reboot=no
+for attempt in $(seq 1 90); do
+    reboot_id="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)"
+    if [[ "$reboot_id" =~ ^[0-9a-f-]{36}$ ]] && test "$reboot_id" != "$recovery_boot_id"; then
+        recovered_reboot=yes
+        break
+    fi
+    if ! sudo kill -0 "$(sudo cat "$work/vm.pid")" 2>/dev/null; then
+        echo "LMR365_GUEST_SENDMAIL_RECOVERY_VM_EXITED"
+        exit 1
+    fi
+    sleep 5
+done
+test "$recovered_reboot" = yes || { echo "LMR365_GUEST_SENDMAIL_RECOVERY_REBOOT_TIMEOUT"; exit 1; }
+ssh "${ssh_opts[@]}" ci@127.0.0.1 "$reboot_check" > "$work/sendmail-after-reboot"
+if ! diff -u "$work/sendmail-before-reboot" "$work/sendmail-after-reboot"; then
+    echo "LMR365_GUEST_SENDMAIL_RECOVERY_POST_REBOOT_DRIFT"
+    exit 1
+fi
+echo "LMR365_GUEST_SENDMAIL_RECOVERY_POST_REBOOT=verified_unchanged"
+echo "LMR365_GUEST_SENDMAIL_RESTORED_SELINUX_POST_REBOOT=verified"
+echo "LMR365_GUEST_POSTFIX_AFTER_RECOVERY_REBOOT=active"
 
 echo "LMR365_GUEST_MICROSOFT365_DELIVERY_TESTED=no"
 echo "LMR365_GUEST_EXTERNAL_MAIL_DELIVERY_TESTED=no"
