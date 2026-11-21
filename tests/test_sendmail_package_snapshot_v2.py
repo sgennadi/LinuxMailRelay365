@@ -121,7 +121,7 @@ class V2SnapshotTests(unittest.TestCase):
         restore = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(restore)
         with self.assertRaisesRegex(
-                m.Refused, "package_snapshot_restore_requires_manual_metadata_review"):
+                restore.Refused, "package_snapshot_restore_requires_manual_metadata_review"):
             restore.content_from_snapshot(
                 "sendmail", self.folder.name, self.base, self.uid)
 
