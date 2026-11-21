@@ -387,6 +387,7 @@ internal sealed partial class MainForm : Form
         senderPolicy.SelectedIndex = 0;
         oauthSenderMode.SelectedIndexChanged += (_, _) =>
         {
+            ResetMultiMailboxRouteReview();
             if (!routingLoading)
             {
                 oauthSenderAuditSummary = "";
@@ -404,6 +405,7 @@ internal sealed partial class MainForm : Form
         };
         oauthSenderMapPath.TextChanged += (_, _) =>
         {
+            ResetMultiMailboxRouteReview();
             if (!routingLoading)
             {
                 oauthSenderAuditSummary = "";
@@ -413,10 +415,12 @@ internal sealed partial class MainForm : Form
             SaveRoutingChoices();
             UpdatePreserveFlowPreview();
         };
+        isolatedSmtpPort.TextChanged += (_, _) => ResetMultiMailboxRouteReview();
         foreach (var endpointField in new[] { host, sshPort, sshUser })
         {
             endpointField.TextChanged += (_, _) =>
             {
+                ResetMultiMailboxRouteReview();
                 oauthSenderAuditSummary = "";
                 oauthIngressAuditSummary = "";                oauthSignerAuditSummary = "";
 
@@ -440,6 +444,7 @@ internal sealed partial class MainForm : Form
             };
         }
         mailTransport.SelectedIndexChanged += (_, _) => {
+            ResetMultiMailboxRouteReview();
             if (!routingLoading) {
                 oauthSenderAuditSummary = "";
                 oauthIngressAuditSummary = "";                oauthSignerAuditSummary = "";
@@ -2266,6 +2271,30 @@ internal sealed partial class MainForm : Form
                                 "הגדרות Postfix ו-Dovecot טרם הושוו למפה.")
                             : oauthIngressAuditSummary));
                         AddLine(page, UiTheme.Text(T(
+                            "Офлайн-установка: EXPERIMENTAL. Требуются остановленный отдельный Postfix, пустая очередь и проверенный SHA-256. Права Exchange и доставка не подтверждены.",
+                            "EXPERIMENTAL OFFLINE INSTALL: sidecar STOPPED, queue EMPTY and reviewed SHA-256 required. Exchange authorization and real delivery remain unverified.",
+                            "התקנה ניסיונית ללא הפעלת שירותים. יש צורך בתור ריק ובאימות SHA-256.")));
+                        AddAction(page, T(
+                            "1. Подготовить защищённые файлы Multi-mailbox...",
+                            "1. Stage protected multi-mailbox files...",
+                            "1. הכנת קובצי מקור מוגנים"),
+                            StageMultiMailboxRuntimeAsync, false, "shield", "multi-mailbox-stage");
+                        AddAction(page, T(
+                            "2. Проверить маршрут Multi-mailbox (без изменений)",
+                            "2. Preview multi-mailbox route (read-only)",
+                            "2. בדיקת המסלול ללא שינוי"),
+                            PreviewMultiMailboxRouteAsync, false, "check", "multi-mailbox-preview");
+                        AddAction(page, T(
+                            "3. Применить офлайн (службы НЕ запускаются)...",
+                            "3. Apply OFFLINE (services stay STOPPED)...",
+                            "3. החלה ללא הפעלת השירותים"),
+                            ApplyMultiMailboxRouteOfflineAsync, false, "shield", "multi-mailbox-apply-offline");
+                        AddLine(page, UiTheme.Text(string.IsNullOrEmpty(multiMailboxRouteSummary)
+                            ? T("Маршрут не активирован. Отправка Multi-mailbox в этом мастере остаётся заблокирована.",
+                                "Route not activated. Multi-mailbox sending is still blocked in this Wizard.",
+                                "המסלול אינו פעיל. השליחה חסומה.")
+                            : multiMailboxRouteSummary));
+                        AddLine(page, UiTheme.Text(T(
                             "Формат Linux TSV: smtp_login, envelope_from, m365_mailbox, identity_config_path. Карта root:root 0600; конфигурации OAuth root:m365mailer 0640. Проверка НЕ включает отправку и не подтверждает Send As.",
                             "Linux TSV columns: smtp_login, envelope_from, m365_mailbox, identity_config_path. Root-owned TSV mode 0600; OAuth identity JSON root:m365mailer 0640. Audit does NOT enable mail delivery or prove Send As.",
                             "קובץ TSV בבעלות root. הבדיקה אינה מפעילה שליחה או הרשאות Exchange.")));
@@ -2707,7 +2736,7 @@ internal sealed partial class MainForm : Form
                                   "בדיקת שרת הדואר והניתוב"),
                     InspectMailRoutingAsync, false, "check", "preflight");
                 AddAction(page, T("Проверка перед установкой", "Preflight read-only check", "בדיקה לפני התקנה"), PreflightAsync, false, "check", "preflight");
-                if (mailTransport.SelectedIndex == 0)
+                if (mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 0)
                     AddAction(page, T("Установить и настроить XOAUTH2 Postfix",
                                       "Install and configure XOAUTH2 Postfix",
                                       "התקנת Postfix עם XOAUTH2"), ApplyAsync, true, "download", "postfix");
