@@ -15,6 +15,132 @@ internal sealed partial class MainForm
     private string? reviewedMultiMailboxRestoreContext;
     private string multiMailboxRestoreSummary = "";
 
+    private readonly TextBox multiTestSender = Field("");
+    private readonly TextBox multiTestInternal = Field("");
+    private readonly TextBox multiTestExternal = Field("");
+    private string? reviewedMultiTestSha;
+    private string? reviewedMultiTestRunId;
+    private string? reviewedMultiTestContext;
+    private string multiTestSummary = "";
+
+    private void ResetMultiMailboxTestReview()
+    {
+        reviewedMultiTestSha = null;
+        reviewedMultiTestRunId = null;
+        reviewedMultiTestContext = null;
+        multiTestSummary = "";
+    }
+
+    private string CurrentMultiMailboxTestContext() =>
+        CurrentMultiMailboxContext() + "|" + multiTestSender.Text.Trim() +
+        "|" + multiTestInternal.Text.Trim() + "|" + multiTestExternal.Text.Trim();
+
+    private async Task PreviewMultiMailboxDeliveryTestAsync()
+    {
+        string context = CurrentMultiMailboxTestContext();
+        ResetMultiMailboxTestReview();
+        string runId = Guid.NewGuid().ToString("N");
+        var result = await SshRemote.RunRootScriptAsync(
+            Endpoint(),
+            EmbeddedAssets.BuildMultiMailboxAcceptanceBundle(
+                runId, multiTestSender.Text.Trim(),
+                multiTestInternal.Text.Trim(), multiTestExternal.Text.Trim()),
+            TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        string sha = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_PLAN_SHA256", @"\A[a-f0-9]{64}\z");
+        string reported = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_RUN_ID", @"\A[a-f0-9]{32}\z");
+        if (reported != runId)
+            throw new InvalidDataException("Acceptance report returned a different run ID.");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_STATUS", @"\Apreview_only\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_SENDER_SHA256", @"\A[a-f0-9]{64}\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_INTERNAL_SHA256", @"\A[a-f0-9]{64}\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_EXTERNAL_SHA256", @"\A[a-f0-9]{64}\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_MAIL_SENT", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_RECIPIENT_INBOX_VERIFIED", @"\Ano\z");
+        if (context != CurrentMultiMailboxTestContext())
+            throw new InvalidOperationException(
+                "Test recipients, selected sender, SSH host or route changed during Preview.");
+        reviewedMultiTestSha = sha;
+        reviewedMultiTestRunId = runId;
+        reviewedMultiTestContext = context;
+        multiTestSummary = T(
+            "План двух реальных тестов проверен, без отправки. ID: " + runId +
+              ". SHA-256: " + sha[..16] + "… . Отправка требует отдельного подтверждения.",
+            "Reviewed TWO fixed test messages; nothing sent. Trace ID: " + runId +
+              ". SHA-256: " + sha[..16] + "… . Delivery requires separate consent.",
+            "תוכנית שתי הודעות הבדיקה אושרה ללא שליחה. נדרש אישור נפרד.");
+        WriteLine("Multi-mailbox acceptance plan approved; no SMTP was attempted. " +
+                  "Trace ID=" + runId + ", review SHA=" + sha);
+        RenderPage();
+    }
+
+    private async Task ApplyMultiMailboxDeliveryTestAsync()
+    {
+        string context = CurrentMultiMailboxTestContext();
+        if (reviewedMultiTestSha is null || reviewedMultiTestRunId is null ||
+            reviewedMultiTestContext != context)
+            throw new InvalidOperationException(
+                "Run a fresh TWO-recipient Preview for this exact host, route, sender and recipient set.");
+        string sha = reviewedMultiTestSha;
+        string runId = reviewedMultiTestRunId;
+        if (!ConfirmDestructive("LinuxMailRelay365 | Send TWO real Microsoft 365 messages",
+            T("Будут отправлены ДВА РЕАЛЬНЫХ письма через выбранный Microsoft 365 mailbox: " +
+              multiTestSender.Text.Trim() + ". Внутренний получатель: " + multiTestInternal.Text.Trim() +
+              ", внешний: " + multiTestExternal.Text.Trim() + ". Только согласованные тестовые адреса! " +
+              "Этот прямой тест OAuth НЕ доказывает аутентификацию клиента в локальном Postfix. " +
+              "При ошибке или потере SSH НЕ повторяйте тот же тест: сначала проверьте обе почты и Message Trace.",
+              "TWO REAL messages will be sent through the reviewed mailbox " +
+              multiTestSender.Text.Trim() + " to internal " + multiTestInternal.Text.Trim() +
+              " and external " + multiTestExternal.Text.Trim() + ". Use only consenting test inboxes. " +
+              "This direct OAuth test does NOT prove local Postfix SMTP AUTH. " +
+              "On failure/SSH loss, DO NOT retry before independent inbox and Exchange message-trace review.",
+              "יישלחו שתי הודעות אמיתיות לתיבות בדיקה מאושרות. אין לחזור על ניסוי לאחר תקלה ללא בדיקה."),
+            "SEND TWO MULTI MAILBOX TESTS")) return;
+        // Single-use approval, including uncertain SSH timeout or partial run.
+        ResetMultiMailboxTestReview();
+        var result = await SshRemote.RunRootScriptAsync(
+            Endpoint(), EmbeddedAssets.BuildMultiMailboxAcceptanceBundle(
+                runId, multiTestSender.Text.Trim(), multiTestInternal.Text.Trim(),
+                multiTestExternal.Text.Trim(), sha),
+            TimeSpan.FromMinutes(7));
+        result.EnsureSuccess();
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_INTERNAL_SMTP_SUBMITTED", @"\Ayes\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_EXTERNAL_SMTP_SUBMITTED", @"\Ayes\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_TWO_SMTP_SUBMISSIONS_ACCEPTED", @"\Ayes\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_RECIPIENT_INBOX_VERIFIED", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_EXCHANGE_TRACE_VERIFIED", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_AUTOMATIC_RETRY", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_QUEUE_OR_SERVICE_CHANGED", @"\Ano\z");
+        if (context != CurrentMultiMailboxTestContext())
+            throw new InvalidOperationException(
+                "Test host, sender or recipients changed while sending. Review recipient inboxes.");
+        multiTestSummary = T(
+            "Microsoft 365 принял две SMTP-отправки для теста " + runId +
+              ". ДОСТАВКА НЕ подтверждена. Проверьте оба ящика и Exchange Message Trace.",
+            "Two SMTP submissions accepted for trace " + runId +
+              ". INBOX DELIVERY NOT VERIFIED. Check both inboxes and Exchange message trace.",
+            "שתי הודעות התקבלו ב-SMTP. המסירה לתיבות עדיין לא אומתה.");
+        WriteLine("Multi-mailbox two-recipient SMTP submission accepted. Trace ID=" + runId +
+                  ". Inbox delivery and Exchange message trace NOT verified. No automatic retry.");
+        RenderPage();
+    }
+
+
     private void ResetMultiMailboxRouteReview()
     {
         reviewedMultiMailboxPlanSha = null;
@@ -24,6 +150,7 @@ internal sealed partial class MainForm
         reviewedMultiMailboxRestoreBackupId = null;
         reviewedMultiMailboxRestoreContext = null;
         multiMailboxRestoreSummary = "";
+        ResetMultiMailboxTestReview();
     }
 
     private string CurrentMultiMailboxContext()
