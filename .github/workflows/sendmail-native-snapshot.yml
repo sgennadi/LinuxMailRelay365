@@ -1,0 +1,44 @@
+name: Sendmail native snapshot acceptance (experimental)
+on:
+  push:
+    branches:
+      - feature/private-smtp-auth-tls
+    paths:
+      - .github/workflows/sendmail-native-snapshot.yml
+      - linux/foreign-mta-config-backup.py
+      - linux/restore-foreign-mta-config.py
+      - tests/smoke_native_foreign_mta.sh
+      - tests/smoke_native_sendmail_backup.sh
+      - tests/test_sendmail_package_backup.py
+      - tests/test_sendmail_package_snapshot_v2.py
+      - tests/test_foreign_mta_backup.py
+      - tests/test_foreign_mta_restore.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sendmail-native-snapshot-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  snapshot-and-refusal:
+    name: Disposable Ubuntu 24.04 Sendmail v2 backup and restore refusal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v5
+      - name: Static, legacy and package v2 regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n tests/smoke_native_foreign_mta.sh tests/smoke_native_sendmail_backup.sh
+          python3 -m py_compile linux/foreign-mta-config-backup.py linux/restore-foreign-mta-config.py
+          python3 -m unittest discover -v -s tests -p test_sendmail_package_backup.py
+          python3 -m unittest discover -v -s tests -p test_sendmail_package_snapshot_v2.py
+          python3 -m unittest discover -v -s tests -p test_foreign_mta_backup.py
+          python3 -m unittest discover -v -s tests -p test_foreign_mta_restore.py
+      - name: Install real Debian Sendmail without daemon start and run native parser
+        shell: bash
+        run: bash tests/smoke_native_foreign_mta.sh sendmail
+      - name: Verify package-owned v2 snapshot and explicit Restore refusal
+        shell: bash
+        run: bash tests/smoke_native_sendmail_backup.sh
