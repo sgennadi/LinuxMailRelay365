@@ -1,0 +1,32 @@
+name: Rocky Linux SELinux VM acceptance (experimental)
+
+# Independent of the Preview release gate; nested KVM on GitHub runners is
+# experimental and not guaranteed to be available.
+on:
+  push:
+    branches:
+      - feature/private-smtp-auth-tls
+    paths:
+      - .github/workflows/rocky-enforcing-vm.yml
+      - tests/rocky_vm_*.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rocky-selinux-vm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kvm-host-capability:
+    name: Verify nested KVM availability on GitHub-hosted Ubuntu
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect kernel KVM and perform real KVM ioctl
+        shell: bash
+        run: bash tests/rocky_vm_kvm_probe.sh
