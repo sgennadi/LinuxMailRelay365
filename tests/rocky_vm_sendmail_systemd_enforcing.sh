@@ -48,6 +48,9 @@ cleanup() {
   fi
   sudo systemctl stop sendmail.service >/dev/null 2>&1 || true
   sudo systemctl stop sm-client.service >/dev/null 2>&1 || true
+  # Ensure neither package daemon auto-starts on the reboot continuity test.
+  sudo systemctl disable sendmail.service >/dev/null 2>&1 || true
+  sudo systemctl disable sm-client.service >/dev/null 2>&1 || true
   sudo rm -f -- /run/lmr365-disposable-sendmail-vm || true
   if sudo rpm -q postfix >/dev/null 2>&1; then
     if ! sudo systemctl start postfix.service; then
@@ -228,6 +231,12 @@ sudo env GITHUB_ACTIONS=true python3 \
 sudo systemctl start sendmail.service
 smoke
 echo "LMR365_SENDMAIL_VM_RESTORED_SERVICE_START=passed"
+# Store only the validated snapshot ID for read-only post-reboot inspection.
+# The directory was provisioned root-owned by the disposable KVM harness.
+sudo install -o root -g root -m 0600 /dev/null \
+  /usr/local/libexec/lmr365-kvm-sendmail-recovery/sendmail-v2-kvm-snapshot-id
+printf '%s\n' "$backup_id" | sudo tee \
+  /usr/local/libexec/lmr365-kvm-sendmail-recovery/sendmail-v2-kvm-snapshot-id >/dev/null
 sudo systemctl stop sendmail.service
 sudo systemctl stop sm-client.service >/dev/null 2>&1 || true
 ! sudo systemctl is-active --quiet sendmail.service
