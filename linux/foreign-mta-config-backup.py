@@ -407,15 +407,14 @@ def verify(directory, mta, owner_uid=0):
 
 
 def backup(mta, root=ROOT, base=BASE, owner_uid=0):
-    files = selected_files(mta, root, owner_uid)
+    package_objects = {} if mta == "sendmail" and owner_uid == 0 else None
+    files = selected_files(mta, root, owner_uid, package_objects)
     directory = archive_folder(base, mta, owner_uid)
     staging = Path(tempfile.mkdtemp(prefix=".pending-", dir=str(directory)))
     try:
         safe_dir(staging, owner_uid)
-        package_objects = {} if mta == "sendmail" and owner_uid == 0 else None
         # Package-native snapshot v2 records symlink metadata ONLY; never
         # resolves symlinks or imports their potentially external targets.
-        files = selected_files(mta, root, owner_uid, package_objects)
         manifest = {"version": 2 if package_objects is not None else 1,
                     "mta": mta, "files": {}}
         if package_objects is not None:
@@ -454,6 +453,13 @@ def backup(mta, root=ROOT, base=BASE, owner_uid=0):
             output.flush()
             os.fsync(output.fileno())
         review = verify(staging, mta, owner_uid)
+        if package_objects is not None:
+            observed_objects = {}
+            observed_files = selected_files(mta, root, owner_uid,
+                                            observed_objects)
+            if (observed_objects != package_objects or
+                    set(observed_files) != set(files)):
+                raise Refused("sendmail_package_inventory_changed_during_backup")
         backup_id = (datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
                      + "-" + secrets.token_hex(6))
         target = directory / backup_id
