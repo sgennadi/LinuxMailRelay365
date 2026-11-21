@@ -199,6 +199,15 @@ echo "LMR365_GUEST_AUTH_TLS_POST_REBOOT=verified"
 ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash /home/ci/lmr365-tls-auth-ci.sh --cleanup'
 echo "LMR365_GUEST_PORT_POLICY_RESTORE=verified_if_managed"
 
+# Experimental fcontext manager is tested only in this disposable KVM
+# guest; it is NOT wired into production installers.
+scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+    linux/manage-rhel-selinux-sidecar-context.py \
+    ci@127.0.0.1:/home/ci/lmr365-selinux-sidecar-context.py
+ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    'sudo install -o root -g root -m 0755 /home/ci/lmr365-selinux-sidecar-context.py /usr/local/libexec/lmr365-selinux-sidecar-context.py'
+
 # Positive independent Postfix service under Enforcing, with error-only
 # transport and no tenant/network delivery, separate from primary service.
 scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
