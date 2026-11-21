@@ -24,10 +24,6 @@ class FcontextTests(unittest.TestCase):
             mock.patch.object(m, "LOCK", root / "operation.lock"),
             mock.patch.object(m, "environment", return_value=None),
             mock.patch.object(m, "unit_stopped", return_value=None),
-            # Only production may create root-owned operation locks. These
-            # sandboxed unit tests execute as a non-root CI user.
-            mock.patch.object(m, "acquire_lock",
-                              side_effect=lambda: os.open(str(m.LOCK), os.O_RDWR | os.O_CREAT, 0o600)),
         ]
         for patcher in self.patches:
             patcher.start()
