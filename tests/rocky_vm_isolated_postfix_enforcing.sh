@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# POSITIVE isolated Postfix runtime test on a disposable Rocky Linux KVM guest.
+# The production installers remain Enforcing-gated. This fixture has NO
+# external delivery: independent queue and data, error: transports, 127.0.0.1.
+set -Eeuo pipefail
+umask 077
+test "$(cat /proc/1/comm)" = systemd
+test "$(getenforce)" = Enforcing
+test "$(cat /sys/fs/selinux/enforce)" = 1
+test "$(id -u)" != 0  # Admin operations must use visible sudo.
+sudo systemctl start postfix.service
+sudo systemctl is-active --quiet postfix.service
+test -z "$(sudo postqueue -j)"
+
+CONF=/etc/linuxmailrelay365/sidecar-postfix
+QUEUE=/var/spool/linuxmailrelay365-sidecar
+DATA=/var/lib/linuxmailrelay365-sidecar
+UNIT=/etc/systemd/system/linuxmailrelay365-sidecar.service
+MANAGER=/usr/local/libexec/lmr365-selinux-port.py
+PORT=2526
+for p in "$CONF" "$QUEUE" "$DATA" "$UNIT"; do
+  if sudo test -e "$p" || sudo test -L "$p"; then
+    echo "LMR365_POSITIVE_SIDECAR_PREEXISTING_STATE_REFUSED"
+    exit 1
+  fi
+done
+test -z "$(sudo ss -H -ltn '( sport = :2526 )')"
+test -f "$MANAGER"
+
+work="$(mktemp -d)"
+cleanup() {
+  result=$?
+  trap - EXIT
+  if test "$result" -ne 0; then
+    echo "LMR365_POSITIVE_SIDECAR_FAILED_DIAGNOSTICS_BEGIN"
+    sudo journalctl --no-pager -u linuxmailrelay365-sidecar.service -n 50 || true
+    sudo ls -Zd "$CONF" "$QUEUE" "$DATA" 2>/dev/null || true
+    sudo postfix -c "$CONF" check 2>&1 || true
+    echo "LMR365_POSITIVE_SIDECAR_FAILED_DIAGNOSTICS_END"
+  fi
+  sudo systemctl stop linuxmailrelay365-sidecar.service >/dev/null 2>&1 || true
+  sudo systemctl disable linuxmailrelay365-sidecar.service >/dev/null 2>&1 || true
+  sudo rm -f -- "$UNIT"
+  sudo systemctl daemon-reload >/dev/null 2>&1 || true
+  for p in "$CONF" "$QUEUE" "$DATA"; do
+    sudo rm -rf -- "$p"
+  done
+  for p in "$CONF" "$QUEUE" "$DATA"; do
+    sudo semanage fcontext -d "$p" >/dev/null 2>&1 || true
+  done
+  if sudo test -f /var/lib/linuxmailrelay365-selinux-port/active.json; then
+    current="$(sudo python3 "$MANAGER" --status --smtp-port "$PORT" 2>/dev/null |
+      sed -n 's/^RHEL_PORT_CURRENT_POLICY_SHA256=//p')" || true
+    if [[ "$current" =~ ^[a-f0-9]{64}$ ]]; then
+      sudo python3 "$MANAGER" --restore --smtp-port "$PORT" \
+        --expect-policy-sha256 "$current" \
+        --confirm REMOVE_MANAGED_RHEL_SMTP_PORT >/dev/null 2>&1 || true
+    fi
+  fi
+  rm -rf -- "$work"
+  exit "$result"
+}
+trap cleanup EXIT
+sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf > "$work/primary-before"
+before_boot="$(cat /proc/sys/kernel/random/boot_id)"
+sudo postqueue -j > "$work/primary-queue-before"
+
+# Use our production port policy manager (exact SHA approval), never disable
+# SELinux or call setenforce. Do not adopt a conflicting explicit port type.
+preflight="$(sudo python3 "$MANAGER" --check-only --smtp-port "$PORT")"
+echo "$preflight" | grep -Fxq 'RHEL_PORT_PREFLIGHT=ready'
+policy_sha="$(printf '%s\n' "$preflight" | sed -n 's/^RHEL_PORT_POLICY_SHA256=//p')"
+[[ "$policy_sha" =~ ^[a-f0-9]{64}$ ]]
+sudo python3 "$MANAGER" --apply --smtp-port "$PORT" \
+  --expect-policy-sha256 "$policy_sha" \
+  --confirm ADD_REVIEWED_RHEL_SMTP_PORT >/dev/null
+echo "LMR365_POSITIVE_SIDECAR_SMTP_PORT_LABEL=managed_smtp_port_t"
+
+# The guest-only fixture reuses the production sidecar directory layout,
+# but disables all mail transport. This does not circumvent installer safety.
+sudo install -d -o root -g root -m 0755 /etc/linuxmailrelay365
+sudo install -d -o root -g root -m 0755 "$CONF" "$QUEUE"
+sudo install -d -o postfix -g postfix -m 0700 "$DATA"
+
+# Map secondary instance paths to the system Postfix policy using narrowly
+# scoped equivalence rules. Do not apply any global SELinux policy change.
+sudo semanage fcontext -a -e /etc/postfix "$CONF"
+sudo semanage fcontext -a -e /var/spool/postfix "$QUEUE"
+sudo semanage fcontext -a -e /var/lib/postfix "$DATA"
+sudo restorecon -RF "$CONF" "$QUEUE" "$DATA" >/dev/null
+
+cat > "$work/main.cf" <<'CONFMAIN'
+myhostname = smtp-ci.lab.invalid
+myorigin = $myhostname
+queue_directory = /var/spool/linuxmailrelay365-sidecar
+data_directory = /var/lib/linuxmailrelay365-sidecar
+inet_interfaces = 127.0.0.1
+inet_protocols = ipv4
+mynetworks = 127.0.0.0/8
+mydestination =
+relay_domains =
+relayhost =
+default_transport = error:ExternalMailDisabledInKVM
+relay_transport = error:ExternalMailDisabledInKVM
+local_transport = error:LocalMailDisabledInKVM
+smtpd_client_restrictions = permit_mynetworks, reject
+smtpd_relay_restrictions = reject
+smtpd_sender_restrictions = reject
+smtpd_recipient_restrictions = reject
+disable_vrfy_command = yes
+smtpd_helo_required = yes
+syslog_name = postfix-lmr365-lab
+authorized_submit_users =
+CONFMAIN
+sudo install -o root -g root -m 0644 "$work/main.cf" "$CONF/main.cf"
+cat > "$work/master.cf" <<'CONFMASTER'
+2526      inet  n       -       n       -       -       smtpd
+pickup    unix  n       -       n       60      1       pickup
+cleanup   unix  n       -       n       -       0       cleanup
+qmgr      unix  n       -       n       300     1       qmgr
+rewrite   unix  -       -       n       -       -       trivial-rewrite
+bounce    unix  -       -       n       -       0       bounce
+defer     unix  -       -       n       -       0       bounce
+trace     unix  -       -       n       -       0       bounce
+verify    unix  -       -       n       -       1       verify
+flush     unix  n       -       n       1000?   0       flush
+proxymap  unix  -       -       n       -       -       proxymap
+proxywrite unix -       -       n       -       1       proxymap
+anvil     unix  -       -       n       -       1       anvil
+scache    unix  -       -       n       -       1       scache
+showq     unix  n       -       n       -       -       showq
+error     unix  -       -       n       -       -       error
+CONFMASTER
+sudo install -o root -g root -m 0644 "$work/master.cf" "$CONF/master.cf"
+sudo restorecon -RF "$CONF" "$QUEUE" "$DATA" >/dev/null
+sudo postfix -c "$CONF" check
+
+cat > "$work/sidecar.service" <<'SERVICE'
+[Unit]
+Description=LinuxMailRelay365 lab isolated Postfix under Enforcing
+After=postfix.service
+Requires=postfix.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/postfix -c /etc/linuxmailrelay365/sidecar-postfix start
+ExecStop=/usr/sbin/postfix -c /etc/linuxmailrelay365/sidecar-postfix stop
+TimeoutStartSec=90
+[Install]
+WantedBy=multi-user.target
+SERVICE
+sudo install -o root -g root -m 0644 "$work/sidecar.service" "$UNIT"
+sudo restorecon -F "$UNIT"
+sudo systemctl daemon-reload
+sudo systemctl start linuxmailrelay365-sidecar.service
+sudo systemctl is-active --quiet linuxmailrelay365-sidecar.service
+sudo systemctl is-active --quiet postfix.service
+sudo postfix -c "$CONF" status >/dev/null
+echo "LMR365_POSITIVE_SIDECAR_SYSTEMD=active"
+
+sudo python3 - <<'PY'
+import socket
+import subprocess
+from pathlib import Path
+
+r = subprocess.run(["ss", "-H", "-ltn"], stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE, universal_newlines=True,
+                   timeout=12, check=True)
+present = {25: [], 2526: []}
+for line in r.stdout.splitlines():
+    parts = line.split()
+    if len(parts) < 5:
+        raise SystemExit("LMR365_POSITIVE_SIDECAR_UNPARSEABLE_PORT")
+    address, _, port = parts[3].rpartition(":")
+    if port.isdigit() and int(port) in present:
+        present[int(port)].append(address)
+if present != {25:["127.0.0.1"], 2526:["127.0.0.1"]}:
+    raise SystemExit("LMR365_POSITIVE_SIDECAR_PRIMARY_OR_ISOLATION_BROKEN")
+with socket.create_connection(("127.0.0.1",2526),timeout=8) as sock:
+    sock.settimeout(8)
+    f=sock.makefile("rb")
+    line=f.readline(2049)
+    if not line.startswith(b"220 "):
+        raise SystemExit("LMR365_POSITIVE_SIDECAR_NO_SMTP_GREETING")
+    sock.sendall(b"EHLO lmr365-ci.invalid\r\n")
+    for i in range(30):
+        line=f.readline(2049)
+        if line.startswith(b"250 "):
+            break
+        if not line.startswith(b"250-"):
+            raise SystemExit("LMR365_POSITIVE_SIDECAR_BAD_EHLO")
+    else:
+        raise SystemExit("LMR365_POSITIVE_SIDECAR_EHLO_UNBOUNDED")
+    sock.sendall(b"QUIT\r\n")
+    if not f.readline(2049).startswith(b"221 "):
+        raise SystemExit("LMR365_POSITIVE_SIDECAR_QUIT_FAILED")
+    f.close()
+print("LMR365_POSITIVE_SIDECAR_LISTENERS=127.0.0.1_25_and_2526")
+print("LMR365_POSITIVE_SIDECAR_SMTP=ehlo_quit_only")
+PY
+
+test "$(getenforce)" = Enforcing
+test "$(cat /sys/fs/selinux/enforce)" = 1
+test "$(cat /proc/1/comm)" = systemd
+test "$(cat /proc/sys/kernel/random/boot_id)" = "$before_boot"
+test -z "$(sudo postqueue -j)"
+test -z "$(sudo postqueue -c "$CONF" -j)"
+sudo sha256sum /etc/postfix/main.cf /etc/postfix/master.cf > "$work/primary-after"
+cmp "$work/primary-before" "$work/primary-after"
+sudo postqueue -j > "$work/primary-queue-after"
+cmp "$work/primary-queue-before" "$work/primary-queue-after"
+echo "LMR365_POSITIVE_SIDECAR_CONFIG=primary_unchanged"
+echo "LMR365_POSITIVE_SIDECAR_QUEUES=separate_and_empty"
+echo "LMR365_POSITIVE_SIDECAR_SELINUX=enforcing"
+
+# Stop the lab instance while preserving the already-running main Postfix.
+sudo systemctl stop linuxmailrelay365-sidecar.service
+sudo postfix -c "$CONF" status >/dev/null 2>&1 &&
+  { echo "LMR365_POSITIVE_SIDECAR_STOP_FAILED"; exit 1; } || true
+sudo systemctl is-active --quiet postfix.service
+echo "LMR365_POSITIVE_SIDECAR_RESTORE=primary_still_running"
+echo "LMR365_POSITIVE_SIDECAR_EXTERNAL_DELIVERY_TESTED=no"
+echo "LMR365_POSITIVE_SIDECAR_PRODUCT_INSTALLER_TESTED=no"
