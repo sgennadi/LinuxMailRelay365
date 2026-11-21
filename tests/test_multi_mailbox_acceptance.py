@@ -44,14 +44,22 @@ class MultiAcceptanceTests(unittest.TestCase):
             TARGET=directory / "runtime-code")
         self.state = {
             "sha": "a" * 64, "marker": (None, b"root-owned-active-marker"),
+            "review": {"version": 1, "config": {"sha": "a" * 64},
+                       "proof": {"inode": 9001, "expires_at": 1000}},
             "record": {"runtime_map_sha256": M.digest(MAP), "source": {
                 "m365-multi-mailbox-transport.py": "b" * 64}}
         }
         self.restorer = SimpleNamespace(
             install=installer, preview=mock.Mock(side_effect=lambda: self.state),
             locked=mock.Mock(side_effect=lambda: os.open(os.devnull, os.O_RDONLY)))
+        def refresh_proof(_):
+            # Simulate replacing a short-lived root receipt between the two
+            # sends; it must not invalidate the immutable approved route.
+            self.state["review"]["proof"] = {
+                "inode": self.state["review"]["proof"]["inode"] + 1,
+                "expires_at": 1100}
         self.refresh = SimpleNamespace(inspect=mock.Mock(return_value={
-            "expires_at": 1010}), publish=mock.Mock())
+            "expires_at": 1010}), publish=mock.Mock(side_effect=refresh_proof))
         self.request = {"sender": sender, "internal": "review@example.org",
                         "external": "review@external.net",
                         "run_id": "c" * 32}
@@ -118,7 +126,7 @@ class MultiAcceptanceTests(unittest.TestCase):
         different = dict(self.request, sender="bob@example.org")
         with self.assertRaises(M.Refused):
             M.prepare(different)
-        self.state["sha"] = "f" * 64
+        self.state["review"]["config"]["sha"] = "f" * 64
         self.assertNotEqual(self.plan["sha"], M.prepare(self.request)["sha"])
 
     def test_invalid_roles_injection_json_duplicates_and_sender_rejected(self):
