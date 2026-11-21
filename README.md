@@ -1,6 +1,27 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.21 — Exim/Sendmail read-only SMTP TLS/AUTH discovery, hardened MTA coexistence and Preview 20 to 21 update test; NOT a signed Stable or production-accepted release.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.22 — protected root-only Exim/Sendmail config archives and Wizard backup safety; NOT signed Stable or production-accepted.**
+
+## Preview 22: verified primary Exim/Sendmail config-only archives
+
+The Backup & Restore Wizard now separates Postfix backups from foreign
+primary MTAs. When the same connected host is verified to have an active
+Exim or Sendmail, the GUI offers Create + Verify, List, and Verify SHA256
+for a root-only archive of strictly allowlisted /etc configuration files.
+Archive data (which can include SMTP credentials) stays on Linux. It is
+never downloaded to or logged by the GUI. Files, directory permissions,
+archive SHA256 and every member digest are validated, with symlink, size,
+owner, incomplete-read and changed-file protections.
+
+These snapshots EXCLUDE queues, packages, service state, external
+certificates, and any data outside the captured /etc roots. They are
+NOT proof of complete recoverability, and automatic Exim/Sendmail Restore
+is deliberately not offered. The Postfix Restore option is now shown and
+permitted only when the currently inspected primary MTA is Postfix.
+
+Preview 22 CI tests a disposable published Preview 21 to Preview 22
+replacement and rollback. The unsigned Preview updater is restricted to
+non-elevated test accounts, and signed Stable is not authorized.
 
 ## Preview 21: read-only Exim/Sendmail authentication and TLS discovery
 

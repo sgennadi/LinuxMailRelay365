@@ -315,7 +315,7 @@ jobs:
           if ($testProcess.ExitCode -ne 0) { throw "Windows self-test failed with exit code $($testProcess.ExitCode)." }
           $files = @(Get-ChildItem ./out/win-x64 -Filter '*.exe')
           if ($files.Count -ne 1) { throw 'Expected exactly one EXE in publish output.' }
-      - name: Test published Preview 20 -> candidate Preview 21 backup and rollback (disposable)
+      - name: Test published Preview 21 -> candidate Preview 22 backup and rollback (disposable)
         shell: pwsh
         timeout-minutes: 8
         env:
@@ -414,7 +414,7 @@ jobs:
           if-no-files-found: error
 
   preview-release:
-    name: Publish tested Preview 21 (unsigned)
+    name: Publish tested Preview 22 (unsigned)
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature/private-smtp-auth-tls'
     needs:
       - linux-tests
@@ -434,8 +434,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          grep -Fxq '    <Version>0.1.0-preview.21</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
-          grep -Fq 'internal const string Version = "0.1.0-preview.21";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fxq '    <Version>0.1.0-preview.22</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.0-preview.22";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
       - uses: actions/download-artifact@v6
         with:
           name: LinuxMailRelay365-preview-builds
@@ -480,7 +480,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='v0.1.0-preview.21'
+          tag='v0.1.0-preview.22'
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::notice::Preview already published. Bump version to publish another update."
             exit 0
@@ -494,5 +494,5 @@ jobs:
             out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
             out/published/preview-artifact-digests.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "LinuxMailRelay365 v0.1.0-preview.21" --prerelease \
-            --notes "UNSIGNED TEST PREVIEW 21, NOT Stable/production approved. Adds read-only Exim and Sendmail SMTP AUTH/TLS declaration inspection, stable no-follow configuration reads and fail-closed systemd MTA coexistence checks. CI verifies Preview 20 to 21 replacement/rollback and Windows x64/ARM64 builds. No primary MTA changes or automatic Exim/Sendmail rewrite. Real TLS/AUTH, tenant delivery, TPM and RHEL SELinux Enforcing acceptance remain unverified. SHA256 does not replace Authenticode."
+            --title "LinuxMailRelay365 v0.1.0-preview.22" --prerelease \
+            --notes "UNSIGNED TEST PREVIEW 22, NOT Stable/production approved. Adds verified root-only Exim and Sendmail configuration archive creation/list/SHA256 verification from Windows Wizard, with no foreign MTA Restore and no mail queue or service changes. Postfix-only recovery controls are hidden for foreign MTA hosts. CI tests published Preview 21 to Preview 22 EXE replacement/rollback and Windows x64/ARM64 builds. Live Exchange tenant, physical TPM, SELinux Enforcing, mail recovery and Authenticode Stable acceptance remain outstanding."
