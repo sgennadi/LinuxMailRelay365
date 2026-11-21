@@ -41,6 +41,25 @@ trust and names, Exim ACL/routers/transports, Sendmail access maps, MTA
 queue preservation, RHEL SELinux Enforcing and actual Microsoft 365 delivery.
 Neither this inspection nor CI enables native Exim/Sendmail rewriting.
 
+## Offline SELinux policy packages in real Enterprise Linux containers
+
+Draft CI now installs the actual `selinux-policy-targeted`, `setools-console`,
+`policycoreutils-python-utils` and `libselinux-utils` packages in disposable
+Rocky Linux 8/9/10, AlmaLinux 9, Oracle Linux 9/10 containers. It inspects the
+compiled targeted policy for `smtp_port_t` and Postfix types, attempts read-only
+`semanage port -l` and verifies the doctor, port manager and loopback
+Enforcing acceptance tool **all refuse false runtime success** when the
+container's shared host kernel has SELinux disabled. No `setenforce`,
+`semanage -a/-m/-d`, firewall changes, SMTP submission or daemon starts are
+performed. Inaccessible policy stores in Docker are reported as *not verified*,
+never passed. Package policy tests alone do not prove actual Enforcing.
+
+Outstanding independent acceptance: an enrolled RHEL 8/9/10 or compatible
+VM/host with `getenforce=Enforcing`, actual root-only sidecar service,
+systemd and firewalld, labeled queues/sockets/certificates, AVC audit,
+SMTP STARTTLS/AUTH, post-reboot continuity, and operator-approved
+Microsoft 365 delivery. CI cannot change SELinux mode of the host kernel.
+
 ## Cloud inventory input identity binding (Draft after Preview 25)
 
 The Windows read-only Microsoft 365 Objects Manager now captures the exact
