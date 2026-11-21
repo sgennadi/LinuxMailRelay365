@@ -6,6 +6,8 @@ import hashlib
 import importlib.util
 import io
 import json
+from contextlib import redirect_stdout
+from unittest.mock import patch
 import os
 from pathlib import Path
 import stat
@@ -65,6 +67,33 @@ class V2SnapshotTests(unittest.TestCase):
         self.manifest_path.write_text(json.dumps(
             self.manifest, sort_keys=True), encoding="utf-8")
         os.chmod(str(self.manifest_path), 0o600)
+
+    def test_cli_verify_identifies_v2_metadata_only(self):
+        output = io.StringIO()
+        with patch.object(m, "BASE", self.base), \
+             patch.object(m.os, "geteuid", return_value=0), \
+             redirect_stdout(output):
+            result = m.main(["--mta", "sendmail", "--verify", self.folder.name])
+        self.assertEqual(result, 0)
+        self.assertIn("FOREIGN_BACKUP_FORMAT=v2_package_metadata\n",
+                      output.getvalue())
+        self.assertIn("FOREIGN_BACKUP_STATUS=verified\n",
+                      output.getvalue())
+
+    def test_cli_preview_identifies_v2_metadata_only(self):
+        review = m.recovery_preview(
+            "sendmail", self.folder.name, self.root, self.base, self.uid)
+        output = io.StringIO()
+        with patch.object(m, "recovery_preview", return_value=review), \
+             patch.object(m.os, "geteuid", return_value=0), \
+             redirect_stdout(output):
+            result = m.main(["--mta", "sendmail",
+                             "--preview-recovery", self.folder.name])
+        self.assertEqual(result, 0)
+        self.assertIn("FOREIGN_BACKUP_FORMAT=v2_package_metadata\n",
+                      output.getvalue())
+        self.assertIn("FOREIGN_BACKUP_CURRENT_CONFIG_MATCH=identical\n",
+                      output.getvalue())
 
     def test_v2_verifies_file_contents_and_untouched_symlink_metadata(self):
         result = m.verify(self.folder, "sendmail", self.uid)
