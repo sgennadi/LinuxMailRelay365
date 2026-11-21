@@ -313,6 +313,7 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_sendmail_package_backup.py
           python3 -m unittest discover -v -s tests -p test_sendmail_package_snapshot_v2.py
           python3 -m py_compile tests/assert_sendmail_v2_export.py
+          python3 -m py_compile tests/rehearse_sendmail_v2_metadata.py
           python3 -m unittest discover -v -s tests -p test_sidecar_smtp_accounts.py
           python3 -m unittest discover -v -s tests -p test_smtp_credential_generator.py
           python3 linux/generate-smtp-client-credential.py --self-test
