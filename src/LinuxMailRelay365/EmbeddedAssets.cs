@@ -338,6 +338,7 @@ internal static class EmbeddedAssets
 
     internal static string MultiMailboxPostfixInstaller => Text("LinuxMailRelay365.linux.multi-mailbox-postfix.py");
     internal static string MultiMailboxTransport => Text("LinuxMailRelay365.linux.multi-mailbox-transport.py");
+    internal static string MultiMailboxIngressProof => Text("LinuxMailRelay365.linux.multi-mailbox-ingress-proof.py");
 
     // Explicitly stage code only. This is a Linux filesystem change, not
     // an SMTP route change. Never install into an existing directory.
@@ -347,6 +348,7 @@ internal static class EmbeddedAssets
         {
             ("manage-multi-mailbox-postfix.py", MultiMailboxPostfixInstaller),
             ("m365-multi-mailbox-transport.py", MultiMailboxTransport),
+            ("refresh-multi-mailbox-proof.py", MultiMailboxIngressProof),
             ("audit-oauth-sender-map.py", OAuthSenderMapAudit),
             ("audit-oauth-ingress.py", OAuthIngressAudit),
             ("m365_xoauth2_transport.py", Transport),
