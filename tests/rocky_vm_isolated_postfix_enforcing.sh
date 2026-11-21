@@ -35,6 +35,11 @@ cleanup() {
     echo "LMR365_POSITIVE_SIDECAR_FAILED_DIAGNOSTICS_BEGIN"
     sudo journalctl --no-pager -u linuxmailrelay365-sidecar.service -n 50 || true
     sudo ls -Zd "$CONF" "$QUEUE" "$DATA" 2>/dev/null || true
+    sudo ls -ldZ "$QUEUE/public" "$QUEUE/private" "$QUEUE/maildrop" 2>/dev/null || true
+    if command -v ausearch >/dev/null 2>&1; then
+      sudo ausearch -m AVC,USER_AVC -ts recent 2>/dev/null |
+        grep -E 'denied|scontext|tcontext' | tail -n 25 || true
+    fi
     sudo postfix -c "$CONF" check 2>&1 || true
     echo "LMR365_POSITIVE_SIDECAR_FAILED_DIAGNOSTICS_END"
   fi
@@ -134,6 +139,13 @@ CONFMASTER
 sudo install -o root -g root -m 0644 "$work/master.cf" "$CONF/master.cf"
 sudo restorecon -RF "$CONF" "$QUEUE" "$DATA" >/dev/null
 sudo postfix -c "$CONF" check
+# 'postfix check' creates the queue subdirectories (including public and
+# private). The earlier restorecon ran BEFORE these paths existed, so they
+# inherited postfix_spool_t instead of specific public/private socket types.
+# Relabel only this isolated instance after Postfix has created the layout.
+sudo restorecon -RF "$QUEUE" "$DATA" >/dev/null
+sudo ls -ldZ "$QUEUE/public" "$QUEUE/private" "$QUEUE/maildrop"
+echo "LMR365_POSITIVE_SIDECAR_QUEUE_LABELS=restored_after_queue_creation"
 
 cat > "$work/sidecar.service" <<'SERVICE'
 [Unit]
