@@ -245,7 +245,8 @@ class ForeignMtaBackupTests(unittest.TestCase):
                         return (0, queue)
                     if argv == ["ss", "-ltnp"]:
                         if listen == "mta":
-                            return (0, 'LISTEN 0 100 0.0.0.0:25 0.0.0.0:* users:(("exim4",pid=1,fd=1))\n')
+                            return (0, 'State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n' +
+                                    'LISTEN 0 100 0.0.0.0:25 0.0.0.0:* users:(("exim4",pid=1,fd=1))\n')
                         if listen == "unverified":
                             return None
                         return (0, "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n")
