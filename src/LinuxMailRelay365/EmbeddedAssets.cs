@@ -335,6 +335,77 @@ internal static class EmbeddedAssets
                "python3 \"$work/manage-tpm-dependencies.py\" " + args + "\n";
     }
 
+
+    internal static string MultiMailboxPostfixInstaller => Text("LinuxMailRelay365.linux.multi-mailbox-postfix.py");
+    internal static string MultiMailboxTransport => Text("LinuxMailRelay365.linux.multi-mailbox-transport.py");
+
+    // Explicitly stage code only. This is a Linux filesystem change, not
+    // an SMTP route change. Never install into an existing directory.
+    internal static string BuildMultiMailboxRuntimeStageBundle()
+    {
+        var files = new (string Name, string Content)[]
+        {
+            ("manage-multi-mailbox-postfix.py", MultiMailboxPostfixInstaller),
+            ("m365-multi-mailbox-transport.py", MultiMailboxTransport),
+            ("audit-oauth-sender-map.py", OAuthSenderMapAudit),
+            ("audit-oauth-ingress.py", OAuthIngressAudit),
+            ("m365_xoauth2_transport.py", Transport),
+            ("m365_hardware_signer.py", HardwareSigner)
+        };
+        var script = new StringBuilder(
+            "set -Eeuo pipefail\numask 077\n" +
+            "test \"$(id -u)\" = 0 || { echo 'MULTI_SOURCE_STAGE=root_required' >&2; exit 2; }\n" +
+            "test -d /opt && test ! -L /opt || { echo 'MULTI_SOURCE_STAGE=unsafe_opt' >&2; exit 2; }\n" +
+            "parent=/opt/linuxmailrelay365\n" +
+            "target=$parent/multi-oauth\n" +
+            "if test -e \"$target\" || test -L \"$target\"; then echo 'MULTI_SOURCE_STAGE=already_exists_no_overwrite' >&2; exit 2; fi\n" +
+            "if test -e /usr/local/libexec/linuxmailrelay365-multi-oauth || " +
+                "test -L /usr/local/libexec/linuxmailrelay365-multi-oauth || " +
+                "test -e /etc/linuxmailrelay365/oauth-runtime-senders.tsv; then " +
+                "echo 'MULTI_SOURCE_STAGE=existing_runtime_requires_review' >&2; exit 2; fi\n" +
+            "if test ! -e \"$parent\" && test ! -L \"$parent\"; then mkdir -m 0755 \"$parent\"; fi\n" +
+            "test -d \"$parent\" && test ! -L \"$parent\" && " +
+                "test \"$(stat -c '%u' \"$parent\")\" = 0 && " +
+                "test \"$(stat -c '%a' \"$parent\")\" = 755 || " +
+                "{ echo 'MULTI_SOURCE_STAGE=unsafe_parent' >&2; exit 2; }\n" +
+            "work=$(mktemp -d \"$parent/.multi-oauth.XXXXXXXX\")\n" +
+            "trap 'test -z \"${work:-}\" || rm -rf -- \"$work\"' EXIT\n" +
+            "chmod 0755 \"$work\"\n");
+        foreach (var (name, source) in files)
+        {
+            script.Append("base64 -d > \"$work/").Append(name)
+                .Append("\" <<'LMR365_MULTI_SOURCE_EOF'\n")
+                .Append(Encode(source)).Append("\nLMR365_MULTI_SOURCE_EOF\n");
+        }
+        script.Append(
+            "chmod 0644 \"$work\"/*.py\n" +
+            "if test -e \"$target\" || test -L \"$target\"; then " +
+                "echo 'MULTI_SOURCE_STAGE=concurrent_change' >&2; exit 2; fi\n" +
+            "mv -T -- \"$work\" \"$target\"\n" +
+            "work=\n" +
+            "echo 'MULTI_SOURCE_STAGE=created_no_service_changes'\n" +
+            "echo 'MULTI_SOURCE_MAIL_SENT=no'\n" +
+            "echo 'MULTI_SOURCE_PRIMARY_MTA_CHANGED=no'\n");
+        return script.ToString();
+    }
+
+    internal static string BuildMultiMailboxRouteBundle(string action, string? reviewedSha = null)
+    {
+        string parameters = action switch
+        {
+            "plan" when reviewedSha is null => "--plan",
+            "apply" when reviewedSha is not null &&
+                Regex.IsMatch(reviewedSha, @"\A[a-f0-9]{64}\z",
+                    RegexOptions.CultureInvariant) =>
+                "--apply-offline --approve-sha256 " + reviewedSha +
+                " --confirm INSTALL_MULTI_MAILBOX_OFFLINE",
+            _ => throw new ArgumentException("A verified multi-mailbox plan SHA is required for offline apply.")
+        };
+        return "set -Eeuo pipefail\numask 077\n" +
+               "python3 /opt/linuxmailrelay365/multi-oauth/manage-multi-mailbox-postfix.py " +
+               parameters + "\n";
+    }
+
     internal static string BuildOAuthSenderMapAuditBundle(string mapPath)
     {
         // This is a read-only root-only audit. Do not pass sender address,
