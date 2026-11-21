@@ -5880,18 +5880,18 @@ internal sealed partial class MainForm : Form
         if (foreignBackupListContext != SecurityOptionsStore.Identity(Endpoint()) + "|" + mta ||
             foreignBackupSelector.SelectedItem is not string currentId || currentId != id)
             throw new InvalidOperationException("SSH host or selected archive changed during verification.");
-        if (format == "v2_package_metadata")
-        {
-            WriteLine("Offline Export blocked: Sendmail package Snapshot v2 includes service-owned files and symbolic link metadata. Verify and compare are supported; package-aware offline recovery requires manual approval and full system backup.");
-            return;
-        }
-        if (!ConfirmDestructive("LinuxMailRelay365 | Offline " + mta + " recovery export",
-            T("Будут извлечены файлы архива " + id +
+        bool packageV2 = format == "v2_package_metadata";
+        string warning = packageV2
+            ? T("Sendmail Snapshot v2: файлы будут скопированы ТОЛЬКО в приватный каталог на Linux. Символические ссылки останутся данными JSON и НЕ будут созданы. Права и владельцы оригинальных файлов НЕ применяются. Это НЕ восстановление /etc/mail. Пароли и ключи остаются в архиве. Продолжить?",
+                "Sendmail Snapshot v2: files are copied ONLY into a private Linux review directory. Symlinks are inert JSON metadata, never created. Original owners/modes are NOT applied. This is NOT an /etc/mail restore. Secrets stay in the archive. Proceed?",
+                "גיבוי Sendmail v2 ייוצא לתיקייה פרטית בלבד. קישורים סמליים יישמרו כנתונים בלבד. אין שחזור של /etc/mail.")
+            : T("Будут извлечены файлы архива " + id +
                   " в НОВЫЙ каталог root-only внутри /var/backups. Текущий /etc, почтовая очередь, службы и маршруты не меняются. Файлы могут содержать пароли! Самостоятельно проверьте восстановление на отдельной VM. Продолжить?",
-              "A NEW private, root-only folder under /var/backups will receive extracted files from snapshot " +
+                "A NEW private, root-only folder under /var/backups will receive extracted files from snapshot " +
                   id + ". Active /etc, MTA services, queues and routes are NOT changed. Extracted files may contain passwords. Validate recovery separately on a disposable VM. Proceed?",
-              "הגיבוי ייחלץ לתיקייה חדשה ומוגנת. אין שינוי בתצורה הפעילה או בשירותי הדואר."),
-            "EXTRACT VERIFIED MTA ARCHIVE")) return;
+                "הגיבוי ייחלץ לתיקייה חדשה ומוגנת. אין שינוי בתצורה הפעילה או בשירותי הדואר.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Offline " + mta + " recovery export",
+            warning, packageV2 ? "EXPORT INERT SENDMAIL SNAPSHOT" : "EXTRACT VERIFIED MTA ARCHIVE")) return;
         var response = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildForeignMtaBackupBundle(mta, "export-offline", id),
             TimeSpan.FromMinutes(5));
@@ -5903,12 +5903,19 @@ internal sealed partial class MainForm : Form
             mta + @"/\.offline-recovery-[a-zA-Z0-9_-]{8,20})\r?$");
         var sha = System.Text.RegularExpressions.Regex.Match(response.StdOut,
             @"(?m)^FOREIGN_BACKUP_ARCHIVE_SHA256=([a-f0-9]{64})\r?$");
-        if (!path.Success || !sha.Success ||
-            foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta)
-            throw new InvalidDataException("Offline export directory or host check was not verified.");
-        WriteLine("Verified offline " + mta + " recovery files extracted on Linux: " +
+        string reportedFormat = ParseForeignBackupFormat(response.StdOut, mta);
+        if (!path.Success || !sha.Success || reportedFormat != format ||
+            foreignBackupListContext != SecurityOptionsStore.Identity(Endpoint()) + "|" + mta ||
+            foreignBackupSelector.SelectedItem is not string stillSelected || stillSelected != id)
+            throw new InvalidDataException("Offline export format, directory, archive or SSH host changed.");
+        if (packageV2 && !System.Text.RegularExpressions.Regex.IsMatch(response.StdOut,
+            @"(?m)^FOREIGN_BACKUP_OFFLINE_LINKS_MATERIALIZED=no\r?$"))
+            throw new InvalidDataException("Sendmail v2 export did not confirm inert package symlinks.");
+        WriteLine("Verified offline " + mta + " snapshot exported privately on Linux: " +
             path.Groups[1].Value + "; archive SHA256=" + sha.Groups[1].Value +
-            ". Active server unchanged. DO NOT copy secrets to Windows or start MTA with these files.");
+            (packageV2
+                ? ". Package links are JSON metadata ONLY; original owners and modes are NOT applied. This is NOT a live /etc/mail restore. Do NOT copy secrets to Windows or start MTA with this tree."
+                : ". Active server unchanged. DO NOT copy secrets to Windows or start MTA with these files."));
     }
 
     private async Task BackupNowAsync()
