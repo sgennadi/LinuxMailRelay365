@@ -1176,3 +1176,51 @@ with exact release asset names, machine header validation and SHA256
 content comparison. No Authenticode signing is fabricated by CI. A production
 release must rebuild each archive around the actually publisher-signed EXE
 and record both archive SHA256 values before trusted updater acceptance.
+
+
+## Experimental reviewed SELinux fcontext lifecycle — Draft after Preview 25
+
+The Draft branch adds linux/manage-rhel-selinux-sidecar-context.py.
+It manages ONLY these three exact Postfix equivalences:
+
+- /etc/linuxmailrelay365/sidecar-postfix = /etc/postfix
+- /var/spool/linuxmailrelay365-sidecar = /var/spool/postfix
+- /var/lib/linuxmailrelay365-sidecar = /var/lib/postfix
+
+Read-only --check-only prints a SHA-256 of local custom fcontexts and refuses
+collisions. --apply requires the exact reviewed SHA and the typed approval
+ADD_REVIEWED_RHEL_SIDECAR_CONTEXTS. It writes a root-only recovery journal
+before changing policy; it verifies all three rules, and on failure it
+attempts to remove ONLY its own newly-added rules. A crash leaves an
+explicit recovery journal, not silent adoption.
+
+--relabel requires an unchanged complete managed policy, stopped secondary
+systemd service, existing verified isolated directories, no symlinked
+ancestors or descendants, and explicit approval
+RELABEL_REVIEWED_RHEL_SIDECAR_PATHS. Run it again after a standalone Postfix
+instance has created public/private queue directories. --status is read-only.
+
+--restore requires a fresh current policy SHA-256, typed
+REMOVE_REVIEWED_RHEL_SIDECAR_CONTEXTS, stopped sidecar unit, and removal
+of all three isolated target directories. Unrelated custom SELinux rules
+must be unchanged. It does NOT stop any service, delete mail, edit
+Postfix or Microsoft 365, disable SELinux, configure firewalld, or send mail.
+
+Example in an authorized disposable Enforcing lab only:
+
+```shell
+sudo python3 linux/manage-rhel-selinux-sidecar-context.py --check-only
+sudo python3 linux/manage-rhel-selinux-sidecar-context.py --apply --expect-policy-sha256 EXACT_REVIEWED_SHA256 --confirm ADD_REVIEWED_RHEL_SIDECAR_CONTEXTS
+# Create isolated directories in the LAB and relabel before service start:
+sudo python3 linux/manage-rhel-selinux-sidecar-context.py --relabel --confirm RELABEL_REVIEWED_RHEL_SIDECAR_PATHS
+# Stop the secondary service and remove lab-owned isolated directories/unit.
+sudo python3 linux/manage-rhel-selinux-sidecar-context.py --status
+sudo python3 linux/manage-rhel-selinux-sidecar-context.py --restore --expect-policy-sha256 EXACT_CURRENT_SHA256 --confirm REMOVE_REVIEWED_RHEL_SIDECAR_CONTEXTS
+```
+
+GitHub CI exercises offline collisions, rollback, policy drift and restore.
+The independent Rocky 9.9 KVM test also exercises the lifecycle against
+a loopback-only error-transport Postfix fixture and requires full cleanup.
+This does NOT certify a production Direct Send, Connector, XOAUTH2, Dovecot
+or multi-mailbox installer under Enforcing, real cloud delivery or TPM.
+All production installers retain their Enforcing safety gates.
