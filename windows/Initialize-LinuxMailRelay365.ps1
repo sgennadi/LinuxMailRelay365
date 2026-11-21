@@ -28,6 +28,15 @@ if ($cert.NotAfter.ToUniversalTime() -le $now.AddDays(3) -or
 }
 $sha = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($cert.RawData))
 $clientId = $ExistingAppId
+$createdThisRun = [ordered]@{
+    appRegistration = $false
+    enterpriseApplication = $false
+    exchangeServicePrincipal = $false
+    managementScope = $false
+    smtpRoleAssignment = $false
+    mailboxTag = $false
+    addedCertificate = $false
+}
 Write-Host "PLAN: Tenant $TenantId; mailbox $Mailbox; certificate SHA256 $sha"
 Write-Host "PLAN: $($(if ($clientId -eq [guid]::Empty) {'Create new app'} else {'Reuse existing app'})) and add one public certificate."
 Write-Host 'PLAN: scoped Exchange Application SMTP.SendAsApp ONLY. No mailbox password or Graph Mail.Send.'
@@ -80,6 +89,7 @@ try {
             keyCredentials = @((CertEntry $cert $CertificateLabel))
         }
         $clientId = [guid]$app.appId
+        $createdThisRun.appRegistration = $true
         Write-Host "New Entra application created. Client ID: $clientId"
     } else {
         $app = Fetch-App $clientId
@@ -105,6 +115,7 @@ try {
             $entries += CertEntry $cert $CertificateLabel
             [void](Graph PATCH "https://graph.microsoft.com/v1.0/applications/$($app.id)" `
                 @{ keyCredentials = $entries })
+            $createdThisRun.addedCertificate = $true
             $verify = Fetch-App $clientId
             $valid = @($verify.keyCredentials | Where-Object {
                 $_.key -and [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([Convert]::FromBase64String($_.key))) -eq $sha
@@ -121,6 +132,7 @@ try {
     } catch {
         # New registration often has no Enterprise Application until created.
         $service = Graph POST 'https://graph.microsoft.com/v1.0/servicePrincipals' @{ appId = $clientId.ToString() }
+        $createdThisRun.enterpriseApplication = $true
     }
     if (-not $service.id) { throw 'Enterprise Application object ID missing.' }
     $serviceObjectId = [guid]$service.id
@@ -166,11 +178,13 @@ try {
     if ($null -eq $sp) {
         New-ServicePrincipal -AppId $clientId.ToString() -ObjectId $serviceObjectId.ToString() `
             -DisplayName $ApplicationName | Out-Null
+        $createdThisRun.exchangeServicePrincipal = $true
     } elseif ([guid]$sp.AppId -ne $clientId) { throw 'Exchange service principal mismatch.' }
     $scope = Get-ManagementScope -Identity $prefix -ErrorAction SilentlyContinue
     $filter = "CustomAttribute15 -eq '$tag'"
     if ($null -eq $scope) {
         New-ManagementScope -Name $prefix -RecipientRestrictionFilter $filter | Out-Null
+        $createdThisRun.managementScope = $true
     } elseif ($scope.RecipientRestrictionFilter.ToString() -ne $filter) {
         throw 'Scope filter changed; refusing to continue.'
     }
@@ -179,11 +193,15 @@ try {
     if ($null -eq $assignment) {
         New-ManagementRoleAssignment -Name $assignmentName -App $serviceObjectId.ToString() `
             -Role 'Application SMTP.SendAsApp' -CustomResourceScope $prefix | Out-Null
+        $createdThisRun.smtpRoleAssignment = $true
     } elseif ($assignment.Role.ToString() -ne 'Application SMTP.SendAsApp' -or
               $assignment.CustomResourceScope.ToString() -ne $prefix) {
         throw 'Unexpected existing role assignment.'
     }
-    if (-not $existingTag) { Set-Mailbox -Identity $Mailbox -CustomAttribute15 $tag -ErrorAction Stop }
+    if (-not $existingTag) {
+        Set-Mailbox -Identity $Mailbox -CustomAttribute15 $tag -ErrorAction Stop
+        $createdThisRun.mailboxTag = $true
+    }
     Set-CASMailbox -Identity $Mailbox -SmtpClientAuthenticationDisabled $false -ErrorAction Stop
     $auth = @(Test-ServicePrincipalAuthorization -Identity $serviceObjectId.ToString() -Resource $Mailbox)
     if (@($auth | Where-Object { $_.RoleName -eq 'Application SMTP.SendAsApp' -and $_.InScope -eq $true }).Count -lt 1) {
@@ -197,6 +215,15 @@ try {
         enterpriseAppObjectId = $serviceObjectId.ToString()
         certificateSha256 = $sha; certificateExpiresUtc = $cert.NotAfter.ToUniversalTime().ToString('o')
         rbacReady = $true
+        createdObjectEvidence = [ordered]@{
+            schema = 'linuxmailrelay365-created-object-hints/v1'
+            # Local audit hint only, NEVER sufficient authorization to delete.
+            exchangeServicePrincipalObjectId = $serviceObjectId.ToString('D')
+            managementScopeName = $prefix
+            roleAssignmentName = $assignmentName
+            mailboxScopeTag = $tag
+            createdThisRun = $createdThisRun
+        }
     }
     Save-State $state
     Write-Host 'READY: Scoped Application SMTP.SendAsApp authorized for sender mailbox.'
