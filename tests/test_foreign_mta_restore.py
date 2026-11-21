@@ -253,6 +253,20 @@ class ForeignMtaRestoreTests(unittest.TestCase):
                 with self.assertRaises(restore.Refused):
                     restore.safe_native_sendmail_directory(config, root, 0)
 
+    def test_native_parser_timeout_is_categorized_and_fails_closed(self):
+        with patch.object(restore, "trusted_native_tool", return_value="/usr/sbin/exim"):
+            with patch.object(restore.subprocess, "run",
+                              side_effect=restore.subprocess.TimeoutExpired(
+                                  ["/usr/sbin/exim", "-bV"], 15)):
+                with self.assertRaisesRegex(
+                        restore.Refused, "native_mta_static_parser_timed_out"):
+                    restore.native_static_config_check("exim")
+            with patch.object(restore.subprocess, "run",
+                              side_effect=OSError("test missing binary")):
+                with self.assertRaisesRegex(
+                        restore.Refused, "native_mta_static_parser_unavailable"):
+                    restore.native_static_config_check("exim")
+
     def test_native_static_check_uses_only_compiler_parse_modes(self):
         with tempfile.TemporaryDirectory() as folder:
             root, base, tree, snap_id, uid = self.fixture(folder, "sendmail")

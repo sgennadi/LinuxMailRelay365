@@ -194,12 +194,18 @@ def native_static_config_check(mta, root=backup.ROOT, uid=0,
         raise Refused("unsupported_primary_mta")
     if command_runner is None:
         def command_runner(args):
-            result = subprocess.run(args, stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL,
-                                    env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
-                                         "LC_ALL": "C"},
-                                    timeout=15, check=False)
+            try:
+                result = subprocess.run(args, stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL,
+                                        env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                                             "LC_ALL": "C",
+                                             "RES_OPTIONS": "attempts:1 timeout:1"},
+                                        timeout=15, check=False)
+            except subprocess.TimeoutExpired:
+                raise Refused("native_mta_static_parser_timed_out")
+            except OSError:
+                raise Refused("native_mta_static_parser_unavailable")
             return result.returncode
     tool = trusted_native_tool(mta)
     if mta == "exim":

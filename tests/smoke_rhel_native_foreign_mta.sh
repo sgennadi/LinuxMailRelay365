@@ -24,7 +24,7 @@ fi
 # DNF operates only in this disposable container, never on a user MTA.
 # EL9 minimal containers include coreutils-single, incompatible with
 # coreutils; never replace base packages just to run a syntax smoke test.
-dnf -y install python3
+dnf -y install python3 hostname
 if test "$mta" = "exim"; then
   if test "$ID" != rocky; then
     echo "EL_NATIVE_EXIM_EPEL_TEST_REQUIRES_ROCKY" >&2; exit 2
@@ -43,6 +43,35 @@ fi
 # An unrelated /usr/sbin/sendmail alternative must not count as Sendmail.
 rpm -q "$mta" >/dev/null
 test ! -e /run/systemd/system
+if test "$mta" = sendmail; then
+  # RPM Sendmail initialisation may perform canonical-host DNS lookups. In a
+  # disposable Docker host ID the default hostname may lack an FQDN. Supply
+  # exactly one local hosts-file entry; never write to a customer's /etc/hosts.
+  python3 - <<'PY'
+import re
+import socket
+from pathlib import Path
+
+hostname = socket.gethostname()
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,90}", hostname):
+    raise SystemExit("EL_SENDMAIL_UNSAFE_CI_HOSTNAME")
+try:
+    addr = socket.gethostbyname(hostname)
+except OSError:
+    addr = "127.0.0.1"
+path = Path("/etc/hosts")
+original = path.read_text(encoding="utf-8")
+entry = "{} {}.ci.localdomain {}\n".format(addr, hostname, hostname)
+with path.open("r+", encoding="utf-8") as stream:
+    stream.write(entry + original)
+    stream.truncate()
+print("EL_SENDMAIL_CI_FQDN_HOSTS_ENTRY=added")
+for name in ("sendmail.cf", "submit.cf"):
+    p = Path("/etc/mail") / name
+    print("EL_SENDMAIL_{}_EXISTS={}".format(
+        name.replace(".", "_").upper(), "yes" if p.is_file() else "no"))
+PY
+fi
 
 state="$(mktemp -d)"
 trap 'rm -rf -- "$state"' EXIT
