@@ -149,7 +149,7 @@ scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
     linux/manage-rhel-selinux-port.py ci@127.0.0.1:/home/ci/lmr365-selinux-port.py
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
-    'sudo install -o root -g root -m 0755 /home/ci/lmr365-selinux-port.py /usr/local/libexec/lmr365-selinux-port.py'
+    'sudo install -d -o root -g root -m 0755 /usr/local/libexec && sudo install -o root -g root -m 0755 /home/ci/lmr365-selinux-port.py /usr/local/libexec/lmr365-selinux-port.py'
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'bash /home/ci/lmr365-tls-auth-ci.sh --setup'
 echo "LMR365_GUEST_AUTH_TLS_SETUP=verified"
