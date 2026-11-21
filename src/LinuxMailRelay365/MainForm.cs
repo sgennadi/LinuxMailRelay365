@@ -2732,7 +2732,7 @@ internal sealed class MainForm : Form
                         "שחזור תצורת Postfix"),
                         RestoreBackupAsync, false, "back", "restore");
                 }
-                else if (verifiedPrimary && inspectedMail?.Mta is "exim" or "sendmail")
+                else if (verifiedPrimary && (inspectedMail?.Mta is "exim" or "sendmail"))
                 {
                     AddLine(page, UiTheme.Text(T(
                         "Архив конфигурации основного Exim/Sendmail",
@@ -5468,6 +5468,124 @@ internal sealed class MainForm : Form
         inspectedServerIdentity = null;
         sidecarBackupSelector.Items.Clear();
         WriteLine("Restored files ONLY. Recheck certificates, DNS, M365 delivery and Relay configuration BEFORE manually starting isolated services.");
+    }
+
+    private void RequirePostfixBackup()
+    {
+        if (inspectedServerIdentity != TryCurrentIdentity() || inspectedMail?.Mta != "postfix")
+            throw new InvalidOperationException(
+                "Reinspect the active Postfix before using Postfix backup or Restore. This archive does not cover Exim/Sendmail.");
+    }
+
+    private string ConfirmedForeignBackupMta()
+    {
+        string? current = TryCurrentIdentity();
+        if (current is null || inspectedServerIdentity != current ||
+            inspectedHostIdentity != current || inspectedHost is null ||
+            inspectedHost.MtaState != "active" ||
+            inspectedMail?.Mta is not ("exim" or "sendmail") ||
+            inspectedHost.Mta != inspectedMail.Mta)
+            throw new InvalidOperationException(
+                "Reinspect active Exim/Sendmail and hostname before making a primary MTA backup.");
+        return inspectedMail.Mta;
+    }
+
+    private static bool ForeignBackupReportOk(string output, string mta, string status)
+    {
+        if (output.Length > 8192 || output.Contains('\0')) return false;
+        string normalized = output.Replace("\r\n", "\n");
+        return normalized.Contains("FOREIGN_BACKUP_STATUS=" + status + "\n",
+                StringComparison.Ordinal) &&
+            normalized.Contains("FOREIGN_BACKUP_MTA=" + mta + "\n",
+                StringComparison.Ordinal) &&
+            normalized.Contains("FOREIGN_BACKUP_PRIMARY_CONFIG_CHANGED=no\n",
+                StringComparison.Ordinal) &&
+            normalized.Contains("FOREIGN_BACKUP_MAIL_QUEUE_CHANGED=no\n",
+                StringComparison.Ordinal) &&
+            normalized.Contains("FOREIGN_BACKUP_SERVICE_CHANGED=no\n",
+                StringComparison.Ordinal) &&
+            normalized.Contains("FOREIGN_BACKUP_RESTORE_ENABLED=no\n",
+                StringComparison.Ordinal);
+    }
+
+    private async Task BackupForeignMtaAsync()
+    {
+        var endpoint = Endpoint();
+        string mta = ConfirmedForeignBackupMta();
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaBackupBundle(mta, "backup"),
+            TimeSpan.FromMinutes(4));
+        response.EnsureSuccess();
+        if (!ForeignBackupReportOk(response.StdOut, mta, "verified"))
+            throw new InvalidDataException("Existing MTA configuration backup was not verified.");
+        var id = System.Text.RegularExpressions.Regex.Match(response.StdOut,
+            @"(?m)^FOREIGN_BACKUP_ID=([0-9]{8}T[0-9]{6}Z-[a-f0-9]{12})\r?$");
+        var sha = System.Text.RegularExpressions.Regex.Match(response.StdOut,
+            @"(?m)^FOREIGN_BACKUP_ARCHIVE_SHA256=([a-f0-9]{64})\r?$");
+        if (!id.Success || !sha.Success ||
+            inspectedServerIdentity != TryCurrentIdentity())
+            throw new InvalidDataException("Missing verified MTA archive ID or SSH host changed.");
+        foreignBackupListContext = null;
+        foreignBackupSelector.Items.Clear();
+        WriteLine("Verified " + mta + " root-only config snapshot: " +
+            id.Groups[1].Value + " SHA256=" + sha.Groups[1].Value +
+            ". No mail queue, external certificate or service-state backup. Restore disabled.");
+    }
+
+    private async Task ListForeignMtaBackupsAsync()
+    {
+        var endpoint = Endpoint();
+        string mta = ConfirmedForeignBackupMta();
+        foreignBackupListContext = null;
+        foreignBackupSelector.Items.Clear();
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaBackupBundle(mta, "list"),
+            TimeSpan.FromMinutes(2));
+        response.EnsureSuccess();
+        if (!ForeignBackupReportOk(response.StdOut, mta, "verified_list"))
+            throw new InvalidDataException("Foreign MTA archive inventory could not be verified.");
+        var count = System.Text.RegularExpressions.Regex.Match(response.StdOut,
+            @"(?m)^FOREIGN_BACKUP_COUNT=([0-9]{1,3})\r?$");
+        var matches = System.Text.RegularExpressions.Regex.Matches(response.StdOut,
+            @"(?m)^FOREIGN_BACKUP_ID=([0-9]{8}T[0-9]{6}Z-[a-f0-9]{12})\r?$");
+        if (!count.Success || !int.TryParse(count.Groups[1].Value, out int expected) ||
+            expected != matches.Count || expected > 128 ||
+            inspectedServerIdentity != TryCurrentIdentity())
+            throw new InvalidDataException("Foreign MTA backup listing has inconsistent count or host.");
+        var unique = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (System.Text.RegularExpressions.Match item in matches)
+            if (!unique.Add(item.Groups[1].Value))
+                throw new InvalidDataException("Duplicate foreign MTA backup ID.");
+        foreach (string id in unique)
+            foreignBackupSelector.Items.Add(id);
+        if (foreignBackupSelector.Items.Count > 0)
+            foreignBackupSelector.SelectedIndex = 0;
+        foreignBackupListContext = SecurityOptionsStore.Identity(endpoint) + "|" + mta;
+        WriteLine("Verified primary " + mta + " config archives: " + matches.Count +
+            ". Contents stay on Linux and Restore is not available.");
+        RenderPage();
+    }
+
+    private async Task VerifyForeignMtaBackupAsync()
+    {
+        var endpoint = Endpoint();
+        string mta = ConfirmedForeignBackupMta();
+        if (foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta ||
+            foreignBackupSelector.SelectedItem is not string id)
+            throw new InvalidOperationException("List and choose the verified archive for this MTA.");
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaBackupBundle(mta, "verify", id),
+            TimeSpan.FromMinutes(3));
+        response.EnsureSuccess();
+        if (!ForeignBackupReportOk(response.StdOut, mta, "verified"))
+            throw new InvalidDataException("Selected MTA archive failed checksum verification.");
+        var sha = System.Text.RegularExpressions.Regex.Match(response.StdOut,
+            @"(?m)^FOREIGN_BACKUP_ARCHIVE_SHA256=([a-f0-9]{64})\r?$");
+        if (!sha.Success || foreignBackupListContext !=
+            SecurityOptionsStore.Identity(endpoint) + "|" + mta)
+            throw new InvalidDataException("Archive digest missing or selected MTA changed.");
+        WriteLine("Primary " + mta + " archive " + id + " SHA256=" + sha.Groups[1].Value +
+            " verified on Linux. Nothing restored.");
     }
 
     private async Task BackupNowAsync()
