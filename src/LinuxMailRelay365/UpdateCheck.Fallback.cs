@@ -130,9 +130,9 @@ internal static class UpdateCheck
         }
         const string name = "LinuxMailRelay365-win-x64.zip";
         const string sha = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        if (Select(Catalog("0.1.0-preview.25", true, sha, name), false).Item1 is not null ||
-            Select(Catalog("0.1.0-preview.25", true, sha, name), true).Item2 != "0.1.0-preview.25" ||
-            Select(Catalog("0.1.0-preview.25", false, sha, name), false).Item1 is not null ||
+        if (Select(Catalog("0.1.0-preview.26", true, sha, name), false).Item1 is not null ||
+            Select(Catalog("0.1.0-preview.26", true, sha, name), true).Item2 != "0.1.0-preview.26" ||
+            Select(Catalog("0.1.0-preview.26", false, sha, name), false).Item1 is not null ||
             Select(Catalog("0.1.0-preview.16", true, sha, name), true).Item1 is not null ||
             Select(Catalog("0.1.1", false, sha, name), false).Item2 != "0.1.1" ||
             Select(Catalog("0.1.1", false, "sha256:invalid", name), true).Item1 is not null ||
