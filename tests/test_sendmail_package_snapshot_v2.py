@@ -144,9 +144,41 @@ class V2SnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(m.Refused, "package_file_metadata_mismatch"):
             m.verify(self.folder, "sendmail", self.uid)
 
-    def test_package_export_explicitly_blocked(self):
-        with self.assertRaisesRegex(m.Refused, "metadata_aware_export"):
+    def test_package_export_privately_copies_data_and_inert_metadata(self):
+        export, accepted = m.extract_offline(
+            "sendmail", self.folder.name, self.base, self.uid)
+        folder = Path(export)
+        self.assertEqual(accepted["format"], "v2_package_metadata")
+        self.assertEqual(m.verify(folder, "sendmail", self.uid), accepted)
+        self.assertTrue(folder.is_dir())
+        self.assertEqual(stat.S_IMODE(folder.stat().st_mode), 0o700)
+        self.assertEqual((folder / "etc/mail/sendmail.cf").read_bytes(),
+                         (self.root / "etc/mail/sendmail.cf").read_bytes())
+        self.assertEqual((folder / "etc/aliases").read_bytes(),
+                         (self.root / "etc/aliases").read_bytes())
+        for name in ("etc/mail/sendmail.cf", "etc/aliases",
+                     "PACKAGE_RECOVERY_METADATA.json",
+                     "READ_ME_BEFORE_RECOVERY.txt",
+                     "manifest.json", "config.tar.gz"):
+            self.assertEqual(stat.S_IMODE((folder / name).stat().st_mode), 0o600)
+        link = folder / "etc/mail/smrsh/procmail"
+        self.assertFalse(os.path.lexists(str(link)))
+        recovered = json.loads((folder / "PACKAGE_RECOVERY_METADATA.json").read_text())
+        self.assertEqual(recovered["format"], "sendmail_v2_inert_metadata_only")
+        self.assertEqual(recovered["source_archive_sha256"], accepted["sha256"])
+        self.assertFalse(recovered["symlinks_materialized"])
+        self.assertFalse(recovered["automatic_live_restore_supported"])
+        self.assertEqual(recovered["objects"]["etc/mail/smrsh/procmail"]["target"],
+                         "/usr/bin/procmail")
+        self.assertTrue((self.root / "etc/mail/smrsh/procmail").is_symlink())
+        self.assertIn("OFFLINE REVIEW ONLY",
+                      (folder / "READ_ME_BEFORE_RECOVERY.txt").read_text())
+
+    def test_package_export_refuses_corrupted_snapshot(self):
+        self.archive.write_bytes(self.archive.read_bytes() + b"corrupt")
+        with self.assertRaisesRegex(m.Refused, "snapshot_archive_digest_mismatch"):
             m.extract_offline("sendmail", self.folder.name, self.base, self.uid)
+        self.assertFalse(any(self.folder.parent.glob(".offline-recovery-*")))
 
     def test_package_restore_never_applies(self):
         spec = importlib.util.spec_from_file_location(
