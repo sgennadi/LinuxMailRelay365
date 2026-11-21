@@ -186,3 +186,26 @@ regeneration, or Microsoft 365 delivery. The rehearsal explicitly requires
 root and `GITHUB_ACTIONS=true`, and is **not exposed as a GUI action**.
 Full production/VM backup restore and disaster recovery sign-off are still
 mandatory before introducing any live `/etc/mail` Restore operation.
+
+### Reboot continuity after stopped Sendmail configuration recovery (KVM only)
+
+The **experimental, root-attested disposable Rocky Linux 9.9 KVM** workflow
+first validates a controlled restore of the single root-owned `sendmail.cf`
+from a verified v2 snapshot, including its SHA-256, UID/GID, mode and SELinux
+label. It restarts Sendmail only to test loopback SMTP EHLO/QUIT, then stops
+it and restores the original Postfix. A second real VM reboot checks the
+snapshot again, without changing any configuration or submitting test mail.
+
+The reboot comparison includes the **entire snapshot member/object
+inventory** via `--preview-recovery`, the archived SHA-256, restored
+`sendmail.cf` SHA-256, owner/mode, SELinux label SHA-256, private snapshot
+identifier, empty Postfix/Sendmail queues, stopped Sendmail and active
+Postfix under Enforcing SELinux. The normalized report must be identical
+before and after the new boot ID. This probe is read-only and CI-only.
+
+**Scope limit:** This tests single-file recovery and read-only full-snapshot
+comparison, **not** a full package-tree Restore. It does not restore package
+DBs to active `/etc/mail`, materialize links there, replay queues, validate
+external certificates, or send Microsoft 365 mail. Production live Restore
+remains disabled and the Windows release stays Draft until independent
+acceptance and signing gates have passed.
