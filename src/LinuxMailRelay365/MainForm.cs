@@ -5649,6 +5649,18 @@ internal sealed partial class MainForm : Form
                 StringComparison.Ordinal);
     }
 
+    private static string ParseForeignBackupFormat(string output, string mta)
+    {
+        var matches = System.Text.RegularExpressions.Regex.Matches(output,
+            @"(?m)^FOREIGN_BACKUP_FORMAT=(v1_regular_files|v2_package_metadata)\r?$");
+        if (matches.Count != 1)
+            throw new InvalidDataException("Missing or duplicate verified MTA snapshot format.");
+        string format = matches[0].Groups[1].Value;
+        if (format == "v2_package_metadata" && mta != "sendmail")
+            throw new InvalidDataException("Unexpected package metadata archive for this MTA.");
+        return format;
+    }
+
     private async Task CheckForeignMtaNativeSyntaxAsync()
     {
         var endpoint = Endpoint();
@@ -5696,11 +5708,16 @@ internal sealed partial class MainForm : Form
         if (!id.Success || !sha.Success ||
             inspectedServerIdentity != TryCurrentIdentity())
             throw new InvalidDataException("Missing verified MTA archive ID or SSH host changed.");
+        string format = ParseForeignBackupFormat(response.StdOut, mta);
         foreignBackupListContext = null;
         foreignBackupSelector.Items.Clear();
         WriteLine("Verified " + mta + " root-only config snapshot: " +
             id.Groups[1].Value + " SHA256=" + sha.Groups[1].Value +
-            ". No mail queue, external certificate or service-state backup. Restore disabled.");
+            ", format=" + format +
+            ". No mail queue, external certificate or service-state backup. Restore disabled." +
+            (format == "v2_package_metadata"
+                ? " Sendmail package directory/link metadata captured without following symlinks. Offline Export is unavailable for this snapshot."
+                : ""));
     }
 
     private async Task ListForeignMtaBackupsAsync()
@@ -5755,8 +5772,12 @@ internal sealed partial class MainForm : Form
         if (!sha.Success || foreignBackupListContext !=
             SecurityOptionsStore.Identity(endpoint) + "|" + mta)
             throw new InvalidDataException("Archive digest missing or selected MTA changed.");
+        string format = ParseForeignBackupFormat(response.StdOut, mta);
         WriteLine("Primary " + mta + " archive " + id + " SHA256=" + sha.Groups[1].Value +
-            " verified on Linux. Nothing restored.");
+            ", format=" + format + " verified on Linux. Nothing restored." +
+            (format == "v2_package_metadata"
+                ? " Package-owned database and symlink metadata included; Offline Export and automatic Restore are blocked."
+                : ""));
     }
 
     private async Task PreviewForeignMtaRecoveryAsync()
@@ -5779,9 +5800,14 @@ internal sealed partial class MainForm : Form
         if (!state.Success || !sha.Success ||
             foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta)
             throw new InvalidDataException("Recovery preview was not bound to this host and archive.");
+        string format = ParseForeignBackupFormat(response.StdOut, mta);
         WriteLine("Read-only " + mta + " configuration comparison with backup " + id +
             ": current=" + state.Groups[1].Value + ", archive SHA256=" +
-            sha.Groups[1].Value + ". No SMTP changes or Restore performed.");
+            sha.Groups[1].Value + ", format=" + format +
+            ". No SMTP changes or Restore performed." +
+            (format == "v2_package_metadata"
+                ? " Package metadata are compared, but automatic recovery remains blocked."
+                : ""));
     }
 
     private async Task PreflightForeignMtaRecoveryAsync()
@@ -5841,6 +5867,24 @@ internal sealed partial class MainForm : Form
         if (foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta ||
             foreignBackupSelector.SelectedItem is not string id)
             throw new InvalidOperationException("Re-list verified snapshots and select one for this MTA.");
+        // Re-verify the exact selected archive and format before asking for
+        // confirmation. V2 includes package-owned DBs and symlink metadata;
+        // a regular-file-only export would silently omit essential objects.
+        var verified = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaBackupBundle(mta, "verify", id),
+            TimeSpan.FromMinutes(3));
+        verified.EnsureSuccess();
+        if (!ForeignBackupReportOk(verified.StdOut, mta, "verified"))
+            throw new InvalidDataException("Selected MTA archive verification failed before Export.");
+        string format = ParseForeignBackupFormat(verified.StdOut, mta);
+        if (foreignBackupListContext != SecurityOptionsStore.Identity(Endpoint()) + "|" + mta ||
+            foreignBackupSelector.SelectedItem is not string currentId || currentId != id)
+            throw new InvalidOperationException("SSH host or selected archive changed during verification.");
+        if (format == "v2_package_metadata")
+        {
+            WriteLine("Offline Export blocked: Sendmail package Snapshot v2 includes service-owned files and symbolic link metadata. Verify and compare are supported; package-aware offline recovery requires manual approval and full system backup.");
+            return;
+        }
         if (!ConfirmDestructive("LinuxMailRelay365 | Offline " + mta + " recovery export",
             T("Будут извлечены файлы архива " + id +
                   " в НОВЫЙ каталог root-only внутри /var/backups. Текущий /etc, почтовая очередь, службы и маршруты не меняются. Файлы могут содержать пароли! Самостоятельно проверьте восстановление на отдельной VM. Продолжить?",
