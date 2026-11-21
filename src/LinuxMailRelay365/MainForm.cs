@@ -2233,13 +2233,13 @@ internal sealed partial class MainForm : Form
                     AddLine(page, oauthSenderMode);
                     if (oauthSenderMode.SelectedIndex == 1)
                     {
-                        AddField(page, T("Путь к защищённой карте отправителей Linux (только план)",
-                            "Linux sender/mailbox authorization map path (plan only)",
-                            "נתיב למיפוי שולחים בלינוקס - תכנון בלבד"), oauthSenderMapPath);
+                        AddField(page, T("Защищённая карта отправителей Linux (аудит и офлайн-план)",
+                            "Linux sender/mailbox authorization map (audit and offline plan)",
+                            "מפת שולחים מוגנת לבדיקת תצורה"), oauthSenderMapPath);
                         AddLine(page, UiTheme.Text(T(
-                            "Этот режим НЕ УСТАНАВЛИВАЕТСЯ. Для каждого локального отправителя понадобятся проверка SMTP-логина, владения From и разрешений Exchange. Не меняйте сервер до появления проверенной реализации.",
-                            "PLAN ONLY, NOT DEPLOYABLE: each local sender must have a verified SMTP login, RFC5322 From ownership and Exchange mailbox permission. The current XOAUTH2 transport always rewrites From.",
-                            "תכנון בלבד: לא ניתן להפעיל עד לאימות זהות והרשאות שולחים.")));
+                            "Обычный установщик XOAUTH2 здесь отключён. Ниже доступна только экспериментальная подготовка и офлайн-настройка отдельного Postfix без запуска службы. Реальная доставка, Exchange и Restore пока НЕ подтверждены.",
+                            "The standard XOAUTH2 installer is disabled for multiple mailboxes. Experimental actions below stage files and configure a STOPPED isolated Postfix only. Exchange delivery and a complete Restore are NOT verified.",
+                            "מתקין XOAUTH2 הרגיל חסום. מותרת הכנה ניסיונית ללא הפעלת השירות בלבד.")));
                         AddAction(page, T(
                             "Проверить карту SMTP-логинов и ящиков M365 (только чтение)",
                             "Audit SMTP login → sender → M365 mailbox map (read-only)",
@@ -2869,7 +2869,7 @@ internal sealed partial class MainForm : Form
                 {
                     AddLine(page, UiTheme.Text(T(
                         "Несколько XOAUTH2 mailbox: это только план. Проверка токена и тестовая отправка скрыты, чтобы не отправить письмо от чужого фиксированного ящика. Применение запрещено.",
-                        "Multi-mailbox XOAUTH2 is PLAN ONLY. Token/test-mail actions are hidden to avoid sending through the unrelated fixed mailbox. Deployment remains blocked.",
+                        "Multi-mailbox XOAUTH2 is PLAN ONLY for live delivery. Token/test-mail actions remain hidden; experimental OFFLINE configuration never starts sending.",
                         "ריבוי תיבות XOAUTH2 הוא תכנון בלבד; לא תישלח הודעה.")));
                     AddAction(page, T("Проверить состояние локального SMTP и очереди (без отправки)",
                                       "Inspect local SMTP and queue (no mail sent)",
