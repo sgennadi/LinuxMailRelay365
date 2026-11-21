@@ -277,6 +277,97 @@ def backup(mta, root=ROOT, base=BASE, owner_uid=0):
         raise
 
 
+
+def recovery_preview(mta, snapshot_id, root=ROOT, base=BASE, owner_uid=0):
+    """Summarize differences using hashes only. Never display paths or data."""
+    if mta not in ALLOWED or not ID.fullmatch(snapshot_id):
+        raise Refused("invalid_recovery_selection")
+    directory = base / mta / snapshot_id
+    verified = verify(directory, mta, owner_uid)
+    manifest = json.loads(stable_file(directory / "manifest.json", owner_uid)[1])
+    try:
+        files = selected_files(mta, root, owner_uid)
+        same = len(files) == verified["files"]
+        if same:
+            for name, path in files.items():
+                expected = manifest["files"].get(name)
+                if not expected:
+                    same = False
+                    break
+                meta, contents = stable_file(path, owner_uid)
+                if (meta.st_size != expected["size"] or
+                        hashlib.sha256(contents).hexdigest() != expected["sha256"]):
+                    same = False
+                    break
+        state = "identical" if same else "different"
+    except (OSError, ValueError, Refused):
+        state = "unverified"
+    return {"snapshot": verified, "current": state}
+
+
+def extract_offline(mta, snapshot_id, base=BASE, owner_uid=0):
+    """Extract ONLY into a new 0700 backup-area directory, never /etc.
+
+    This is deliberately NOT a primary MTA configuration restore. It never
+    modifies active paths, config, queues or services. Keys remain root-only.
+    """
+    if mta not in ALLOWED or not ID.fullmatch(snapshot_id):
+        raise Refused("invalid_export_selection")
+    folder = base / mta
+    safe_dir(base, owner_uid)
+    safe_dir(folder, owner_uid)
+    directory = folder / snapshot_id
+    accepted = verify(directory, mta, owner_uid)
+    manifest = json.loads(stable_file(directory / "manifest.json", owner_uid)[1])
+    target = Path(tempfile.mkdtemp(prefix=".offline-recovery-", dir=str(folder)))
+    try:
+        safe_dir(target, owner_uid)
+        seen = set()
+        with tarfile.open(str(directory / "config.tar.gz"), "r:gz") as tar:
+            for member in tar:
+                name = member.name
+                parts = name.split("/")
+                if (name not in manifest["files"] or
+                        member.type != tarfile.REGTYPE or
+                        not parts or any(not part or part in (".", "..") or
+                                         len(part) > 255 for part in parts) or
+                        not any(name.startswith(prefix + "/") or name == prefix
+                                for prefix in ALLOWED[mta]) or
+                        name in seen):
+                    raise Refused("invalid_offline_export_member")
+                seen.add(name)
+                dest = target
+                for component in parts[:-1]:
+                    dest = dest / component
+                    if not dest.exists() and not dest.is_symlink():
+                        dest.mkdir(mode=0o700)
+                    safe_dir(dest, owner_uid)
+                final = dest / parts[-1]
+                stream = tar.extractfile(member)
+                if stream is None:
+                    raise Refused("offline_export_member_unreadable")
+                contents = stream.read(member.size + 1)
+                item = manifest["files"][name]
+                if (len(contents) != member.size or
+                        hashlib.sha256(contents).hexdigest() != item["sha256"]):
+                    raise Refused("offline_export_member_changed")
+                flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         getattr(os, "O_NOFOLLOW", 0) |
+                         getattr(os, "O_CLOEXEC", 0))
+                fd = os.open(str(final), flags, 0o600)
+                with os.fdopen(fd, "wb") as output:
+                    output.write(contents)
+                    output.flush()
+                    os.fsync(output.fileno())
+        if len(seen) != accepted["files"] or seen != set(manifest["files"]):
+            raise Refused("incomplete_offline_export")
+        return str(target), accepted
+    except Exception:
+        shutil.rmtree(str(target), ignore_errors=True)
+        raise
+
+
+
 def listed(mta, base=BASE, owner_uid=0):
     if mta not in ALLOWED:
         raise Refused("invalid_mta")
@@ -308,7 +399,10 @@ def main(argv=None):
     actions.add_argument("--backup", action="store_true")
     actions.add_argument("--list", action="store_true")
     actions.add_argument("--verify")
+    actions.add_argument("--preview-recovery")
+    actions.add_argument("--export-offline")
     actions.add_argument("--self-test", action="store_true")
+    ap.add_argument("--confirm", default="")
     opts = ap.parse_args(argv)
     if opts.self_test:
         assert ID.fullmatch("20261121T005501Z-abcdef012345")
@@ -316,6 +410,10 @@ def main(argv=None):
         assert ALLOWED["sendmail"][0] == "etc/mail"
         print("FOREIGN_BACKUP_SELF_TEST=pass")
         return 0
+    if ((opts.export_offline is not None) !=
+            (opts.confirm == "EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT")):
+        print("FOREIGN_BACKUP_STATUS=confirmation_required", file=sys.stderr)
+        return 2
     if os.geteuid() != 0:
         print("FOREIGN_BACKUP_STATUS=refused_root_required", file=sys.stderr)
         return 2
@@ -332,6 +430,17 @@ def main(argv=None):
                 print("FOREIGN_BACKUP_ID=" + backup_id)
             print("FOREIGN_BACKUP_COUNT=" + str(len(items)))
             print("FOREIGN_BACKUP_STATUS=verified_list")
+        elif opts.preview_recovery is not None:
+            state = recovery_preview(opts.mta, opts.preview_recovery)
+            print("FOREIGN_BACKUP_CURRENT_CONFIG_MATCH=" + state["current"])
+            print("FOREIGN_BACKUP_ARCHIVE_SHA256=" + state["snapshot"]["sha256"])
+            print("FOREIGN_BACKUP_STATUS=recovery_preview_only")
+        elif opts.export_offline is not None:
+            path, info = extract_offline(opts.mta, opts.export_offline)
+            print("FOREIGN_BACKUP_OFFLINE_DIRECTORY=" + path)
+            print("FOREIGN_BACKUP_ARCHIVE_SHA256=" + info["sha256"])
+            print("FOREIGN_BACKUP_FILE_COUNT=" + str(info["files"]))
+            print("FOREIGN_BACKUP_STATUS=exported_offline_only")
         else:
             if not ID.fullmatch(opts.verify):
                 raise Refused("invalid_backup_identifier")
