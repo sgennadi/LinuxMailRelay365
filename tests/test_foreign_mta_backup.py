@@ -94,7 +94,7 @@ class ForeignMtaBackupTests(unittest.TestCase):
                 "exim", base=absent, owner_uid=os.getuid()), [])
             self.assertFalse(absent.exists())
 
-    def test_wizard_reports_v2_package_snapshot_and_blocks_flattened_export(self):
+    def test_wizard_reports_v2_package_snapshot_and_requires_inert_export(self):
         source = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text(
             encoding="utf-8")
         snapshot = (ROOT / "linux/foreign-mta-config-backup.py").read_text(
@@ -103,7 +103,11 @@ class ForeignMtaBackupTests(unittest.TestCase):
         self.assertIn("FOREIGN_BACKUP_FORMAT=(v1_regular_files|v2_package_metadata)",
                       source)
         self.assertIn('format == "v2_package_metadata"', source)
-        self.assertIn("Offline Export blocked: Sendmail package Snapshot v2", source)
+        self.assertIn('bool packageV2 = format == "v2_package_metadata";', source)
+        self.assertIn("EXPORT INERT SENDMAIL SNAPSHOT", source)
+        self.assertIn("FOREIGN_BACKUP_OFFLINE_LINKS_MATERIALIZED=no", source)
+        self.assertIn("Package links are JSON metadata ONLY", source)
+        self.assertNotIn("Offline Export blocked: Sendmail package Snapshot v2", source)
         self.assertIn('BuildForeignMtaBackupBundle(mta, "verify", id)', source)
         self.assertIn('print("FOREIGN_BACKUP_FORMAT=" + result["format"])', snapshot)
         self.assertIn('"format": ("v2_package_metadata"', snapshot)
