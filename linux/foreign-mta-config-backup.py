@@ -410,9 +410,12 @@ def main(argv=None):
         assert ALLOWED["sendmail"][0] == "etc/mail"
         print("FOREIGN_BACKUP_SELF_TEST=pass")
         return 0
-    if ((opts.export_offline is not None) !=
-            (opts.confirm == "EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT")):
-        print("FOREIGN_BACKUP_STATUS=confirmation_required", file=sys.stderr)
+    if opts.export_offline is not None:
+        if opts.confirm != "EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT":
+            print("FOREIGN_BACKUP_STATUS=confirmation_required", file=sys.stderr)
+            return 2
+    elif opts.confirm:
+        print("FOREIGN_BACKUP_STATUS=unexpected_confirmation", file=sys.stderr)
         return 2
     if os.geteuid() != 0:
         print("FOREIGN_BACKUP_STATUS=refused_root_required", file=sys.stderr)
