@@ -5,7 +5,7 @@ The LinuxMailRelay365 application previously supported **read-only backup**, SHA
 ## Preconditions
 
 1. A complete VM/system backup already exists. Queue files, systemd unit state, external keys, DNS, alternate config paths and any other system-wide dependencies are outside this script.
-2. The exact Exim or Sendmail systemd unit is **loaded and inactive**, no matching primary MTA processes are running and TCP 25 has no listener. The administrator stops the MTA separately; this script never does.
+2. The exact Exim or Sendmail systemd unit is **loaded and inactive** and no matching workers or standard SMTP listeners are observed. Exim's queue counter or BOTH Sendmail queue views (-bp and -Ac -bp) must report empty. A missing tool or ambiguous state blocks Restore. The administrator stops the MTA separately; this script never does.
 3. The desired backup was previously created by the protected `foreign-mta-config-backup.py` tool, and its archive and manifest verify.
 4. Current and archived allowlisted file sets are identical. New files, deleted files, symlinks, special files, changed identities or unsupported extended attributes are hard refusals.
 5. The working Exim/Sendmail configuration was checked outside this tool. This script does not guarantee syntactic or semantic compatibility of a restored file, nor does it restart a service.
@@ -28,7 +28,7 @@ sudo python3 linux/restore-foreign-mta-config.py --mta exim \
 
 Substitute `--mta sendmail` only for a verified Sendmail host. The tool will create a **new, verified safety snapshot of the pre-restore configuration**, print its ID, check again that the reviewed input is unchanged, then replace the corresponding configuration files. Each file is replaced atomically, but a multi-file restore cannot be atomic as a whole. On an error it attempts rollback while the service is still confirmed stopped. If rollback cannot be verified, **do not restart the MTA**: use the printed safety snapshot and full system backup for manual recovery.
 
-The operation does not open firewall rules, enable SMTP AUTH, change M365 objects or send mail. Active mail queues are not read, drained, or restored. Because no live heterogeneous-MTA test has occurred, this functionality is **experimental** and is not part of a signed Stable release. Validation on Ubuntu, RHEL/Oracle/Rocky/Alma, SELinux Enforcing and real Exim/Sendmail service lifecycles remains required.
+The operation does not open firewall rules, enable SMTP AUTH, change M365 objects or send mail. It inspects queue state read-only before and after backup and after replacement, plus periodically in larger restores; it never drains or restores queues. Unknown/nonempty queue or active listeners abort the operation and attempt file rollback. Plan output includes bounded non-secret preflight states, not approval to restore. Custom queues/spools and external dependencies still need manual assessment. Because no live heterogeneous-MTA test has occurred, this functionality is **experimental** and is not part of a signed Stable release. Validation on Ubuntu, RHEL/Oracle/Rocky/Alma, SELinux Enforcing and real Exim/Sendmail service lifecycles remains required.
 
 ## Follow-up engineering
 

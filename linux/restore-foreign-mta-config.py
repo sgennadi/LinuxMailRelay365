@@ -213,15 +213,36 @@ def replace_one(path, content, metadata, uid, original_inode=True):
             os.unlink(temporary)
 
 
+def require_offline_preflight(mta, snapshot_id, root, base, uid, inspector=None):
+    """A stale GUI preview is not evidence that queues and listeners are safe."""
+    check = backup.offline_recovery_preflight if inspector is None else inspector
+    proof = check(mta, snapshot_id, root, base, uid)
+    if (not isinstance(proof, dict) or proof.get("mta") != mta or
+            proof.get("snapshot_id") != snapshot_id):
+        raise Refused("offline_preflight_identity_unverified")
+    expected = {"service": "stopped_declared", "processes": "none_observed",
+                "queue": "empty_reported", "listener": "none_observed"}
+    if (proof.get("gate") != "offline_candidate_manual_recovery_only" or
+            proof.get("current") not in ("identical", "different") or
+            any(proof.get(key) != val for key, val in expected.items())):
+        gate = proof.get("gate")
+        reason = gate if gate in ("blocked_running", "blocked_nonempty_queue",
+                                 "blocked_unverified") else "blocked_unverified"
+        raise Refused("offline_preflight_" + reason)
+    return proof
+
+
 def apply(mta, snapshot_id, approved_sha, confirm,
           root=backup.ROOT, base=backup.BASE, uid=0,
-          offline_check=stopped, lock_path=LOCK):
+          offline_check=stopped, lock_path=LOCK, preflight_check=None):
     if confirm != APPROVAL or not backup.SHA.fullmatch(approved_sha):
         raise Refused("typed_confirmation_and_reviewed_sha_required")
     if not offline_check(mta):
         raise Refused("primary_mta_not_stopped")
     lock_handle = take_lock(lock_path, uid)
     try:
+        require_offline_preflight(mta, snapshot_id, root, base, uid,
+                                  preflight_check)
         state = preview(mta, snapshot_id, root, base, uid)
         if state["sha"] != approved_sha:
             raise Refused("restore_plan_changed_reapprove")
@@ -232,6 +253,8 @@ def apply(mta, snapshot_id, approved_sha, confirm,
         print("FOREIGN_RESTORE_SAFETY_BACKUP_ID=" + safety_id, flush=True)
         if preview(mta, snapshot_id, root, base, uid)["sha"] != approved_sha:
             raise Refused("configuration_changed_during_safety_backup")
+        require_offline_preflight(mta, snapshot_id, root, base, uid,
+                                  preflight_check)
         changed = []
         try:
             for name in sorted(state["original"]):
@@ -241,6 +264,9 @@ def apply(mta, snapshot_id, approved_sha, confirm,
                     continue
                 if not offline_check(mta):
                     raise Refused("primary_mta_restarted_during_restore")
+                if len(changed) and len(changed) % 16 == 0:
+                    require_offline_preflight(mta, snapshot_id, root, base, uid,
+                                              preflight_check)
                 now, current_data = backup.stable_file(root / name, uid)
                 if (current_data != original_data or
                         now.st_dev != original_meta.st_dev or
@@ -250,6 +276,19 @@ def apply(mta, snapshot_id, approved_sha, confirm,
                     raise Refused("configuration_changed_during_restore")
                 changed.append(name)
                 replace_one(root / name, wanted, original_meta, uid)
+            if not offline_check(mta):
+                raise Refused("primary_mta_restarted_after_restore")
+            require_offline_preflight(mta, snapshot_id, root, base, uid,
+                                      preflight_check)
+            for name in sorted(state["target"]):
+                metadata, observed = backup.stable_file(root / name, uid)
+                original_meta = state["original"][name][0]
+                if (observed != state["target"][name] or
+                        metadata.st_uid != original_meta.st_uid or
+                        metadata.st_gid != original_meta.st_gid or
+                        stat.S_IMODE(metadata.st_mode) !=
+                        stat.S_IMODE(original_meta.st_mode)):
+                    raise Refused("post_restore_content_or_metadata_mismatch")
         except Exception:
             safe_rollback = True
             for name in reversed(changed):
@@ -265,6 +304,20 @@ def apply(mta, snapshot_id, approved_sha, confirm,
                                     uid, original_inode=False)
                 except Exception:
                     safe_rollback = False
+            if safe_rollback:
+                for name, (prior_meta, prior_data) in state["original"].items():
+                    try:
+                        now_meta, now_data = backup.stable_file(root / name, uid)
+                        if (now_data != prior_data or
+                                now_meta.st_uid != prior_meta.st_uid or
+                                now_meta.st_gid != prior_meta.st_gid or
+                                stat.S_IMODE(now_meta.st_mode) !=
+                                stat.S_IMODE(prior_meta.st_mode)):
+                            safe_rollback = False
+                            break
+                    except Exception:
+                        safe_rollback = False
+                        break
             raise Refused("restore_failed_rollback_" +
                           ("verified" if safe_rollback
                            else "incomplete_use_safety_backup"))
@@ -294,6 +347,9 @@ def main(argv=None):
             print("FOREIGN_RESTORE_PLAN_SHA256=" + review["sha"])
             print("FOREIGN_RESTORE_CHANGED_FILES=" + str(review["changed"]))
             print("FOREIGN_RESTORE_FILE_COUNT=" + str(review["files"]))
+            gate = backup.offline_recovery_preflight(args.mta, snapshot_id)
+            for key in ("service", "processes", "queue", "listener", "gate"):
+                print("FOREIGN_RESTORE_PREFLIGHT_" + key.upper() + "=" + gate[key])
             print("FOREIGN_RESTORE_STATUS=preview_only")
         else:
             result = apply(args.mta, snapshot_id,

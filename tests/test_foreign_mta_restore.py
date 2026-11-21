@@ -32,9 +32,21 @@ class ForeignMtaRestoreTests(unittest.TestCase):
         return root, base, tree, snap_id, uid
 
     @staticmethod
-    def kwargs(folder, root, base, uid, offline=lambda mta: True):
+    def safe_preflight(mta, snapshot_id, root, base, uid):
+        current = snapshot.recovery_preview(
+            mta, snapshot_id, root, base, uid)["current"]
+        return {"mta": mta, "snapshot_id": snapshot_id, "current": current,
+                "service": "stopped_declared", "processes": "none_observed",
+                "queue": "empty_reported", "listener": "none_observed",
+                "gate": "offline_candidate_manual_recovery_only"}
+
+    @staticmethod
+    def kwargs(folder, root, base, uid, offline=lambda mta: True,
+               preflight=None):
         return {"root": root, "base": base, "uid": uid,
-                "offline_check": offline, "lock_path": Path(folder) / "restore.lock"}
+                "offline_check": offline,
+                "preflight_check": preflight or ForeignMtaRestoreTests.safe_preflight,
+                "lock_path": Path(folder) / "restore.lock"}
 
     def test_preview_has_no_side_effects_and_changes_bind_review_sha(self):
         for mta in ("exim", "sendmail"):
@@ -168,6 +180,82 @@ class ForeignMtaRestoreTests(unittest.TestCase):
                      {"process": True}, {"port": 25}):
             with self.subTest(case=case), self.assertRaises(restore.Refused):
                 probe(**case)
+
+    def test_queue_listener_service_gates_block_before_safety_backup(self):
+        cases = (("queue", "nonempty_reported", "blocked_nonempty_queue"),
+                 ("queue", "unverified", "blocked_unverified"),
+                 ("listener", "running", "blocked_running"),
+                 ("service", "running", "blocked_running"),
+                 ("processes", "unverified", "blocked_unverified"))
+        for field, value, gate in cases:
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as folder:
+                root, base, tree, snap_id, uid = self.fixture(folder, "exim")
+                edited = next(tree.iterdir())
+                edited.write_text("current edit\n")
+                plan = restore.preview("exim", snap_id, root, base, uid)
+                def unsafe(mta, sid, root, base, uid):
+                    result = self.safe_preflight(mta, sid, root, base, uid)
+                    result[field], result["gate"] = value, gate
+                    return result
+                with self.assertRaisesRegex(restore.Refused, "offline_preflight_" + gate):
+                    restore.apply("exim", snap_id, plan["sha"], restore.APPROVAL,
+                                  **self.kwargs(folder, root, base, uid, preflight=unsafe))
+                self.assertEqual(edited.read_text(), "current edit\n")
+                self.assertEqual(snapshot.listed("exim", base, uid), [snap_id])
+
+    def test_queue_becomes_nonempty_after_safety_backup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, snap_id, uid = self.fixture(folder, "sendmail")
+            edited = next(tree.iterdir())
+            edited.write_text("new content\n")
+            plan = restore.preview("sendmail", snap_id, root, base, uid)
+            calls = [0]
+            def drift(mta, sid, root, base, uid):
+                calls[0] += 1
+                result = self.safe_preflight(mta, sid, root, base, uid)
+                if calls[0] >= 2:
+                    result["queue"] = "nonempty_reported"
+                    result["gate"] = "blocked_nonempty_queue"
+                return result
+            with self.assertRaisesRegex(restore.Refused, "blocked_nonempty_queue"):
+                restore.apply("sendmail", snap_id, plan["sha"], restore.APPROVAL,
+                              **self.kwargs(folder, root, base, uid, preflight=drift))
+            self.assertEqual(edited.read_text(), "new content\n")
+            self.assertEqual(len(snapshot.listed("sendmail", base, uid)), 2)
+
+    def test_listener_changes_after_write_trigger_rollback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, snap_id, uid = self.fixture(folder, "exim")
+            edited = next(tree.iterdir())
+            edited.write_text("live content\n")
+            plan = restore.preview("exim", snap_id, root, base, uid)
+            calls = [0]
+            def drift(mta, sid, root, base, uid):
+                calls[0] += 1
+                result = self.safe_preflight(mta, sid, root, base, uid)
+                if calls[0] >= 3:
+                    result["listener"], result["gate"] = "running", "blocked_running"
+                return result
+            with self.assertRaisesRegex(restore.Refused, "rollback_verified"):
+                restore.apply("exim", snap_id, plan["sha"], restore.APPROVAL,
+                              **self.kwargs(folder, root, base, uid, preflight=drift))
+            self.assertEqual(edited.read_text(), "live content\n")
+            self.assertEqual(len(snapshot.listed("exim", base, uid)), 2)
+
+    def test_wrong_preflight_identity_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, snap_id, uid = self.fixture(folder, "exim")
+            edited = next(tree.iterdir())
+            edited.write_text("new content\n")
+            plan = restore.preview("exim", snap_id, root, base, uid)
+            def wrong(mta, sid, root, base, uid):
+                result = self.safe_preflight(mta, sid, root, base, uid)
+                result["snapshot_id"] = "other"
+                return result
+            with self.assertRaisesRegex(restore.Refused, "offline_preflight_identity_unverified"):
+                restore.apply("exim", snap_id, plan["sha"], restore.APPROVAL,
+                              **self.kwargs(folder, root, base, uid, preflight=wrong))
+            self.assertEqual(edited.read_text(), "new content\n")
 
     def test_no_implicit_service_or_queue_changes(self):
         source = SCRIPT.read_text(encoding="utf-8")
