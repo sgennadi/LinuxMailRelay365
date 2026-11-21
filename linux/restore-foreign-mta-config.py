@@ -114,7 +114,8 @@ def trusted_native_tool(mta):
     """Resolve only root-managed native binary paths, never inherited PATH."""
     candidates = {
         "exim": ("/usr/sbin/exim4", "/usr/sbin/exim"),
-        "sendmail": ("/usr/sbin/sendmail", "/usr/lib/sendmail")
+        "sendmail": ("/usr/sbin/sendmail", "/usr/lib/sendmail",
+                     "/usr/libexec/sendmail/sendmail")
     }
     if mta not in candidates:
         raise Refused("unsupported_primary_mta")
@@ -124,7 +125,8 @@ def trusted_native_tool(mta):
         resolved = os.path.realpath(original)
         trusted_root = (resolved.startswith(
             ("/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/")) or
-            resolved == "/usr/lib/sendmail")
+            resolved in ("/usr/lib/sendmail",
+                         "/usr/libexec/sendmail/sendmail"))
         if not trusted_root:
             raise Refused("native_mta_binary_outside_trusted_root")
         native_name = os.path.basename(resolved)
@@ -169,6 +171,13 @@ def native_static_config_check(mta, root=backup.ROOT, uid=0,
         queries = [[tool, "-bV"]]
     else:
         queries = []
+        # A native parser check is not a strict backup snapshot.
+        # Distributions may use group-writable /etc/mail; reject world write.
+        for directory in (root / "etc", root / "etc" / "mail"):
+            info = directory.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or
+                    info.st_mode & 0o002):
+                raise Refused("native_mta_config_directory_untrusted")
         for config_name in ("sendmail.cf", "submit.cf"):
             config = root / "etc" / "mail" / config_name
             if config_name == "submit.cf" and not os.path.lexists(str(config)):
@@ -389,7 +398,7 @@ def main(argv=None):
             # inspect mail contents, or authorize a Restore.
             if args.approve_sha256 or args.confirm:
                 raise Refused("approval_not_permitted_during_static_check")
-            backup.selected_files(args.mta)
+            # Static inspection does not require archive-only permissions.
             native_static_config_check(args.mta)
             print("FOREIGN_STATIC_VERSION=1")
             print("FOREIGN_STATIC_MTA=" + args.mta)

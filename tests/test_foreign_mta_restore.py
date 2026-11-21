@@ -322,7 +322,7 @@ class ForeignMtaRestoreTests(unittest.TestCase):
              patch.object(restore, "apply", side_effect=AssertionError("restore forbidden")), \
              redirect_stdout(captured):
             self.assertEqual(restore.main(["--mta", "sendmail", "--static-check"]), 0)
-        files.assert_called_once()
+        files.assert_not_called()
         checker.assert_called_once()
         response = captured.getvalue()
         for item in ("FOREIGN_STATIC_VERSION=1",
