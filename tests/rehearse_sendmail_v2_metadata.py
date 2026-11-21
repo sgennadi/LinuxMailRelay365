@@ -64,12 +64,15 @@ def preserve_metadata(destination, entry, symlink=False):
     if not symlink and not (stat.S_ISREG(before.st_mode) or
                             stat.S_ISDIR(before.st_mode)):
         fail("UNEXPECTED_METADATA_OBJECT_TYPE")
-    os.chown(str(destination), uid, gid, follow_symlinks=False)
+    # Validate every target permission BEFORE making the first change.
+    mode = None
     if not symlink:
         mode = entry["mode"]
         if (type(mode) is not int or mode < 0 or mode > 0o7777
                 or mode & 0o022):
             fail("UNSAFE_PACKAGE_MODE")
+    os.chown(str(destination), uid, gid, follow_symlinks=False)
+    if not symlink:
         # Linux Python does not consistently expose lchmod/AT_SYMLINK_NOFOLLOW.
         # Open the verified regular file/directory without following links and
         # apply the mode through its descriptor instead of a pathname.
