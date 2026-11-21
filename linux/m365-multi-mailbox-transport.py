@@ -238,15 +238,18 @@ def require_privileged_acceptance_parent():
         if parent <= 1:
             raise Denied("direct_acceptance_requires_root_runuser")
         proc = Path("/proc") / str(parent)
-        exe = os.readlink(str(proc / "exe"))
-        if exe not in ("/usr/sbin/runuser", "/usr/bin/runuser"):
-            raise Denied("direct_acceptance_requires_root_runuser")
+        # Linux forbids a setuid non-root child from reading the root
+        # parent's /proc/<pid>/exe under normal ptrace restrictions.
+        # /proc/<pid>/status is readable; require the root-owned runuser
+        # task name and all four root UIDs, refusing missing/ambiguous data.
         raw = (proc / "status").read_text(encoding="ascii")
-        uids = [line for line in raw.splitlines() if line.startswith("Uid:")]
-        if len(uids) != 1:
-            raise Denied("acceptance_parent_uid_unverifiable")
-        values = uids[0].split()[1:]
-        if len(values) != 4 or any(value != "0" for value in values):
+        names = [line.split()[1:] for line in raw.splitlines()
+                 if line.startswith("Name:")]
+        uids = [line.split()[1:] for line in raw.splitlines()
+                if line.startswith("Uid:")]
+        if len(names) != 1 or names[0] != ["runuser"] or len(uids) != 1:
+            raise Denied("direct_acceptance_requires_root_runuser")
+        if len(uids[0]) != 4 or any(value != "0" for value in uids[0]):
             raise Denied("direct_acceptance_parent_not_root")
         return True
     except (OSError, UnicodeError, ValueError):
