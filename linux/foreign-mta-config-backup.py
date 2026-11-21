@@ -489,14 +489,25 @@ def offline_listener_state(mta, probe=read_only_probe):
     for line in lines[1:]:
         if not line.startswith("LISTEN "):
             return "unverified"
+        columns = line.split()
+        if len(columns) < 5 or ":" not in columns[3]:
+            return "unverified"
+        # Only parse the LOCAL address:port column. A regex lookbehind on
+        # ":25" incorrectly misses ordinary IPv4 addresses ending in a
+        # digit (0.0.0.0:25). Never match the peer address or process text.
+        port_text = columns[3].rsplit(":", 1)[-1]
+        if not re.fullmatch(r"[0-9]{1,5}", port_text):
+            return "unverified"
+        port = int(port_text)
+        if not 1 <= port <= 65535:
+            return "unverified"
         match = re.search(r'users:\(\("(exim4?|sendmail)",pid=[0-9]{1,10},fd=[0-9]{1,10}\)', line)
         if match and ((mta == "exim" and match.group(1) in ("exim", "exim4")) or
                       (mta == "sendmail" and match.group(1) == "sendmail")):
             return "running"
-        # If another process holds a standard SMTP listener we cannot
-        # infer that a reconfiguration would be safe. On a custom port,
-        # process discovery remains only a hint, never a recovery permit.
-        if re.search(r'(?<![0-9]):(?:25|465|587|2525)\s', line):
+        # Any standard SMTP listener blocks automatic claims of a quiescent
+        # host, even when owned by another daemon; it may be part of delivery.
+        if port in (25, 465, 587, 2525):
             return "unverified"
     return "none_observed"
 

@@ -269,6 +269,27 @@ class ForeignMtaBackupTests(unittest.TestCase):
                     self.assertEqual(status["gate"], expect)
                     self.assertEqual(status["snapshot_id"], archive_id)
 
+    def test_non_mta_smtp_listener_blocks_offline_recovery(self):
+        header = "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
+        cases = (
+            ("0.0.0.0:25", "unverified"),
+            ("192.168.20.5:25", "unverified"),
+            ("[::]:25", "unverified"),
+            (":::587", "unverified"),
+            ("127.0.0.1:465", "unverified"),
+            ("*:2525", "unverified"),
+            ("127.0.0.1:22", "none_observed"),
+            ("127.0.0.1:2500", "none_observed"),
+            ("0.0.0.0:65536", "unverified"),
+            ("0.0.0.0:notaport", "unverified"),
+        )
+        for address, expected in cases:
+            with self.subTest(address=address):
+                rows = header + "LISTEN 0 100 " + address + (
+                    ' 0.0.0.0:* users:(("other",pid=123,fd=4))\n')
+                self.assertEqual(snapshot.offline_listener_state(
+                    "exim", lambda args: (0, rows)), expected)
+
     def test_sendmail_client_queue_unknown_blocks_manual_restore_preflight(self):
         with tempfile.TemporaryDirectory() as directory:
             root, base, _ = self.fixture(directory, "sendmail")
