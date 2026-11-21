@@ -95,6 +95,7 @@ def run(args):
         'postqueue': ('/usr/sbin/postqueue', '/usr/bin/postqueue'),
         'postfix': ('/usr/sbin/postfix', '/usr/bin/postfix'),
         'systemctl': ('/usr/bin/systemctl', '/bin/systemctl'),
+        'ss': ('/usr/sbin/ss', '/usr/bin/ss', '/bin/ss'),
     }
     if not args or args[0] not in allowed or shutil.which(args[0]) not in allowed[args[0]]:
         raise Refused('untrusted_host_command')
@@ -120,6 +121,16 @@ def offline():
         raise Refused("sidecar_service_not_proven_stopped")
     if run(["postqueue", "-c", str(CONF), "-j"]):
         raise Refused("sidecar_queue_not_empty")
+    port_raw = read(CONF / "smtp-port", 16, (0o644,))[1].strip()
+    if not port_raw.isdigit() or not 1024 <= int(port_raw) <= 65535:
+        raise Refused("sidecar_custom_port_unverified")
+    sockets = run(["ss", "-H", "-ltn"])
+    for line in sockets.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            raise Refused("socket_inventory_malformed")
+        if parts[3].rsplit(":", 1)[-1] == port_raw.decode("ascii"):
+            raise Refused("sidecar_custom_port_still_listening")
     return True
 
 
