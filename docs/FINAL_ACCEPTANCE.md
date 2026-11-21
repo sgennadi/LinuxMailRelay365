@@ -64,6 +64,18 @@ still intentionally refuse unverified isolated sidecar setup under Enforcing.
 This is not signed Stable acceptance nor a substitute for host-specific
 AVC investigation, service identity, TPM and external M365 routing.
 
+## Sidecar installer refusal under genuine SELinux Enforcing
+
+In the independent Rocky Linux KVM workflow, the four production installer
+entrypoints are exercised with synthetic input data and no tenant: Preserve
+XOAUTH2, Direct Send, Inbound Connector, and SMTP AUTH/TLS. On this real
+Enforcing guest, they must refuse installation before staging keys, queue,
+units, or a change lock. Read-only preflight reports must not mutate the
+machine. Primary Postfix configuration, queue, listeners and service state
+are compared before and after. This is a **negative safety test**: it does
+not claim that a complete custom sidecar can already be installed under
+Enforcing, nor does it contact Exchange Online.
+
 ## Offline SELinux policy packages in real Enterprise Linux containers
 
 Draft CI now installs the actual `selinux-policy-targeted`, `setools-console`,

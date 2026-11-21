@@ -141,6 +141,20 @@ scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'bash /tmp/lmr365-postfix-smoke.sh'
 
+# Run actual sidecar installers under guest SELinux Enforcing and verify
+# that they refuse safely without changing primary Postfix or mail queues.
+scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+    linux/install-preserve-postfix-sidecar.sh \
+    linux/install-direct-send-sidecar.sh \
+    linux/install-connector-sidecar.sh \
+    linux/enable-sidecar-auth-tls.sh \
+    tests/rocky_vm_sidecar_installer_guard.sh \
+    ci@127.0.0.1:/home/ci/
+ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    'bash /home/ci/rocky_vm_sidecar_installer_guard.sh'
+echo "LMR365_GUEST_REAL_SIDECAR_INSTALLER_GUARDS=verified"
+
 # Tenant-free loopback-only STARTTLS and SMTP AUTH acceptance inside the VM.
 scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
