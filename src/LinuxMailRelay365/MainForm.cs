@@ -2860,6 +2860,16 @@ internal sealed partial class MainForm : Form
                             "Compare active configuration with snapshot (read-only)",
                             "השווה תצורה נוכחית לגיבוי ללא שינוי"),
                             PreviewForeignMtaRecoveryAsync, false, "check", "foreign-recovery-preview");
+                        AddAction(page, T(
+                            "Проверить готовность восстановления Exim/Sendmail (только аудит)",
+                            "Audit Exim/Sendmail offline recovery readiness (read-only)",
+                            "בדיקת מוכנות לשחזור Exim/Sendmail ללא שינוי"),
+                            PreflightForeignMtaRecoveryAsync, false, "check",
+                            "foreign-recovery-preflight");
+                        AddLine(page, UiTheme.Text(T(
+                            "Проверяются служба, процессы, очереди и неизменность архива. Даже успешный аудит НЕ разрешает автоматический Restore или перезапуск MTA.",
+                            "Checks service, processes, queues and archive SHA. Even a clean audit NEVER authorizes automatic Restore or service restart.",
+                            "הבדיקה אינה מאשרת שחזור אוטומטי או הפעלת שירות.")));
                         AddAction(page, T("Извлечь архив в отдельный защищённый каталог на Linux...",
                             "Extract verified files to separate protected Linux directory...",
                             "חלץ גיבוי לתיקייה מוגנת ונפרדת בלינוקס"),
@@ -5726,6 +5736,54 @@ internal sealed partial class MainForm : Form
         WriteLine("Read-only " + mta + " configuration comparison with backup " + id +
             ": current=" + state.Groups[1].Value + ", archive SHA256=" +
             sha.Groups[1].Value + ". No SMTP changes or Restore performed.");
+    }
+
+    private async Task PreflightForeignMtaRecoveryAsync()
+    {
+        var endpoint = Endpoint();
+        string mta = ConfirmedForeignBackupMta();
+        string identity = SecurityOptionsStore.Identity(endpoint) + "|" + mta;
+        if (foreignBackupListContext != identity ||
+            foreignBackupSelector.SelectedItem is not string id)
+            throw new InvalidOperationException(
+                "List and select the verified Exim/Sendmail backup before read-only preflight.");
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaBackupBundle(mta, "offline-preflight", id),
+            TimeSpan.FromMinutes(3));
+        response.EnsureSuccess();
+        if (!ForeignBackupReportOk(response.StdOut, mta, "read_only_no_restore"))
+            throw new InvalidDataException("Foreign MTA preflight did not prove no configuration changes.");
+        string Value(string field, string allowed)
+        {
+            var matches = System.Text.RegularExpressions.Regex.Matches(response.StdOut,
+                @"(?m)^" + System.Text.RegularExpressions.Regex.Escape(field) +
+                @"=(" + allowed + @")\r?$");
+            if (matches.Count != 1)
+                throw new InvalidDataException("Missing or duplicate field in foreign MTA preflight.");
+            return matches[0].Groups[1].Value;
+        }
+        string service = Value("FOREIGN_PREFLIGHT_SERVICE",
+            "running|stopped_declared|unverified");
+        string processes = Value("FOREIGN_PREFLIGHT_PROCESSES",
+            "running|none_observed|unverified");
+        string queue = Value("FOREIGN_PREFLIGHT_QUEUE",
+            "empty_reported|nonempty_reported|unverified");
+        string config = Value("FOREIGN_PREFLIGHT_CONFIG_MATCH",
+            "identical|different|unverified");
+        string archiveSha = Value("FOREIGN_PREFLIGHT_ARCHIVE_SHA256", "[a-f0-9]{64}");
+        string planSha = Value("FOREIGN_PREFLIGHT_PLAN_SHA256", "[a-f0-9]{64}");
+        string gate = Value("FOREIGN_PREFLIGHT_GATE",
+            "blocked_running|blocked_nonempty_queue|blocked_unverified|offline_candidate_manual_recovery_only");
+        string current = SecurityOptionsStore.Identity(Endpoint()) + "|" +
+                         ConfirmedForeignBackupMta();
+        if (foreignBackupListContext != current || current != identity ||
+            foreignBackupSelector.SelectedItem is not string selected || selected != id)
+            throw new InvalidOperationException("SSH server, MTA or selected backup changed during preflight.");
+        WriteLine("Read-only " + mta + " recovery preflight: service=" + service +
+            ", processes=" + processes + ", queue=" + queue +
+            ", config=" + config + ", gate=" + gate +
+            ", snapshot SHA256=" + archiveSha + ", evidence SHA256=" + planSha +
+            ". No Restore, service action, SMTP send or queue change. Manual recovery only.");
     }
 
     private async Task ExportForeignMtaOfflineAsync()
