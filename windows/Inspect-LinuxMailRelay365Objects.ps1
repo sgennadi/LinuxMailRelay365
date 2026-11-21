@@ -23,10 +23,14 @@ function SafeGuid([object]$value) {
   Require ([guid]::TryParse([string]$value,[ref]$guid) -and $guid -ne [guid]::Empty) 'unsafe_cloud_guid'
   return $guid.ToString('D')
 }
-function ConnectorRecord($item) {
+function ConnectorRecord($item,[guid]$exactTenant = [guid]::Empty) {
   $ips = @($item.SenderIPAddresses | ForEach-Object { SafeText $_ 64 } | Sort-Object -Unique)
   $domains = @($item.SenderDomains | ForEach-Object { SafeText $_ 253 } | Sort-Object -Unique)
   Require ($ips.Count -le 24 -and $domains.Count -le 40) 'connector_inventory_unbounded'
+  $marker = 'LinuxMailRelay365/v1;tenant=' + $exactTenant.ToString('D')
+  $provenance = if ($exactTenant -ne [guid]::Empty -and
+    [string]$item.Comment -ceq $marker -and
+    [string]$item.ConnectorType -eq 'OnPremises') { 'verified' } else { 'unverified' }
   return [ordered]@{
     identity=SafeText $item.Identity 256
     name=SafeText $item.Name 90
@@ -35,7 +39,7 @@ function ConnectorRecord($item) {
     senderIps=$ips
     senderDomains=$domains
     tlsCertificateName=SafeText $item.TlsSenderCertificateName 253
-    ownership='unverified'
+    ownership=$provenance
   }
 }
 function CredentialRecord($key) {
@@ -57,6 +61,14 @@ if ($SelfTest) {
   })
   Require ($test.enabled -and $test.senderIps.Count -eq 1 -and
            $test.ownership -eq 'unverified') 'connector_self_test_failed'
+  $stampTenant = [guid]'22222222-2222-4222-8222-222222222222'
+  $stamped = ConnectorRecord ([pscustomobject]@{
+    Identity='test'; Name='LinuxMailRelay365 Managed'; Comment=('LinuxMailRelay365/v1;tenant=' + $stampTenant.ToString('D'))
+    ConnectorType='OnPremises'; Enabled=$false
+    SenderIPAddresses=@('8.8.8.8'); SenderDomains=@('example.org')
+    TlsSenderCertificateName=''
+  }) $stampTenant
+  Require ($stamped.ownership -eq 'verified') 'connector_marker_self_test_failed'
   $cert = CredentialRecord ([pscustomobject]@{
     keyId='11111111-1111-4111-8111-111111111111'
     displayName='LinuxMailRelay365'; type='AsymmetricX509Cert'; usage='Verify'
@@ -131,7 +143,7 @@ try {
     ($ConnectorName -and [string]$_.Name -ceq $ConnectorName)
   })
   Require ($selected.Count -le 100) 'too_many_matching_connectors'
-  $inventory.connectors=@($selected | ForEach-Object { ConnectorRecord $_ })
+  $inventory.connectors=@($selected | ForEach-Object { ConnectorRecord $_ $TenantId })
   if ($graphRequested) {
     $prefix='LMR365-' + $ClientId.ToString('N').Substring(0,16)
     $scopes=@(Get-ManagementScope -ErrorAction Stop)

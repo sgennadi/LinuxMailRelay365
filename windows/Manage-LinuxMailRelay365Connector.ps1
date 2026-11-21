@@ -157,8 +157,12 @@ try {
         if (-not (Get-Command New-InboundConnector -ErrorAction SilentlyContinue)) {
             throw 'No permissions to create Exchange Online inbound connectors.'
         }
+        # New objects carry an exact tenant-bound provenance marker. Names
+        # alone are never sufficient authority to edit/delete a Connector.
+        $marker = 'LinuxMailRelay365/v1;tenant=' + $TenantId.ToString('D')
         $options = @{
             Name = $ConnectorName
+            Comment = $marker
             ConnectorType = 'OnPremises'
             SenderDomains = $AcceptedDomain
             Enabled = $true
@@ -172,7 +176,8 @@ try {
         if ($created.Count -ne 1 -or
             [string]$created[0].ConnectorType -ne 'OnPremises' -or
             $created[0].Enabled -ne $true -or
-            [string]$created[0].Name -ne $ConnectorName) {
+            [string]$created[0].Name -ne $ConnectorName -or
+            [string]$created[0].Comment -cne $marker) {
             throw 'New Connector requires manual identity/permission inspection.'
         }
         $actualDomains = @($created[0].SenderDomains | ForEach-Object { [string]$_ })
