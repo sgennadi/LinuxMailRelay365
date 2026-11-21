@@ -2875,6 +2875,16 @@ internal sealed partial class MainForm : Form
                                       "Inspect local SMTP and queue (no mail sent)",
                                       "בדיקת SMTP ותור ללא שליחה"),
                         InspectRelayHealthAsync, true, "check", "smtp-health");
+                    AddAction(page, T(
+                        "Обновить подтверждение SMTP AUTH/From Guard на 120 секунд...",
+                        "Refresh 120-second SMTP AUTH/From Guard proof (supervised test)...",
+                        "עדכון אישור אבטחה זמני לבדיקת SMTP"),
+                        RefreshMultiMailboxIngressProofAsync, false, "shield",
+                        "multi-mailbox-ingress-proof");
+                    AddLine(page, UiTheme.Text(T(
+                        "Для реальной отправки нужна ручная проверка Microsoft 365. Это подтверждение истекает через 120 секунд. Автообновление пока НЕ настроено; включение SMTP НЕ выполняется.",
+                        "For real delivery, Microsoft 365 must be tested separately. Proof expires after 120 seconds. Auto-renewal is NOT installed and SMTP is NOT started.",
+                        "האישור פג לאחר 120 שניות. אין חידוש אוטומטי או הפעלת SMTP.")));
                 }
                 else
                 {
