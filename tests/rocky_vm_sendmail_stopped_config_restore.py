@@ -87,10 +87,12 @@ def file_state(backup):
     return state, data
 
 
-def atomic_write(payload, meta, old_context):
+def atomic_write(payload, expected_current, meta, old_context):
     # This is a direct write ONLY in an attested, disposable VM. No library
     # product command uses this function, and it is not a general restore.
-    if not isinstance(payload, bytes) or len(payload) > 16 * 1024 * 1024:
+    if (not isinstance(payload, bytes) or len(payload) > 16 * 1024 * 1024 or
+            not isinstance(expected_current, bytes) or
+            len(expected_current) > 16 * 1024 * 1024):
         refuse("BAD_RESTORATION_BYTES")
     fd, name = tempfile.mkstemp(prefix=".lmr365-kvm-restore-", dir="/etc/mail")
     try:
@@ -105,14 +107,21 @@ def atomic_write(payload, meta, old_context):
         # Renaming a temporary file into sendmail.cf retains its own SELinux
         # label. Ensure it has exactly the previous target label.
         os.setxattr(name, "security.selinux", old_context, follow_symlinks=False)
-        current, _ = file_state_without_backup(CONFIG)
-        if (current.st_uid != meta.st_uid or
+        current, current_bytes = file_state_without_backup(CONFIG)
+        if (current_bytes != expected_current or
+                current.st_uid != meta.st_uid or
                 current.st_gid != meta.st_gid or
-                stat.S_IMODE(current.st_mode) != stat.S_IMODE(meta.st_mode)):
+                stat.S_IMODE(current.st_mode) != stat.S_IMODE(meta.st_mode) or
+                os.getxattr(CONFIG, "security.selinux") != old_context):
             refuse("SOURCE_CHANGED_BEFORE_ATOMIC_REPLACE")
         os.replace(name, str(CONFIG))
         name = None
-        os.fsync(os.open("/etc/mail", os.O_RDONLY | os.O_DIRECTORY))
+        directory_fd = os.open("/etc/mail", os.O_RDONLY | os.O_DIRECTORY |
+                               getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         if name and os.path.lexists(name):
             os.unlink(name)
@@ -178,16 +187,15 @@ def main(snapshot_id):
 
     altered = False
     try:
-        atomic_write(before + RESTORE_MARKER, meta, context)
-        altered = True
+        altered = True  # Cover an error that occurs after os.replace().
+        atomic_write(before + RESTORE_MARKER, before, meta, context)
         if hashlib.sha256(CONFIG.read_bytes()).hexdigest() == declared["sha256"]:
             refuse("CONTROLLED_EDIT_NOT_DETECTED")
         if backup.recovery_preview("sendmail", snapshot_id)["current"] != "different":
             refuse("ARCHIVE_DRIFT_NOT_DETECTED")
         # All v2 package-owned files, symlinks and directories are unchanged.
         # Only the single controlled root-owned .cf file is restored.
-        atomic_write(target, meta, context)
-        altered = False
+        atomic_write(target, before + RESTORE_MARKER, meta, context)
         final, data = file_state(backup)
         if (data != before or hashlib.sha256(data).hexdigest() != declared["sha256"]
                 or os.getxattr(CONFIG, "security.selinux") != context
@@ -196,6 +204,7 @@ def main(snapshot_id):
             refuse("RESTORED_CONFIG_OR_CONTEXT_MISMATCH")
         if backup.recovery_preview("sendmail", snapshot_id)["current"] != "identical":
             refuse("POST_RESTORE_METADATA_DRIFT")
+        altered = False  # Only after all hashes, labels and metadata match.
         print("LMR365_SENDMAIL_VM_CONFIG_RESTORE=verified_single_file")
         print("LMR365_SENDMAIL_VM_CONFIG_SELINUX=unchanged")
         print("LMR365_SENDMAIL_VM_SNAPSHOT_DRIFT=detected_then_cleared")
@@ -204,9 +213,23 @@ def main(snapshot_id):
     finally:
         # Even if a simulated edit or validation fails, prefer returning the
         # exact pre-test bytes before the outer VM cleanup restores Postfix.
-        if altered and CONFIG.is_file():
+        if altered:
             try:
-                atomic_write(before, meta, context)
+                current_meta, current_bytes = file_state_without_backup(CONFIG)
+                if current_bytes == before:
+                    if (current_meta.st_uid != meta.st_uid or
+                            current_meta.st_gid != meta.st_gid or
+                            stat.S_IMODE(current_meta.st_mode) !=
+                            stat.S_IMODE(meta.st_mode) or
+                            os.getxattr(CONFIG, "security.selinux") != context):
+                        refuse("RESTORE_METADATA_NOT_RECOVERED")
+                elif current_bytes == before + RESTORE_MARKER:
+                    atomic_write(before, current_bytes, meta, context)
+                    if file_state(backup)[1] != before:
+                        refuse("ROLLBACK_BYTES_NOT_RECOVERED")
+                else:
+                    # Refuse to overwrite any unexpected concurrent content.
+                    refuse("UNKNOWN_CHANGE_REQUIRES_MANUAL_RECOVERY")
             except Exception as exc:
                 print("LMR365_SENDMAIL_VM_CRITICAL_RECOVERY_CLEANUP_FAILED",
                       type(exc).__name__, file=sys.stderr)
