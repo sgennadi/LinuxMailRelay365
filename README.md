@@ -1,6 +1,34 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.24 — Microsoft 365 object inventory and reviewed managed Connector lifecycle; NOT signed Stable or production-accepted.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.25 — guarded Multi-mailbox XOAUTH2 offline configuration, Restore and approved SMTP acceptance; UNSIGNED TEST Preview, NOT Stable or production-accepted.**
+
+## Preview 25: Multi-mailbox XOAUTH2 and safe test delivery (UNSIGNED TEST ONLY)
+
+The Windows Wizard can Stage -> Preview -> Apply OFFLINE and separately
+Restore Preview -> Restore OFFLINE an isolated Postfix Multi-mailbox route.
+Current routes are protected by ownership markers and SHA-256 approvals;
+there is no automatic mail-service restart, queue drain or replacement of
+a production primary MTA. Mapped senders require authenticated login and
+From ownership; arbitrary cross-mailbox Send As remains blocked.
+
+For a test tenant, an operator may explicitly preview and approve two fixed
+short direct Microsoft 365 SMTP test messages through one selected mailbox's
+protected OAuth identity (internal + external consenting recipient). The
+unique run ID is stored in a root-only ledger **before sending** and never
+automatically retried. After uncertain SSH loss, the Wizard can inspect
+the last attempt's stage without resending. SMTP acceptance is **not**
+recipient inbox delivery or evidence of local Postfix client SMTP AUTH.
+The actual inboxes and Exchange Message Trace must be checked separately.
+
+The test helper requires a root-owned runuser parent; the unprivileged
+m365mailer worker does not have access to SMTP password hashes.
+The guarded 120-second root ingress proof expires and has no automatic
+production renewal service yet. Physical TPM, SELinux Enforcing, real
+tenant/recipient acceptance, and 200% DPI visual acceptance remain open.
+New Preview 25 updates are opt-in, non-elevated, unsigned test deployments
+only and **do not** satisfy the signed Stable release gate.
+
+See [Multi-mailbox runtime and Restore](docs/MULTI_MAILBOX_XOAUTH2_RUNTIME.md).
 
 ## Preview 24: Microsoft 365 Objects Manager (read-only discovery and reviewed Connector controls)
 
@@ -249,7 +277,7 @@ test-inbox reviews before marking delivery confirmed.
 See [experimental runtime, Restore and delivery acceptance guide](docs/MULTI_MAILBOX_XOAUTH2_RUNTIME.md).
 Automated CI testing is not proof of M365 token rights, internal/external
 mail delivery, live SELinux/TPM or production recovery acceptance. This
-work is in Draft PR only; published Preview 24 is unchanged.
+work remains experimentally gated; publishing Preview 25 does not modify the existing Preview 24 release.
 
 ## New functionality in development branch (not Stable)
 
