@@ -197,7 +197,7 @@ class V2SnapshotTests(unittest.TestCase):
                 m.extract_offline("sendmail", self.folder.name, self.base, self.uid)
         self.assertFalse(any(self.folder.parent.glob(".offline-recovery-*")))
         self.assertEqual((self.root / "etc/mail/sendmail.cf").read_text(),
-                         "O DaemonPortOptions=Addr=127.0.0.1\\n")
+                         "O DaemonPortOptions=Addr=127.0.0.1\n")
 
     def test_symlinked_archive_base_is_refused_before_read(self):
         renamed = self.base.with_name("archived-safe-base")
