@@ -58,6 +58,13 @@ internal sealed partial class MainForm
     private async Task<CloudObjectsInventory> QueryCloudObjectsAsync(
         Guid tenantId, Guid? clientId)
     {
+        // Freeze the exact UI selection before asynchronous admin sign-in.
+        // A valid GUID in the field AFTER sign-in is insufficient: it must
+        // match the original requested app, not just parse successfully.
+        string requestedClientField = existingAppId.Text.Trim();
+        string requestedConnectorName = outboundConnectorName.Text.Trim();
+        ValidateCloudInventorySelection(
+            tenantId, clientId, requestedClientField, requestedConnectorName);
         Directory.CreateDirectory(dataDirectory);
         string script = Path.Combine(dataDirectory, "Inspect-LinuxMailRelay365Objects.ps1");
         string report = Path.Combine(dataDirectory,
@@ -78,14 +85,10 @@ internal sealed partial class MainForm
             psi.ArgumentList.Add("-ClientId");
             psi.ArgumentList.Add(clientId.Value.ToString("D"));
         }
-        string connectorName = outboundConnectorName.Text.Trim();
-        if (connectorName.Length > 0)
+        if (requestedConnectorName.Length > 0)
         {
-            if (!System.Text.RegularExpressions.Regex.IsMatch(connectorName,
-                @"\A[A-Za-z0-9][A-Za-z0-9._ -]{2,69}\z"))
-                throw new ArgumentException("Connector display name must be 3..70 safe characters.");
             psi.ArgumentList.Add("-ConnectorName");
-            psi.ArgumentList.Add(connectorName);
+            psi.ArgumentList.Add(requestedConnectorName);
         }
         WriteLine("Microsoft 365 object audit: interactive admin sign-in; exact tenant-bound and read-only.");
         try
@@ -100,11 +103,8 @@ internal sealed partial class MainForm
                 throw new InvalidDataException("Microsoft 365 cloud inventory report is missing.");
             var inventory = CloudObjectsInventory.Parse(
                 await File.ReadAllTextAsync(report), tenantId, clientId);
-            if (!Guid.TryParse(tenant.Text.Trim(), out Guid activeTenant) ||
-                activeTenant != tenantId ||
-                (existingAppId.Text.Trim().Length > 0 &&
-                 !Guid.TryParse(existingAppId.Text.Trim(), out Guid nowClient)))
-                throw new InvalidOperationException("Selected Microsoft 365 tenant/application changed.");
+            ValidateCloudInventorySelection(
+                tenantId, clientId, requestedClientField, requestedConnectorName);
             WriteLine("Read-only Microsoft 365 object inspection: " +
                 inventory.Connectors.Count + " candidate connectors, " +
                 inventory.Certificates.Count + " public credential records, " +
@@ -115,6 +115,36 @@ internal sealed partial class MainForm
         {
             if (File.Exists(report)) File.Delete(report);
         }
+    }
+
+    private void ValidateCloudInventorySelection(
+        Guid expectedTenant, Guid? expectedClient,
+        string requestedClientField, string requestedConnectorName)
+    {
+        if (!Guid.TryParse(tenant.Text.Trim(), out Guid selectedTenant) ||
+            selectedTenant != expectedTenant ||
+            (tenantSelector.SelectedItem is TenantOption option &&
+             option.Id != expectedTenant) ||
+            (discoveredTenants.Count > 1 &&
+             tenantSelector.SelectedItem is not TenantOption) ||
+            !string.Equals(existingAppId.Text.Trim(), requestedClientField,
+                           StringComparison.Ordinal) ||
+            !string.Equals(outboundConnectorName.Text.Trim(), requestedConnectorName,
+                           StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "Microsoft 365 tenant, app or Connector selection changed. Inspect again.");
+
+        if (requestedClientField.Length > 0 &&
+            (!Guid.TryParse(requestedClientField, out Guid chosenClient) ||
+             !expectedClient.HasValue || chosenClient != expectedClient.Value))
+            throw new InvalidOperationException(
+                "Microsoft 365 application ID changed. Inspect again.");
+
+        if (requestedConnectorName.Length > 0 &&
+            !System.Text.RegularExpressions.Regex.IsMatch(requestedConnectorName,
+                @"\A[A-Za-z0-9][A-Za-z0-9._ -]{2,69}\z"))
+            throw new InvalidOperationException(
+                "Connector name is not a safe exact-match selection.");
     }
 
     private void ShowCloudObjectInventory(CloudObjectsInventory inventory)

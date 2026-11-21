@@ -41,6 +41,18 @@ trust and names, Exim ACL/routers/transports, Sendmail access maps, MTA
 queue preservation, RHEL SELinux Enforcing and actual Microsoft 365 delivery.
 Neither this inspection nor CI enables native Exim/Sendmail rewriting.
 
+## Cloud inventory input identity binding (Draft after Preview 25)
+
+The Windows read-only Microsoft 365 Objects Manager now captures the exact
+selected Tenant ID, optional App Client ID input, and Connector filter before
+the interactive PowerShell/Graph/Exchange sign-in. The input is validated both
+before and after the asynchronous request, including the chosen tenant from
+the tenant picker. A changed Client ID is rejected even if both GUIDs are
+syntactically valid; a changed Connector name or cleared app field is also
+rejected. This prevents displaying a stale cloud response for another UI
+selection. No tenant objects, mail route, or local Linux service is modified.
+An interactive authorized-tenant acceptance test remains open.
+
 ## Microsoft 365 object inventory and managed Connector acceptance
 
 Read-only inventory uses an exact selected Tenant ID and optional exact
