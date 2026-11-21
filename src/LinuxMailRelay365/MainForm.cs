@@ -5602,16 +5602,19 @@ internal sealed partial class MainForm : Form
                 "Reinspect the active Postfix before using Postfix backup or Restore. This archive does not cover Exim/Sendmail.");
     }
 
-    private string ConfirmedForeignBackupMta()
+    private string ConfirmedForeignBackupMta(bool allowStopped = false)
     {
         string? current = TryCurrentIdentity();
         if (current is null || inspectedServerIdentity != current ||
             inspectedHostIdentity != current || inspectedHost is null ||
-            inspectedHost.MtaState != "active" ||
+            (inspectedHost.MtaState != "active" &&
+             !(allowStopped && inspectedHost.MtaState == "installed_inactive")) ||
             inspectedMail?.Mta is not ("exim" or "sendmail") ||
             inspectedHost.Mta != inspectedMail.Mta)
             throw new InvalidOperationException(
-                "Reinspect active Exim/Sendmail and hostname before making a primary MTA backup.");
+                allowStopped
+                    ? "Reinspect the exact installed Exim/Sendmail and hostname before archive verification or read-only preflight."
+                    : "Reinspect active Exim/Sendmail and hostname before creating a primary MTA backup.");
         return inspectedMail.Mta;
     }
 
@@ -5660,7 +5663,7 @@ internal sealed partial class MainForm : Form
     private async Task ListForeignMtaBackupsAsync()
     {
         var endpoint = Endpoint();
-        string mta = ConfirmedForeignBackupMta();
+        string mta = ConfirmedForeignBackupMta(allowStopped: true);
         foreignBackupListContext = null;
         foreignBackupSelector.Items.Clear();
         var response = await SshRemote.RunRootScriptAsync(endpoint,
@@ -5694,7 +5697,7 @@ internal sealed partial class MainForm : Form
     private async Task VerifyForeignMtaBackupAsync()
     {
         var endpoint = Endpoint();
-        string mta = ConfirmedForeignBackupMta();
+        string mta = ConfirmedForeignBackupMta(allowStopped: true);
         if (foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta ||
             foreignBackupSelector.SelectedItem is not string id)
             throw new InvalidOperationException("List and choose the verified archive for this MTA.");
@@ -5716,7 +5719,7 @@ internal sealed partial class MainForm : Form
     private async Task PreviewForeignMtaRecoveryAsync()
     {
         var endpoint = Endpoint();
-        string mta = ConfirmedForeignBackupMta();
+        string mta = ConfirmedForeignBackupMta(allowStopped: true);
         if (foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta ||
             foreignBackupSelector.SelectedItem is not string id)
             throw new InvalidOperationException("Re-list verified snapshots and select one for this MTA.");
@@ -5741,7 +5744,7 @@ internal sealed partial class MainForm : Form
     private async Task PreflightForeignMtaRecoveryAsync()
     {
         var endpoint = Endpoint();
-        string mta = ConfirmedForeignBackupMta();
+        string mta = ConfirmedForeignBackupMta(allowStopped: true);
         string identity = SecurityOptionsStore.Identity(endpoint) + "|" + mta;
         if (foreignBackupListContext != identity ||
             foreignBackupSelector.SelectedItem is not string id)
@@ -5791,7 +5794,7 @@ internal sealed partial class MainForm : Form
     private async Task ExportForeignMtaOfflineAsync()
     {
         var endpoint = Endpoint();
-        string mta = ConfirmedForeignBackupMta();
+        string mta = ConfirmedForeignBackupMta(allowStopped: true);
         if (foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta ||
             foreignBackupSelector.SelectedItem is not string id)
             throw new InvalidOperationException("Re-list verified snapshots and select one for this MTA.");
