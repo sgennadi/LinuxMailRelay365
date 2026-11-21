@@ -128,14 +128,14 @@ def single_header(message, auditor, expected):
     return True
 
 
-def choose_identity(rows, sender):
-    matches = [r for r in rows if r[1] == sender]
+def choose_identity(rows, sender, sasl_login):
+    matches = [r for r in rows if r[1] == sender and r[0] == sasl_login]
     if len(matches) != 1:
         raise Denied("envelope_sender_not_owned_or_ambiguous")
     return matches[0]
 
 
-def deliver(sender, recipient, map_hash, raw,
+def deliver(sender, recipient, sasl_login, sasl_method, map_hash, raw,
             auditor=None, ingress_checker=ingress_ready,
             transport=None, gid=None):
     auditor = auditor or load_source(AUDITOR, "lmr365_multi_policy")
@@ -144,10 +144,16 @@ def deliver(sender, recipient, map_hash, raw,
     if not auditor.EMAIL.fullmatch(sender) or not auditor.EMAIL.fullmatch(recipient):
         raise Denied("invalid_sender_or_recipient_address")
     sender = sender.casefold()
+    if (not isinstance(sasl_login, str) or
+            not isinstance(sasl_method, str) or
+            not auditor.LOGIN.fullmatch(sasl_login) or
+            sasl_method.upper() not in ('PLAIN', 'LOGIN')):
+        raise Denied('verified_smtp_auth_session_required')
+    sasl_login = sasl_login.casefold()
     if gid is None:
         gid = require_service_account()
     rows = secure_runtime_map(auditor, gid, map_hash)
-    login, assigned_from, mailbox, path = choose_identity(rows, sender)
+    login, assigned_from, mailbox, path = choose_identity(rows, sender, sasl_login)
     if assigned_from != sender or mailbox != sender:
         raise Denied("route_not_self_mailbox")
     single_header(raw, auditor, sender)
@@ -169,6 +175,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--recipient", default="")
     parser.add_argument("--envelope-sender", default="")
+    parser.add_argument("--sasl-login", default="")
+    parser.add_argument("--sasl-method", default="")
     parser.add_argument("--expected-map-sha256", required=True)
     parser.add_argument("--check-only", action="store_true")
     opts = parser.parse_args(argv)
@@ -178,7 +186,7 @@ def main(argv=None):
         rows = secure_runtime_map(auditor, gid, opts.expected_map_sha256)
         ingress_ready(rows, auditor)
         if opts.check_only:
-            if opts.recipient or opts.envelope_sender:
+            if opts.recipient or opts.envelope_sender or opts.sasl_login or opts.sasl_method:
                 raise Denied("check_only_accepts_no_delivery_arguments")
             print("MULTI_MAILBOX_INGRESS=configuration_consistent_not_live_verified")
             print("MULTI_MAILBOX_IDENTITIES=" + str(len(set(r[2] for r in rows))))
@@ -188,7 +196,7 @@ def main(argv=None):
             parser.error("Postfix pipe must supply one envelope sender and recipient")
         raw = sys.stdin.buffer.read(MAX_MAIL_BYTES + 1)
         deliver(opts.envelope_sender, opts.recipient,
-                opts.expected_map_sha256, raw,
+                opts.sasl_login, opts.sasl_method, opts.expected_map_sha256, raw,
                 auditor=auditor, gid=gid)
         print("2.0.0 SMTP submitted to Microsoft 365; inbox not verified")
         return 0
