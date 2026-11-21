@@ -17,6 +17,7 @@ QUEUE=/var/spool/linuxmailrelay365-sidecar
 DATA=/var/lib/linuxmailrelay365-sidecar
 UNIT=/etc/systemd/system/linuxmailrelay365-sidecar.service
 MANAGER=/usr/local/libexec/lmr365-selinux-port.py
+CONTEXT_MANAGER=/usr/local/libexec/lmr365-selinux-sidecar-context.py
 PORT=2526
 for p in "$CONF" "$QUEUE" "$DATA" "$UNIT"; do
   if sudo test -e "$p" || sudo test -L "$p"; then
@@ -26,6 +27,7 @@ for p in "$CONF" "$QUEUE" "$DATA" "$UNIT"; do
 done
 test -z "$(sudo ss -H -ltn '( sport = :2526 )')"
 test -f "$MANAGER"
+test -f "$CONTEXT_MANAGER"
 
 work="$(mktemp -d)"
 cleanup() {
@@ -50,9 +52,16 @@ cleanup() {
   for p in "$CONF" "$QUEUE" "$DATA"; do
     sudo rm -rf -- "$p"
   done
-  for p in "$CONF" "$QUEUE" "$DATA"; do
-    sudo semanage fcontext -d "$p" >/dev/null 2>&1 || true
-  done
+  if sudo test -f /var/lib/linuxmailrelay365-selinux-context/active.json; then
+    current_ctx="$(sudo python3 "$CONTEXT_MANAGER" --status 2>/dev/null |
+      sed -n 's/^RHEL_FCONTEXT_POLICY_SHA256=//p')" || true
+    if [[ "$current_ctx" =~ ^[a-f0-9]{64}$ ]]; then
+      sudo python3 "$CONTEXT_MANAGER" --restore \
+        --expect-policy-sha256 "$current_ctx" \
+        --confirm REMOVE_REVIEWED_RHEL_SIDECAR_CONTEXTS || true
+    fi
+  fi
+
   if sudo test -f /var/lib/linuxmailrelay365-selinux-port/active.json; then
     current="$(sudo python3 "$MANAGER" --status --smtp-port "$PORT" 2>/dev/null |
       sed -n 's/^RHEL_PORT_CURRENT_POLICY_SHA256=//p')" || true
@@ -81,6 +90,10 @@ cleanup() {
     done
     if sudo test -f /var/lib/linuxmailrelay365-selinux-port/active.json; then
       echo "LMR365_POSITIVE_SIDECAR_CLEANUP_PORT_POLICY_STILL_MANAGED"
+      result=1
+    fi
+    if sudo test -f /var/lib/linuxmailrelay365-selinux-context/active.json; then
+      echo "LMR365_POSITIVE_SIDECAR_CLEANUP_CONTEXT_POLICY_STILL_MANAGED"
       result=1
     fi
     if ! sudo semanage fcontext -l -C > "$work/remaining-fcontext"; then
@@ -127,12 +140,19 @@ sudo install -d -o root -g root -m 0755 /etc/linuxmailrelay365
 sudo install -d -o root -g root -m 0755 "$CONF" "$QUEUE"
 sudo install -d -o postfix -g postfix -m 0700 "$DATA"
 
-# Map secondary instance paths to the system Postfix policy using narrowly
-# scoped equivalence rules. Do not apply any global SELinux policy change.
-sudo semanage fcontext -a -e /etc/postfix "$CONF"
-sudo semanage fcontext -a -e /var/spool/postfix "$QUEUE"
-sudo semanage fcontext -a -e /var/lib/postfix "$DATA"
-sudo restorecon -RF "$CONF" "$QUEUE" "$DATA" >/dev/null
+# Apply exactly three reviewed Postfix-specific equivalents using the
+# experimental guarded manager; never overwrite unrelated local policy.
+fcontext_preflight="$(sudo python3 "$CONTEXT_MANAGER" --check-only)"
+echo "$fcontext_preflight" | grep -Fxq 'RHEL_FCONTEXT_PREFLIGHT=ready'
+fcontext_sha="$(printf '%s\n' "$fcontext_preflight" |
+  sed -n 's/^RHEL_FCONTEXT_POLICY_SHA256=//p')"
+[[ "$fcontext_sha" =~ ^[a-f0-9]{64}$ ]]
+sudo python3 "$CONTEXT_MANAGER" --apply \
+  --expect-policy-sha256 "$fcontext_sha" \
+  --confirm ADD_REVIEWED_RHEL_SIDECAR_CONTEXTS
+sudo python3 "$CONTEXT_MANAGER" --relabel \
+  --confirm RELABEL_REVIEWED_RHEL_SIDECAR_PATHS
+echo "LMR365_POSITIVE_SIDECAR_FCONTEXT=managed_three_equivalences"
 
 cat > "$work/main.cf" <<'CONFMAIN'
 myhostname = smtp-ci.lab.invalid
@@ -177,13 +197,15 @@ showq     unix  n       -       n       -       -       showq
 error     unix  -       -       n       -       -       error
 CONFMASTER
 sudo install -o root -g root -m 0644 "$work/master.cf" "$CONF/master.cf"
-sudo restorecon -RF "$CONF" "$QUEUE" "$DATA" >/dev/null
+sudo python3 "$CONTEXT_MANAGER" --relabel \
+  --confirm RELABEL_REVIEWED_RHEL_SIDECAR_PATHS
 sudo postfix -c "$CONF" check
 # 'postfix check' creates the queue subdirectories (including public and
 # private). The earlier restorecon ran BEFORE these paths existed, so they
 # inherited postfix_spool_t instead of specific public/private socket types.
 # Relabel only this isolated instance after Postfix has created the layout.
-sudo restorecon -RF "$QUEUE" "$DATA" >/dev/null
+sudo python3 "$CONTEXT_MANAGER" --relabel \
+  --confirm RELABEL_REVIEWED_RHEL_SIDECAR_PATHS
 sudo ls -ldZ "$QUEUE/public" "$QUEUE/private" "$QUEUE/maildrop"
 sudo stat -c '%C' "$QUEUE/public" | grep -Fq ':postfix_public_t:'
 sudo stat -c '%C' "$QUEUE/private" | grep -Fq ':postfix_private_t:'
