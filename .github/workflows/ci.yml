@@ -299,6 +299,7 @@ jobs:
           ./windows/Test-LinuxMailRelay365OutboundMode.ps1 -SelfTest
           ./windows/Manage-LinuxMailRelay365Connector.ps1 -SelfTest
           ./windows/Inspect-LinuxMailRelay365Objects.ps1 -SelfTest
+          ./windows/Manage-LinuxMailRelay365Object.ps1 -SelfTest
           ./windows/Manage-LinuxMailRelay365EntraCertificate.ps1 -SelfTest
           ./scripts/Test-LinuxMailRelay365SignedRelease.ps1 -SelfTest
       - name: Build portable single EXE x64

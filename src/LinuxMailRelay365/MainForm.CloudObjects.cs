@@ -209,7 +209,10 @@ internal sealed partial class MainForm
                     Environment.NewLine + "Sender domains: " + string.Join(", ", c.SenderDomains) +
                     Environment.NewLine + "Public source IPs: " + string.Join(", ", c.SenderIps) +
                     Environment.NewLine + "TLS identity: " + c.TlsCertificateName +
-                    Environment.NewLine + "Ownership: UNVERIFIED. Modification/deletion blocked.",
+                    Environment.NewLine + "Ownership: " +
+                    (c.Ownership == "verified" ?
+                        "verified tenant marker; edits require reviewed SHA + typed approval" :
+                        "UNVERIFIED; edits/deletion blocked"),
                 CloudScopeObject c => "Management scope: " + c.Name +
                     Environment.NewLine + "Recipient filter: " + c.Filter +
                     Environment.NewLine + "Do not change without checking affected mailbox permissions.",
@@ -235,8 +238,66 @@ internal sealed partial class MainForm
         close.Click += (_, _) => modal.Close();
         var copy = UiTheme.Action(T("Копировать сведения", "Copy details", "העתק פרטים"), false, "check");
         copy.Click += (_, _) => { if (details.Text.Length > 0) Clipboard.SetText(details.Text); };
+        var operation = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList, Width = 132,
+            Font = new Font("Segoe UI", 9.5f),
+            Margin = new Padding(5, 4, 5, 4)
+        };
+        operation.Items.AddRange(new object[] { "Disable", "Enable", "Rename", "Delete" });
+        operation.SelectedIndex = 0;
+        var newName = new TextBox
+        {
+            Width = 230, Visible = false,
+            PlaceholderText = "LinuxMailRelay365 New Name",
+            Margin = new Padding(5, 5, 5, 5)
+        };
+        operation.SelectedIndexChanged += (_, _) =>
+            newName.Visible = operation.Enabled && operation.SelectedIndex == 2;
+        var change = UiTheme.Action(T("Проверить и применить...", "Review & apply...",
+            "בדוק והחל שינוי"), false, "shield");
+        operation.Enabled = false;
+        change.Enabled = false;
+        tree.AfterSelect += (_, _) =>
+        {
+            bool managed = tree.SelectedNode?.Tag is CloudConnectorObject connector &&
+                connector.Ownership == "verified";
+            operation.Enabled = managed;
+            change.Enabled = managed;
+            newName.Visible = managed && operation.SelectedIndex == 2;
+        };
+        change.Click += async (_, _) =>
+        {
+            if (tree.SelectedNode?.Tag is not CloudConnectorObject connector ||
+                connector.Ownership != "verified" || operation.SelectedIndex < 0)
+                return;
+            string selectedOperation = operation.SelectedItem?.ToString() ?? "";
+            change.Enabled = false;
+            try
+            {
+                bool applied = await ExecuteCloudConnectorOperationAsync(
+                    modal, inventory, connector, selectedOperation, newName.Text.Trim());
+                if (applied) modal.Close();
+            }
+            catch (Exception)
+            {
+                MessageBox.Show(modal, T(
+                    "Операция не подтверждена. Проверьте PowerShell/Exchange и повторите инвентаризацию.",
+                    "Operation not verified. Inspect PowerShell/Exchange and refresh inventory.",
+                    "הפעולה לא אומתה. יש לבדוק את Exchange ולרענן מלאי."),
+                    "LinuxMailRelay365", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                change.Enabled = tree.SelectedNode?.Tag is CloudConnectorObject c &&
+                                 c.Ownership == "verified";
+            }
+        };
         footer.Controls.Add(close);
         footer.Controls.Add(copy);
+        footer.Controls.Add(change);
+        footer.Controls.Add(operation);
+        footer.Controls.Add(newName);
         main.Controls.Add(footer, 0, 2);
         modal.Controls.Add(main);
         modal.AcceptButton = close;
