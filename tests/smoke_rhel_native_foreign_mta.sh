@@ -22,7 +22,9 @@ if test -e /run/systemd/system; then
 fi
 
 # DNF operates only in this disposable container, never on a user MTA.
-dnf -y install python3 coreutils
+# EL9 minimal containers include coreutils-single, incompatible with
+# coreutils; never replace base packages just to run a syntax smoke test.
+dnf -y install python3
 if test "$mta" = "exim"; then
   if test "$ID" != rocky; then
     echo "EL_NATIVE_EXIM_EPEL_TEST_REQUIRES_ROCKY" >&2; exit 2
