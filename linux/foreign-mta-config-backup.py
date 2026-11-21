@@ -320,7 +320,9 @@ def verify(directory, mta, owner_uid=0):
     else:
         if not isinstance(objects, dict) or not objects or len(objects) > MAX_FILES:
             raise Refused("invalid_package_object_manifest")
-        if "etc/mail" not in objects or objects["etc/mail"].get("kind") != "directory":
+        if ("etc/mail" not in objects or
+                not isinstance(objects["etc/mail"], dict) or
+                objects["etc/mail"].get("kind") != "directory"):
             raise Refused("sendmail_package_root_directory_unrecorded")
         if len(objects) + len(manifest["files"]) > MAX_FILES:
             raise Refused("package_snapshot_object_limit")
