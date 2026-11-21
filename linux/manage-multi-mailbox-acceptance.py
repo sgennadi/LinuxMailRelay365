@@ -118,10 +118,19 @@ def prepare(request, auditor=None, restorer=None):
     path = selected[0][3]
     identity = auditor.secure_read(path, auditor.MAX_IDENTITY, 0o640, gid)
     auditor.validate_identity(identity, verified["sender"])
+    # The privileged audit proof is intentionally refreshed before EACH
+    # accepted message. Its inode, ctime and expiry are volatile and must NOT
+    # invalidate the approved immutable route/recipient SHA between the two
+    # sends. All other route configuration, marker, source and identity facts
+    # remain SHA-bound and must still match on every send attempt.
+    immutable_route = dict(state["review"])
+    immutable_route.pop("proof", None)
+    immutable_route_sha = digest(json.dumps(
+        immutable_route, sort_keys=True, separators=(",", ":")).encode("ascii"))
     evidence = {
         "version": VERSION,
         "run_id": verified["run_id"],
-        "active_route_sha256": state["sha"],
+        "active_route_sha256": immutable_route_sha,
         "active_marker_sha256": digest(state["marker"][1]),
         "runtime_map_sha256": digest(map_bytes),
         "selected_identity_sha256": digest(identity),
