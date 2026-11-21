@@ -84,7 +84,7 @@ sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m 4096 \
   -drive "if=virtio,format=raw,file=$work/seed.iso,media=cdrom" \
   -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:22222-:22" \
   -device virtio-rng-pci -display none -monitor none \
-  -serial "file:$work/console.log" -no-reboot -daemonize -pidfile "$work/vm.pid"
+  -serial "file:$work/console.log" -daemonize -pidfile "$work/vm.pid"
 
 ssh_opts=(-o BatchMode=yes -o ConnectionAttempts=1 -o ConnectTimeout=4 \
   -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$work/known_hosts" \
@@ -141,5 +141,42 @@ scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'bash /tmp/lmr365-postfix-smoke.sh'
 
-echo "LMR365_GUEST_MAIL_DELIVERY_TESTED=no"
-echo "LMR365_GUEST_SMTP_AUTH_TESTED=no"
+# Tenant-free loopback-only STARTTLS and SMTP AUTH acceptance inside the VM.
+scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+    tests/rocky_vm_tls_auth_enforcing.sh ci@127.0.0.1:/home/ci/lmr365-tls-auth-ci.sh
+ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    'bash /home/ci/lmr365-tls-auth-ci.sh --setup'
+echo "LMR365_GUEST_AUTH_TLS_SETUP=verified"
+
+old_boot_id="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 'cat /proc/sys/kernel/random/boot_id')"
+if ! [[ "$old_boot_id" =~ ^[0-9a-f-]{36}$ ]]; then
+    echo "LMR365_GUEST_OLD_BOOT_ID_UNVERIFIED"
+    exit 1
+fi
+ssh "${ssh_opts[@]}" ci@127.0.0.1 'sudo systemctl reboot' >/dev/null 2>&1 || true
+rebooted=no
+for attempt in $(seq 1 90); do
+    new_boot_id="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)"
+    if [[ "$new_boot_id" =~ ^[0-9a-f-]{36}$ ]] &&
+       test "$new_boot_id" != "$old_boot_id"; then
+        rebooted=yes
+        break
+    fi
+    if ! sudo kill -0 "$(sudo cat "$work/vm.pid")" 2>/dev/null; then
+        echo "LMR365_GUEST_REBOOT_QEMU_EXITED"
+        exit 1
+    fi
+    sleep 5
+done
+test "$rebooted" = yes || {
+    echo "LMR365_GUEST_REBOOT_BOOT_ID_UNCHANGED"
+    exit 1
+}
+echo "LMR365_GUEST_REBOOT=verified_new_boot_id"
+ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash /home/ci/lmr365-tls-auth-ci.sh --verify'
+echo "LMR365_GUEST_AUTH_TLS_POST_REBOOT=verified"
+echo "LMR365_GUEST_MICROSOFT365_DELIVERY_TESTED=no"
+echo "LMR365_GUEST_EXTERNAL_MAIL_DELIVERY_TESTED=no"
+
