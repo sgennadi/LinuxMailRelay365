@@ -10,7 +10,7 @@ using System.Windows.Forms;
 
 namespace LinuxMailRelay365;
 
-internal sealed class MainForm : Form
+internal sealed partial class MainForm : Form
 {
     private readonly TextBox host = Field("linux.example.net");
     private readonly TextBox sshPort = Field("22");
@@ -2159,6 +2159,10 @@ internal sealed class MainForm : Form
                     "בחרו כיצד Linux ישלח דואר דרך Microsoft 365")));
                 AddLine(page, BuildDeliveryModeChoices());
                 AddLine(page, BuildDeliveryModeOverview());
+                AddAction(page, T("Microsoft 365: объекты, сертификаты и Connector (только чтение)",
+                    "Microsoft 365: inspect applications, credentials and connectors (read-only)",
+                    "בדיקת יישומים, אישורים ומחברים ב-Microsoft 365"),
+                    InspectCloudObjectsAsync, false, "cloud", "cloud-objects");
                 if (mailTransport.SelectedIndex is 1 or 2)
                 {
                     AddLine(page, UiTheme.Text(T(
@@ -2334,6 +2338,10 @@ internal sealed class MainForm : Form
                                               "Create NEW reviewed tenant Connector...",
                                               "יצירת Connector מאומת בענן"),
                                               CreateTenantConnectorAsync, false, "shield", "m365-connector-create");
+                            AddAction(page, T("Показать объекты Connector и Entra (только чтение)",
+                                "Inspect Microsoft 365 Connector and Entra objects (read-only)",
+                                "בדיקת מחברים ויישומים ללא שינוי"),
+                                InspectCloudObjectsAsync, false, "cloud", "cloud-objects");
                         }
                         if (senderPolicy.SelectedIndex != 0)
                         {

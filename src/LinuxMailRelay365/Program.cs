@@ -388,6 +388,11 @@ internal static class Program
                 }
                 catch (ArgumentException) { return true; }
             }),
+            ("Microsoft 365 read-only inventory parser", CloudObjectsInventory.SelfTest),
+            ("Microsoft 365 object inspector embedded", () =>
+                EmbeddedAssets.CloudObjectsInspector.Contains("M365_OBJECT_INSPECT=read_only", StringComparison.Ordinal) &&
+                EmbeddedAssets.CloudObjectsInspector.Contains("Application.Read.All", StringComparison.Ordinal) &&
+                !EmbeddedAssets.CloudObjectsInspector.Contains("Remove-InboundConnector", StringComparison.Ordinal)),
             ("Tenant discovery", TenantDiscovery.SelfTest),
             ("Diagnostic privacy", DiagnosticJournal.SelfTest)
         };
