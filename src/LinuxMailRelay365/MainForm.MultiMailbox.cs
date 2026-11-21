@@ -22,13 +22,24 @@ internal sealed partial class MainForm
     private string? reviewedMultiTestRunId;
     private string? reviewedMultiTestContext;
     private string multiTestSummary = "";
+    private string? lastMultiTestRunId;
+    private string? lastMultiTestContext;
+    private string multiTestLedgerSummary = "";
 
-    private void ResetMultiMailboxTestReview()
+    private void ResetMultiMailboxTestApproval()
     {
         reviewedMultiTestSha = null;
         reviewedMultiTestRunId = null;
         reviewedMultiTestContext = null;
         multiTestSummary = "";
+    }
+
+    private void ResetMultiMailboxTestReview()
+    {
+        ResetMultiMailboxTestApproval();
+        lastMultiTestRunId = null;
+        lastMultiTestContext = null;
+        multiTestLedgerSummary = "";
     }
 
     private string CurrentMultiMailboxTestContext() =>
@@ -38,7 +49,7 @@ internal sealed partial class MainForm
     private async Task PreviewMultiMailboxDeliveryTestAsync()
     {
         string context = CurrentMultiMailboxTestContext();
-        ResetMultiMailboxTestReview();
+        ResetMultiMailboxTestApproval();
         string runId = Guid.NewGuid().ToString("N");
         var result = await SshRemote.RunRootScriptAsync(
             Endpoint(),
@@ -105,7 +116,12 @@ internal sealed partial class MainForm
               "יישלחו שתי הודעות אמיתיות לתיבות בדיקה מאושרות. אין לחזור על ניסוי לאחר תקלה ללא בדיקה."),
             "SEND TWO MULTI MAILBOX TESTS")) return;
         // Single-use approval, including uncertain SSH timeout or partial run.
-        ResetMultiMailboxTestReview();
+        // Preserve this exact run ID so the operator can inspect a partial
+        // acceptance ledger after an interrupted SSH session, without resend.
+        ResetMultiMailboxTestApproval();
+        lastMultiTestRunId = runId;
+        lastMultiTestContext = context;
+        multiTestLedgerSummary = "";
         var result = await SshRemote.RunRootScriptAsync(
             Endpoint(), EmbeddedAssets.BuildMultiMailboxAcceptanceBundle(
                 runId, multiTestSender.Text.Trim(), multiTestInternal.Text.Trim(),
@@ -137,6 +153,44 @@ internal sealed partial class MainForm
             "שתי הודעות התקבלו ב-SMTP. המסירה לתיבות עדיין לא אומתה.");
         WriteLine("Multi-mailbox two-recipient SMTP submission accepted. Trace ID=" + runId +
                   ". Inbox delivery and Exchange message trace NOT verified. No automatic retry.");
+        RenderPage();
+    }
+
+
+    private async Task InspectLastMultiMailboxDeliveryTestAsync()
+    {
+        string context = CurrentMultiMailboxTestContext();
+        if (lastMultiTestRunId is null || lastMultiTestContext != context)
+            throw new InvalidOperationException(
+                "No inspected acceptance attempt belongs to the current SSH host and sender/recipient set.");
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildMultiMailboxAcceptanceStatusBundle(lastMultiTestRunId),
+            TimeSpan.FromSeconds(90));
+        result.EnsureSuccess();
+        string reportedId = ValidatedMultiMailboxReportValue(
+            result.StdOut, "MULTI_ACCEPTANCE_RUN_ID", @"\A[a-f0-9]{32}\z");
+        if (reportedId != lastMultiTestRunId)
+            throw new InvalidDataException("The acceptance ledger belongs to a different run.");
+        string state = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_LEDGER_STATE",
+            @"\A(?:reserved_no_send_recorded|internal_attempted_result_uncertain|internal_smtp_accepted_external_not_attempted|external_attempted_result_uncertain|both_smtp_accepted_completion_not_recorded|smtp_submissions_complete_not_inbox_verified)\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_EVENT_COUNT", @"\A[1-6]\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_RECIPIENT_INBOX_VERIFIED", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_ACCEPTANCE_AUTOMATIC_RETRY", @"\Ano\z");
+        if (context != CurrentMultiMailboxTestContext())
+            throw new InvalidOperationException(
+                "Host or recipient set changed during acceptance ledger inspection.");
+        multiTestLedgerSummary = T(
+            "Журнал теста " + reportedId + ": " + state +
+              ". Никакой автоматической повторной отправки. Проверьте оба почтовых ящика и Exchange Message Trace.",
+            "Acceptance ledger " + reportedId + ": " + state +
+              ". NO automatic retries; check both inboxes and Exchange message trace.",
+            "יומן בדיקה: " + state + ". אין שליחה חוזרת; בדוק שתי תיבות ואת Message Trace.");
+        WriteLine("Read-only acceptance ledger inspection: run " + reportedId +
+                  ", status " + state + "; no retry, no inbox delivery proven.");
         RenderPage();
     }
 
