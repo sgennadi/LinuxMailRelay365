@@ -195,14 +195,13 @@ hostname, but only as a non-binding draft. It refuses the primary's FQDN for
 an isolated relay. Validate DNS, certificate SAN, sender ownership, SMTP
 permissions and actual listener availability before any approved install.
 
-**Unfinished, blocked until acceptance:** full Entra/Exchange delivery from
-an application SMTP client through local Postfix, safe per-mailbox XOAUTH2
-identity binding at submission and queue time, fully guarded GUI OAuth
-certificate renewal, physical TPM/PKCS11 and RHEL SELinux Enforcing live
-acceptance, external/public SMTP abuse tests, and signed Stable binaries.
-These are not silently enabled.
+**Unfinished, blocked until acceptance:** real Entra/Exchange delivery
+from an application SMTP client, physical TPM/PKCS11 and RHEL SELinux
+Enforcing acceptance, supervised EOP <-> XOAUTH2 migration, live mailbox
+identity authorization, external/public SMTP abuse tests, 200% DPI visual
+QA, and signed Stable binaries. These are not silently enabled.
 
-## Multi-mailbox OAuth signer proof (development branch, offline only)
+## Multi-mailbox XOAUTH2 (development branch: offline install and Restore)
 
 The separate mapped identity audit performs an actual PS256 signature test for
 each distinct mailbox identity, using its protected local certificate and
@@ -215,11 +214,33 @@ certificates, private keys, token contents or raw script output. The preview
 currently caps one review at 64 identities; a failed signer is reported as
 unverified, never silently skipped or treated as authorization.
 
-This is **NOT** an Exchange Online OAuth SMTP session, Send As entitlement,
-authenticated Postfix queue identity, hardware provenance/attestation, or
-multi-mailbox delivery proof. No token is requested, no SMTP connection made,
-no queue or Postfix config modified. All multi-mailbox Apply/Test paths remain
-disabled until the separately documented live authorization gates pass.
+This signing audit is **NOT** an Exchange Online OAuth SMTP session,
+Send As entitlement, hardware provenance/attestation or real recipient
+delivery proof. The **development branch** now provides a distinct,
+experimental Windows Wizard **Stage -> SHA-256 Preview -> Apply OFFLINE** for
+an isolated Postfix. It is not the existing fixed-mailbox XOAUTH2 installer.
+The service is never started and no test email is sent by these actions.
+
+An owner-bound, protected runtime maps each authenticated SMTP login and
+envelope sender to exactly one allowed mailbox OAuth identity. Cross-mailbox
+Send As and aliases are blocked until separate Exchange authorization is
+verified. The unprivileged pipe transport requires a 120-second root-issued
+ingress proof and has no access to the SMTP credential hash database.
+Supervised testing requires a fresh manual proof; no production auto-renewal
+service is installed.
+
+**Restore Preview -> Restore OFFLINE** checks the exact active route
+fingerprint, original root-only pre-install backup and source SHA-256.
+Restore requires stopped sidecar, empty queue and closed custom SMTP port.
+It creates an emergency snapshot, reinstates original Postfix settings,
+quarantines now-unused OAuth runtime/config, and leaves services stopped.
+The EOP route manager will not overwrite an owned active Multi-mailbox
+route. Automatic EOP <-> XOAUTH2 migration remains blocked.
+
+See [experimental runtime and Restore guide](docs/MULTI_MAILBOX_XOAUTH2_RUNTIME.md).
+Automated CI testing is not proof of M365 token rights, internal/external
+mail delivery, live SELinux/TPM or production recovery acceptance. This
+work is in Draft PR only; published Preview 24 is unchanged.
 
 ## New functionality in development branch (not Stable)
 
