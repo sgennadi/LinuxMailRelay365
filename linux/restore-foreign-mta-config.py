@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import pwd
 from pathlib import Path
 import shutil
 import stat
@@ -147,6 +148,29 @@ def trusted_native_tool(mta):
     raise Refused("native_mta_binary_missing")
 
 
+def safe_native_sendmail_directory(directory, root, owner_uid=0):
+    """Read-only syntax probe honors the native Ubuntu/Debian smmsp layout.
+
+    This is NOT the snapshot-restore trust policy and never permits a write.
+    """
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o022):
+        raise Refused("native_mta_config_directory_untrusted")
+    if info.st_uid == owner_uid:
+        return True
+    # Debian packages can install /etc/mail as smmsp:smmsp mode 2755.
+    # Never generalize this to other directories, owners or permissions.
+    if owner_uid == 0 and directory == root / "etc" / "mail" and \
+            stat.S_IMODE(info.st_mode) == 0o2755:
+        try:
+            account = pwd.getpwnam("smmsp")
+        except KeyError:
+            raise Refused("native_mta_config_directory_untrusted")
+        if info.st_uid == account.pw_uid and info.st_gid == account.pw_gid:
+            return True
+    raise Refused("native_mta_config_directory_untrusted")
+
+
 def native_static_config_check(mta, root=backup.ROOT, uid=0,
                                command_runner=None):
     """Test native config parsing only. No daemon, SMTP, queue or shell.
@@ -171,13 +195,10 @@ def native_static_config_check(mta, root=backup.ROOT, uid=0,
         queries = [[tool, "-bV"]]
     else:
         queries = []
-        # A native parser check is not a strict backup snapshot.
-        # Distributions may use group-writable /etc/mail; reject world write.
+        # A native syntax probe is intentionally separate from the stricter
+        # file-snapshot allowlist; accept only root or packaged smmsp owner.
         for directory in (root / "etc", root / "etc" / "mail"):
-            info = directory.lstat()
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or
-                    info.st_mode & 0o002):
-                raise Refused("native_mta_config_directory_untrusted")
+            safe_native_sendmail_directory(directory, root, uid)
         for config_name in ("sendmail.cf", "submit.cf"):
             config = root / "etc" / "mail" / config_name
             if config_name == "submit.cf" and not os.path.lexists(str(config)):

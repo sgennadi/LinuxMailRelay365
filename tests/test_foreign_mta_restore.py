@@ -1,7 +1,9 @@
 """Offline Exim/Sendmail configuration restore must remain fail-closed."""
 import importlib.util
 import io
+import stat
 from contextlib import redirect_stdout, redirect_stderr
+from types import SimpleNamespace
 import os
 from pathlib import Path
 import stat
@@ -180,6 +182,41 @@ class ForeignMtaRestoreTests(unittest.TestCase):
                      {"process": True}, {"port": 25}, {"port": 2525}):
             with self.subTest(case=case), self.assertRaises(restore.Refused):
                 probe(**case)
+
+    def test_sendmail_packaged_config_directory_only_smmsp_and_2755(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            config = root / "etc" / "mail"
+            config.parent.mkdir()
+            config.mkdir()
+            regular = config.lstat()
+            synthetic = SimpleNamespace(st_mode=stat.S_IFDIR | 0o2755,
+                                        st_uid=112, st_gid=122)
+            with patch.object(restore.pwd, "getpwnam",
+                              return_value=SimpleNamespace(pw_uid=112, pw_gid=122)):
+                with patch.object(Path, "lstat", autospec=True,
+                                  side_effect=lambda item: synthetic if item == config
+                                  else regular):
+                    self.assertTrue(restore.safe_native_sendmail_directory(
+                        config, root, 0))
+                    for invalid in (SimpleNamespace(st_mode=stat.S_IFDIR | 0o2755,
+                                                    st_uid=113, st_gid=122),
+                                    SimpleNamespace(st_mode=stat.S_IFDIR | 0o2775,
+                                                    st_uid=112, st_gid=122),
+                                    SimpleNamespace(st_mode=stat.S_IFDIR | 0o2777,
+                                                    st_uid=112, st_gid=122)):
+                        with patch.object(Path, "lstat", autospec=True,
+                                          return_value=invalid):
+                            with self.assertRaises(restore.Refused):
+                                restore.safe_native_sendmail_directory(
+                                    config, root, 0)
+            # The same foreign-owner exception must not work on /etc.
+            with patch.object(Path, "lstat", autospec=True,
+                              return_value=synthetic):
+                with patch.object(restore.pwd, "getpwnam",
+                                  return_value=SimpleNamespace(pw_uid=112,pw_gid=122)):
+                    with self.assertRaises(restore.Refused):
+                        restore.safe_native_sendmail_directory(config.parent, root, 0)
 
     def test_native_static_check_uses_only_compiler_parse_modes(self):
         with tempfile.TemporaryDirectory() as folder:
