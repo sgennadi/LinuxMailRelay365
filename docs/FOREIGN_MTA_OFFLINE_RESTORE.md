@@ -8,7 +8,7 @@ The LinuxMailRelay365 application previously supported **read-only backup**, SHA
 2. The exact Exim or Sendmail systemd unit is **loaded and inactive** and no matching workers or standard SMTP listeners are observed. Exim's queue counter or BOTH Sendmail queue views (-bp and -Ac -bp) must report empty. A missing tool or ambiguous state blocks Restore. The administrator stops the MTA separately; this script never does.
 3. The desired backup was previously created by the protected `foreign-mta-config-backup.py` tool, and its archive and manifest verify.
 4. Current and archived allowlisted file sets are identical. New files, deleted files, symlinks, special files, changed identities or unsupported extended attributes are hard refusals.
-5. The working Exim/Sendmail configuration was checked outside this tool. This script does not guarantee syntactic or semantic compatibility of a restored file, nor does it restart a service.
+5. After file replacement and fresh queue/listener checks, the tool attempts a bounded native static parser gate BEFORE declaring success: Exim -bV or Sendmail -bt -C for both sendmail.cf and any submit.cf. The tool uses only resolved root-managed executable paths, an empty standard input and no shell; diagnostics are not copied to Windows. Failure triggers attempted rollback. Exim -bV validates the runtime configuration in use (which may be generated from Debian source snippets), and sendmail test mode is only a partial config check. Neither proves actual delivery or full source-to-runtime synchronization. The tool does not restart any service.
 
 ## Example (manual, Linux root only)
 
@@ -33,6 +33,6 @@ The operation does not open firewall rules, enable SMTP AUTH, change M365 object
 ## Follow-up engineering
 
 - Define a shared transaction/approval API before wiring this operation into Windows Wizard.
-- Include a dedicated Exim config-check / Sendmail config-check stage using distribution-specific tools, with no automatic daemon restart.
+- Extend the new Exim/Sendmail static parse stage to validate generated Exim configuration provenance and all included files on each distribution, without automatic daemon restart. Regress non-native sendmail alternative targets and malformed generated config.
 - Verify forced rollback, systemd aliases, package update interactions, SELinux file contexts and queue preservation on disposable real hosts.
 - Provide explicit emergency instructions when rollback cannot safely write, and preserve the identity and content of the original safety snapshot.

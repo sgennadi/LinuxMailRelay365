@@ -97,52 +97,79 @@ def preview(mta, snapshot_id, root=backup.ROOT, base=backup.BASE, uid=0):
 
 
 def stopped(mta):
-    """Never interpret a missing utility, failed service or query as stopped."""
-    if mta not in UNITS or any(not shutil.which(x) for x in
-                               ("systemctl", "pgrep", "ss")):
-        raise Refused("stopped_state_unverifiable")
-    loaded = 0
-    for unit in UNITS[mta]:
-        result = subprocess.run(
-            ["systemctl", "show", unit, "--property=LoadState",
-             "--property=ActiveState"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=10, universal_newlines=True, check=False)
-        fields = {}
-        for line in result.stdout.splitlines():
-            if line.count("=") != 1:
-                raise Refused("invalid_systemd_response")
-            key, value = line.split("=", 1)
-            if key in fields:
-                raise Refused("duplicate_systemd_response")
-            fields[key] = value
-        if (result.returncode or len(result.stdout) > 512 or
-                fields.get("LoadState") not in ("loaded", "not-found") or
-                fields.get("ActiveState") != "inactive"):
-            raise Refused("primary_mta_not_proven_inactive")
-        if fields["LoadState"] == "loaded":
-            loaded += 1
-    if not loaded:
-        raise Refused("no_primary_mta_service_found")
-    for process in PROCESSES[mta]:
-        probe = subprocess.run(["pgrep", "-x", process],
-                               stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=10, check=False)
-        if probe.returncode != 1:
-            raise Refused("primary_mta_process_active_or_unknown")
-    probe = subprocess.run(["ss", "-H", "-ltn"], stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL, timeout=10,
-                           universal_newlines=True, check=False)
-    if probe.returncode or len(probe.stdout) > 65536:
-        raise Refused("socket_inventory_unavailable")
-    for line in probe.stdout.splitlines():
-        columns = line.split()
-        if len(columns) < 4:
-            raise Refused("socket_inventory_malformed")
-        if columns[3].rsplit(":", 1)[-1] == "25":
-            raise Refused("smtp_port_25_still_listening")
+    """Fresh root-only bounded native-MTA state check; never infer inactivity."""
+    if mta not in UNITS:
+        raise Refused("unsupported_primary_mta")
+    probe = backup.read_only_probe
+    state = backup.offline_service_state(mta, probe)
+    workers = backup.offline_process_state(mta, probe)
+    sockets = backup.offline_listener_state(mta, probe)
+    if (state != "stopped_declared" or workers != "none_observed" or
+            sockets != "none_observed"):
+        raise Refused("primary_mta_not_proven_inactive")
     return True
 
+
+def trusted_native_tool(mta):
+    """Resolve only root-managed native binary paths, never inherited PATH."""
+    candidates = {
+        "exim": ("/usr/sbin/exim4", "/usr/sbin/exim"),
+        "sendmail": ("/usr/sbin/sendmail", "/usr/lib/sendmail")
+    }
+    if mta not in candidates:
+        raise Refused("unsupported_primary_mta")
+    for original in candidates[mta]:
+        if not os.path.lexists(original):
+            continue
+        resolved = os.path.realpath(original)
+        if not resolved.startswith(("/usr/bin/", "/usr/sbin/", "/bin/",
+                                    "/sbin/", "/usr/lib/sendmail.")):
+            raise Refused("native_mta_binary_outside_trusted_root")
+        metadata = os.stat(resolved)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or
+                metadata.st_mode & 0o022 or not metadata.st_mode & 0o111):
+            raise Refused("native_mta_binary_not_root_managed")
+        return resolved
+    raise Refused("native_mta_binary_missing")
+
+
+def native_static_config_check(mta, root=backup.ROOT, uid=0,
+                               command_runner=None):
+    """Test native config parsing only. No daemon, SMTP, queue or shell.
+
+    Exim -bV checks the effective generated config, not necessarily source
+    snippets. Sendmail -bt -C checks the selected compiled configuration.
+    Both are partial checks, never evidence of working delivery.
+    """
+    if mta not in UNITS:
+        raise Refused("unsupported_primary_mta")
+    if command_runner is None:
+        def command_runner(args):
+            result = subprocess.run(args, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                                         "LC_ALL": "C"},
+                                    timeout=15, check=False)
+            return result.returncode
+    tool = trusted_native_tool(mta)
+    if mta == "exim":
+        queries = [[tool, "-bV"]]
+    else:
+        queries = []
+        for config_name in ("sendmail.cf", "submit.cf"):
+            config = root / "etc" / "mail" / config_name
+            if config_name == "submit.cf" and not os.path.lexists(str(config)):
+                continue
+            backup.safe_regular(config, uid)
+            queries.append([tool, "-bt", "-C" + str(config)])
+    if not queries:
+        raise Refused("no_native_configuration_to_validate")
+    for args in queries:
+        code = command_runner(args)
+        if type(code) is not int or code != 0:
+            raise Refused("native_mta_static_configuration_invalid_or_unavailable")
+    return True
 
 def take_lock(path=LOCK, uid=0):
     backup.safe_dir(path.parent, uid)
@@ -234,7 +261,8 @@ def require_offline_preflight(mta, snapshot_id, root, base, uid, inspector=None)
 
 def apply(mta, snapshot_id, approved_sha, confirm,
           root=backup.ROOT, base=backup.BASE, uid=0,
-          offline_check=stopped, lock_path=LOCK, preflight_check=None):
+          offline_check=stopped, lock_path=LOCK, preflight_check=None,
+          static_check=None):
     if confirm != APPROVAL or not backup.SHA.fullmatch(approved_sha):
         raise Refused("typed_confirmation_and_reviewed_sha_required")
     if not offline_check(mta):
@@ -289,6 +317,9 @@ def apply(mta, snapshot_id, approved_sha, confirm,
                         stat.S_IMODE(metadata.st_mode) !=
                         stat.S_IMODE(original_meta.st_mode)):
                     raise Refused("post_restore_content_or_metadata_mismatch")
+            checker = native_static_config_check if static_check is None else static_check
+            if checker(mta, root, uid) is not True:
+                raise Refused("native_mta_static_configuration_unverified")
         except Exception:
             safe_rollback = True
             for name in reversed(changed):
@@ -321,7 +352,8 @@ def apply(mta, snapshot_id, approved_sha, confirm,
             raise Refused("restore_failed_rollback_" +
                           ("verified" if safe_rollback
                            else "incomplete_use_safety_backup"))
-        return {"changed": len(changed), "safety_id": safety_id}
+        return {"changed": len(changed), "safety_id": safety_id,
+                "static_config": "passed_partial_parse_only"}
     finally:
         os.close(lock_handle)
 
@@ -355,6 +387,7 @@ def main(argv=None):
             result = apply(args.mta, snapshot_id,
                            args.approve_sha256, args.confirm)
             print("FOREIGN_RESTORE_CHANGED_FILES=" + str(result["changed"]))
+            print("FOREIGN_RESTORE_NATIVE_STATIC_CHECK=" + result["static_config"])
             print("FOREIGN_RESTORE_STATUS=config_replaced_service_not_started")
         print("FOREIGN_RESTORE_QUEUE_CHANGED=no")
         print("FOREIGN_RESTORE_SERVICE_CHANGED=no")

@@ -46,6 +46,7 @@ class ForeignMtaRestoreTests(unittest.TestCase):
         return {"root": root, "base": base, "uid": uid,
                 "offline_check": offline,
                 "preflight_check": preflight or ForeignMtaRestoreTests.safe_preflight,
+                "static_check": lambda mta, root, uid: True,
                 "lock_path": Path(folder) / "restore.lock"}
 
     def test_preview_has_no_side_effects_and_changes_bind_review_sha(self):
@@ -157,29 +158,73 @@ class ForeignMtaRestoreTests(unittest.TestCase):
             self.assertEqual(len(snapshot.listed("sendmail", base, uid)), 2)
 
     def test_service_inactive_check_fails_closed(self):
-        def probe(loaded=True, active=False, process=False, port=2525):
-            def command(argv, **kwargs):
+        def probe(loaded=True, active=False, process=False, port=46500):
+            def command(argv, timeout=8):
                 if argv[0] == "systemctl":
-                    is_loaded = loaded and argv[2] == "exim4.service"
-                    return SimpleNamespace(
-                        returncode=0,
-                        stdout="LoadState={}\nActiveState={}\n".format(
-                            "loaded" if is_loaded else "not-found",
-                            "active" if is_loaded and active else "inactive"))
+                    is_loaded = loaded and argv[-1] == "exim4.service"
+                    return (0, "LoadState={}\nActiveState={}\n".format(
+                        "loaded" if is_loaded else "not-found",
+                        "active" if is_loaded and active else "inactive"))
                 if argv[0] == "pgrep":
-                    return SimpleNamespace(returncode=0 if process else 1, stdout="")
+                    return (0, "1234\n") if process else (1, "")
                 if argv[0] == "ss":
-                    return SimpleNamespace(returncode=0,
-                        stdout="LISTEN 0 128 0.0.0.0:{} 0.0.0.0:*\n".format(port))
+                    return (0, "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
+                            "LISTEN 0 128 0.0.0.0:{} 0.0.0.0:* users:((\"other\",pid=4321,fd=4))\n".format(port))
                 raise AssertionError(argv)
-            with patch.object(restore.shutil, "which", return_value="/usr/bin/tool"):
-                with patch.object(restore.subprocess, "run", side_effect=command):
-                    return restore.stopped("exim")
+            with patch.object(restore.backup, "read_only_probe", side_effect=command):
+                return restore.stopped("exim")
         self.assertTrue(probe())
         for case in ({"loaded": False}, {"active": True},
-                     {"process": True}, {"port": 25}):
+                     {"process": True}, {"port": 25}, {"port": 2525}):
             with self.subTest(case=case), self.assertRaises(restore.Refused):
                 probe(**case)
+
+    def test_native_static_check_uses_only_compiler_parse_modes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, snap_id, uid = self.fixture(folder, "sendmail")
+            (tree / "submit.cf").write_text("V10\n")
+            captured = []
+            def run(args):
+                captured.append(args)
+                return 0
+            with patch.object(restore, "trusted_native_tool", return_value="/usr/sbin/sendmail"):
+                self.assertTrue(restore.native_static_config_check(
+                    "sendmail", root, uid, run))
+            self.assertEqual(len(captured), 2)
+            self.assertTrue(all(args[1] == "-bt" and args[2].startswith("-C")
+                                for args in captured))
+            captured.clear()
+            with patch.object(restore, "trusted_native_tool", return_value="/usr/sbin/exim"):
+                self.assertTrue(restore.native_static_config_check(
+                    "exim", root, uid, run))
+            self.assertEqual(captured, [["/usr/sbin/exim", "-bV"]])
+
+    def test_failed_native_static_check_rolls_back_configuration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, snap_id, uid = self.fixture(folder, "sendmail")
+            edited = next(tree.iterdir())
+            edited.write_text("current but valid version\n")
+            plan = restore.preview("sendmail", snap_id, root, base, uid)
+            kwargs = self.kwargs(folder, root, base, uid)
+            kwargs["static_check"] = lambda mta, root, uid: False
+            with self.assertRaisesRegex(restore.Refused, "rollback_verified"):
+                restore.apply("sendmail", snap_id, plan["sha"], restore.APPROVAL,
+                              **kwargs)
+            self.assertEqual(edited.read_text(), "current but valid version\n")
+            self.assertEqual(len(snapshot.listed("sendmail", base, uid)), 2)
+
+    def test_native_checker_refuses_untrusted_binary_and_failed_parse(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, snap_id, uid = self.fixture(folder, "sendmail")
+            with patch.object(restore, "trusted_native_tool", return_value="/usr/sbin/sendmail"):
+                with self.assertRaisesRegex(restore.Refused,
+                                            "native_mta_static_configuration_invalid"):
+                    restore.native_static_config_check(
+                        "sendmail", root, uid, lambda args: 1)
+            with patch.object(restore.os.path, "lexists", return_value=False):
+                with self.assertRaisesRegex(restore.Refused, "native_mta_binary_missing"):
+                    restore.trusted_native_tool("exim")
+
 
     def test_queue_listener_service_gates_block_before_safety_backup(self):
         cases = (("queue", "nonempty_reported", "blocked_nonempty_queue"),
