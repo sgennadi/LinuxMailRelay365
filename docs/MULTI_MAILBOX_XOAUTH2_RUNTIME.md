@@ -1,8 +1,8 @@
 # Multi-mailbox XOAUTH2 runtime (experimental, NOT Stable)
 
-The LinuxMailRelay365 Windows Wizard does **not** yet activate this route.
-This branch adds separate Linux runtime and an explicitly approved
-**offline-only** isolated Postfix installation tool. No Microsoft 365 tenant
+The Windows Wizard offers experimental Stage -> Preview -> Apply Offline
+and Restore Preview -> Restore Offline. It never starts the route or
+sends a message. This branch contains a guarded isolated Postfix runtime. No Microsoft 365 tenant
 or real recipient tests have been performed. No daemon is automatically started.
 
 ## Data flow
@@ -148,3 +148,53 @@ appropriate only for supervised tests. It does not prove any real SMTP AUTH
 client's identity, Exchange mailbox permissions, external recipient delivery,
 or successful login to Microsoft 365. The sidecar is never started by the
 installer or Wizard.
+
+## Offline Multi-mailbox Restore (experimental)
+
+The installer now writes a root-only (0600) active marker under
+/var/backups/linuxmailrelay365-multi-oauth/active.json **only after** a
+successful Postfix configuration check. The marker contains the SHA-256
+of original and installed Postfix config files, the runtime sender map,
+installed Python source, the original approved plan, and an exact
+pre-install backup ID (pre-multi-XXXXXXXX). No credentials are stored.
+
+**Read-only Preview** requires the marker, original safety archive,
+manifest, current installed SHA, unchanged primary Postfix and protected
+runtime map/source hashes. It returns the reviewed SHA and exact backup ID:
+
+    sudo python3 /opt/linuxmailrelay365/multi-oauth/restore-multi-mailbox-postfix.py --preview
+
+The operator must separately stop the isolated sidecar, verify the queue
+is **empty**, and verify the custom SMTP port is not listening. Only then
+can the exact reviewed SHA and archive be used to apply the restore:
+
+    sudo python3 /opt/linuxmailrelay365/multi-oauth/restore-multi-mailbox-postfix.py --restore-offline --backup-id pre-multi-XXXXXXXX --approve-sha256 REVIEWED_RESTORE_SHA256 --confirm RESTORE_MULTI_MAILBOX_OFFLINE
+
+The operation acquires the same exclusive sidecar-auth lock as EOP and
+SMTP AUTH route management. It verifies a fresh root-only pre-restore
+snapshot under /var/backups/linuxmailrelay365-multi-oauth/pre-restore-XXXXXXXX
+before replacing any files. The original main.cf/master.cf are restored
+and Postfix configuration is validated while the sidecar remains stopped.
+The old OAuth runtime, protected sender map, expiring ingress proof and
+active marker are **quarantined inside that private emergency snapshot**,
+not deleted. The separate pre-install archive is retained unchanged.
+
+Any failure triggers an attempted offline rollback. If rollback cannot be
+verified, do **not** restart mail services: inspect the emergency backup
+and perform manual recovery. The successful result
+MULTI_RESTORE_STATUS=restored_offline_not_started confirms configuration
+restoration, **not** live delivery or an automatically started service.
+
+The Wizard includes a pair of Restore Preview and Restore Offline actions.
+It binds the approval to the reviewed SHA, archive, SSH host and selected
+route, then invalidates the approval after one attempt.
+
+The EOP route manager reciprocally refuses changes when an active
+Multi-mailbox marker owns the sidecar. **Automatic migration between
+EOP Connector and Multi-mailbox XOAUTH2 is intentionally blocked**.
+Restore the original route and start a separately reviewed operation;
+never overwrite a manager-owned active route.
+
+Physical TPM, SELinux Enforcing, actual Microsoft 365/recipient delivery,
+and full Windows GUI 200% DPI visual tests remain open. Do not release
+this branch as Stable.
