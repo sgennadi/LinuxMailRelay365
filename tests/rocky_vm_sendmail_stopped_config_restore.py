@@ -30,11 +30,10 @@ def refuse(reason):
     raise RuntimeError("LMR365_SENDMAIL_VM_RECOVERY_" + reason)
 
 
-def verify_disposable():
-    if os.geteuid() != 0 or os.environ.get("GITHUB_ACTIONS") != "true":
-        refuse("CI_ROOT_ONLY")
+def validate_rocky_release(contents):
+    """Accept standard quoted/unquoted /etc/os-release IDs; reject drift."""
     distro = {}
-    for row in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+    for row in contents.splitlines():
         if row.startswith(("ID=", "VERSION_ID=")):
             key, value = row.split("=", 1)
             if key in distro:
@@ -42,6 +41,13 @@ def verify_disposable():
             distro[key] = value.strip().strip('"').strip("'")
     if distro.get("ID") != "rocky" or distro.get("VERSION_ID") != "9.9":
         refuse("UNEXPECTED_ROCKY_GUEST_VERSION")
+    return True
+
+
+def verify_disposable():
+    if os.geteuid() != 0 or os.environ.get("GITHUB_ACTIONS") != "true":
+        refuse("CI_ROOT_ONLY")
+    validate_rocky_release(Path("/etc/os-release").read_text(encoding="utf-8"))
     if Path("/proc/1/comm").read_text().strip() != "systemd":
         refuse("NOT_SYSTEMD_GUEST")
     if socket.gethostname().split(".")[0] != "rocky-selinux-ci":
