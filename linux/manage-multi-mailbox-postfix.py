@@ -27,7 +27,8 @@ TARGET = Path("/usr/local/libexec/linuxmailrelay365-multi-oauth")
 MAP = Path("/etc/linuxmailrelay365/oauth-senders.tsv")
 RUNTIME = Path("/etc/linuxmailrelay365/oauth-runtime-senders.tsv")
 RECOVERY = Path("/var/backups/linuxmailrelay365-multi-oauth")
-LOCK = Path("/run/linuxmailrelay365-multi-oauth.lock")
+LOCK = Path("/run/linuxmailrelay365-sidecar-auth.lock")
+ACTIVE = RECOVERY / "active.json"
 FILES = ("audit-oauth-sender-map.py", "audit-oauth-ingress.py",
          "m365_xoauth2_transport.py", "m365_hardware_signer.py",
          "m365-multi-mailbox-transport.py",
@@ -192,7 +193,8 @@ def plan():
         raise Refused("root_required")
     secure_dir(TARGET.parent)
     secure_dir(RUNTIME.parent)
-    if TARGET.exists() or TARGET.is_symlink() or \
+    if ACTIVE.exists() or ACTIVE.is_symlink() or \
+            TARGET.exists() or TARGET.is_symlink() or \
             RUNTIME.exists() or RUNTIME.is_symlink():
         raise Refused("multi_mailbox_route_already_present")
     # No competing route recovery manager may own this configuration.
@@ -318,6 +320,7 @@ def apply_offline(review_sha, confirm):
             stream.flush()
             os.fsync(stream.fileno())
         print("MULTI_OAUTH_SAFETY_BACKUP=" + str(safety), flush=True)
+        print("MULTI_OAUTH_RESTORE_BACKUP_ID=" + safety.name, flush=True)
         staging = Path(tempfile.mkdtemp(prefix=".multi-oauth-", dir=str(TARGET.parent)))
         try:
             os.chmod(str(staging), 0o755)
@@ -358,6 +361,34 @@ def apply_offline(review_sha, confirm):
         if [digest(read(PRIMARY / x, 1048576)[1]) for x in
                 ("main.cf", "master.cf")] != plan_data["evidence"]["primary"]:
             raise Refused("primary_postfix_changed")
+        offline()
+        # The marker is written ONLY after a verified offline Postfix check.
+        # It binds Restore to the exact installed config and safety snapshot.
+        if ACTIVE.exists() or ACTIVE.is_symlink():
+            raise Refused("active_route_marker_created_by_other_process")
+        record = {
+            "version": 1, "backup_id": safety.name,
+            "plan_sha256": plan_data["sha"],
+            "before": plan_data["evidence"]["config"],
+            "active": {"main.cf": digest(plan_data["main"]),
+                       "master.cf": digest(plan_data["master"])},
+            "runtime_map_sha256": plan_data["evidence"]["map_sha256"],
+            "source": plan_data["evidence"]["source"],
+            "primary": plan_data["evidence"]["primary"]
+        }
+        markerfd = os.open(str(ACTIVE), os.O_CREAT | os.O_EXCL | os.O_WRONLY |
+                           getattr(os, "O_NOFOLLOW", 0), 0o600)
+        modified.append(("marker", ACTIVE))
+        with os.fdopen(markerfd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write((json.dumps(record, sort_keys=True, separators=(",", ":")) +
+                          "\n").encode("ascii"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        if digest(read(ACTIVE, 4096, (0o600,))[1]) != digest(
+                (json.dumps(record, sort_keys=True, separators=(",", ":")) +
+                 "\n").encode("ascii")):
+            raise Refused("active_route_marker_verification_failed")
         return plan_data["evidence"]
     except Exception:
         # Never rollback while the SMTP service is active: print warning and
@@ -367,7 +398,10 @@ def apply_offline(review_sha, confirm):
                 offline()
             if plan_data and modified:
                 for kind, thing in reversed(modified):
-                    if kind == "config":
+                    if kind == "marker":
+                        if ACTIVE.is_file() and not ACTIVE.is_symlink():
+                            ACTIVE.unlink()
+                    elif kind == "config":
                         replace_file(CONF / thing,
                                      plan_data["originals"][thing][1],
                                      plan_data["originals"][thing])
