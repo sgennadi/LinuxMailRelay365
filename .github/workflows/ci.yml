@@ -5,6 +5,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  # Do not waste runners on superseded commits or duplicate push/PR checks.
+  group: linuxmailrelay365-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   linux-tests:
     runs-on: ubuntu-latest
@@ -12,16 +16,275 @@ jobs:
       - uses: actions/checkout@v5
       - name: Shell and unit tests
         run: |
-          bash -n linux/probe-linux.sh linux/install-postfix-m365-xoauth2.sh linux/mail-config-recovery.sh linux/install-preserve-postfix-sidecar.sh linux/network-firewall.sh
-          python3 -m py_compile linux/audit-existing-smtp.py
+          bash -n tests/smoke_authenticated_from_guard_loopback.sh tests/smoke_local_postfix_delivery.sh tests/smoke_fresh_direct_send.sh tests/smoke_fresh_connector.sh tests/smoke_scoped_recovery.sh tests/smoke_scoped_auth_recovery.sh tests/smoke_from_owner_milter.sh linux/install-sidecar-from-guard.sh
+          bash -n linux/probe-linux.sh linux/install-postfix-m365-xoauth2.sh linux/mail-config-recovery.sh linux/install-preserve-postfix-sidecar.sh linux/install-direct-send-sidecar.sh linux/install-connector-sidecar.sh linux/network-firewall.sh linux/enable-sidecar-auth-tls.sh linux/restore-sidecar-auth-tls.sh linux/rotate-sidecar-tls.sh linux/install-health-monitor.sh
+          python3 -m py_compile linux/prepare-clean-postfix.py linux/inspect-mail-host.py linux/audit-mail-bindings.py
+          python3 linux/inspect-mail-host.py --self-test
+          python3 -m unittest discover -v -s tests -p test_mail_host_inspect.py
+          python3 linux/audit-mail-bindings.py --self-test
+          python3 -W error::DeprecationWarning -m unittest discover -v -s tests -p test_postfix_basics.py
+          python3 linux/manage-postfix-basics.py --self-test
+          python3 -m unittest discover -v -s tests -p test_clean_postfix_bootstrap.py
+          python3 -m py_compile linux/audit-existing-smtp.py linux/manage-rhel-selinux-port.py linux/manage-public-smtp.py linux/manage-health-alerts.py linux/audit-m365-dns.py
+          python3 -m py_compile linux/sidecar-from-owner-milter.py
+          python3 -m py_compile linux/manage-tpm-dependencies.py tests/smoke_local_postfix_sink.py tests/smoke_authenticated_from_guard_loopback.py
+          python3 -m unittest discover -v -s tests -p test_authenticated_from_guard_loopback.py
+          python3 -m unittest discover -v -s tests -p test_local_postfix_sink.py
+          python3 -m unittest discover -v -s tests -p test_tpm_dependencies.py
+          python3 -m py_compile linux/verify-hardware-oauth.py
+          python3 -m unittest discover -v -s tests -p test_verify_hardware_oauth.py
+          python3 -m py_compile linux/manage-hardware-oauth-cutover.py
+          python3 -m unittest discover -v -s tests -p test_hardware_oauth_cutover.py
+          python3 -m unittest discover -v -s tests -p test_hardware_oauth_stage.py
+          python3 -m py_compile linux/manage-tpm-oauth-key.py
+          python3 -m unittest discover -v -s tests -p test_tpm_oauth_key.py
+          python3 -m py_compile linux/manage-primary-oauth-rotation.py
+          python3 -m unittest discover -v -s tests -p test_primary_oauth_rotation.py
+          python3 -m py_compile linux/export-hardware-oauth-cert.py
+          python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
+          python3 -m py_compile linux/audit-oauth-sender-map.py
+          python3 -m unittest discover -v -s tests -p test_oauth_sender_map.py
+          python3 -m py_compile linux/audit-oauth-ingress.py
+          python3 -m unittest discover -v -s tests -p test_oauth_ingress.py
+          python3 -m py_compile linux/m365_xoauth2_transport.py linux/manage-m365-delivery-acceptance.py
+          python3 -m unittest discover -v -s tests -p test_m365_delivery_acceptance.py
+          python3 linux/sidecar-from-owner-milter.py --self-test
+          python3 -m unittest discover -v -s tests -p test_sidecar_from_owner_milter.py
           python3 -m unittest discover -v -s tests
+          python3 -m unittest discover -v -s tests -p test_signed_release_gate.py
+          python3 linux/mta-coexistence-doctor.py --self-test
+          python3 linux/guard-foreign-mta.py --self-test
+          python3 -m py_compile linux/guard-foreign-mta.py
+          python3 -m unittest discover -v -s tests -p test_foreign_mta_preservation.py
+          python3 linux/recovery-scope-audit.py --self-test
+          python3 -m py_compile linux/sidecar-config-recovery.py
+          python3 linux/sidecar-config-recovery.py --self-test
+          # Deprecated UTC/time code must fail rather than be hidden.
+          python3 -W error::DeprecationWarning -m unittest discover -v -s tests -p test_sidecar_config_recovery.py
+          python3 linux/generate-smtp-client-credential.py --self-test
+          python3 linux/rhel-enforcing-live-smoke.py --self-test
+          python3 linux/verify-sidecar-auth-client.py --self-test
+          python3 -m py_compile linux/verify-sidecar-envelope.py
+          python3 linux/verify-sidecar-envelope.py --self-test
+          python3 -m unittest discover -v -s tests -p test_sidecar_envelope.py
+  ubuntu-clean-postfix-bootstrap:
+    # Disposable runner: exercises real apt/dpkg/systemd, but never sends mail
+    # and never runs against a user-managed Linux server.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Postfix packages on pristine Ubuntu with primary MTA disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 linux/prepare-clean-postfix.py --check-only --smtp-port 2525 > /tmp/lmr365-clean-preview
+          cat /tmp/lmr365-clean-preview
+          grep -Fxq 'CLEAN_POSTFIX_BOOTSTRAP_READY=yes' /tmp/lmr365-clean-preview
+          plan="$(sed -n 's/^CLEAN_POSTFIX_PLAN_SHA256=//p' /tmp/lmr365-clean-preview)"
+          [[ "$plan" =~ ^[a-f0-9]{64}$ ]]
+          sudo python3 linux/prepare-clean-postfix.py --apply --smtp-port 2525 \
+            --expected-plan-sha256 "$plan" --confirm INSTALL_CLEAN_POSTFIX_PACKAGES \
+            > /tmp/lmr365-clean-result
+          grep -Fxq 'CLEAN_POSTFIX_PACKAGES_PREPARED=yes' /tmp/lmr365-clean-result
+          grep -Fxq 'PRIMARY_POSTFIX_SERVICE=disabled' /tmp/lmr365-clean-result
+          sudo python3 linux/prepare-clean-postfix.py --verify-prepared --smtp-port 2525 \
+            > /tmp/lmr365-clean-verify
+          grep -Fxq 'CLEAN_POSTFIX_PREPARED_VERIFIED=yes' /tmp/lmr365-clean-verify
+          grep -Fxq 'POSTFIX_PRIMARY_STARTED=no' /tmp/lmr365-clean-verify
+          test "$(systemctl is-active postfix.service 2>/dev/null || true)" != active
+          ! ss -H -lnt | grep -E ':(25|465|587|2525)[[:space:]]'
+          echo 'CLEAN_POSTFIX_UBUNTU_PACKAGE_BOOTSTRAP=passed_real_systemd'
+      - name: Install isolated Direct Send using ONLY the prepared Postfix package
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo bash linux/install-direct-send-sidecar.sh --apply \
+            --smtp-port 2525 \
+            --mx-host example-org.mail.protection.outlook.com \
+            --accepted-domain example.org --fixed-sender alerts@example.org \
+            --confirm-accepted-domain TENANT_DOMAIN_CHECKED \
+            > /tmp/lmr365-clean-isolated
+          grep -Fxq 'DIRECT_SEND_SIDECAR_INSTALLED=yes' /tmp/lmr365-clean-isolated
+          grep -Fxq 'PRIMARY_POSTFIX_CONFIG_UNCHANGED=yes' /tmp/lmr365-clean-isolated
+          systemctl is-active --quiet linuxmailrelay365-sidecar.service
+          test "$(systemctl is-active postfix.service 2>/dev/null || true)" != active
+          ss -H -lnt | grep -E '127[.]0[.]0[.]1:2525[[:space:]]'
+          ! ss -H -lnt | grep -E ':(25|465|587)[[:space:]]'
+          # The clean bootstrap marker is no longer authority to install a
+          # second gateway once port 2525 has become a live SMTP listener.
+          if sudo python3 linux/prepare-clean-postfix.py --verify-prepared --smtp-port 2525 \
+              > /tmp/lmr365-replay 2>&1; then
+            echo 'ERROR: clean-bootstrap marker could be reused after sidecar install' >&2
+            exit 1
+          fi
+          echo 'CLEAN_POSTFIX_TO_ISOLATED_DIRECT_SEND=passed_no_messages_sent'
+
   ubuntu-postfix-smoke:
-    runs-on: ubuntu-latest
+    # Test both production LTS Dovecot 2.3 and updated Dovecot 2.4 grammar.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v5
       - name: Real isolated Postfix service and primary mail preservation smoke
         run: bash tests/smoke_isolated_postfix.sh
+
+  ubuntu-fresh-direct-send-smoke:
+    # Clean system: no Entra app or OAuth cert; one synthetic DATA goes to local sink only.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install clean isolated Direct Send and verify SMTP RCPT restrictions
+        run: bash tests/smoke_fresh_direct_send.sh
+
+  ubuntu-fresh-connector-smoke:
+    # Real isolated Postfix with custom inbound port, no OAuth identity or M365 mail.
+    # Tests RCPT policy plus one synthetic queue-to-loopback DATA message only.
+    # Does NOT validate Microsoft 365 tenant Connector or Exchange delivery.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install fresh isolated fixed-sender Connector and verify private relay
+        run: bash tests/smoke_fresh_connector.sh
+
+  rhel-family-readonly-smoke:
+    # Container-only validation. Not a full systemd/Postfix/SELinux integration test.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - rockylinux:8
+          - rockylinux:9
+          - rockylinux:10
+          - almalinux:8
+          - almalinux:9
+          - almalinux:10
+          - oraclelinux:8
+          - oraclelinux:9
+          - oraclelinux:10
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install distribution Python
+        shell: bash
+        run: |
+          dnf -y install python3
+      - name: Verify real OS identification and custom port
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 linux/platform-compat.py --smtp-port 2526 | tee /tmp/lmr365-platform.log
+          python3 -m unittest discover -v -s tests -p test_tpm_dependencies.py
+          python3 -m py_compile linux/verify-hardware-oauth.py
+          python3 -m unittest discover -v -s tests -p test_verify_hardware_oauth.py
+          python3 -m py_compile linux/manage-hardware-oauth-cutover.py
+          python3 -m unittest discover -v -s tests -p test_hardware_oauth_cutover.py
+          python3 -m unittest discover -v -s tests -p test_hardware_oauth_stage.py
+          python3 -m py_compile linux/manage-tpm-oauth-key.py
+          python3 -m unittest discover -v -s tests -p test_tpm_oauth_key.py
+          python3 -m py_compile linux/manage-primary-oauth-rotation.py
+          python3 -m unittest discover -v -s tests -p test_primary_oauth_rotation.py
+          python3 -m py_compile linux/export-hardware-oauth-cert.py
+          python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
+          python3 -m py_compile linux/m365_xoauth2_transport.py linux/manage-m365-delivery-acceptance.py
+          python3 -m py_compile linux/audit-oauth-sender-map.py
+          python3 -m unittest discover -v -s tests -p test_oauth_sender_map.py
+          python3 -m py_compile linux/audit-oauth-ingress.py
+          python3 -m unittest discover -v -s tests -p test_oauth_ingress.py
+          python3 -m py_compile tests/smoke_authenticated_from_guard_loopback.py
+          python3 -m unittest discover -v -s tests -p test_authenticated_from_guard_loopback.py
+          python3 -m unittest discover -v -s tests -p test_m365_delivery_acceptance.py
+          grep -Fx 'OS_FAMILY=rhel' /tmp/lmr365-platform.log
+          grep -Fx 'SMTP_PORT=2526' /tmp/lmr365-platform.log
+          grep -Fx 'CHANGES_APPLIED=no' /tmp/lmr365-platform.log
+          bash -n linux/enable-sidecar-auth-tls.sh
+          bash -n linux/restore-sidecar-auth-tls.sh
+          bash linux/restore-sidecar-auth-tls.sh --self-test
+          python3 -m unittest discover -v -s tests -p test_sidecar_auth_restore.py
+          python3 -m unittest discover -v -s tests -p test_sidecar_auth_archives.py
+          bash linux/enable-sidecar-auth-tls.sh --self-test
+          python3 -m unittest discover -v -s tests -p test_private_auth_tls.py
+          python3 -m unittest discover -v -s tests -p test_installed_sidecar_audit.py
+          python3 -m unittest discover -v -s tests -p test_rhel_selinux_doctor.py
+          python3 -m unittest discover -v -s tests -p test_rhel_enforcing_live_smoke.py
+          python3 linux/rhel-enforcing-live-smoke.py --self-test
+          python3 linux/verify-sidecar-auth-client.py --self-test
+          python3 -m py_compile linux/verify-sidecar-envelope.py
+          python3 linux/verify-sidecar-envelope.py --self-test
+          python3 -m unittest discover -v -s tests -p test_sidecar_envelope.py
+          python3 -m unittest discover -v -s tests -p test_sidecar_auth_client.py
+          python3 -m unittest discover -v -s tests -p test_rhel_selinux_port_manager.py
+          python3 -m unittest discover -v -s tests -p test_public_smtp_manager.py
+          python3 -m unittest discover -v -s tests -p test_health_alerts.py
+          python3 -m unittest discover -v -s tests -p test_m365_dns_audit.py
+          python3 linux/audit-m365-dns.py --self-test
+          python3 linux/manage-health-alerts.py --self-test
+          python3 linux/manage-public-smtp.py --self-test --smtp-port 46500
+          python3 linux/manage-rhel-selinux-port.py --self-test
+          python3 -m unittest discover -v -s tests -p test_sidecar_smtp_accounts.py
+          python3 -m unittest discover -v -s tests -p test_smtp_credential_generator.py
+          python3 linux/generate-smtp-client-credential.py --self-test
+          python3 -m unittest discover -v -s tests -p test_relay_health.py
+          python3 -m unittest discover -v -s tests -p test_m365_outbound_preflight.py
+          # Any regression to invalid Python escape sequences fails CI.
+          python3 -W error::SyntaxWarning -m py_compile tests/test_sidecar_eop_route.py tests/test_standalone_connector.py tests/test_standalone_direct_send.py
+          python3 -m unittest discover -v -s tests -p test_sidecar_eop_route.py
+          bash -n linux/install-direct-send-sidecar.sh
+          bash linux/install-direct-send-sidecar.sh --self-test
+          bash -n linux/install-connector-sidecar.sh
+          bash linux/install-connector-sidecar.sh --self-test
+          python3 -m unittest discover -v -s tests -p test_standalone_connector.py
+          python3 -m unittest discover -v -s tests -p test_standalone_direct_send.py
+          bash -n linux/rotate-sidecar-tls.sh
+          bash linux/rotate-sidecar-tls.sh --self-test
+          python3 -m unittest discover -v -s tests -p test_sidecar_tls_rotation.py
+          bash -n linux/install-health-monitor.sh
+          bash linux/install-health-monitor.sh --self-test
+          python3 -m unittest discover -v -s tests -p test_health_monitor.py
+          python3 -m unittest discover -v -s tests -p test_reboot_continuity.py
+          python3 linux/verify-reboot-continuity.py --verify-after-reboot --smtp-port 46500 || test $? -eq 2
+          python3 linux/m365-outbound-mode-preflight.py --mode direct-send --smtp-port 46500 --mx-host demo-com.mail.protection.outlook.com --accepted-domain demo.com | grep -Fx 'CHANGES_APPLIED=no'
+          python3 linux/relay-health.py --smtp-port 46500 | grep -Fx 'CHANGES_APPLIED=no'
+          python3 linux/rhel-selinux-doctor.py --smtp-port 46500 | grep -Fx 'CHANGES_APPLIED=no'
+          python3 -m unittest discover -v -s tests -p test_tls_identity.py
+          python3 linux/verify-sidecar-tls-identity.py --validate-only --smtp-port 46500 --server-name smtp.example.org | grep -Fx 'CHANGES_APPLIED=no'
+          python3 linux/installed-sidecar-audit.py --smtp-port 46500 --no-live-probe | grep -Fx 'CHANGES_APPLIED=no'
+          python3 -m py_compile linux/mta-coexistence-doctor.py linux/generate-smtp-client-credential.py linux/rhel-enforcing-live-smoke.py linux/audit-m365-dns.py linux/manage-health-alerts.py linux/manage-public-smtp.py linux/manage-rhel-selinux-port.py linux/platform-compat.py linux/m365_xoauth2_transport.py linux/audit-existing-smtp.py linux/installed-sidecar-audit.py linux/audit-sidecar-auth-archives.py linux/rhel-selinux-doctor.py linux/manage-sidecar-smtp-accounts.py linux/relay-health.py linux/m365-outbound-mode-preflight.py linux/manage-sidecar-eop-route.py linux/verify-reboot-continuity.py linux/verify-sidecar-tls-identity.py
+          python3 linux/m365_xoauth2_transport.py --help >/dev/null
+          bash linux/install-preserve-postfix-sidecar.sh --check-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
+          bash linux/network-firewall.sh --validate-only --smtp-port 46500 --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
+          bash linux/install-postfix-m365-xoauth2.sh --validate-network-only --listen-ip 192.168.40.2 --trusted-network 192.168.40.0/24
+          python3 -m unittest discover -v -s tests -p test_recovery_confirmation.py
+          python3 -m unittest discover -v -s tests -p test_existing_mta_audit.py
+          python3 -m unittest discover -v -s tests -p test_mta_coexistence_doctor.py
+          python3 -m unittest discover -v -s tests -p test_foreign_mta_preservation.py
+          python3 -m py_compile linux/guard-foreign-mta.py
+          python3 linux/guard-foreign-mta.py --self-test
+          python3 linux/mta-coexistence-doctor.py --self-test
+          python3 -m unittest discover -v -s tests -p test_recovery_scope_audit.py
+          python3 -m py_compile linux/sidecar-config-recovery.py
+          python3 linux/sidecar-config-recovery.py --self-test
+          # Deprecated UTC/time code must fail rather than be hidden.
+          python3 -W error::DeprecationWarning -m unittest discover -v -s tests -p test_sidecar_config_recovery.py
+          python3 linux/recovery-scope-audit.py --self-test
+          python3 linux/recovery-scope-audit.py --smtp-port 46500 | grep -Fx 'CHANGES_APPLIED=no'
+          python3 -m unittest discover -v -s tests -p test_platform_compat.py
 
   windows-build:
     runs-on: windows-latest
@@ -30,6 +293,15 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
+      - name: Microsoft 365 Connector/Direct Send read-only audit self-test
+        shell: pwsh
+        run: |
+          ./windows/Test-LinuxMailRelay365OutboundMode.ps1 -SelfTest
+          ./windows/Manage-LinuxMailRelay365Connector.ps1 -SelfTest
+          ./windows/Inspect-LinuxMailRelay365Objects.ps1 -SelfTest
+          ./windows/Manage-LinuxMailRelay365Object.ps1 -SelfTest
+          ./windows/Manage-LinuxMailRelay365EntraCertificate.ps1 -SelfTest
+          ./scripts/Test-LinuxMailRelay365SignedRelease.ps1 -SelfTest
       - name: Build portable single EXE x64
         shell: pwsh
         run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-x64 --self-contained true -p:UseSharedUpdater=false -o out/win-x64
@@ -45,14 +317,184 @@ jobs:
           if ($testProcess.ExitCode -ne 0) { throw "Windows self-test failed with exit code $($testProcess.ExitCode)." }
           $files = @(Get-ChildItem ./out/win-x64 -Filter '*.exe')
           if ($files.Count -ne 1) { throw 'Expected exactly one EXE in publish output.' }
+      - name: Test published Preview 23 -> candidate Preview 24 backup and rollback (disposable)
+        shell: pwsh
+        timeout-minutes: 8
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
+          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary
+      - name: Capture actual Windows Wizard and early-route screens (CI-only)
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $exe = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
+          $folder = Join-Path (Get-Location) 'out/wizard-screenshots'
+          New-Item -ItemType Directory -Force -Path $folder | Out-Null
+          $result = Start-Process -FilePath $exe -ArgumentList @('--capture-wizard-screens', ('"{0}"' -f $folder)) -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Wizard screenshot capture failed: exit $($result.ExitCode)" }
+          $images = @(Get-ChildItem -LiteralPath $folder -Filter '*.png')
+          if ($images.Count -ne 24) { throw "Expected 24 real Wizard PNG screens; found $($images.Count)" }
+          foreach ($image in $images) {
+            if ($image.Length -lt 3000) { throw "Empty or invalid screen PNG: $($image.Name)" }
+          }
+          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=24'
+          Write-Host 'SMTP_TENANT_CONNECTIONS_ATTEMPTED=no'
+      - name: Upload actual Wizard screenshots (no production host or tenant)
+        uses: actions/upload-artifact@v6
+        with:
+          name: LinuxMailRelay365-actual-wizard-screenshots
+          path: out/wizard-screenshots/
+          if-no-files-found: error
       - name: Build portable single EXE ARM64
         shell: pwsh
         run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-arm64 --self-contained true -p:UseSharedUpdater=false -o out/win-arm64
+      - name: Build unsigned release-candidate ZIPs and verify PE architectures
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ./out/release-candidates | Out-Null
+          foreach ($arch in @('x64', 'arm64')) {
+            $exe = (Resolve-Path "./out/win-$arch/LinuxMailRelay365.exe").Path
+            $zip = Join-Path (Resolve-Path ./out/release-candidates).Path "LinuxMailRelay365-win-$arch.zip"
+            $expectedMachine = if ($arch -eq 'x64') { 0x8664 } else { 0xAA64 }
+            $stream = [System.IO.File]::OpenRead($exe)
+            try {
+              $reader = [System.IO.BinaryReader]::new($stream)
+              if ($reader.ReadUInt16() -ne 0x5A4D) { throw "Missing MZ header: $arch" }
+              $stream.Position = 0x3C
+              $offset = $reader.ReadInt32()
+              if ($offset -lt 64 -or $offset -ge $stream.Length - 6) { throw "Invalid PE header offset: $arch" }
+              $stream.Position = $offset
+              if ($reader.ReadUInt32() -ne 0x00004550 -or $reader.ReadUInt16() -ne $expectedMachine) {
+                throw "Incorrect PE machine in $arch update candidate"
+              }
+            }
+            finally { $stream.Dispose() }
+            Compress-Archive -LiteralPath $exe -DestinationPath $zip -CompressionLevel Optimal -Force
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+            try {
+              if ($archive.Entries.Count -ne 1 -or $archive.Entries[0].FullName -cne 'LinuxMailRelay365.exe') {
+                throw "Update ZIP must contain exactly one root LinuxMailRelay365.exe: $arch"
+              }
+              if ($archive.Entries[0].Length -ne (Get-Item -LiteralPath $exe).Length) {
+                throw "Update ZIP EXE size mismatch: $arch"
+              }
+              $payload = $archive.Entries[0].Open()
+              try { $actual = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($payload)).ToLowerInvariant() }
+              finally { $payload.Dispose() }
+              $expected = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+              if ($actual -cne $expected) { throw "ZIP contents SHA256 mismatch: $arch" }
+            }
+            finally { $archive.Dispose() }
+            Write-Host "UNSIGNED_RELEASE_CANDIDATE_VERIFIED=$arch"
+          }
+      - name: Generate SHA256 manifest for unsigned preview EXEs and ZIPs
+        shell: pwsh
+        run: |
+          $x64 = (Get-FileHash -Algorithm SHA256 ./out/win-x64/LinuxMailRelay365.exe).Hash.ToLowerInvariant()
+          $arm64 = (Get-FileHash -Algorithm SHA256 ./out/win-arm64/LinuxMailRelay365.exe).Hash.ToLowerInvariant()
+          $zip64 = (Get-FileHash -Algorithm SHA256 ./out/release-candidates/LinuxMailRelay365-win-x64.zip).Hash.ToLowerInvariant()
+          $zipArm = (Get-FileHash -Algorithm SHA256 ./out/release-candidates/LinuxMailRelay365-win-arm64.zip).Hash.ToLowerInvariant()
+          @(
+            "win-x64 LinuxMailRelay365.exe sha256:$x64",
+            "win-arm64 LinuxMailRelay365.exe sha256:$arm64",
+            "win-x64 LinuxMailRelay365-win-x64.zip sha256:$zip64",
+            "win-arm64 LinuxMailRelay365-win-arm64.zip sha256:$zipArm",
+            "STATUS=preview_unsigned_not_for_production"
+          ) | Set-Content -Path ./out/preview-artifact-digests.txt -Encoding utf8
       - name: Upload preview build (not a stable release)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: LinuxMailRelay365-preview-builds
           path: |
             out/win-x64/LinuxMailRelay365.exe
             out/win-arm64/LinuxMailRelay365.exe
+            out/release-candidates/LinuxMailRelay365-win-x64.zip
+            out/release-candidates/LinuxMailRelay365-win-arm64.zip
+            out/preview-artifact-digests.txt
           if-no-files-found: error
+
+  preview-release:
+    name: Publish tested Preview 24 (unsigned)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/private-smtp-auth-tls'
+    needs:
+      - linux-tests
+      - ubuntu-clean-postfix-bootstrap
+      - ubuntu-postfix-smoke
+      - ubuntu-fresh-direct-send-smoke
+      - ubuntu-fresh-connector-smoke
+      - rhel-family-readonly-smoke
+      - windows-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Bind Preview release to tested commit and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          grep -Fxq '    <Version>0.1.0-preview.24</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.0-preview.24";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+      - uses: actions/download-artifact@v6
+        with:
+          name: LinuxMailRelay365-preview-builds
+          path: out/published
+      - name: Verify SHA-256 manifest and root EXE ZIPs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          from zipfile import ZipFile
+          root = Path("out/published")
+          lines = (root / "preview-artifact-digests.txt").read_text(encoding="utf-8-sig").splitlines()
+          expected = {}
+          status = False
+          for line in lines:
+              if line.startswith("STATUS="):
+                  assert line == "STATUS=preview_unsigned_not_for_production"
+                  status = True
+                  continue
+              arch, name, digest = line.split()
+              assert digest.startswith("sha256:") and len(digest) == 71
+              expected[(arch, name)] = digest[7:]
+          assert status and len(expected) == 4
+          for arch in ("x64", "arm64"):
+              suffix = "win-" + arch
+              exe = root / suffix / "LinuxMailRelay365.exe"
+              archive = root / "release-candidates" / ("LinuxMailRelay365-" + suffix + ".zip")
+              assert exe.is_file() and archive.is_file()
+              digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+              assert digest(exe) == expected[(suffix, "LinuxMailRelay365.exe")]
+              assert digest(archive) == expected[(suffix, archive.name)]
+              with ZipFile(archive) as z:
+                  assert z.namelist() == ["LinuxMailRelay365.exe"]
+                  assert hashlib.sha256(z.read("LinuxMailRelay365.exe")).hexdigest() == digest(exe)
+          print("PREVIEW_RELEASE_SHA256_AND_ZIP=PASS")
+          PY
+      - name: Publish one GitHub prerelease without overwrite
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='v0.1.0-preview.24'
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::Preview already published. Bump version to publish another update."
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Existing tag has no release; manual review required."
+            exit 1
+          fi
+          gh release create "$tag" \
+            out/published/release-candidates/LinuxMailRelay365-win-x64.zip \
+            out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
+            out/published/preview-artifact-digests.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "LinuxMailRelay365 v0.1.0-preview.24" --prerelease \
+            --notes "UNSIGNED TEST PREVIEW 24, NOT Stable/production approved. Adds Microsoft 365 Objects Manager with tenant-bound read-only App Registration, Enterprise App, public OAuth certificate credential, Connector and Exchange RBAC inventory. New managed Connectors receive tenant ownership markers; approved Enable/Disable/Rename/Delete require reviewed live SHA, typed confirmation and postcheck. Legacy unlabeled Connectors and Entra/RBAC objects remain read-only. CI validates Preview 23 to 24 replacement and rollback. Live tenant acceptance, code signing and Stable are outstanding."

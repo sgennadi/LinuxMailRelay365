@@ -26,7 +26,13 @@ class MailRoutingSafetyContracts(unittest.TestCase):
         self.assertNotIn("postconf -e 'masquerade_domains =",linux)
         self.assertNotIn("postconf -e 'sender_canonical_maps =",linux)
         ui=(ROOT/'src/LinuxMailRelay365/MainForm.cs').read_text(encoding='utf8')
-        self.assertIn('Masquerade and Connector are planning-only',ui)
+        # Sender rewriting is allowed only in an independent Connector sidecar.
+        self.assertIn('Connector sender handling is available under the isolated EOP route',ui)
+        self.assertIn('Connector и политики сохранения/маскарада отправителя можно применить',ui)
+        self.assertNotIn('Маскарад и Connector пока доступны только как план',ui)
+        self.assertIn('chosenTransport != "oauth2" || chosenSender != 0',ui)
+        self.assertIn('ApplyEopRouteAsync',ui)
+        self.assertIn('RestoreEopRouteAsync',ui)
         self.assertIn('MailRoutingPlanStore.Save',ui)
 
 if __name__=='__main__': unittest.main()

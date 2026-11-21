@@ -12,7 +12,25 @@ val OS_ID "${ID:-unknown}"
 val OS_LIKE "${ID_LIKE:-}"
 val OS_VERSION "${VERSION_ID:-unknown}"
 val ARCH "$(uname -m)"
-if has postconf; then
+# Installed Postfix utilities are not evidence that Postfix owns SMTP.
+# When systemd is available, prefer an active Exim/Sendmail over an unused
+# postconf binary. Multiple active MTAs remain UNKNOWN for manual review.
+active_postfix=0
+active_exim=0
+active_sendmail=0
+if has systemctl; then
+  systemctl -q is-active postfix.service 2>/dev/null && active_postfix=1
+  { systemctl -q is-active exim.service 2>/dev/null || \
+    systemctl -q is-active exim4.service 2>/dev/null; } && active_exim=1
+  systemctl -q is-active sendmail.service 2>/dev/null && active_sendmail=1
+fi
+if (( active_postfix + active_exim + active_sendmail > 1 )); then
+  val MTA unknown
+elif (( active_exim == 1 )); then
+  val MTA exim
+elif (( active_sendmail == 1 )); then
+  val MTA sendmail
+elif has postconf; then
   val MTA postfix
   val POSTFIX_RELAY "$(postconf -h relayhost 2>/dev/null || true)"
   val POSTFIX_TRANSPORT "$(postconf -h default_transport 2>/dev/null || true)"
@@ -79,10 +97,31 @@ if has pkcs11-tool && has timeout; then
     val PKCS11_TOKENS none_or_inaccessible
   fi
 fi
-val OPENSSL_PKCS11_PROVIDER "$( [ -d /usr/lib64/ossl-modules ] || [ -d /usr/lib/x86_64-linux-gnu/ossl-modules ] || [ -d /usr/lib/ossl-modules ] && echo directory_present_unverified || echo unknown )"
-# TPM2/HSM key integration is NOT automatically activated by discovery.
-# The current XOAUTH2 transport uses an OpenSSL PEM key. A hardware key requires
-# tested PKCS#11 or provider signing support AND a fresh Entra certificate upload.
+# Probe provider loading without creating a key or touching the mail service.
+OPENSSL_TPM2_PROVIDER=not_available
+OPENSSL_PKCS11_PROVIDER=not_available
+if has openssl && has timeout; then
+  if timeout 6 openssl list -providers -provider tpm2 >/dev/null 2>&1; then
+    OPENSSL_TPM2_PROVIDER=loadable_unverified
+  fi
+  if timeout 6 openssl list -providers -provider pkcs11 >/dev/null 2>&1; then
+    OPENSSL_PKCS11_PROVIDER=loadable_unverified
+  fi
+fi
+val OPENSSL_TPM2_PROVIDER "$OPENSSL_TPM2_PROVIDER"
+val OPENSSL_PKCS11_PROVIDER "$OPENSSL_PKCS11_PROVIDER"
+TPM2_ABRMD_SERVICE=not_verified
+if has systemctl; then
+  if systemctl -q is-active tpm2-abrmd.service >/dev/null 2>&1; then
+    TPM2_ABRMD_SERVICE=active
+  else
+    TPM2_ABRMD_SERVICE=inactive_or_unavailable
+  fi
+fi
+val TPM2_ABRMD_SERVICE "$TPM2_ABRMD_SERVICE"
+# The XOAUTH2 transport can use an explicitly staged hardware signer.
+# Discovery never provisions a key, selects a provider or changes Entra; an
+# approved hardware key/certificate/signature test is still mandatory.
 val HARDWARE_SIGNING_CONFIGURED not_verified
 val HARDWARE_SIGNING_AUTOMATICALLY_ENABLED no
 val ENTRA_IP_POLICY not_checked_on_linux

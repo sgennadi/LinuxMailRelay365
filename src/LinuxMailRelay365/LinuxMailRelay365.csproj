@@ -11,8 +11,10 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <PublishTrimmed>false</PublishTrimmed>
+    <!-- Obsolete X.509 constructor regressions are build errors. -->
+    <WarningsAsErrors>$(WarningsAsErrors);SYSLIB0057</WarningsAsErrors>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <Version>0.1.0-preview.11</Version>
+    <Version>0.1.0-preview.24</Version>
     <!-- Standalone builds work in a public repository. Reuse the user's private
          UniversalUpdater module when it has been restored locally. -->
     <UseSharedUpdater Condition="'$(UseSharedUpdater)' == '' and Exists('../../modules/UniversalUpdater/src/UniversalUpdater.Core/UniversalUpdater.Core.csproj')">true</UseSharedUpdater>
@@ -29,13 +31,63 @@
                       Condition="'$(UseSharedUpdater)' == 'true'" />
     <EmbeddedResource Include="../../linux/install-postfix-m365-xoauth2.sh" LogicalName="LinuxMailRelay365.linux.install.sh" />
     <EmbeddedResource Include="../../linux/m365_xoauth2_transport.py" LogicalName="LinuxMailRelay365.linux.transport.py" />
+    <EmbeddedResource Include="../../linux/manage-multi-mailbox-postfix.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-postfix.py" />
+    <EmbeddedResource Include="../../linux/m365-multi-mailbox-transport.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-transport.py" />
+    <EmbeddedResource Include="../../linux/refresh-multi-mailbox-proof.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-ingress-proof.py" />
+    <EmbeddedResource Include="../../linux/audit-oauth-sender-map.py" LogicalName="LinuxMailRelay365.linux.oauth-sender-map-audit.py" />
+    <EmbeddedResource Include="../../linux/audit-oauth-ingress.py" LogicalName="LinuxMailRelay365.linux.oauth-ingress-audit.py" />
+    <EmbeddedResource Include="../../linux/audit-oauth-identity-signing.py" LogicalName="LinuxMailRelay365.linux.oauth-identity-signing-audit.py" />
+    <EmbeddedResource Include="../../linux/m365_hardware_signer.py" LogicalName="LinuxMailRelay365.linux.hardware-signer.py" />
+    <EmbeddedResource Include="../../linux/manage-tpm-dependencies.py" LogicalName="LinuxMailRelay365.linux.tpm-dependencies.py" />
+    <EmbeddedResource Include="../../linux/verify-hardware-oauth.py" LogicalName="LinuxMailRelay365.linux.hardware-oauth-diagnostics.py" />
+    <EmbeddedResource Include="../../linux/manage-hardware-oauth-cutover.py" LogicalName="LinuxMailRelay365.linux.hardware-oauth-cutover.py" />
+    <EmbeddedResource Include="../../linux/manage-m365-delivery-acceptance.py" LogicalName="LinuxMailRelay365.linux.delivery-acceptance.py" />
+    <EmbeddedResource Include="../../linux/manage-tpm-oauth-key.py" LogicalName="LinuxMailRelay365.linux.tpm-oauth-provision.py" />
+    <EmbeddedResource Include="../../linux/export-hardware-oauth-cert.py" LogicalName="LinuxMailRelay365.linux.entra-public-cert-export.py" />
+    <EmbeddedResource Include="../../linux/manage-primary-oauth-rotation.py" LogicalName="LinuxMailRelay365.linux.primary-oauth-rotation.py" />
     <EmbeddedResource Include="../../linux/probe-linux.sh" LogicalName="LinuxMailRelay365.linux.security-probe.sh" />
+    <EmbeddedResource Include="../../linux/prepare-clean-postfix.py" LogicalName="LinuxMailRelay365.linux.prepare-clean-postfix.py" />
+    <EmbeddedResource Include="../../linux/manage-postfix-basics.py" LogicalName="LinuxMailRelay365.linux.manage-postfix-basics.py" />
     <EmbeddedResource Include="../../linux/mail-config-recovery.sh" LogicalName="LinuxMailRelay365.linux.recovery.sh" />
+    <EmbeddedResource Include="../../linux/sidecar-config-recovery.py" LogicalName="LinuxMailRelay365.linux.sidecar-config-recovery.py" />
     <EmbeddedResource Include="../../linux/install-preserve-postfix-sidecar.sh" LogicalName="LinuxMailRelay365.linux.sidecar.sh" />
+    <EmbeddedResource Include="../../linux/install-direct-send-sidecar.sh" LogicalName="LinuxMailRelay365.linux.direct-send-sidecar.sh" />
+    <EmbeddedResource Include="../../linux/install-connector-sidecar.sh" LogicalName="LinuxMailRelay365.linux.connector-sidecar.sh" />
+    <EmbeddedResource Include="../../linux/guard-foreign-mta.py" LogicalName="LinuxMailRelay365.linux.foreign-mta-guard.py" />
+    <EmbeddedResource Include="../../linux/foreign-mta-config-backup.py" LogicalName="LinuxMailRelay365.linux.foreign-mta-backup.py" />
     <EmbeddedResource Include="../../linux/network-firewall.sh" LogicalName="LinuxMailRelay365.linux.network-firewall.sh" />
+    <EmbeddedResource Include="../../linux/manage-public-smtp.py" LogicalName="LinuxMailRelay365.linux.public-smtp-manager.py" />
     <EmbeddedResource Include="../../linux/audit-existing-smtp.py" LogicalName="LinuxMailRelay365.linux.existing-smtp-audit.py" />
+    <EmbeddedResource Include="../../linux/inspect-mail-host.py" LogicalName="LinuxMailRelay365.linux.inspect-mail-host.py" />
+    <EmbeddedResource Include="../../linux/audit-mail-bindings.py" LogicalName="LinuxMailRelay365.linux.audit-mail-bindings.py" />
+    <EmbeddedResource Include="../../linux/platform-compat.py" LogicalName="LinuxMailRelay365.linux.platform-compat.py" />
+    <EmbeddedResource Include="../../linux/mta-coexistence-doctor.py" LogicalName="LinuxMailRelay365.linux.mta-coexistence-doctor.py" />
+    <EmbeddedResource Include="../../linux/rhel-selinux-doctor.py" LogicalName="LinuxMailRelay365.linux.rhel-selinux-doctor.py" />
+    <EmbeddedResource Include="../../linux/rhel-enforcing-live-smoke.py" LogicalName="LinuxMailRelay365.linux.rhel-enforcing-live-smoke.py" />
+    <EmbeddedResource Include="../../linux/manage-rhel-selinux-port.py" LogicalName="LinuxMailRelay365.linux.rhel-selinux-port-manager.py" />
+    <EmbeddedResource Include="../../linux/manage-sidecar-smtp-accounts.py" LogicalName="LinuxMailRelay365.linux.smtp-account-manager.py" />
+    <EmbeddedResource Include="../../linux/generate-smtp-client-credential.py" LogicalName="LinuxMailRelay365.linux.smtp-credential-generator.py" />
+    <EmbeddedResource Include="../../linux/relay-health.py" LogicalName="LinuxMailRelay365.linux.relay-health.py" />
+    <EmbeddedResource Include="../../linux/manage-health-alerts.py" LogicalName="LinuxMailRelay365.linux.health-alerts.py" />
+    <EmbeddedResource Include="../../linux/audit-m365-dns.py" LogicalName="LinuxMailRelay365.linux.m365-dns-audit.py" />
+    <EmbeddedResource Include="../../linux/install-health-monitor.sh" LogicalName="LinuxMailRelay365.linux.health-monitor-installer.sh" />
+    <EmbeddedResource Include="../../linux/verify-reboot-continuity.py" LogicalName="LinuxMailRelay365.linux.reboot-continuity.py" />
+    <EmbeddedResource Include="../../linux/m365-outbound-mode-preflight.py" LogicalName="LinuxMailRelay365.linux.outbound-mode-preflight.py" />
+    <EmbeddedResource Include="../../linux/manage-sidecar-eop-route.py" LogicalName="LinuxMailRelay365.linux.eop-route-manager.py" />
+    <EmbeddedResource Include="../../linux/sidecar-from-owner-milter.py" LogicalName="LinuxMailRelay365.linux.from-owner-milter.py" />
+    <EmbeddedResource Include="../../linux/install-sidecar-from-guard.sh" LogicalName="LinuxMailRelay365.linux.from-owner-guard-installer.sh" />
+    <EmbeddedResource Include="../../linux/rotate-sidecar-tls.sh" LogicalName="LinuxMailRelay365.linux.sidecar-tls-rotator.sh" />
+    <EmbeddedResource Include="../../linux/enable-sidecar-auth-tls.sh" LogicalName="LinuxMailRelay365.linux.auth-tls-installer.sh" />
+    <EmbeddedResource Include="../../linux/restore-sidecar-auth-tls.sh" LogicalName="LinuxMailRelay365.linux.auth-tls-restore.sh" />
+    <EmbeddedResource Include="../../linux/installed-sidecar-audit.py" LogicalName="LinuxMailRelay365.linux.installed-sidecar-audit.py" />
+    <EmbeddedResource Include="../../linux/audit-sidecar-auth-archives.py" LogicalName="LinuxMailRelay365.linux.auth-archive-audit.py" />
+    <EmbeddedResource Include="../../linux/verify-sidecar-tls-identity.py" LogicalName="LinuxMailRelay365.linux.tls-identity-probe.py" />
     <EmbeddedResource Include="../../windows/Test-LinuxMailRelay365Security.ps1" LogicalName="LinuxMailRelay365.windows.cloud-security-probe.ps1" />
     <EmbeddedResource Include="../../windows/Initialize-LinuxMailRelay365.ps1" LogicalName="LinuxMailRelay365.windows.provision.ps1" />
     <EmbeddedResource Include="../../windows/Discover-LinuxMailRelay365Tenants.ps1" LogicalName="LinuxMailRelay365.windows.tenant-discovery.ps1" />
+    <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365Connector.ps1" LogicalName="LinuxMailRelay365.windows.tenant-connector-manager.ps1" />
+    <EmbeddedResource Include="../../windows/Inspect-LinuxMailRelay365Objects.ps1" LogicalName="LinuxMailRelay365.windows.cloud-objects-inspector.ps1" />
+    <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365Object.ps1" LogicalName="LinuxMailRelay365.windows.cloud-connector-manager.ps1" />
+    <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365EntraCertificate.ps1" LogicalName="LinuxMailRelay365.windows.entra-oauth-cert-manager.ps1" />
   </ItemGroup>
 </Project>

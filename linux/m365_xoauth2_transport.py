@@ -6,11 +6,15 @@ The private signing key remains usable by a privileged local attacker.
 """
 import argparse
 import base64
+import binascii
+import grp
 import hashlib
 import json
 import os
 import re
 import smtplib
+import tempfile
+import stat
 import ssl
 import subprocess
 import sys
@@ -23,9 +27,19 @@ from email import policy
 from email.parser import BytesParser
 from email.utils import formatdate, make_msgid
 from pathlib import Path
+from m365_hardware_signer import HardwareSignerError, validate_spec, sign_ps256
 
 CONF_FILE = Path('/etc/postfix/m365-oauth/app.json')
 SIDECAR_CONF_FILE = Path('/etc/linuxmailrelay365/sidecar-identity/app.json')
+MAPPED_IDENTITIES = Path('/etc/linuxmailrelay365/oauth-identities')
+MAPPED_IDENTITY_NAME = re.compile(r'\A[A-Za-z0-9][A-Za-z0-9_.-]{0,90}\.json\Z')
+STAGED_CONF_FILES = (
+    Path('/etc/postfix/m365-oauth/hardware-staged.json'),
+    Path('/etc/linuxmailrelay365/sidecar-identity/hardware-staged.json'),
+    Path('/etc/postfix/m365-oauth/pem-rotation-staged.json'),
+)
+PEM_ROTATION_CONF = STAGED_CONF_FILES[-1]
+PEM_ROTATION_NAME = re.compile(r'\Aapp\.rotation\.[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\Z')
 EX_TEMPFAIL = 75
 EX_OK = 0
 MAX_MESSAGE_BYTES = 25 * 1024 * 1024
@@ -46,7 +60,7 @@ def base64url(value):
 
 def run_openssl(*args, data=None):
     result = subprocess.run(
-        ['/usr/bin/openssl', *args], input=data, capture_output=True,
+        ['/usr/bin/openssl', *args], input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         timeout=20, check=False,
     )
     if result.returncode:
@@ -58,21 +72,147 @@ def validate_guid(value):
     return str(uuid.UUID(value))
 
 
+
+def require_mapped_identity_file(path):
+    """Accept mapped identities for OFFLINE diagnostics, never queue delivery."""
+    if not isinstance(path, Path) or path.parent != MAPPED_IDENTITIES or \
+            not MAPPED_IDENTITY_NAME.fullmatch(path.name):
+        raise ValueError('Mapped OAuth identity path not allowlisted')
+    try:
+        group = grp.getgrnam('m365mailer').gr_gid
+        for directory in (Path('/etc'), MAPPED_IDENTITIES.parent, MAPPED_IDENTITIES):
+            info = directory.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or \
+                    info.st_mode & 0o022:
+                raise ValueError('Mapped OAuth identity directory is unsafe')
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or \
+                info.st_gid != group or info.st_nlink != 1 or \
+                stat.S_IMODE(info.st_mode) != 0o640 or \
+                not 1 <= info.st_size <= 8192:
+            raise ValueError('Mapped OAuth identity file is unsafe')
+    except (OSError, KeyError):
+        raise ValueError('Mapped OAuth identity file unavailable') from None
+    return group
+
+
+def check_mapped_credential_file(reference, group, private=False):
+    if not isinstance(reference, str):
+        raise ValueError('Invalid mapped OAuth credential reference')
+    target = Path(reference)
+    if target.parent != MAPPED_IDENTITIES or not target.name or \
+            target.name in ('.', '..'):
+        raise ValueError('Mapped OAuth credential escapes protected directory')
+    try:
+        info = target.lstat()
+        modes = (0o640,) if private else (0o640, 0o644)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or \
+                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) not in modes or \
+                (private and info.st_gid != group) or \
+                not 1 <= info.st_size <= 65536:
+            raise ValueError('Unsafe mapped OAuth credential permissions')
+    except OSError:
+        raise ValueError('Mapped OAuth credential unavailable') from None
+
+
+def verify_assertion_signature(config, assertion):
+    """Verify PS256 against PUBLIC cert; never write private keys or tokens."""
+    try:
+        pieces = assertion.split('.')
+        if len(pieces) != 3 or any(not x for x in pieces):
+            raise ValueError()
+        unsigned = (pieces[0] + '.' + pieces[1]).encode('ascii')
+        signature = base64.urlsafe_b64decode(pieces[2] + '===')
+        if not 128 <= len(signature) <= 1024:
+            raise ValueError()
+    except (ValueError, TypeError, UnicodeError, binascii.Error):
+        raise TransientError('Malformed local OAuth assertion') from None
+    public = run_openssl('x509', '-in', config['certificate'], '-pubkey', '-noout')
+    if b'BEGIN PUBLIC KEY' not in public:
+        raise TransientError('OAuth certificate has no public key')
+    with tempfile.TemporaryDirectory(prefix='lmr365-oauth-verify-') as folder:
+        pub = Path(folder) / 'public.pem'
+        sig = Path(folder) / 'signature.bin'
+        pub.write_bytes(public)
+        sig.write_bytes(signature)
+        pub.chmod(0o600)
+        sig.chmod(0o600)
+        check = subprocess.run(
+            ['/usr/bin/openssl', 'dgst', '-sha256', '-verify', str(pub),
+             '-signature', str(sig), '-sigopt', 'rsa_padding_mode:pss',
+             '-sigopt', 'rsa_pss_saltlen:32'],
+            input=unsigned, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=20, check=False)
+        if check.returncode or b'Verified OK' not in check.stdout:
+            raise TransientError('OAuth signer does not match public certificate')
+
+
 def load_config(path=None):
     path = CONF_FILE if path is None else Path(path)
-    if path not in (CONF_FILE, SIDECAR_CONF_FILE):
+    mapped = path.parent == MAPPED_IDENTITIES
+    mapped_group = require_mapped_identity_file(path) if mapped else None
+    if not mapped and path not in (CONF_FILE, SIDECAR_CONF_FILE) + STAGED_CONF_FILES:
         raise ValueError('Unsupported XOAUTH2 configuration path')
+    if path == PEM_ROTATION_CONF:
+        # This is an explicitly staged software key, never a delivery identity.
+        # It is available only through --candidate-config with a non-delivery
+        # diagnostic action; refuse files/symlinks of unsafe ownership/mode.
+        def protected_file(p, modes, maximum):
+            info = p.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or \
+                    info.st_nlink != 1 or stat.S_IMODE(info.st_mode) not in modes or \
+                    not 0 < info.st_size <= maximum:
+                raise ValueError('Unsafe staged PEM identity file')
+            if not p.parent.is_dir() or p.parent.is_symlink():
+                raise ValueError('Unsafe staged PEM directory')
+            directory = p.parent.lstat()
+            if directory.st_uid != 0 or directory.st_mode & 0o022:
+                raise ValueError('Unsafe staged PEM directory permissions')
+        protected_file(path, (0o640,), 32768)
     data = json.loads(path.read_text(encoding='utf-8'))
-    for required in ('tenant_id', 'client_id', 'mailbox', 'certificate', 'private_key'):
+    if not isinstance(data, dict):
+        raise ValueError('Invalid XOAUTH2 JSON identity')
+    for required in ('tenant_id', 'client_id', 'mailbox', 'certificate'):
         if not data.get(required):
             raise ValueError('Missing configuration entry: ' + required)
     data['tenant_id'] = validate_guid(data['tenant_id'])
     data['client_id'] = validate_guid(data['client_id'])
     if not EMAIL_RE.fullmatch(data['mailbox']):
         raise ValueError('Invalid configured mailbox')
-    for path in (data['certificate'], data['private_key']):
-        if not Path(path).is_file():
-            raise ValueError('Certificate or private key is missing')
+    if not Path(data['certificate']).is_file():
+        raise ValueError('Certificate file is missing')
+    if path == PEM_ROTATION_CONF:
+        if set(data) != {'tenant_id', 'client_id', 'mailbox',
+                         'certificate', 'private_key'}:
+            raise ValueError('Staged software PEM must have exact identity keys')
+        root = CONF_FILE.parent
+        certificate = Path(data['certificate'])
+        key = Path(data['private_key'])
+        if certificate.parent != root or key.parent != root or \
+                not PEM_ROTATION_NAME.fullmatch(certificate.stem) or \
+                key.name != certificate.stem + '.key':
+            raise ValueError('Candidate key or cert escapes fixed versioned identity')
+        protected_file(certificate, (0o640, 0o644), 32768)
+        protected_file(key, (0o640,), 32768)
+        active = json.loads(CONF_FILE.read_text(encoding='utf-8'))
+        if ('signer' in active or
+                any(active.get(k) != data.get(k) for k in (
+                    'tenant_id', 'client_id', 'mailbox'))):
+            raise ValueError('Staged PEM cannot change tenant, app or sender')
+    if mapped:
+        required = {'tenant_id', 'client_id', 'mailbox', 'certificate'}
+        extra = {'signer'} if 'signer' in data else {'private_key'}
+        if set(data) != required | extra:
+            raise ValueError('Mapped OAuth identity contains unexpected fields')
+        check_mapped_credential_file(data['certificate'], mapped_group)
+        if 'private_key' in data:
+            check_mapped_credential_file(data['private_key'], mapped_group, private=True)
+    if 'signer' in data:
+        validate_spec(data, path)
+        data['_identity_path'] = str(path)
+    else:
+        if not data.get('private_key') or not Path(data['private_key']).is_file():
+            raise ValueError('PEM private key file is missing')
     return data
 
 
@@ -95,11 +235,14 @@ def make_client_assertion(config, now=None):
     def enc(obj):
         return base64url(json.dumps(obj, separators=(',', ':')).encode('utf-8'))
     unsigned = f'{enc(header)}.{enc(claims)}'.encode('ascii')
-    signature = run_openssl(
-        'dgst', '-sha256', '-sign', config['private_key'],
-        '-sigopt', 'rsa_padding_mode:pss',
-        '-sigopt', 'rsa_pss_saltlen:32', data=unsigned,
-    )
+    if 'signer' in config:
+        signature = sign_ps256(config, unsigned)
+    else:
+        signature = run_openssl(
+            'dgst', '-sha256', '-sign', config['private_key'],
+            '-sigopt', 'rsa_padding_mode:pss',
+            '-sigopt', 'rsa_pss_saltlen:32', data=unsigned,
+        )
     return endpoint, unsigned.decode('ascii') + '.' + base64url(signature)
 
 
@@ -186,22 +329,147 @@ def send_smtp(config, recipient, raw_message, token):
             raise PermanentError(f'SMTP recipient rejected: {code}')
 
 
+def check_smtp_auth(config, token):
+    """Complete real Exchange Online SMTP STARTTLS/XOAUTH2 authentication only.
+
+    Never issues MAIL FROM, RCPT TO or DATA, never submits a message, and
+    never prints the bearer token, SASL exchange or server's challenge.
+    """
+    mailbox = config['mailbox']
+    if not EMAIL_RE.fullmatch(mailbox):
+        raise PermanentError('Invalid configured sender mailbox')
+    sasl = ('user=' + mailbox + '\x01auth=Bearer ' + token + '\x01\x01')
+    encoded = base64.b64encode(sasl.encode('utf-8')).decode('ascii')
+    with smtplib.SMTP('smtp.office365.com', 587, timeout=45) as client:
+        client.ehlo()
+        if not client.has_extn('starttls'):
+            raise TransientError('Microsoft 365 did not offer STARTTLS')
+        client.starttls(context=ssl.create_default_context())
+        client.ehlo()
+        offered = client.esmtp_features.get('auth', '').upper().split()
+        if 'XOAUTH2' not in offered:
+            raise TransientError('Microsoft 365 did not advertise AUTH XOAUTH2')
+        code, _ = client.docmd('AUTH', 'XOAUTH2 ' + encoded)
+        if code == 334:
+            # Consume an RFC 7628 error challenge without exposing its body.
+            client.docmd('')
+            raise TransientError('Microsoft 365 rejected staged XOAUTH2 token (334)')
+        if code != 235:
+            raise TransientError('Microsoft 365 staged XOAUTH2 authentication failed (SMTP {})'.format(code))
+    # Closing authenticated session sends QUIT only. No sendmail(), no DATA.
+
+
+
+# Direct supervised delivery acceptance is independent of the Postfix pipe.
+# It has no arbitrary message body, staged identity or recipient CLI argument.
+ACCEPTANCE_EMAIL = re.compile(
+    r'^(?![^@]*\.\.)(?:[A-Za-z0-9](?:[A-Za-z0-9._+-]{0,62}[A-Za-z0-9_+-])?)@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+    r'(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$')
+ACCEPTANCE_ID = re.compile(r'^[a-f0-9]{32}$')
+
+
+def submit_acceptance_message(config, request):
+    """Send ONE fixed test message; SMTP acceptance is not inbox delivery."""
+    if not isinstance(request, dict) or set(request) != {'recipient', 'run_id', 'role'}:
+        raise PermanentError('Invalid restricted acceptance request')
+    recipient = request['recipient']
+    run_id = request['run_id']
+    role = request['role']
+    if (not isinstance(recipient, str) or len(recipient) > 254 or
+            not ACCEPTANCE_EMAIL.fullmatch(recipient) or
+            not isinstance(run_id, str) or not ACCEPTANCE_ID.fullmatch(run_id) or
+            role not in ('internal', 'external')):
+        raise PermanentError('Invalid restricted acceptance recipient or marker')
+    sender = config['mailbox']
+    if not ACCEPTANCE_EMAIL.fullmatch(sender):
+        raise PermanentError('Invalid fixed test sender')
+    domain = sender.rsplit('@', 1)[1].lower()
+    recipient_domain = recipient.rsplit('@', 1)[1].lower()
+    if ((role == 'internal' and recipient_domain != domain) or
+            (role == 'external' and recipient_domain == domain)):
+        raise PermanentError('Recipient domain does not match reviewed test role')
+    # Fixed ASCII, no attachments, Bcc, arbitrary HTML, or input headers.
+    message = (
+        'To: ' + recipient + '\r\n'
+        'Subject: LinuxMailRelay365 acceptance ' + run_id + ' ' + role + '\r\n'
+        'Message-ID: <lmr365-' + run_id + '-' + role + '@' + domain + '>\r\n'
+        'X-LinuxMailRelay365-Test-ID: ' + run_id + '\r\n'
+        'Auto-Submitted: auto-generated\r\n'
+        'Content-Type: text/plain; charset=us-ascii\r\n'
+        '\r\n'
+        'Authorized LinuxMailRelay365 acceptance test.\r\n'
+        'Trace: ' + run_id + '\r\n'
+        'Class: ' + role + '\r\n'
+        'Confirm receipt independently to the operator.\r\n'
+    ).encode('ascii')
+    token = acquire_token(config)
+    send_smtp(config, recipient, message, token)
+
+
+
 def run(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--recipient', help='Single envelope recipient from Postfix')
     ap.add_argument('--token-check', action='store_true', help='Check Entra token acquisition without printing token')
+    ap.add_argument('--smtp-auth-check', action='store_true', help='Verify real Microsoft 365 XOAUTH2 AUTH without MAIL/RCPT/DATA')
+    ap.add_argument('--acceptance-test', action='store_true', help='One fixed authorized test message, bounded JSON from stdin')
+    ap.add_argument('--signing-check', action='store_true', help='Verify local PS256 signing without Entra traffic')
     ap.add_argument('--config-check', action='store_true', help='Check local configuration only')
     ap.add_argument('--config', choices=[str(CONF_FILE), str(SIDECAR_CONF_FILE)],
-                    default=str(CONF_FILE), help='Explicit instance identity configuration')
+                    default=str(CONF_FILE), help='Explicit installed identity configuration')
+    ap.add_argument('--candidate-config', choices=[str(x) for x in STAGED_CONF_FILES],
+                    help='Root-staged hardware identity, usable only for signing/token checks')
+    ap.add_argument('--mapped-identity-config',
+                    help='Protected mapped OAuth identity for LOCAL diagnostics only')
     args = ap.parse_args(argv)
     try:
-        config = load_config(args.config)
+        if sum((bool(args.token_check), bool(args.signing_check), bool(args.config_check),
+                bool(args.smtp_auth_check), bool(args.acceptance_test))) > 1:
+            ap.error('Select only one non-delivery diagnostic action')
+        if args.acceptance_test and (args.candidate_config is not None or args.recipient or
+                                     args.mapped_identity_config is not None):
+            ap.error('Acceptance delivery may use active identity only, without CLI recipient')
+        if args.mapped_identity_config is not None:
+            if (args.candidate_config is not None or args.recipient or
+                    not (args.config_check or args.signing_check) or
+                    args.token_check or args.smtp_auth_check or args.acceptance_test):
+                ap.error('Mapped identity permits local config/signing checks only')
+            config = load_config(args.mapped_identity_config)
+        elif args.candidate_config is not None:
+            if not (args.token_check or args.signing_check or args.config_check or args.smtp_auth_check) or args.recipient:
+                ap.error('Candidate identity cannot send mail or accept a recipient')
+            config = load_config(args.candidate_config)
+            if args.candidate_config != str(PEM_ROTATION_CONF) and 'signer' not in config:
+                raise ValueError('Candidate hardware identity missing signer')
+        else:
+            config = load_config(args.config)
         if args.config_check:
             print('Local configuration OK (no network connection attempted)')
+            return EX_OK
+        if args.signing_check:
+            _, assertion = make_client_assertion(config)
+            verify_assertion_signature(config, assertion)
+            print('Local PS256 signing and certificate match verified; no token requested')
             return EX_OK
         if args.token_check:
             acquire_token(config)
             print('Entra application token acquired (token not displayed)')
+            return EX_OK
+        if args.smtp_auth_check:
+            token = acquire_token(config)
+            check_smtp_auth(config, token)
+            print('Microsoft 365 STARTTLS and SMTP AUTH XOAUTH2 verified; no message submitted')
+            return EX_OK
+        if args.acceptance_test:
+            raw_request = sys.stdin.buffer.read(4097)
+            if not raw_request or len(raw_request) > 4096:
+                raise PermanentError('Missing or oversized restricted acceptance request')
+            try:
+                request = json.loads(raw_request.decode('utf-8'))
+            except (ValueError, UnicodeError):
+                raise PermanentError('Invalid restricted acceptance request')
+            submit_acceptance_message(config, request)
+            print('Acceptance SMTP submission accepted; recipient delivery not verified')
             return EX_OK
         if not args.recipient:
             ap.error('--recipient is required for delivery')
@@ -219,7 +487,7 @@ def run(argv=None):
     except PermanentError as exc:
         print('5.0.0 ' + str(exc), file=sys.stderr)
         return 69
-    except (TransientError, OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired,
+    except (TransientError, HardwareSignerError, OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired,
             smtplib.SMTPException, ssl.SSLError) as exc:
         if isinstance(exc, smtplib.SMTPResponseException):
             text = f'Exchange SMTP error {exc.smtp_code}'

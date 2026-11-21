@@ -35,8 +35,8 @@ Optional: --allow-existing   Legacy advanced flag (not sufficient for replacemen
           --validate-network-only  Validate ingress without modifying anything.
           --prepare-only     Generate certificate and dedicated local account.
           --certificate-days N (1..365, default 365).
-          --rotate-only      Prepare a SECOND certificate without disrupting the old one.
-          --activate-only    After adding the next certificate in Entra, switch keys.
+          --rotate-only      DEPRECATED and blocked; use reviewed Primary OAuth Rotation Wizard.
+          --activate-only    DEPRECATED and blocked; use reviewed Primary OAuth Rotation Wizard.
 This installer never automatically removes an existing Sendmail or Exim MTA.
 
 Does not require or store a Microsoft 365 mailbox password, refresh token,
@@ -82,7 +82,16 @@ if [ "$ACTIVATE_ONLY" -eq 1 ] && [ "$ROTATE_ONLY" -eq 1 ]; then
   echo 'Choose only one lifecycle action.' >&2
   exit 2
 fi
-
+# The legacy direct key-copy sequence switches identities without a separate
+# staged Exchange SMTP AUTH acceptance step. Refuse unsafe shortcuts in Preview.
+if [ "$ROTATE_ONLY" -eq 1 ] || [ "$ACTIVATE_ONLY" -eq 1 ]; then
+  echo 'Deprecated direct PEM rotation refused: use reviewed Primary OAuth Rotation Wizard (plan, stage, Entra addKey, SMTP AUTH, activate).' >&2
+  exit 2
+fi
+if [ "$PREPARE_ONLY" -eq 1 ] && [ -e /etc/postfix/m365-oauth/app.json ]; then
+  echo 'Existing OAuth identity detected. Use reviewed Primary OAuth Rotation instead of initial certificate preparation.' >&2
+  exit 2
+fi
 
 # Validate before touching Postfix, packages, identities or certificates.
 validate_ingress() {
@@ -111,7 +120,7 @@ try:
     for cidr in sys.argv[2:]:
         network = ipaddress.ip_network(cidr, strict=True)
         if not isinstance(network, ipaddress.IPv4Network) or not any(
-            network.subnet_of(private) for private in allowed):
+            (network.network_address in private and network.broadcast_address in private) for private in allowed):
             raise ValueError("Trusted clients must belong to a specific RFC1918 subnet")
 except ValueError as exc:
     sys.stderr.write("SMTP ingress policy rejected: " + str(exc) + "\n")
@@ -236,7 +245,7 @@ if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ]; then
       echo "Postfix setup failed. Pre-change backup ID: $SNAPSHOT_ID" >&2
       if [ "$FORCE_REPLACE" -eq 1 ]; then
         echo 'Attempting automatic Postfix configuration rollback...' >&2
-        if bash "$SCRIPT_DIR/mail-config-recovery.sh" --restore "$SNAPSHOT_ID"; then
+        if bash "$SCRIPT_DIR/mail-config-recovery.sh" --restore "$SNAPSHOT_ID" --confirm AUTO_ROLLBACK_AFTER_FAILED_INSTALL; then
           echo 'Automatic configuration rollback succeeded.' >&2
         else
           echo 'CRITICAL: automatic rollback failed. Manual restore is needed.' >&2
@@ -267,8 +276,9 @@ else
   exit 1
 fi
 
-[ -f "$SCRIPT_DIR/m365_xoauth2_transport.py" ] || {
-  echo "Missing $SCRIPT_DIR/m365_xoauth2_transport.py" >&2; exit 1;
+[ -f "$SCRIPT_DIR/m365_xoauth2_transport.py" ] &&
+[ -f "$SCRIPT_DIR/m365_hardware_signer.py" ] || {
+  echo 'Bundled transport or hardware-signing helper missing; no changes.' >&2; exit 1;
 }
 
 if ! id m365mailer >/dev/null 2>&1; then
@@ -333,6 +343,9 @@ chmod 0640 "$CONF_DIR/app.json"
 install -D -o root -g root -m 0755 \
   "$SCRIPT_DIR/m365_xoauth2_transport.py" \
   /usr/local/libexec/m365_xoauth2_transport.py
+install -D -o root -g root -m 0644 \
+  "$SCRIPT_DIR/m365_hardware_signer.py" \
+  /usr/local/libexec/m365_hardware_signer.py
 
 STAMP="$(date -u +'%Y%m%dT%H%M%SZ')"
 cp -p /etc/postfix/main.cf "/etc/postfix/main.cf.pre-m365.$STAMP"

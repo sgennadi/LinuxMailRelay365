@@ -8,7 +8,10 @@ namespace LinuxMailRelay365;
 internal sealed record PreserveFlowSnapshot(
     string LinuxHost, string Listener, string SmtpPort, string Mailbox,
     string TenantId, string TrustedCidrs, string? ExistingMta, bool PublicRequested,
-    bool ConnectorPlanned = false, bool SenderPolicyPlanned = false, string VerifiedDomain = "")
+    bool ConnectorPlanned = false, bool SenderPolicyPlanned = false, string VerifiedDomain = "",
+    string TransportMode = "oauth2", string OAuthSenderMode = "fixed-mailbox",
+    string OutboundMx = "", string EopFixedSender = "",
+    bool KeepExisting = true, string SenderPolicy = "fixed-mailbox")
 {
     private static string OneLine(string? value, int limit = 120)
     {
@@ -17,7 +20,23 @@ internal sealed record PreserveFlowSnapshot(
     }
 
     internal bool LocalOnly => string.IsNullOrWhiteSpace(Listener);
-    internal bool NotDeployablePlan => ConnectorPlanned || SenderPolicyPlanned;
+    // Connector and Direct Send ARE implemented as separately reviewed EOP routes.
+    // Only the multi-mailbox OAuth option is not deployable yet.
+    internal bool NotDeployablePlan => MailRoutingGuidance.IsUnimplementedOAuthMultiSender(
+        TransportMode, OAuthSenderMode);
+    internal string MailRouteTitle => TransportMode switch
+    {
+        "connector" => "M365 CONNECTOR · TCP 25",
+        "direct-send" => "DIRECT SEND · INTERNAL",
+        _ => "XOAUTH2 · TCP 587"
+    };
+    internal string MailRouteHint => TransportMode switch
+    {
+        "connector" => "Authorized Inbound Connector",
+        "direct-send" => "Internal recipients only",
+        _ => NotDeployablePlan ? "Multiple mailboxes: PLAN ONLY" : DisplayMailbox
+    };
+    internal string OutboundDescription => MailRoutingGuidance.Outbound(TransportMode, OutboundMx);
     internal string ServerForClient => LocalOnly ? "127.0.0.1" : OneLine(Listener);
     internal string DisplayHost => string.IsNullOrWhiteSpace(LinuxHost)
         ? "(not entered)" : OneLine(LinuxHost);
@@ -30,38 +49,105 @@ internal sealed record PreserveFlowSnapshot(
     internal string ExistingStatus => ExistingMta switch
     {
         "postfix" => "Postfix detected",
-        "sendmail" or "exim" => "Existing MTA not supported by sidecar",
+        "sendmail" or "exim" => "Detected external MTA: guarded coexistence requires review",
         "none" => "No existing MTA detected",
         "unknown" => "MTA state uncertain",
         _ => "MTA not inspected"
     };
 
+    internal string ExistingStatusLocalized(int language) =>
+        language switch
+        {
+            0 => ExistingMta switch
+            {
+                "postfix" => "Обнаружен Postfix",
+                "exim" or "sendmail" => "Exim/Sendmail: требуется проверка",
+                "none" => "Почтовая система не найдена",
+                "unknown" => "Состояние MTA неизвестно",
+                _ => "MTA ещё не проверен"
+            },
+            2 => ExistingMta switch
+            {
+                "postfix" => "Postfix זוהה",
+                "exim" or "sendmail" => "נמצא MTA אחר; נדרשת בדיקה",
+                "none" => "לא נמצא שרת דואר",
+                "unknown" => "מצב MTA לא ידוע",
+                _ => "MTA טרם נבדק"
+            },
+            _ => ExistingStatus
+        };
+
+    internal string MailRouteHintLocalized(int language) =>
+        language switch
+        {
+            0 => TransportMode switch
+            {
+                "connector" => "Проверенный входящий Connector",
+                "direct-send" => "Только внутренние получатели",
+                _ => NotDeployablePlan ? "Несколько ящиков: только план" :
+                    string.IsNullOrWhiteSpace(Mailbox) ? "(ящик не выбран)" : DisplayMailbox
+            },
+            2 => TransportMode switch
+            {
+                "connector" => "מחבר נכנס מאושר",
+                "direct-send" => "נמענים פנימיים בלבד",
+                _ => NotDeployablePlan ? "ריבוי תיבות: תכנון בלבד" :
+                    string.IsNullOrWhiteSpace(Mailbox) ? "(תיבה לא נבחרה)" : DisplayMailbox
+            },
+            _ => MailRouteHint
+        };
+
     internal string ClientInstructions(int lang)
     {
+        string route = MailRoutingGuidance.Explain(TransportMode, SenderPolicy,
+            OAuthSenderMode, Mailbox, OutboundMx, EopFixedSender,
+            VerifiedDomain, SmtpPort, KeepExisting, lang);
         if (NotDeployablePlan)
-        {
-            string domain = string.IsNullOrWhiteSpace(VerifiedDomain)
-                ? "(not specified)" : OneLine(VerifiedDomain);
-            return lang switch
+            return route + "\r\n" + (lang switch
             {
-                1 => "LinuxMailRelay365 | NOT READY TO DEPLOY\r\n" +
-                     "Selected: Microsoft 365 Connector or sender-policy option not yet implemented.\r\n" +
-                     "Linux: " + DisplayHost + " | SMTP port: " + DisplayPort +
-                     " | Verified domain: " + domain + "\r\n" +
-                     "Preserve Existing Mail means old clients stay on existing SMTP; do not switch clients to this planned route.\r\n",
-                2 => "LinuxMailRelay365 | תצורה בתכנון, עדיין לא ניתנת להתקנה\r\n" +
-                     "שרת: " + DisplayHost + " | יציאה: " + DisplayPort +
-                     " | דומיין: " + domain + "\r\nאין לשנות הגדרות של יישומים קיימים.\r\n",
-                _ => "LinuxMailRelay365 | ТОЛЬКО ПЛАН, УСТАНОВКА НЕДОСТУПНА\r\n" +
-                     "Выбран режим Microsoft 365 Connector или обработки отправителя, ещё не реализованный в этом Preview.\r\n" +
-                     "Linux: " + DisplayHost + " | Порт SMTP: " + DisplayPort +
-                     " | Проверенный домен: " + domain + "\r\n" +
-                     "Существующие приложения остаются на старом SMTP. НЕ переключайте клиентов на этот маршрут.\r\n"
-            };
+                0 => "НЕ ПЕРЕКЛЮЧАЙТЕ ПРИЛОЖЕНИЯ. Многопользовательский XOAUTH2 только планируется: установка и отправка не разрешены.\r\n",
+                2 => "אין לעבור למסלול זה לפני אימות הרשאות ושולחים.\r\n",
+                _ => "DO NOT SWITCH APPLICATIONS. Multi-mailbox XOAUTH2 cannot be installed or used yet.\r\n"
+            });
+        if (TransportMode is "connector" or "direct-send")
+        {
+            string proposedClientHost = ServerForClient;
+            string scope = TransportMode == "direct-send"
+                ? (lang == 0 ? "Только внутренние получатели Microsoft 365.\r\n"
+                    : lang == 2 ? "רק נמענים פנימיים ב-Microsoft 365.\r\n"
+                    : "Microsoft 365 internal recipients ONLY.\r\n")
+                : (lang == 0 ? "Внутренние и внешние получатели (только через проверенный Connector).\r\n"
+                    : lang == 2 ? "נמענים פנימיים וחיצוניים בכפוף ל-Connector תקין.\r\n"
+                    : "Internal and external recipients (verified Connector required).\r\n");
+            return route + "\r\n" + (lang switch
+            {
+                0 => "ПАРАМЕТРЫ ДЛЯ ПРИЛОЖЕНИЙ (план; установка ещё не проверена):\r\n" +
+                     "  SMTP Linux: " + proposedClientHost + ":" + DisplayPort + "\r\n" +
+                     "  Исходящий Microsoft 365: " + OutboundDescription + "\r\n" +
+                     "  Отправитель: " + MailRoutingGuidance.SenderResult(
+                         TransportMode, SenderPolicy, OAuthSenderMode, Mailbox, EopFixedSender, lang) + "\r\n" +
+                     "  Отдельная очередь: /var/spool/linuxmailrelay365-sidecar\r\n" +
+                     "  SMTP AUTH/STARTTLS: включить и проверить отдельно; не предполагать их наличие.\r\n",
+                2 => "הגדרות SMTP מוצעות: " + proposedClientHost + ":" + DisplayPort +
+                     "\r\nיעד Microsoft 365: " + OutboundDescription +
+                     "\r\nיש לבדוק SMTP AUTH/STARTTLS לפני השימוש.\r\n",
+                _ => "PROPOSED CLIENT SETTINGS (not verified installed):\r\n" +
+                     "  Linux SMTP: " + proposedClientHost + ":" + DisplayPort + "\r\n" +
+                     "  Outbound Microsoft 365: " + OutboundDescription + "\r\n" +
+                     "  Sender: " + MailRoutingGuidance.SenderResult(
+                         TransportMode, SenderPolicy, OAuthSenderMode, Mailbox, EopFixedSender, lang) + "\r\n" +
+                     "  Dedicated queue: /var/spool/linuxmailrelay365-sidecar\r\n" +
+                     "  SMTP AUTH/STARTTLS: enable and verify separately; never assume enabled.\r\n"
+            }) + scope + (lang switch
+            {
+                0 => "Сначала проверьте установленную конфигурацию, права отправителей и реальную доставку. Не переключайте старые программы автоматически.\r\n",
+                2 => "יש לאמת את המסלול וההרשאות לפני שינוי היישומים.\r\n",
+                _ => "Verify installed route, sender rights and real delivery first. Never silently switch existing apps.\r\n"
+            });
         }
         string listener = ServerForClient;
         string port = DisplayPort;
-        string mta = ExistingStatus;
+        string mta = ExistingStatusLocalized(lang);
         string sender = DisplayMailbox;
         string tenant = DisplayTenant;
         string host = DisplayHost;
@@ -75,8 +161,8 @@ internal sealed record PreserveFlowSnapshot(
             "NEW APPLICATIONS (send via Microsoft 365):\r\n" +
             "  SMTP server: " + listener + "\r\n" +
             "  SMTP port: " + port + "\r\n" +
-            "  SMTP AUTH: not available on the sidecar in this preview.\r\n" +
-            "  SMTP TLS to Linux: not available on the sidecar in this preview.\r\n" +
+            "  SMTP AUTH: not enabled by default; optional private-sidecar AUTH requires explicit setup.\r\n" +
+            "  SMTP TLS to Linux: not enabled by default; mandatory STARTTLS after explicit hardening.\r\n" +
             "  Sender (From/envelope): rewritten to " + sender + "\r\n" +
             "  Recipient (To): preserved; Microsoft 365 routes it normally.\r\n" +
             "  Entra tenant: " + tenant + "\r\n" +
@@ -86,6 +172,7 @@ internal sealed record PreserveFlowSnapshot(
             (LocalOnly ? "  The application must run ON THIS LINUX HOST. Remote clients cannot use 127.0.0.1 on a different machine.\r\n" :
                          "  Remote clients must be in a trusted CIDR; an administrator must explicitly allow the selected port through firewall.\r\n") +
             "  Public internet SMTP: NOT SUPPORTED / NOT ENABLED.\r\n" +
+            "  Verify installed SMTP AUTH/TLS status before changing client settings.\r\n" +
             "Do not switch an existing application automatically. Verify an actual test message and Exchange delivery first.\r\n";
         if (lang == 2) return
             "LinuxMailRelay365 | שימור דואר קיים | הגדרות מוצעות (טרם אומתו)\r\n" +
@@ -94,7 +181,7 @@ internal sealed record PreserveFlowSnapshot(
             "יישומים קיימים: אין שינוי ביציאות, בניתוב או בתור הדואר.\r\n" +
             "יישומים חדשים:\r\n  שרת SMTP: " + listener +
             "\r\n  יציאת SMTP: " + port +
-            "\r\n  אימות SMTP: לא זמין בגרסה זו\r\n  TLS נכנס: לא זמין בגרסה זו" +
+            "\r\n  אימות SMTP: כבוי כברירת מחדל (ניתן להפעיל בנפרד)\r\n  STARTTLS: כבוי כברירת מחדל (חובה לאחר הפעלה מפורשת)" +
             "\r\n  כתובת השולח: " + sender + "\r\n  נמען: נשאר ללא שינוי" +
             "\r\n  Tenant: " + tenant + "\r\n  רשתות מהימנות: " + networks +
             "\r\n  תור נפרד: /var/spool/linuxmailrelay365-sidecar\r\n" +
@@ -109,8 +196,8 @@ internal sealed record PreserveFlowSnapshot(
             "НОВЫЕ ПРИЛОЖЕНИЯ для отправки через Microsoft 365:\r\n" +
             "  SMTP-сервер: " + listener + "\r\n" +
             "  SMTP-порт: " + port + "\r\n" +
-            "  SMTP AUTH: в этом Preview для локального SMTP не реализован.\r\n" +
-            "  Входящий TLS до Linux: в этом Preview не реализован.\r\n" +
+            "  SMTP AUTH: по умолчанию выключен; для отдельного Postfix включается явно.\r\n" +
+            "  STARTTLS до Linux: по умолчанию выключен; после явного включения обязателен.\r\n" +
             "  Отправитель From/envelope: будет заменён на " + sender + "\r\n" +
             "  Получатель To: остаётся прежним; доставку выполняет Microsoft 365.\r\n" +
             "  Tenant: " + tenant + "\r\n" +
@@ -134,7 +221,23 @@ internal sealed record PreserveFlowSnapshot(
             !instructions.Contains("linux-alerts@example.org") ||
             !instructions.Contains("preserved", StringComparison.OrdinalIgnoreCase)) return false;
         var local = sample with { Listener = "", SmtpPort = "2525", Mailbox = "" };
-        return local.ServerForClient == "127.0.0.1" &&
+        var eop = sample with { TransportMode = "connector",
+            OutboundMx = "example-org.mail.protection.outlook.com",
+            EopFixedSender = "alerts@example.org", SenderPolicy = "preserve-domain" };
+        var direct = sample with { TransportMode = "direct-send",
+            OutboundMx = "example-org.mail.protection.outlook.com",
+            EopFixedSender = "alerts@example.org" };
+        var multiple = sample with { OAuthSenderMode = "authorized-multiple-mailboxes" };
+        return sample.ExistingStatusLocalized(0).Contains("Postfix") &&
+               local.ExistingStatusLocalized(0).Contains("Postfix") &&
+               (sample with { ExistingMta = null }).ExistingStatusLocalized(0).Contains("не проверен") &&
+               direct.MailRouteHintLocalized(0).Contains("внутренние") &&
+               eop.ClientInstructions(1).Contains("Connector") &&
+               eop.ClientInstructions(1).Contains("external recipients") &&
+               direct.ClientInstructions(1).Contains("internal recipients ONLY") &&
+               !direct.ClientInstructions(1).Contains("external recipients (verified Connector") &&
+               multiple.NotDeployablePlan && multiple.ClientInstructions(1).Contains("DO NOT SWITCH") &&
+               local.ServerForClient == "127.0.0.1" &&
                local.ClientInstructions(0).Contains("НА ЭТОМ Linux") &&
                local.DisplayMailbox == "(not selected)" &&
                local.ClientInstructions(1).Contains("127.0.0.1") &&
@@ -152,7 +255,7 @@ internal sealed class PreserveMailFlowPreview : Control
         BackColor = Color.White;
         Width = 890;
         Height = 286;
-        MinimumSize = new Size(640, 250);
+        MinimumSize = new Size(280, 240);
         Margin = new Padding(0, 8, 0, 12);
         Font = new Font("Segoe UI", 10f);
         AccessibleRole = AccessibleRole.Graphic;
@@ -181,6 +284,11 @@ internal sealed class PreserveMailFlowPreview : Control
         var graphics = e.Graphics;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.Clear(BackColor);
+        if (Width < 790)
+        {
+            DrawCompact(graphics);
+            return;
+        }
         var previous = graphics.Save();
         graphics.ScaleTransform(Width / 890f, Height / 286f);
         try
@@ -191,33 +299,47 @@ internal sealed class PreserveMailFlowPreview : Control
             graphics.DrawPath(border, background);
             DrawText(graphics,
                 language switch { 1 => "PRESERVE EXISTING MAIL · LIVE PREVIEW", 2 => "דואר קיים נשמר · תצוגה חיה",
-                    _ => "PRESERVE EXISTING MAIL · СХЕМА ИЗ ВВЕДЁННЫХ ДАННЫХ" },
+                    _ => "СОХРАНЕНИЕ ПОЧТЫ · СХЕМА ИЗ ВВЕДЁННЫХ ДАННЫХ" },
                 new RectangleF(18, 12, 670, 23), 11, UiTheme.Navy, bold: true);
             DrawText(graphics, language switch { 1 => "NOT DEPLOYED", 2 => "טרם הותקן",
                 _ => "НЕ ПОДТВЕРЖДЕНО" }, new RectangleF(699, 12, 170, 23), 9, UiTheme.Muted);
 
-            DrawCard(graphics, 18, 48, false, language switch
-                { 1 => "EXISTING APPLICATIONS", 2 => "יישומים קיימים", _ => "СУЩЕСТВУЮЩИЕ ПРОГРАММЫ" },
+            DrawCard(graphics, 18, 48, false, state.KeepExisting
+                ? language switch { 1 => "EXISTING APPLICATIONS", 2 => "יישומים קיימים", _ => "СУЩЕСТВУЮЩИЕ ПРОГРАММЫ" }
+                : language switch { 1 => "EXISTING APPS · RISK", 2 => "יישומים קיימים", _ => "СТАРЫЕ ПРОГРАММЫ · РИСК" },
                 language switch { 1 => "Existing SMTP settings", 2 => "הגדרות קודמות", _ => "Старые настройки SMTP" },
-                language switch { 1 => "No client changes", 2 => "ללא שינוי", _ => "Без изменений" });
+                state.KeepExisting
+                    ? language switch { 1 => "No client changes", 2 => "ללא שינוי", _ => "Без изменений" }
+                    : language switch { 1 => "Replacement requires approval", 2 => "נדרש אישור", _ => "Замена требует согласия" });
             DrawArrow(graphics, 270, 97, UiTheme.Muted);
             DrawCard(graphics, 322, 48, false, language switch
                 { 1 => "PRIMARY MAIL SERVER", 2 => "שרת הדואר הקיים", _ => "ДЕЙСТВУЮЩИЙ MTA" },
-                state.ExistingStatus,
-                language switch { 1 => "Current config and queue", 2 => "תצורה ותור קיימים",
-                    _ => "Текущие маршруты и очередь" });
+                state.ExistingStatusLocalized(language),
+                state.KeepExisting
+                    ? language switch { 1 => "Current config and queue", 2 => "תצורה ותור קיימים",
+                        _ => "Текущие маршруты и очередь" }
+                    : language switch { 1 => "Backup before changes", 2 => "גיבוי לפני שינויים",
+                        _ => "Перед заменой — backup" });
             DrawArrow(graphics, 574, 97, UiTheme.Muted);
             DrawCard(graphics, 626, 48, false, language switch
                 { 1 => "CURRENT DESTINATIONS", 2 => "יעדים קיימים", _ => "ПРЕЖНЯЯ ДОСТАВКА" },
-                language switch { 1 => "Unchanged routing", 2 => "ניתוב ללא שינוי", _ => "Без изменения маршрутов" },
-                language switch { 1 => "No rerouting to M365", 2 => "אין העברה אוטומטית",
-                    _ => "Не переключаем в 365" });
+                state.KeepExisting
+                    ? language switch { 1 => "Unchanged routing", 2 => "ניתוב ללא שינוי", _ => "Без изменения маршрутов" }
+                    : language switch { 1 => "REPLACE: extra review", 2 => "דרוש אישור נוסף",
+                        _ => "ЗАМЕНА: нужна проверка" },
+                state.KeepExisting
+                    ? language switch { 1 => "No rerouting to M365", 2 => "אין העברה אוטומטית",
+                        _ => "Не переключаем в 365" }
+                    : language switch { 1 => "Service interruption risk", 2 => "סיכון להפרעה",
+                        _ => "Риск простоя почты" });
 
             DrawCard(graphics, 18, 148, true, language switch
                 { 1 => "NEW APPLICATIONS", 2 => "יישומים חדשים", _ => "НОВЫЕ ПРИЛОЖЕНИЯ" },
                 state.ServerForClient + ":" + state.DisplayPort,
-                state.LocalOnly ? (language == 1 ? "Localhost only" : "Только этот Linux") :
-                    (language == 1 ? "Trusted networks only" : "Только доверенные сети"));
+                state.LocalOnly ? language switch
+                    { 1 => "Localhost only", 2 => "רק שרת Linux זה", _ => "Только этот Linux" } :
+                    language switch { 1 => "Trusted networks only", 2 => "רשתות מהימנות בלבד",
+                        _ => "Только доверенные сети" });
             DrawArrow(graphics, 270, 197, UiTheme.Accent);
             DrawCard(graphics, 322, 148, true, language switch
                 { 1 => "ISOLATED POSTFIX", 2 => "Postfix נפרד", _ => "ОТДЕЛЬНЫЙ POSTFIX" },
@@ -226,20 +348,155 @@ internal sealed class PreserveMailFlowPreview : Control
                     _ => "Отдельная служба и порт" });
             DrawArrow(graphics, 574, 197, UiTheme.Accent);
             DrawCard(graphics, 626, 148, true,
-                state.NotDeployablePlan ? "M365 · NOT IMPLEMENTED" : "MICROSOFT 365",
-                state.NotDeployablePlan ? "PLANNED ROUTE" : state.DisplayMailbox,
+                state.MailRouteTitle,
+                state.MailRouteHintLocalized(language),
                 state.NotDeployablePlan
-                    ? (language == 1 ? "Do not switch clients" : "Не переключать клиентов")
-                    : (language == 1 ? "Recipient is preserved" : "Получатель сохраняется"));
+                    ? language switch { 1 => "PLAN ONLY · not deployable", 2 => "תכנון בלבד",
+                        _ => "ТОЛЬКО ПЛАН" }
+                    : state.TransportMode == "direct-send"
+                    ? language switch { 1 => "Internal recipients ONLY", 2 => "נמענים פנימיים",
+                        _ => "Только внутри M365" }
+                    : language switch { 1 => "Recipients preserved", 2 => "הנמען נשמר",
+                        _ => "Получатель сохраняется" });
 
-            DrawText(graphics, (language == 1 ? "Linux: " : "Linux: ") + state.DisplayHost +
-                "    |    Tenant: " + state.DisplayTenant,
+            DrawText(graphics, "Linux: " + state.DisplayHost +
+                "    |    " + (language switch { 0 => "Исходящий маршрут: ", 2 => "מסלול יוצא: ",
+                    _ => "Outbound: " }) + state.OutboundDescription,
                 new RectangleF(18, 251, 694, 20), 9, UiTheme.Muted);
             if (state.PublicRequested)
-                DrawText(graphics, language == 1 ? "PUBLIC SMTP: BLOCKED" : "PUBLIC SMTP: ЗАБЛОКИРОВАН",
+                DrawText(graphics, language switch {
+                    0 => "ПУБЛИЧНЫЙ SMTP: ЗАКРЫТ", 2 => "SMTP ציבורי: חסום",
+                    _ => "PUBLIC SMTP: BLOCKED" },
                     new RectangleF(697, 251, 180, 20), 8.6f, Color.FromArgb(154, 52, 49), bold: true);
         }
         finally { graphics.Restore(previous); }
+    }
+
+    // Narrow windows use readable vertical lanes rather than shrinking a
+    // wide diagram to 30–70% and losing all captions.
+    private void DrawCompact(Graphics g)
+    {
+        using var border = new Pen(UiTheme.Border, 1.1f);
+        using var background = Rounded(new RectangleF(1, 1, Width - 2, Height - 2), 10);
+        g.FillPath(Brushes.White, background);
+        g.DrawPath(border, background);
+        DrawText(g, language switch
+        {
+            0 => "СХЕМА ПОЧТОВЫХ МАРШРУТОВ", 2 => "תרשים מסלולי הדואר",
+            _ => "MAIL ROUTES · LIVE PREVIEW"
+        }, new RectangleF(15, 10, Width - 30, 22), 10.5f, UiTheme.Navy, bold: true);
+        DrawText(g, language switch
+        {
+            0 => "ПЛАН · НЕ ПОДТВЕРЖДЕНО", 2 => "תכנון בלבד · טרם אומת",
+            _ => "PLAN ONLY · NOT VERIFIED"
+        }, new RectangleF(15, 34, Width - 30, 17), 8.8f, UiTheme.Muted);
+        DrawText(g, language switch
+        {
+            0 => "ТЕКУЩАЯ ПОЧТА", 2 => "דואר קיים", _ => "EXISTING MAIL"
+        }, new RectangleF(16, 57, Width - 32, 18), 10, UiTheme.Navy, bold: true);
+        DrawCompactCard(g, 80, false,
+            language switch { 0 => "ПРОГРАММЫ", 2 => "יישומים קיימים", _ => "APPLICATIONS" },
+            language switch { 0 => "Старые настройки SMTP", 2 => "הגדרות SMTP קודמות",
+                _ => "Existing SMTP settings" },
+            state.KeepExisting ? (language switch { 0 => "Без изменений",
+                2 => "ללא שינוי", _ => "Preserved" }) : (language switch {
+                0 => "Изменение требует согласия", 2 => "נדרש אישור לשינוי", _ => "Approval required" }));
+        DrawCompactArrow(g, 153, UiTheme.Navy);
+        DrawCompactCard(g, 163, false,
+            language switch { 0 => "ОСНОВНОЙ MTA", 2 => "שרת הדואר הקיים", _ => "PRIMARY MTA" },
+            state.ExistingStatusLocalized(language),
+            language switch { 0 => "Действующая конфигурация и очередь",
+                2 => "תצורה ותור קיימים", _ => "Current configuration and queue" });
+        DrawCompactArrow(g, 236, UiTheme.Navy);
+        DrawCompactCard(g, 246, false,
+            language switch { 0 => "ДОСТАВКА", 2 => "יעדים קיימים", _ => "DELIVERY" },
+            state.KeepExisting ? (language switch { 0 => "Без смены маршрутов",
+                2 => "ללא שינוי ניתוב", _ => "Routes unchanged" }) : (language switch {
+                0 => "Замена требует проверки", 2 => "שינוי מחייב בדיקה", _ => "Review replacement" }),
+            language switch { 0 => "Существующая почта остаётся",
+                2 => "הדואר הקיים נשמר", _ => "Existing mail preserved" });
+        DrawText(g, language switch
+        {
+            0 => "НОВЫЙ МАРШРУТ", 2 => "מסלול חדש", _ => "NEW ROUTE"
+        }, new RectangleF(16, 330, Width - 32, 18), 10, UiTheme.Accent, bold: true);
+        DrawCompactCard(g, 351, true,
+            language switch { 0 => "НОВЫЕ ПРОГРАММЫ", 2 => "יישומים חדשים", _ => "NEW APPLICATIONS" },
+            state.ServerForClient + ":" + state.DisplayPort,
+            state.LocalOnly ? (language switch { 0 => "Только на этом Linux",
+                2 => "רק בשרת Linux זה", _ => "Local Linux only" }) :
+                (language switch { 0 => "Только доверенные сети",
+                2 => "רשתות מאושרות בלבד", _ => "Trusted subnets only" }));
+        DrawCompactArrow(g, 424, UiTheme.Accent);
+        DrawCompactCard(g, 434, true,
+            language switch { 0 => "ОТДЕЛЬНЫЙ POSTFIX", 2 => "Postfix נפרד",
+                _ => "ISOLATED POSTFIX" },
+            language switch { 0 => "Своя очередь", 2 => "תור דואר נפרד",
+                _ => "Independent queue" },
+            language switch { 0 => "Отдельный порт и служба",
+                2 => "יציאה ושירות נפרדים", _ => "Separate port and service" });
+        DrawCompactArrow(g, 507, UiTheme.Accent);
+        DrawCompactCard(g, 517, true,
+            state.MailRouteTitle, state.MailRouteHintLocalized(language),
+            state.NotDeployablePlan ? (language switch {
+                0 => "Только план — отправка запрещена",
+                2 => "תכנון בלבד, שליחה חסומה", _ => "Plan only, cannot send" }) :
+                state.TransportMode == "direct-send" ? (language switch {
+                0 => "Только внутренние адресаты", 2 => "נמענים פנימיים",
+                _ => "Internal only" }) : (language switch {
+                0 => "Получатели сохраняются", 2 => "הנמענים נשמרים",
+                _ => "Recipients preserved" }));
+        DrawWrappedText(g, (language switch {
+            0 => "Исходящий маршрут: ", 2 => "מסלול יוצא: ", _ => "Outbound route: " }) +
+            state.OutboundDescription, new RectangleF(16, 603, Width - 32, 39),
+            8.8f, UiTheme.Muted);
+    }
+
+    private void DrawCompactCard(Graphics g, float y, bool newLane,
+        string heading, string main, string detail)
+    {
+        float width = Math.Max(240, Width - 30);
+        var rect = new RectangleF(15, y, width, 69);
+        using var background = new SolidBrush(newLane
+            ? Color.FromArgb(242, 249, 246) : Color.FromArgb(246, 248, 251));
+        using var outline = new Pen(newLane ? Color.FromArgb(175, 207, 193) : UiTheme.Border, 1);
+        using var path = Rounded(rect, 8);
+        g.FillPath(background, path);
+        g.DrawPath(outline, path);
+        using var side = new SolidBrush(newLane ? UiTheme.Accent : UiTheme.Navy);
+        g.FillRectangle(side, rect.Left + 1, y + 9, 3, 52);
+        var color = newLane ? UiTheme.Accent : UiTheme.Muted;
+        DrawText(g, heading, new RectangleF(27, y + 4, width - 19, 15),
+            8.2f, color, bold: true);
+        DrawWrappedText(g, main, new RectangleF(27, y + 20, width - 19, 31),
+            10f, UiTheme.Navy, bold: true);
+        DrawText(g, detail, new RectangleF(27, y + 52, width - 19, 13),
+            8.2f, UiTheme.Muted);
+    }
+
+    private void DrawCompactArrow(Graphics g, float y, Color color)
+    {
+        using var pen = new Pen(color, 1.8f) { StartCap = LineCap.Round };
+        float x = Width / 2f;
+        g.DrawLine(pen, x, y, x, y + 5);
+        using var brush = new SolidBrush(color);
+        g.FillPolygon(brush, [new PointF(x - 4, y + 4),
+                              new PointF(x + 4, y + 4),
+                              new PointF(x, y + 9)]);
+    }
+
+    private static void DrawWrappedText(Graphics g, string value, RectangleF bounds,
+        float fontSize, Color color, bool bold = false)
+    {
+        using var font = new Font("Segoe UI", fontSize,
+            bold ? FontStyle.Bold : FontStyle.Regular);
+        using var brush = new SolidBrush(color);
+        using var format = new StringFormat(StringFormat.GenericDefault)
+        {
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.LineLimit,
+            LineAlignment = StringAlignment.Center
+        };
+        g.DrawString(value, font, brush, bounds, format);
     }
 
     private void DrawCard(Graphics g, int x, int y, bool newLane, string heading,
@@ -256,7 +513,8 @@ internal sealed class PreserveMailFlowPreview : Control
         g.FillRectangle(side, x + 1, y + 12, 3, 59);
         DrawText(g, heading, new RectangleF(x + 11, y + 8, 223, 18), 8.4f,
             newLane ? UiTheme.Accent : UiTheme.Muted, bold: true);
-        DrawText(g, main, new RectangleF(x + 11, y + 30, 223, 25), 11, UiTheme.Navy, bold: true);
+        DrawWrappedText(g, main, new RectangleF(x + 11, y + 27, 223, 31),
+            10.2f, UiTheme.Navy, bold: true);
         DrawText(g, detail, new RectangleF(x + 11, y + 61, 223, 16), 8.4f, UiTheme.Muted);
     }
 

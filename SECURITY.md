@@ -17,6 +17,7 @@ Microsoft Entra permissions, Exchange Online RBAC, Postfix mail flow and Linux s
 - The structured diagnostic report contains only allowlisted operation names,
   result categories, UTC timestamps and the app version. It does not contain
   server names, login names, mailbox addresses, raw logs, tokens or keys.
+- Signed Stable releases must pass the exact-publisher Authenticode and PE architecture gate; unsigned Preview hashes are not signatures.
 - GitHub releases are *not automatically installed* in this preview; the
   updater currently performs read-only checks and opens the release page.
 
