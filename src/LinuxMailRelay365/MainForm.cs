@@ -3060,14 +3060,14 @@ internal sealed partial class MainForm : Form
         WindowState = FormWindowState.Normal;
         int captured = 0;
 
-        void Screenshot(string filename, bool bottom = false)
+        void Screenshot(string filename, bool scrollToBottom = false)
         {
             // Capture the real top OR bottom of the scrollable step using
             // actual WinForms widgets. Never synthesize labels or status.
             pageHost.AutoScrollPosition = Point.Empty;
             pageHost.PerformLayout();
             PerformLayout();
-            if (bottom && pageHost.VerticalScroll.Visible)
+            if (scrollToBottom && pageHost.VerticalScroll.Visible)
                 pageHost.AutoScrollPosition = new Point(0, pageHost.VerticalScroll.Maximum);
             Refresh();
             Application.DoEvents();
@@ -3119,7 +3119,7 @@ internal sealed partial class MainForm : Form
             step = index;
             RenderPage();
             Screenshot(names[index]);
-            Screenshot("0" + (index + 1) + "-wizard-bottom.png", bottom: true);
+            Screenshot("0" + (index + 1) + "-wizard-bottom.png", scrollToBottom: true);
             if (index == 2)
             {
                 // The operator can choose Connector/Direct Send BEFORE
@@ -3148,7 +3148,7 @@ internal sealed partial class MainForm : Form
                 finally { routingLoading = false; }
                 RenderPage();
                 Screenshot("04-postfix-xoauth2-multi-plan.png");
-                Screenshot("04-postfix-xoauth2-multi-bottom.png", bottom: true);
+                Screenshot("04-postfix-xoauth2-multi-bottom.png", scrollToBottom: true);
                 routingLoading = true;
                 try { oauthSenderMode.SelectedIndex = 0; }
                 finally { routingLoading = false; }
