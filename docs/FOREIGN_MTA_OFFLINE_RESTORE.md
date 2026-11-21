@@ -107,3 +107,38 @@ and disaster recovery tests are signed off.
 Ubuntu/Debian Sendmail may install `/etc/mail` as `smmta:smmsp` mode `2755` while retaining root-owned regular `.cf` and map files. Configuration-only BACKUP/VERIFY on Linux now recognizes that **exact package-managed directory** only after matching the registered `smmta`/`smmsp` account and group; `/etc`, nested configuration directories, each file, Exim and all other paths keep their original root-only checks. Symlinks, unsafe writable modes, unknown owners, unexpected file links, incomplete reads, and unbounded snapshots remain hard refusals. No mail queue, message, service or SMTP configuration is changed by Backup.
 
 A separate **write gate** keeps Exim/Sendmail file Restore disabled for non-root-owned Sendmail `/etc/mail`: `restore-foreign-mta-config.py --apply` refuses before any file modification, even when the snapshot can be read and verified. This is intentional. The Windows Wizard still has no Exim/Sendmail Restore action. Disposable Ubuntu CI exercises packaged Sendmail backup, SHA-256 verify and unchanged configuration/services and the offline unit suite confirms unsafe paths and restore refusal. Do not treat package ownership alone as recoverability proof; a full VM backup and a service/queue/SELinux restoration drill are still required.
+
+
+## Sendmail package snapshot v2 (native backup, not Restore)
+
+The first real Ubuntu 24.04 package Backup test correctly refused to treat
+all `/etc/mail` entries as root-owned regular files. The metadata-only
+diagnostic showed native `smmta:smmsp` generated `.db` files, service-owned
+`m4`, `smrsh` and `tls` directories, and package-created `aliases`,
+`smrsh/procmail` and `smrsh/mail.local` symbolic links.
+
+Sendmail root-only Backup now emits **snapshot manifest v2** (v1 Exim and
+legacy backups remain supported), with SHA-256-verified TAR members for
+only readable regular files, including narrowly identified package-owned
+generated `*.db` files directly under `/etc/mail`. A separate JSON
+object map records directory owner/mode and allowlisted symlink targets
+**as metadata only**. The code never follows those symlinks, reads targets
+outside the allowlist, recursively walks them or copies external binaries.
+Unknown links, unknown owners, writable files/directories, unexpected
+extra objects or inventory drift still cause refusal. Snapshot contents
+remain root-owned mode 0600 on the Linux host and can contain credentials.
+
+`--verify` validates TAR regular files, manifest metadata and the archive
+digest; `--preview-recovery` compares file and object metadata without
+replacing files. **V2 snapshots cannot be applied by Restore or flattened
+by --export-offline**. That prevents incomplete recovery that silently
+discards symlinks, permissions or service-account metadata. Use a manual
+system backup and explicit package-aware restore procedure until real VM
+recovery and security tests are approved. Existing v1 Exim functionality
+is unchanged.
+
+Native CI must show `SENDMAIL_BACKUP_LAB_SNAPSHOT=verified_root_only`,
+`SENDMAIL_BACKUP_LAB_V2_RESTORE=blocked_as_designed` and unchanged file
+hashes/daemon state before this block can be marked accepted. The dedicated
+offline v2 unit suite includes tampered TAR, altered objects, symlink drift
+and blocked export/restore cases.
