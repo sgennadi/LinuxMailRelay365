@@ -203,6 +203,9 @@ PY
     's/^FOREIGN_BACKUP_OFFLINE_DIRECTORY=//p')"
   [[ "$export_dir" =~ ^/var/backups/linuxmailrelay365-foreign-mta/sendmail/\.offline-recovery-[A-Za-z0-9_-]{8,20}$ ]] || exit 1
   GITHUB_ACTIONS=true python3 tests/assert_sendmail_v2_export.py "$export_dir" "$backup_id"
+  # Metadata and allowlisted links are reconstructed only inside a private
+  # throwaway recovery rehearsal tree under /var/backups, never /etc/mail.
+  GITHUB_ACTIONS=true python3 tests/rehearse_sendmail_v2_metadata.py "$export_dir" "$backup_id"
   test "$(native_config_digest)" = "$before_native" || {
     echo "EL_SENDMAIL_NATIVE_CONFIG_CHANGED_BY_BACKUP" >&2; exit 1;
   }
