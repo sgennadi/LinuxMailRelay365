@@ -23,6 +23,7 @@ class FcontextTests(unittest.TestCase):
             mock.patch.object(m, "ACTIVE", root / "active.json"),
             mock.patch.object(m, "LOCK", root / "operation.lock"),
             mock.patch.object(m, "environment", return_value=None),
+            mock.patch.object(m, "unit_stopped", return_value=None),
         ]
         for patcher in self.patches:
             patcher.start()
