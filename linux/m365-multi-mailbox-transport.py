@@ -224,6 +224,65 @@ def deliver(sender, recipient, sasl_login, sasl_method, map_hash, raw,
     return True
 
 
+
+def acceptance_single(request_data, expected_sha, auditor,
+                      gid=None, ingress_checker=ingress_ready, transport=None):
+    """One explicitly reviewed DIRECT M365 SMTP acceptance, not Postfix ingress.
+
+    Root-only orchestration must reserve run ID before asking this unprivileged
+    helper to submit. No caller-supplied headers or message body are accepted.
+    """
+    if not isinstance(request_data, bytes) or not 1 <= len(request_data) <= 4096:
+        raise Denied("invalid_acceptance_request_size")
+    def distinct_pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise Denied("duplicated_acceptance_request_field")
+            result[key] = value
+        return result
+    try:
+        request = json.loads(request_data.decode("ascii"),
+                             object_pairs_hook=distinct_pairs)
+    except (UnicodeError, ValueError, TypeError):
+        raise Denied("invalid_acceptance_request")
+    if not isinstance(request, dict) or set(request) != {
+            "sender", "recipient", "role", "run_id"}:
+        raise Denied("invalid_acceptance_request_fields")
+    sender, recipient = request["sender"], request["recipient"]
+    role, run_id = request["role"], request["run_id"]
+    if (not isinstance(sender, str) or not auditor.EMAIL.fullmatch(sender) or
+            not isinstance(recipient, str) or not auditor.EMAIL.fullmatch(recipient) or
+            role not in ("internal", "external") or
+            not isinstance(run_id, str) or not re.fullmatch(r"[a-f0-9]{32}", run_id)):
+        raise Denied("invalid_acceptance_sender_recipient_or_run_id")
+    sender = sender.casefold()
+    domain = sender.rsplit("@", 1)[1]
+    recipient_domain = recipient.rsplit("@", 1)[1].casefold()
+    if ((role == "internal" and recipient_domain != domain) or
+            (role == "external" and recipient_domain == domain)):
+        raise Denied("acceptance_recipient_role_does_not_match_sender_domain")
+    if gid is None:
+        gid = require_service_account()
+    rows = secure_runtime_map(auditor, gid, expected_sha)
+    selected = [row for row in rows if row[1] == sender and row[2] == sender]
+    if len(selected) != 1:
+        raise Denied("acceptance_sender_not_in_reviewed_runtime_map")
+    ingress_checker(rows, auditor)
+    if transport is None:
+        if str(TRANSPORT.parent) not in sys.path:
+            sys.path.insert(0, str(TRANSPORT.parent))
+        transport = load_source(TRANSPORT, "lmr365_oauth_acceptance")
+    config = transport.load_config(selected[0][3])
+    if config.get("mailbox", "").casefold() != sender:
+        raise Unverified("acceptance_selected_identity_changed")
+    # Only the transport's built-in fixed test content is sent. No arbitrary
+    # mail body, Sender, From, Bcc or attachment is accepted via this API.
+    transport.submit_acceptance_message(config, {
+        "recipient": recipient, "role": role, "run_id": run_id})
+    return True
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--recipient", default="")
@@ -232,10 +291,19 @@ def main(argv=None):
     parser.add_argument("--sasl-method", default="")
     parser.add_argument("--expected-map-sha256", required=True)
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument("--acceptance-test", action="store_true")
     opts = parser.parse_args(argv)
     try:
         gid = require_service_account()
         auditor = load_source(AUDITOR, "lmr365_multi_policy")
+        if opts.acceptance_test:
+            if (opts.check_only or opts.recipient or opts.envelope_sender or
+                    opts.sasl_login or opts.sasl_method):
+                raise Denied("acceptance_has_no_postfix_sender_arguments")
+            acceptance_single(sys.stdin.buffer.read(4097),
+                              opts.expected_map_sha256, auditor, gid=gid)
+            print("2.0.0 Direct M365 SMTP acceptance; mailbox delivery unverified")
+            return 0
         rows = secure_runtime_map(auditor, gid, opts.expected_map_sha256)
         ingress_ready(rows, auditor)
         if opts.check_only:
