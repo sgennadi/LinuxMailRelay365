@@ -180,6 +180,77 @@ def event(fd, stage, status):
     os.fsync(fd)
 
 
+def inspect_ledger(run_id, root=ROOT):
+    """Read-only run recovery after SSH loss. This never retries SMTP."""
+    if os.geteuid() != 0 or not isinstance(run_id, str) or \
+            not RUN.fullmatch(run_id):
+        raise Refused("root_and_exact_run_id_required")
+    if root.is_symlink() or not root.is_dir():
+        raise Refused("acceptance_ledger_not_available")
+    parent = root.parent
+    for folder in (parent, root):
+        info = folder.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or \
+                info.st_mode & 0o022:
+            raise Refused("untrusted_acceptance_ledger_directory")
+    if stat.S_IMODE(root.lstat().st_mode) != 0o700:
+        raise Refused("unsafe_acceptance_ledger_permissions")
+    path = root / (run_id + ".jsonl")
+    try:
+        before = path.lstat()
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or
+                before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600 or
+                not 1 <= before.st_size <= 4096):
+            raise Refused("untrusted_acceptance_ledger_file")
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(fd)
+            if ((info.st_dev, info.st_ino, info.st_size, info.st_mode,
+                 info.st_uid, info.st_gid) !=
+                (before.st_dev, before.st_ino, before.st_size, before.st_mode,
+                 before.st_uid, before.st_gid)):
+                raise Refused("acceptance_ledger_changed_before_read")
+            raw = os.read(fd, 4097)
+            after = os.fstat(fd)
+            if (len(raw) != info.st_size or after.st_mtime_ns != before.st_mtime_ns or
+                    after.st_ctime_ns != before.st_ctime_ns):
+                raise Refused("acceptance_ledger_changed_during_read")
+        finally:
+            os.close(fd)
+    except FileNotFoundError:
+        raise Refused("test_not_reserved_no_submission_evidence")
+    try:
+        if not raw.endswith(b"\n"):
+            raise Refused("partial_acceptance_ledger_record")
+        events = [json.loads(line, object_pairs_hook=unique_pairs)
+                  for line in raw.decode("ascii").splitlines()]
+    except (UnicodeError, ValueError, TypeError):
+        raise Refused("invalid_acceptance_ledger_records")
+    expected = [
+        ("run", "reserved"),
+        ("internal", "attempted"),
+        ("internal", "smtp_accepted_not_inbox_verified"),
+        ("external", "attempted"),
+        ("external", "smtp_accepted_not_inbox_verified"),
+        ("run", "smtp_submissions_complete"),
+    ]
+    if not events or len(events) > len(expected):
+        raise Refused("invalid_acceptance_ledger_length")
+    for i, record in enumerate(events):
+        if (not isinstance(record, dict) or set(record) != {"stage", "status"} or
+                (record["stage"], record["status"]) != expected[i]):
+            raise Refused("invalid_acceptance_ledger_transition")
+    state = [
+        "reserved_no_send_recorded",
+        "internal_attempted_result_uncertain",
+        "internal_smtp_accepted_external_not_attempted",
+        "external_attempted_result_uncertain",
+        "both_smtp_accepted_completion_not_recorded",
+        "smtp_submissions_complete_not_inbox_verified",
+    ][len(events) - 1]
+    return {"run_id": run_id, "state": state, "events": len(events)}
+
+
 def send_reviewed(plan, approved_sha, confirm, runner=subprocess.run,
                   restorer=None, refresh=None, ledger_factory=private_ledger):
     if (confirm != CONFIRM or not isinstance(approved_sha, str) or
@@ -251,10 +322,24 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--plan", action="store_true")
     group.add_argument("--apply", action="store_true")
+    group.add_argument("--status", action="store_true")
+    parser.add_argument("--run-id", default="")
     parser.add_argument("--approve-sha256", default="")
     parser.add_argument("--confirm", default="")
     args = parser.parse_args(argv)
     try:
+        if args.status:
+            if args.approve_sha256 or args.confirm:
+                raise Refused("status_has_no_send_approval")
+            result = inspect_ledger(args.run_id)
+            print("MULTI_ACCEPTANCE_RUN_ID=" + result["run_id"])
+            print("MULTI_ACCEPTANCE_LEDGER_STATE=" + result["state"])
+            print("MULTI_ACCEPTANCE_EVENT_COUNT=" + str(result["events"]))
+            print("MULTI_ACCEPTANCE_RECIPIENT_INBOX_VERIFIED=no")
+            print("MULTI_ACCEPTANCE_AUTOMATIC_RETRY=no")
+            return 0
+        if args.run_id:
+            raise Refused("run_id_is_inside_reviewed_request")
         if args.plan and (args.approve_sha256 or args.confirm):
             raise Refused("approval_not_allowed_during_review")
         request = read_request()
