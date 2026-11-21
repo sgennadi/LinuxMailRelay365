@@ -341,6 +341,9 @@ internal sealed partial class MainForm : Form
         }
         acceptanceInternalRecipient.TextChanged += (_, _) => ResetDeliveryAcceptance();
         acceptanceExternalRecipient.TextChanged += (_, _) => ResetDeliveryAcceptance();
+        multiTestSender.TextChanged += (_, _) => ResetMultiMailboxTestReview();
+        multiTestInternal.TextChanged += (_, _) => ResetMultiMailboxTestReview();
+        multiTestExternal.TextChanged += (_, _) => ResetMultiMailboxTestReview();
         hardwareCutoverTarget.Items.AddRange([
             "Isolated sidecar (existing primary Postfix untouched)",
             "Primary Postfix XOAUTH2 transport (advanced)"
@@ -2305,6 +2308,38 @@ internal sealed partial class MainForm : Form
                             RestoreMultiMailboxRouteOfflineAsync, false, "rotate-ccw", "multi-mailbox-restore");
                         if (!string.IsNullOrEmpty(multiMailboxRestoreSummary))
                             AddLine(page, UiTheme.Text(multiMailboxRestoreSummary));
+
+                        AddLine(page, UiTheme.Text(T(
+                            "Приёмочные тесты Microsoft 365: два РЕАЛЬНЫХ письма через выбранный mailbox. " +
+                            "Этот прямой тест проверяет OAuth/XOAUTH2, но НЕ проверяет локальную авторизацию SMTP AUTH через Postfix. " +
+                            "Запускайте только для согласованных тестовых ящиков; подтверждение доставки выполняется отдельно.",
+                            "Microsoft 365 ACCEPTANCE: two REAL messages using the selected mailbox's OAuth identity. " +
+                            "This direct test checks OAuth/XOAUTH2 but NOT local Postfix SMTP AUTH ownership. " +
+                            "Use consented test inboxes only; verify delivery separately.",
+                            "שתי הודעות אמת דרך תיבת OAuth נבחרת. נדרש אימות משלוח בנפרד.")));
+                        AddField(page, T("Разрешённый M365 mailbox отправителя",
+                            "Approved M365 sender mailbox",
+                            "תיבת שולח מאושרת ב-M365"), multiTestSender);
+                        AddField(page, T("Внутренний тестовый адрес (домен отправителя)",
+                            "Internal test inbox (sender's domain)",
+                            "תיבת בדיקה פנימית"), multiTestInternal);
+                        AddField(page, T("Внешний тестовый адрес (другой домен)",
+                            "External test inbox (different domain)",
+                            "תיבת בדיקה חיצונית"), multiTestExternal);
+                        AddAction(page, T(
+                            "6. Проверить план двух писем M365 (ничего не отправлять)",
+                            "6. Preview two M365 messages (send nothing)",
+                            "6. בדיקת שתי הודעות ללא שליחה"),
+                            PreviewMultiMailboxDeliveryTestAsync, false, "check", "multi-mailbox-delivery-plan");
+                        if (reviewedMultiTestSha is not null)
+                            AddAction(page, T(
+                                "7. Подтвердить ДВА реальных тестовых письма...",
+                                "7. Confirm TWO real test messages...",
+                                "7. אישור שליחת שתי הודעות אמיתיות"),
+                                ApplyMultiMailboxDeliveryTestAsync, false, "shield", "multi-mailbox-delivery-apply");
+                        if (!string.IsNullOrEmpty(multiTestSummary))
+                            AddLine(page, UiTheme.Text(multiTestSummary));
+
 
                         AddLine(page, UiTheme.Text(string.IsNullOrEmpty(multiMailboxRouteSummary)
                             ? T("Маршрут не активирован. Отправка Multi-mailbox в этом мастере остаётся заблокирована.",
