@@ -317,7 +317,7 @@ jobs:
           if ($testProcess.ExitCode -ne 0) { throw "Windows self-test failed with exit code $($testProcess.ExitCode)." }
           $files = @(Get-ChildItem ./out/win-x64 -Filter '*.exe')
           if ($files.Count -ne 1) { throw 'Expected exactly one EXE in publish output.' }
-      - name: Test published Preview 23 -> candidate Preview 24 backup and rollback (disposable)
+      - name: Test published Preview 24 -> candidate Preview 25 backup and rollback (disposable)
         shell: pwsh
         timeout-minutes: 8
         env:
@@ -416,7 +416,7 @@ jobs:
           if-no-files-found: error
 
   preview-release:
-    name: Publish tested Preview 24 (unsigned)
+    name: Publish tested Preview 25 (unsigned)
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature/private-smtp-auth-tls'
     needs:
       - linux-tests
@@ -436,8 +436,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          grep -Fxq '    <Version>0.1.0-preview.24</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
-          grep -Fq 'internal const string Version = "0.1.0-preview.24";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fxq '    <Version>0.1.0-preview.25</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.0-preview.25";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
       - uses: actions/download-artifact@v6
         with:
           name: LinuxMailRelay365-preview-builds
@@ -482,7 +482,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='v0.1.0-preview.24'
+          tag='v0.1.0-preview.25'
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::notice::Preview already published. Bump version to publish another update."
             exit 0
@@ -496,5 +496,5 @@ jobs:
             out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
             out/published/preview-artifact-digests.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "LinuxMailRelay365 v0.1.0-preview.24" --prerelease \
-            --notes "UNSIGNED TEST PREVIEW 24, NOT Stable/production approved. Adds Microsoft 365 Objects Manager with tenant-bound read-only App Registration, Enterprise App, public OAuth certificate credential, Connector and Exchange RBAC inventory. New managed Connectors receive tenant ownership markers; approved Enable/Disable/Rename/Delete require reviewed live SHA, typed confirmation and postcheck. Legacy unlabeled Connectors and Entra/RBAC objects remain read-only. CI validates Preview 23 to 24 replacement and rollback. Live tenant acceptance, code signing and Stable are outstanding."
+            --title "LinuxMailRelay365 v0.1.0-preview.25" --prerelease \
+            --notes "UNSIGNED TEST PREVIEW 25, NOT Stable/production approved. Adds guarded Multi-mailbox XOAUTH2 Stage, SHA256 Preview, offline Postfix apply/restore, per-SASL-login mailbox ownership, root-issued 120-second ingress proof and two-recipient operator-consented direct Microsoft 365 SMTP acceptance. Fixed test message bodies, root-owned per-run ledger, no automatic resend, and read-only last-attempt recovery. Existing EOP routes are protected by reciprocal owner locks. CI verifies published Preview 24 -> Preview 25 candidate replacement/rollback, Windows x64/ARM64 and isolated Linux tests. No real tenant/inbox delivery, physical TPM or SELinux Enforcing acceptance, 200%-DPI hardware QA, signed Stable, or production authorization is claimed."
