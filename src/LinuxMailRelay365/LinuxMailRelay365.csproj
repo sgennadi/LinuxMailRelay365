@@ -32,6 +32,7 @@
     <EmbeddedResource Include="../../linux/install-postfix-m365-xoauth2.sh" LogicalName="LinuxMailRelay365.linux.install.sh" />
     <EmbeddedResource Include="../../linux/m365_xoauth2_transport.py" LogicalName="LinuxMailRelay365.linux.transport.py" />
     <EmbeddedResource Include="../../linux/manage-multi-mailbox-postfix.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-postfix.py" />
+    <EmbeddedResource Include="../../linux/restore-multi-mailbox-postfix.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-restore.py" />
     <EmbeddedResource Include="../../linux/m365-multi-mailbox-transport.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-transport.py" />
     <EmbeddedResource Include="../../linux/refresh-multi-mailbox-proof.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-ingress-proof.py" />
     <EmbeddedResource Include="../../linux/audit-oauth-sender-map.py" LogicalName="LinuxMailRelay365.linux.oauth-sender-map-audit.py" />
