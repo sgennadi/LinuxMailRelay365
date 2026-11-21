@@ -68,6 +68,10 @@ def port_type(port, text):
         match = re.match(r"^(\S+)\s+tcp\s+(.+)$", line)
         if not match:
             continue
+        # Default fallback portcon entries overlap more-specific rules.
+        # All other overlapping labels are still treated as conflicts.
+        if match.group(1) in ("reserved_port_t", "unreserved_port_t"):
+            continue
         for token in re.split(r"[\s,]+", match.group(2).strip()):
             part = re.fullmatch(r"(\d+)(?:-(\d+))?", token)
             if part and int(part.group(1)) <= port <= int(part.group(2) or part.group(1)):

@@ -30,6 +30,14 @@ class RhelSelinuxDoctorTests(unittest.TestCase):
         self.assertEqual(doctor.port_label(2530,rules),"unmapped")
         self.assertEqual(doctor.port_label(8443,rules),"other_label")
         self.assertEqual(doctor.port_label(46500,None),"unknown")
+        defaults = ("reserved_port_t tcp 1-1023\n"
+                    "unreserved_port_t tcp 1024-65535\n")
+        self.assertEqual(doctor.port_label(25, rules + defaults +
+                         "smtp_port_t tcp 25\n"), "smtp_port_t")
+        self.assertEqual(doctor.port_label(2525, rules + defaults), "smtp_port_t")
+        self.assertEqual(doctor.port_label(46500, rules + defaults), "unmapped")
+        self.assertEqual(doctor.port_label(2525, rules + defaults +
+                         "http_port_t tcp 2525\n"), "other_label")
 
     def test_file_context_hints_never_claim_policy_access(self):
         ctx=b"system_u:object_r:postfix_spool_t:s0\x00"

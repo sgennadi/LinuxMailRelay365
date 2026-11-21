@@ -61,6 +61,11 @@ def port_label(port, data):
         m = re.match(r'^(\S+)\s+tcp\s+(.+)$', line)
         if not m:
             continue
+        # The SELinux base policy includes broad default portcon ranges.
+        # These are shadows, not a conflict with a specific smtp_port_t.
+        # Any OTHER explicit type remains a conflict and blocks approval.
+        if m.group(1) in ("reserved_port_t", "unreserved_port_t"):
+            continue
         for chunk in re.split(r'[\s,]+', m.group(2).strip()):
             val = re.fullmatch(r'(\d+)(?:-(\d+))?', chunk)
             if val and int(val.group(1)) <= port <= int(val.group(2) or val.group(1)):

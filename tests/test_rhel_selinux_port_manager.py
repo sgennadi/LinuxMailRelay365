@@ -29,6 +29,13 @@ class RhelPortManagerTests(unittest.TestCase):
         self.assertEqual(mod.port_type(2526, raw), "smtp_port_t")
         self.assertEqual(mod.port_type(8080, raw), "other_type")
         self.assertEqual(mod.port_type(46500, raw), "unmapped")
+        defaults = ("reserved_port_t tcp 1-1023\n"
+                    "unreserved_port_t tcp 1024-65535\n")
+        self.assertEqual(mod.port_type(25, raw + defaults), "smtp_port_t")
+        self.assertEqual(mod.port_type(2526, raw + defaults), "smtp_port_t")
+        self.assertEqual(mod.port_type(46500, raw + defaults), "unmapped")
+        self.assertEqual(mod.port_type(46500, raw + defaults +
+                         "http_port_t tcp 46500\n"), "other_type")
 
     def test_must_not_change_system_for_unknown_or_conflicting_type(self):
         with patch.object(mod, "environment", return_value="enforcing"), \

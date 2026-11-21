@@ -64,6 +64,10 @@ def port_type(port, raw):
         match = re.match(r"^(\S+)\s+tcp\s+(.+)$", line)
         if not match:
             continue
+        # Ignore only policy-wide fallback port labels. A real conflicting
+        # specific label is never silently accepted or overwritten.
+        if match.group(1) in ("reserved_port_t", "unreserved_port_t"):
+            continue
         for field in re.split(r"[\s,]+", match.group(2)):
             segment = re.fullmatch(r"([0-9]+)(?:-([0-9]+))?", field)
             if segment and int(segment.group(1)) <= port <= int(segment.group(2) or segment.group(1)):

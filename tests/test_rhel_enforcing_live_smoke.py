@@ -23,6 +23,11 @@ class EnforcingProbeContracts(unittest.TestCase):
         self.assertEqual(smoke.port_type(2526, mapping), "other_or_unmapped")
         self.assertEqual(smoke.port_type(2525, mapping+"http_port_t tcp 2525\n"),
                          "other_or_unmapped")
+        defaults = ("reserved_port_t tcp 1-1023\n"
+                    "unreserved_port_t tcp 1024-65535\n")
+        self.assertEqual(smoke.port_type(25, mapping + defaults), "smtp_port_t")
+        self.assertEqual(smoke.port_type(2525, mapping + defaults), "smtp_port_t")
+        self.assertEqual(smoke.port_type(46500, mapping + defaults), "other_or_unmapped")
 
     def test_selftest_on_older_python_and_invalid_ports(self):
         proc = subprocess.run([sys.executable, str(SCRIPT), "--self-test"],
