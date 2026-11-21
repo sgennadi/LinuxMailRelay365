@@ -44,6 +44,8 @@ def content_from_snapshot(mta, snapshot_id, base, uid):
     folder = base / mta / snapshot_id
     info = backup.verify(folder, mta, uid)
     manifest = json.loads(backup.stable_file(folder / "manifest.json", uid)[1])
+    if manifest["version"] != 1:
+        raise Refused("package_snapshot_restore_requires_manual_metadata_review")
     contents = {}
     with tarfile.open(str(folder / "config.tar.gz"), "r:gz") as archive:
         for member in archive:
