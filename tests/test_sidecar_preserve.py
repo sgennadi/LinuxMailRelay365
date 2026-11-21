@@ -52,6 +52,10 @@ class IsolatedSidecarTests(unittest.TestCase):
         self.assertIn('--smtp-port', s)
         self.assertIn('printf', s)
         self.assertIn('PRIMARY_POSTFIX_CONFIG_UNCHANGED=yes', s)
+        self.assertIn('SIDECAR_ERROR=selinux_enforcing_sidecar_not_integration_verified', s)
+        self.assertIn('SIDECAR_ERROR=rhel_selinux_state_not_verified', s)
+        self.assertLess(s.index('SIDECAR_ERROR=selinux_enforcing_sidecar_not_integration_verified'),
+                        s.index('install -d -o root -g root -m 0755 /etc/linuxmailrelay365'))
         for blocked in (
             "postconf -e ", "systemctl reload postfix", "systemctl restart postfix",
             "systemctl stop postfix.service", "systemctl start postfix.service",

@@ -71,6 +71,25 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
   exit 0
 fi
 [ "$(id -u)" -eq 0 ] || { echo 'Root privileges required.' >&2; exit 1; }
+# SELinux Enforcing on RHEL-family systems is not yet accepted for this
+# isolated XOAUTH2 sidecar (custom queue, pipe transport, socket labels).
+# Refuse BEFORE staging any configuration, key, queue, or systemd unit.
+selinux_status="$(getenforce 2>/dev/null || true)"
+if [ -r /sys/fs/selinux/enforce ] && [ "$(cat /sys/fs/selinux/enforce)" = 1 ]; then
+  selinux_status=Enforcing
+fi
+if [ "$selinux_status" = Enforcing ]; then
+  echo 'SIDECAR_ERROR=selinux_enforcing_sidecar_not_integration_verified' >&2
+  exit 3
+fi
+osid="$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | head -n 1 | tr -d '"')" || true
+case "$osid" in
+  rhel|ol|rocky|almalinux|centos)
+    if [ "$selinux_status" != Disabled ]; then
+      echo 'SIDECAR_ERROR=rhel_selinux_state_not_verified' >&2
+      exit 3
+    fi ;;
+esac
 [ -n "$TENANT" ] && [ -n "$CLIENT" ] && [ -n "$MAILBOX" ] || {
   echo 'Tenant, Client and Mailbox required for installation.' >&2; exit 2;
 }

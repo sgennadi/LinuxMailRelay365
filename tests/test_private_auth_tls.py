@@ -80,6 +80,8 @@ class PrivateSmtpAuthTlsTests(unittest.TestCase):
             'passwd_file_path = /etc/linuxmailrelay365/smtp-auth/passwd',
         ):
             self.assertIn(token, s)
+        self.assertLess(s.index('AUTH_TLS_ERROR=selinux_enforcing_not_verified'),
+                        s.index('exec 9>/run/linuxmailrelay365-sidecar-auth.lock'))
         for forbidden in (
             'systemctl restart postfix.service',
             'systemctl stop postfix.service',
