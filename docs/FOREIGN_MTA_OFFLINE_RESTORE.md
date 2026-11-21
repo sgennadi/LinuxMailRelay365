@@ -167,3 +167,22 @@ Microsoft 365 routing are untouched. Only copy data out of this private
 directory using an independently reviewed recovery procedure; it may contain
 secrets. The native Ubuntu and RPM smoke checks require verified file hashes,
 private modes and no materialized symlinks; this is NOT disaster-recovery signoff.
+
+
+### Sendmail v2 isolated metadata recovery rehearsal (CI only)
+
+A separate `tests/rehearse_sendmail_v2_metadata.py` fixture now reconstructs
+files, original UID/GID and mode bits, and **exact known package link text**
+inside a disposable root-private directory under `/var/backups` (never under
+`/etc` or the primary Sendmail spool). In contrast, normal `--export-offline`
+continues to create *no symlinks*. Only the CI rehearsal temporarily
+materializes allowlisted links behind a 0700 root-owned parent, checks
+ownership, file digests, metadata, then removes the temporary tree. It
+checks source files and SMTP service/queue state remain unchanged.
+
+This does **not** validate a real Sendmail service startup, systemd units,
+queue recovery, TLS certificates, SELinux label restoration, macro
+regeneration, or Microsoft 365 delivery. The rehearsal explicitly requires
+root and `GITHUB_ACTIONS=true`, and is **not exposed as a GUI action**.
+Full production/VM backup restore and disaster recovery sign-off are still
+mandatory before introducing any live `/etc/mail` Restore operation.
