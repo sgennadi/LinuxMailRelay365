@@ -101,6 +101,7 @@ class ForeignMtaBackupTests(unittest.TestCase):
                    "LinuxMailRelay365.csproj").read_text()
         for fragment in ("BackupForeignMtaAsync", "ListForeignMtaBackupsAsync",
                          "VerifyForeignMtaBackupAsync", "RequirePostfixBackup",
+                         "PreviewForeignMtaRecoveryAsync", "ExportForeignMtaOfflineAsync",
                          'inspectedMail?.Mta == "postfix"',
                          "FOREIGN_BACKUP_RESTORE_ENABLED=no"):
             self.assertIn(fragment, source)

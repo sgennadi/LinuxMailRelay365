@@ -248,15 +248,19 @@ internal static class Program
             {
                 foreach (string mta in new[] { "exim", "sendmail" })
                 {
-                    foreach (string action in new[] { "backup", "list", "verify" })
+                    foreach (string action in new[] {
+                        "backup", "list", "verify", "preview-recovery", "export-offline" })
                     {
-                        string? id = action == "verify" ?
+                        string? id = action is ("verify" or "preview-recovery" or "export-offline") ?
                             "20261121T005501Z-abcdef012345" : null;
                         string bundle = EmbeddedAssets.BuildForeignMtaBackupBundle(mta, action, id);
                         if (!bundle.Contains("LMR365_FOREIGN_BACKUP", StringComparison.Ordinal) ||
                             !bundle.Contains("--mta " + mta, StringComparison.Ordinal) ||
                             !bundle.Contains("--" + action, StringComparison.Ordinal) ||
-                            bundle.Contains("--restore", StringComparison.Ordinal))
+                            bundle.Contains("--restore", StringComparison.Ordinal) ||
+                            (action == "export-offline" &&
+                             !bundle.Contains("EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT",
+                                 StringComparison.Ordinal)))
                             return false;
                     }
                 }
@@ -264,6 +268,8 @@ internal static class Program
                     ("postfix", "backup", (string?)null),
                     ("exim", "restore", (string?)null),
                     ("exim", "verify", (string?)null),
+                    ("exim", "preview-recovery", (string?)null),
+                    ("sendmail", "export-offline", (string?)null),
                     ("sendmail", "backup", (string?)"20261121T005501Z-abcdef012345"),
                     ("exim", "verify", (string?)"../../tmp")
                 })

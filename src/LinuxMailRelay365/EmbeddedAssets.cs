@@ -1232,17 +1232,22 @@ internal static class EmbeddedAssets
         string action, string? backupId = null)
     {
         if (mta is not ("exim" or "sendmail") ||
-            action is not ("backup" or "list" or "verify"))
+            action is not ("backup" or "list" or "verify" or
+                           "preview-recovery" or "export-offline"))
             throw new ArgumentException("Unsupported foreign MTA backup operation.");
-        if ((action == "verify") != (backupId is not null) ||
+        bool selected = action is ("verify" or "preview-recovery" or "export-offline");
+        if (selected != (backupId is not null) ||
             (backupId is not null && !Regex.IsMatch(backupId,
                 @"\A[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\z",
                 RegexOptions.CultureInvariant)))
-            throw new ArgumentException("Backup identifier is valid only for verification.");
+            throw new ArgumentException("A checked backup identifier is required for the selected operation.");
         string operation = action switch
         {
             "backup" => "--backup",
             "list" => "--list",
+            "preview-recovery" => "--preview-recovery " + backupId,
+            "export-offline" => "--export-offline " + backupId +
+                " --confirm EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT",
             _ => "--verify " + backupId
         };
         return "set -Eeuo pipefail\numask 077\n" +

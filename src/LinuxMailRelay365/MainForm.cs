@@ -2759,6 +2759,14 @@ internal sealed class MainForm : Form
                             "Verify archive SHA-256 and contents",
                             "אמת SHA-256 ותוכן הגיבוי"),
                             VerifyForeignMtaBackupAsync, false, "check", "foreign-backup-verify");
+                        AddAction(page, T("Сравнить текущую конфигурацию с архивом (без изменений)",
+                            "Compare active configuration with snapshot (read-only)",
+                            "השווה תצורה נוכחית לגיבוי ללא שינוי"),
+                            PreviewForeignMtaRecoveryAsync, false, "check", "foreign-recovery-preview");
+                        AddAction(page, T("Извлечь архив в отдельный защищённый каталог на Linux...",
+                            "Extract verified files to separate protected Linux directory...",
+                            "חלץ גיבוי לתיקייה מוגנת ונפרדת בלינוקס"),
+                            ExportForeignMtaOfflineAsync, false, "shield", "foreign-recovery-export");
                     }
                 }
                 else
@@ -5586,6 +5594,64 @@ internal sealed class MainForm : Form
             throw new InvalidDataException("Archive digest missing or selected MTA changed.");
         WriteLine("Primary " + mta + " archive " + id + " SHA256=" + sha.Groups[1].Value +
             " verified on Linux. Nothing restored.");
+    }
+
+    private async Task PreviewForeignMtaRecoveryAsync()
+    {
+        var endpoint = Endpoint();
+        string mta = ConfirmedForeignBackupMta();
+        if (foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta ||
+            foreignBackupSelector.SelectedItem is not string id)
+            throw new InvalidOperationException("Re-list verified snapshots and select one for this MTA.");
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaBackupBundle(mta, "preview-recovery", id),
+            TimeSpan.FromMinutes(3));
+        response.EnsureSuccess();
+        if (!ForeignBackupReportOk(response.StdOut, mta, "recovery_preview_only"))
+            throw new InvalidDataException("Read-only recovery comparison report was incomplete.");
+        var state = System.Text.RegularExpressions.Regex.Match(response.StdOut,
+            @"(?m)^FOREIGN_BACKUP_CURRENT_CONFIG_MATCH=(identical|different|unverified)\r?$");
+        var sha = System.Text.RegularExpressions.Regex.Match(response.StdOut,
+            @"(?m)^FOREIGN_BACKUP_ARCHIVE_SHA256=([a-f0-9]{64})\r?$");
+        if (!state.Success || !sha.Success ||
+            foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta)
+            throw new InvalidDataException("Recovery preview was not bound to this host and archive.");
+        WriteLine("Read-only " + mta + " configuration comparison with backup " + id +
+            ": current=" + state.Groups[1].Value + ", archive SHA256=" +
+            sha.Groups[1].Value + ". No SMTP changes or Restore performed.");
+    }
+
+    private async Task ExportForeignMtaOfflineAsync()
+    {
+        var endpoint = Endpoint();
+        string mta = ConfirmedForeignBackupMta();
+        if (foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta ||
+            foreignBackupSelector.SelectedItem is not string id)
+            throw new InvalidOperationException("Re-list verified snapshots and select one for this MTA.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | Offline " + mta + " recovery export",
+            T("Будут извлечены файлы архива " + id +
+                  " в НОВЫЙ каталог root-only внутри /var/backups. Текущий /etc, почтовая очередь, службы и маршруты не меняются. Файлы могут содержать пароли! Самостоятельно проверьте восстановление на отдельной VM. Продолжить?",
+              "A NEW private, root-only folder under /var/backups will receive extracted files from snapshot " +
+                  id + ". Active /etc, MTA services, queues and routes are NOT changed. Extracted files may contain passwords. Validate recovery separately on a disposable VM. Proceed?",
+              "הגיבוי ייחלץ לתיקייה חדשה ומוגנת. אין שינוי בתצורה הפעילה או בשירותי הדואר."),
+            "EXTRACT VERIFIED MTA ARCHIVE")) return;
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaBackupBundle(mta, "export-offline", id),
+            TimeSpan.FromMinutes(5));
+        response.EnsureSuccess();
+        if (!ForeignBackupReportOk(response.StdOut, mta, "exported_offline_only"))
+            throw new InvalidDataException("Offline export did not return verified non-mutating status.");
+        var path = System.Text.RegularExpressions.Regex.Match(response.StdOut,
+            @"(?m)^FOREIGN_BACKUP_OFFLINE_DIRECTORY=(/var/backups/linuxmailrelay365-foreign-mta/" +
+            mta + @"/\.offline-recovery-[a-zA-Z0-9_-]{8,20})\r?$");
+        var sha = System.Text.RegularExpressions.Regex.Match(response.StdOut,
+            @"(?m)^FOREIGN_BACKUP_ARCHIVE_SHA256=([a-f0-9]{64})\r?$");
+        if (!path.Success || !sha.Success ||
+            foreignBackupListContext != SecurityOptionsStore.Identity(endpoint) + "|" + mta)
+            throw new InvalidDataException("Offline export directory or host check was not verified.");
+        WriteLine("Verified offline " + mta + " recovery files extracted on Linux: " +
+            path.Groups[1].Value + "; archive SHA256=" + sha.Groups[1].Value +
+            ". Active server unchanged. DO NOT copy secrets to Windows or start MTA with these files.");
     }
 
     private async Task BackupNowAsync()
