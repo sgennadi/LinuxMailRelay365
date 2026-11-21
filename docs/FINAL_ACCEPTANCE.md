@@ -63,6 +63,28 @@ deleted Connector is implemented. The manager does not remove Entra
 App Registration, Service Principal, OAuth keys, Exchange Management
 Scopes, role assignments, SMTP mailbox settings or policies.
 
+## After Preview 25 (Draft): Exim/Sendmail read-only recovery preflight
+
+The root-only `foreign-mta-config-backup.py --offline-preflight ID` now
+combines a verified root-only archive and current-config SHA comparison with
+bounded, fixed read-only probes of **systemd service state, Exim/Sendmail
+workers, server and client queues, and TCP listener ownership hints**.
+The GUI exposes this action only for a freshly inspected active matching
+Exim/Sendmail host with a selected verified archive. An unknown or failed
+utility, unreadable/dynamic state, active service, running MTA process,
+listener or nonempty queue produces a blocked/unknown result. No SMTP address,
+credential, message content, queue file or archive data is sent to Windows.
+
+Even when every status reads stopped/empty and the snapshot is verified,
+the sole non-blocked result is
+`offline_candidate_manual_recovery_only`. This does **not** enable
+Exim/Sendmail Restore or prove that the host is quiescent. External
+certificate keys, systemd units, aliases, uncommon spool paths, socket
+activation, local DNS/accepted domains, actual TLS trust and external M365
+delivery still require controlled recovery and smoke tests on a disposable VM.
+This new preflight exists in the **Draft branch after published Preview 25**;
+it was not included in the immutable Preview 25 release.
+
 ## Preview 23: Exim/Sendmail offline recovery preview and extraction
 
 On a verified Exim or Sendmail host, the Wizard may compare each root-only
