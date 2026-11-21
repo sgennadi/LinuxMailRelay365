@@ -629,6 +629,13 @@ def _export_sendmail_package_v2(directory, folder, manifest, accepted, owner_uid
                 if len(payload) > MAX_SINGLE:
                     raise Refused("package_export_member_too_large")
                 _write_private_export_file(final, payload, owner_uid)
+                # Verify the bytes BACK from the private export, not only the
+                # TAR input. Never claim success after an incomplete write.
+                exported_meta, exported_bytes = stable_file(final, owner_uid)
+                if (stat.S_IMODE(exported_meta.st_mode) != 0o600 or
+                        len(exported_bytes) != evidence["size"] or
+                        hashlib.sha256(exported_bytes).hexdigest() != evidence["sha256"]):
+                    raise Refused("private_export_readback_digest_mismatch")
         if seen != set(manifest["files"]):
             raise Refused("package_export_missing_regular_files")
 
