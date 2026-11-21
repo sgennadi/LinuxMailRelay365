@@ -188,6 +188,121 @@ class ForeignMtaBackupTests(unittest.TestCase):
         self.assertIn("confirmation_required", result.stderr)
         self.assertNotIn("OFFLINE_DIRECTORY=", result.stdout)
 
+    def test_offline_preflight_readonly_stop_process_listener_and_queue_evidence(self):
+        for mta in ("exim", "sendmail"):
+            with self.subTest(mta=mta), tempfile.TemporaryDirectory() as directory:
+                root, base, config = self.fixture(directory, mta)
+                archive_id, archive = snapshot.backup(
+                    mta, root=root, base=base, owner_uid=os.getuid())
+                before = {p.name: p.read_bytes() for p in config.iterdir()}
+                requested = []
+                def probe(args):
+                    requested.append(tuple(args))
+                    if args[:2] == ["systemctl", "show"]:
+                        name = args[-1]
+                        primary = name == ("exim.service" if mta == "exim"
+                                           else "sendmail.service")
+                        return (0, "LoadState={}\nActiveState=inactive\n".format(
+                            "loaded" if primary else "not-found"))
+                    if args[:2] == ["pgrep", "-x"]:
+                        return (1, "")
+                    if mta == "exim" and args == ["exim4", "-bpc"]:
+                        return (0, "0\n")
+                    if mta == "sendmail" and args in (
+                            ["sendmail", "-bp"], ["sendmail", "-Ac", "-bp"]):
+                        return (0, "Mail queue is empty\n")
+                    if args == ["ss", "-ltnp"]:
+                        return (0, "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n")
+                    raise AssertionError("unsafe preflight query: " + str(args))
+                status = snapshot.offline_recovery_preflight(
+                    mta, archive_id, root=root, base=base,
+                    owner_uid=os.getuid(), probe=probe)
+                self.assertEqual(status["gate"], "offline_candidate_manual_recovery_only")
+                self.assertEqual(status["queue"], "empty_reported")
+                self.assertEqual(status["service"], "stopped_declared")
+                self.assertEqual(status["processes"], "none_observed")
+                self.assertEqual(status["listener"], "none_observed")
+                self.assertEqual(status["current"], "identical")
+                self.assertEqual(status["archive_sha256"], archive["sha256"])
+                self.assertRegex(status["preflight_sha256"], r"^[a-f0-9]{64}$")
+                self.assertNotIn("never-output-this", str(status))
+                self.assertIn(("ss", "-ltnp"), requested)
+                self.assertEqual({p.name: p.read_bytes() for p in config.iterdir()}, before)
+
+    def test_offline_preflight_fails_closed_when_running_nonempty_or_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, base, _ = self.fixture(directory, "exim")
+            archive_id, _ = snapshot.backup("exim", root, base, os.getuid())
+            def fake(service="inactive", process=None, queue="0", listen="none"):
+                def probe(argv):
+                    if argv[:2] == ["systemctl", "show"]:
+                        return (0, "LoadState=loaded\nActiveState={}\n".format(service)
+                                if argv[-1] == "exim.service" else
+                                "LoadState=not-found\nActiveState=inactive\n")
+                    if argv[:2] == ["pgrep", "-x"]:
+                        return process if process is not None else (1, "")
+                    if argv == ["exim4", "-bpc"]:
+                        return (0, queue)
+                    if argv == ["ss", "-ltnp"]:
+                        if listen == "mta":
+                            return (0, 'LISTEN 0 100 0.0.0.0:25 0.0.0.0:* users:(("exim4",pid=1,fd=1))\n')
+                        if listen == "unverified":
+                            return None
+                        return (0, "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n")
+                    raise AssertionError(str(argv))
+                return probe
+            scenarios = [
+                ({"service": "active"}, "blocked_running"),
+                ({"service": "inactive", "process": (0, "1234\n")}, "blocked_running"),
+                ({"queue": "9\n"}, "blocked_nonempty_queue"),
+                ({"queue": "oops"}, "blocked_unverified"),
+                ({"listen": "mta"}, "blocked_running"),
+                ({"listen": "unverified"}, "blocked_unverified"),
+                ({"service": "failed"}, "blocked_unverified"),
+            ]
+            for choices, expect in scenarios:
+                with self.subTest(choices=choices):
+                    status = snapshot.offline_recovery_preflight(
+                        "exim", archive_id, root, base, os.getuid(),
+                        probe=fake(**choices))
+                    self.assertEqual(status["gate"], expect)
+                    self.assertEqual(status["snapshot_id"], archive_id)
+
+    def test_sendmail_client_queue_unknown_blocks_manual_restore_preflight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, base, _ = self.fixture(directory, "sendmail")
+            archive_id, _ = snapshot.backup("sendmail", root, base, os.getuid())
+            def probe(args):
+                if args[:2] == ["systemctl", "show"]:
+                    return (0, "LoadState=loaded\nActiveState=inactive\n"
+                            if args[-1] == "sendmail.service" else
+                            "LoadState=not-found\nActiveState=inactive\n")
+                if args[:2] == ["pgrep", "-x"]:
+                    return (1, "")
+                if args == ["ss", "-ltnp"]:
+                    return (0, "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n")
+                if args == ["sendmail", "-bp"]:
+                    return (0, "Mail queue is empty\n")
+                if args == ["sendmail", "-Ac", "-bp"]:
+                    return None
+                raise AssertionError(str(args))
+            value = snapshot.offline_recovery_preflight(
+                "sendmail", archive_id, root, base, os.getuid(), probe)
+            self.assertEqual(value["queue"], "unverified")
+            self.assertEqual(value["gate"], "blocked_unverified")
+
+    def test_gui_exposes_nonmutating_readonly_foreign_preflight(self):
+        form = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text()
+        assets = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text()
+        self.assertIn("PreflightForeignMtaRecoveryAsync", form)
+        self.assertIn('"offline-preflight"', form)
+        self.assertIn('"offline-preflight" => "--offline-preflight " + backupId', assets)
+        for key in ("FOREIGN_PREFLIGHT_SERVICE", "FOREIGN_PREFLIGHT_PROCESSES",
+                    "FOREIGN_PREFLIGHT_QUEUE", "FOREIGN_PREFLIGHT_LISTENER",
+                    "FOREIGN_PREFLIGHT_PLAN_SHA256", "FOREIGN_PREFLIGHT_GATE"):
+            self.assertIn(key, form)
+        self.assertIn("Manual recovery only.", form)
+
     def test_cli_restoration_and_nonroot_are_refused(self):
         source = PATH.read_text()
         self.assertNotIn("--restore", source)
