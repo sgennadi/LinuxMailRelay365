@@ -30,7 +30,8 @@ RECOVERY = Path("/var/backups/linuxmailrelay365-multi-oauth")
 LOCK = Path("/run/linuxmailrelay365-multi-oauth.lock")
 FILES = ("audit-oauth-sender-map.py", "audit-oauth-ingress.py",
          "m365_xoauth2_transport.py", "m365_hardware_signer.py",
-         "m365-multi-mailbox-transport.py")
+         "m365-multi-mailbox-transport.py",
+         "refresh-multi-mailbox-proof.py")
 CONFIRM = "INSTALL_MULTI_MAILBOX_OFFLINE"
 SHA = re.compile(r"\A[a-f0-9]{64}\Z")
 
