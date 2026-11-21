@@ -51,6 +51,9 @@ class FakeTransport:
         self.events.append(("send", config["mailbox"], recipient, raw))
         assert token == "fake-token-in-test-only"
 
+    def submit_acceptance_message(self, config, request):
+        self.events.append(("fixed-acceptance", config["mailbox"], request))
+
 
 class MultiMailboxTests(unittest.TestCase):
     def setUp(self):
@@ -127,6 +130,55 @@ class MultiMailboxTests(unittest.TestCase):
         with self.assertRaises(dispatch.Unverified):
             self.deliver()
         self.assertNotIn("token", [event[0] for event in self.transport.events])
+
+
+    def test_fixed_direct_acceptance_must_match_selected_mailbox_and_role(self):
+        for sender, role, recipient, identity in (
+                ("alice@example.org", "internal", "test@example.org", IDENTITY_A),
+                ("bob@example.org", "external", "test@outside.net", IDENTITY_B)):
+            payload = json.dumps({"sender": sender, "recipient": recipient,
+                                  "role": role, "run_id": "a" * 32}).encode("ascii")
+            self.assertTrue(dispatch.acceptance_single(
+                payload, MAP_HASH, auditor, gid=4242,
+                ingress_checker=self.ingress, transport=self.transport))
+            self.assertEqual(self.transport.events[-2], ("config", identity))
+            self.assertEqual(self.transport.events[-1][0:2],
+                             ("fixed-acceptance", sender))
+            self.assertEqual(self.transport.events[-1][2]["role"], role)
+        self.assertNotIn("token", [event[0] for event in self.transport.events])
+        self.assertNotIn("send", [event[0] for event in self.transport.events])
+
+    def test_direct_acceptance_rejects_forged_sender_and_unsafe_json(self):
+        requests = [
+            {"sender": "fake@example.org", "recipient": "test@outside.net",
+             "role": "external", "run_id": "a" * 32},
+            {"sender": "alice@example.org", "recipient": "test@outside.net",
+             "role": "internal", "run_id": "a" * 32},
+            {"sender": "alice@example.org", "recipient": "test@example.org",
+             "role": "external", "run_id": "a" * 32},
+            {"sender": "alice@example.org", "recipient": "test@outside.net",
+             "role": "external", "run_id": "BAD"},
+            {"sender": "alice@example.org", "recipient": "test@outside.net",
+             "role": "external", "run_id": "a" * 32, "message": "arbitrary"},
+        ]
+        for request in requests:
+            with self.subTest(request=request), self.assertRaises(dispatch.Denied):
+                dispatch.acceptance_single(
+                    json.dumps(request).encode("ascii"), MAP_HASH,
+                    auditor, gid=4242, ingress_checker=self.ingress,
+                    transport=self.transport)
+        dup = (b'{"sender":"alice@example.org","sender":"bob@example.org",'
+               b'"recipient":"test@outside.net","role":"external","run_id":"' +
+               b"a" * 32 + b'"}')
+        with self.assertRaises(dispatch.Denied):
+            dispatch.acceptance_single(dup, MAP_HASH, auditor, gid=4242,
+                ingress_checker=self.ingress, transport=self.transport)
+        with self.assertRaises(dispatch.Denied):
+            dispatch.acceptance_single(b"{" + b"a" * 5000, MAP_HASH,
+                auditor, gid=4242, ingress_checker=self.ingress,
+                transport=self.transport)
+        self.assertEqual(self.transport.events, [])
+        self.ingress.assert_not_called()
 
     def test_secure_map_pins_sha_and_refuses_send_as(self):
         self.map_patch.stop()  # Exercise the real parser and SHA gate, not setUp's delivery fixture.
