@@ -204,5 +204,33 @@ fi
 sudo systemctl start sendmail.service
 smoke
 echo "LMR365_SENDMAIL_VM_SYSTEMD_SECOND_START=passed"
+
+# The CI-only restoration test runs with all daemons stopped and all queues
+# empty. It performs ONE controlled comment edit to the root-owned .cf file,
+# proves preview drift, then atomically restores the archived bytes and
+# original SELinux label. It has no connection to production Restore code.
+sudo systemctl stop sendmail.service
+sudo systemctl stop sm-client.service >/dev/null 2>&1 || true
+! sudo systemctl is-active --quiet sendmail.service
+! sudo systemctl is-active --quiet postfix.service
+! sudo systemctl is-active --quiet sm-client.service
+backup_report="$(sudo python3 /usr/local/libexec/lmr365-kvm-sendmail-recovery/foreign-mta-config-backup.py \\
+  --mta sendmail --backup)"
+printf '%s\\n' "$backup_report" | grep -Fxq "FOREIGN_BACKUP_STATUS=verified"
+printf '%s\\n' "$backup_report" | grep -Fxq "FOREIGN_BACKUP_FORMAT=v2_package_metadata"
+backup_id="$(printf '%s\\n' "$backup_report" | sed -n 's/^FOREIGN_BACKUP_ID=//p')"
+[[ "$backup_id" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ ]] || {
+  echo "LMR365_SENDMAIL_VM_BACKUP_ID_INVALID"; exit 1;
+}
+sudo env GITHUB_ACTIONS=true python3 \\
+  /usr/local/libexec/lmr365-kvm-sendmail-recovery/rocky_vm_sendmail_stopped_config_restore.py \\
+  "$backup_id"
+sudo systemctl start sendmail.service
+smoke
+echo "LMR365_SENDMAIL_VM_RESTORED_SERVICE_START=passed"
+sudo systemctl stop sendmail.service
+sudo systemctl stop sm-client.service >/dev/null 2>&1 || true
+! sudo systemctl is-active --quiet sendmail.service
+echo "LMR365_SENDMAIL_VM_CONTROLLED_RESTORE=passed_offline_vm_only"
 echo "LMR365_SENDMAIL_VM_EXTERNAL_DELIVERY_TESTED=no"
 echo "LMR365_SENDMAIL_VM_PRODUCTION_RESTORE_TESTED=no"
