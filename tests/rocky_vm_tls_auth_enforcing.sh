@@ -28,7 +28,10 @@ if test "$mode" = --setup; then
   hash="$(openssl passwd -6 -stdin < "$secret")"
   printf '%s:{SHA512-CRYPT}%s\n' "lmr365-ci" "$hash" |
       sudo tee /etc/dovecot/lmr365-ci-passwd >/dev/null
-  sudo chmod 0600 /etc/dovecot/lmr365-ci-passwd
+  # Match the actual LinuxMailRelay365 installer: Dovecot's auth worker
+  # reads this file as the 'dovecot' group, not root. World access is denied.
+  sudo chown root:dovecot /etc/dovecot/lmr365-ci-passwd
+  sudo chmod 0640 /etc/dovecot/lmr365-ci-passwd
   sudo restorecon -F /etc/dovecot/lmr365-ci-passwd
   sudo install -d -m 0755 /var/lib/lmr365-ci-dovecot
   cat <<'CONF' | sudo tee /etc/dovecot/lmr365-ci-auth.conf >/dev/null
@@ -130,6 +133,10 @@ fi
 sudo systemctl is-active --quiet postfix.service
 sudo systemctl is-active --quiet lmr365-ci-auth.service
 sudo test -S /var/spool/postfix/private/auth
+test "$(sudo stat -c '%U:%G:%a' /etc/dovecot/lmr365-ci-passwd)" = "root:dovecot:640" || {
+  echo "LMR365_LAB_PASSFILE_DAC_INVALID"
+  exit 1
+}
 test "$(getenforce)" = Enforcing
 test "$(sudo postconf -h inet_interfaces)" = loopback-only
 test -z "$(sudo postconf -h relayhost)"
