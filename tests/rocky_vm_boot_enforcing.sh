@@ -198,6 +198,16 @@ ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash /home/ci/lmr365-tls-auth-ci.sh --verify'
 echo "LMR365_GUEST_AUTH_TLS_POST_REBOOT=verified"
 ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash /home/ci/lmr365-tls-auth-ci.sh --cleanup'
 echo "LMR365_GUEST_PORT_POLICY_RESTORE=verified_if_managed"
+
+# Positive independent Postfix service under Enforcing, with error-only
+# transport and no tenant/network delivery, separate from primary service.
+scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+    tests/rocky_vm_isolated_postfix_enforcing.sh \
+    ci@127.0.0.1:/home/ci/lmr365-positive-sidecar.sh
+ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    'bash /home/ci/lmr365-positive-sidecar.sh'
+echo "LMR365_GUEST_POSITIVE_ISOLATED_POSTFIX=verified_under_enforcing"
 echo "LMR365_GUEST_MICROSOFT365_DELIVERY_TESTED=no"
 echo "LMR365_GUEST_EXTERNAL_MAIL_DELIVERY_TESTED=no"
 

@@ -76,6 +76,22 @@ are compared before and after. This is a **negative safety test**: it does
 not claim that a complete custom sidecar can already be installed under
 Enforcing, nor does it contact Exchange Online.
 
+## Experimental isolated Postfix runtime under Enforcing (tenant-free)
+
+A separate non-production Rocky KVM acceptance now attempts a positive
+second Postfix instance with its own config, queue, data, systemd unit,
+and loopback TCP/2526. The fixture applies port labeling through the
+project's actual SHA-reviewed SELinux port manager and uses narrow
+SELinux file-context equivalences for secondary paths. All transport
+routes reject mail with error transport and empty queues; it only tests SMTP greeting,
+EHLO and QUIT, never sends SMTP MAIL FROM or DATA. Primary Postfix
+hashes, queues and port 25 must remain unchanged. The fixture tears down
+all guest-only state and port policy when finished.
+
+The outcome is experimental until a successful exact-HEAD KVM workflow
+proves it. It does not override the production installers' Enforcing
+refusal or prove Microsoft 365 delivery, TPM/OAuth/SMTP relay authorization.
+
 ## Offline SELinux policy packages in real Enterprise Linux containers
 
 Draft CI now installs the actual `selinux-policy-targeted`, `setools-console`,
