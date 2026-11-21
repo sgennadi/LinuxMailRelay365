@@ -224,6 +224,16 @@ class ForeignMtaRestoreTests(unittest.TestCase):
             with patch.object(restore.os.path, "lexists", return_value=False):
                 with self.assertRaisesRegex(restore.Refused, "native_mta_binary_missing"):
                     restore.trusted_native_tool("exim")
+            for mta, alternative in (
+                    ("sendmail", "/usr/sbin/exim4"),
+                    ("sendmail", "/usr/sbin/sendmail.postfix"),
+                    ("exim", "/usr/sbin/postfix")):
+                with self.subTest(mta=mta, alternative=alternative):
+                    with patch.object(restore.os.path, "lexists", return_value=True):
+                        with patch.object(restore.os.path, "realpath", return_value=alternative):
+                            with self.assertRaisesRegex(
+                                    restore.Refused, "native_mta_alternative_mismatch"):
+                                restore.trusted_native_tool(mta)
 
 
     def test_queue_listener_service_gates_block_before_safety_backup(self):

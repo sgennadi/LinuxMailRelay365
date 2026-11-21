@@ -122,9 +122,21 @@ def trusted_native_tool(mta):
         if not os.path.lexists(original):
             continue
         resolved = os.path.realpath(original)
-        if not resolved.startswith(("/usr/bin/", "/usr/sbin/", "/bin/",
-                                    "/sbin/", "/usr/lib/sendmail.")):
+        trusted_root = (resolved.startswith(
+            ("/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/")) or
+            resolved == "/usr/lib/sendmail")
+        if not trusted_root:
             raise Refused("native_mta_binary_outside_trusted_root")
+        native_name = os.path.basename(resolved)
+        native_match = (
+            native_name in ("exim", "exim4") or
+            native_name.startswith("exim4-daemon-")
+        ) if mta == "exim" else native_name in (
+            "sendmail", "sendmail.sendmail")
+        # A system sendmail alternative may resolve to Exim or Postfix.
+        # Never trust another MTA's -bt exit code as Sendmail validation.
+        if not native_match:
+            raise Refused("native_mta_alternative_mismatch")
         metadata = os.stat(resolved)
         if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or
                 metadata.st_mode & 0o022 or not metadata.st_mode & 0o111):
