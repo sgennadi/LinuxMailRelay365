@@ -256,6 +256,49 @@ class MultiMailboxTests(unittest.TestCase):
             with self.assertRaises(dispatch.Unverified):
                 dispatch.ingress_ready(ROWS, auditor)
 
+    def test_direct_acceptance_requires_root_owned_runuser_parent(self):
+        good = "Name:\trunuser\nUid:\t0\t0\t0\t0\n"
+        with mock.patch.object(dispatch.os, "getppid", return_value=345), \
+             mock.patch.object(dispatch.Path, "read_text", return_value=good):
+            self.assertTrue(dispatch.require_privileged_acceptance_parent())
+        for data in (
+                "Name:\tpython3\nUid:\t0\t0\t0\t0\n",
+                "Name:\trunuser\nUid:\t1000\t1000\t1000\t1000\n",
+                "Name:\trunuser\nUid:\t0\t0\t1000\t0\n",
+                "Name:\trunuser\n",
+                "Uid:\t0\t0\t0\t0\n",
+                "Name:\trunuser\nName:\trunuser\nUid:\t0\t0\t0\t0\n",
+                "Name:\trunuser\nUid:\t0\t0\t0\t0\nUid:\t0\t0\t0\t0\n"):
+            with self.subTest(proc_status=data), \
+                 mock.patch.object(dispatch.os, "getppid", return_value=345), \
+                 mock.patch.object(dispatch.Path, "read_text", return_value=data), \
+                 self.assertRaises(dispatch.Denied):
+                dispatch.require_privileged_acceptance_parent()
+        with mock.patch.object(dispatch.os, "getppid", return_value=1), \
+             self.assertRaises(dispatch.Denied):
+            dispatch.require_privileged_acceptance_parent()
+        with mock.patch.object(dispatch.os, "getppid", return_value=345), \
+             mock.patch.object(dispatch.Path, "read_text",
+                               side_effect=PermissionError("hidepid")), \
+             self.assertRaises(dispatch.Denied):
+            dispatch.require_privileged_acceptance_parent()
+
+    def test_direct_acceptance_main_blocks_untrusted_parent_before_stdin(self):
+        with mock.patch.object(dispatch, "require_service_account", return_value=4242), \
+             mock.patch.object(dispatch, "load_source", return_value=auditor), \
+             mock.patch.object(dispatch, "require_privileged_acceptance_parent",
+                               side_effect=dispatch.Denied("untrusted_parent")), \
+             mock.patch.object(dispatch, "acceptance_single") as send:
+            from contextlib import redirect_stderr
+            import io
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                result = dispatch.main(["--acceptance-test",
+                                        "--expected-map-sha256", MAP_HASH])
+            self.assertEqual(result, dispatch.EX_UNAVAILABLE)
+            send.assert_not_called()
+            self.assertIn("untrusted_parent", stderr.getvalue())
+
     def test_run_never_prints_token_sender_or_message_on_refusal(self):
         with mock.patch.object(dispatch, "require_service_account", return_value=4242), \
              mock.patch.object(dispatch, "load_source", return_value=auditor), \
