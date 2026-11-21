@@ -94,6 +94,26 @@ class MultiMailboxWizardRuntimeTests(unittest.TestCase):
         self.assertIn("LinuxMailRelay365.linux.multi-mailbox-ingress-proof.py", PROJECT)
         self.assertNotIn("systemctl start", RUNTIME_GUI)
 
+    def test_offline_restore_is_explicitly_reviewed_and_not_auto_started(self):
+        self.assertIn("PreviewMultiMailboxRestoreAsync, false", GUI)
+        self.assertIn("RestoreMultiMailboxRouteOfflineAsync, false", GUI)
+        self.assertIn('private async Task PreviewMultiMailboxRestoreAsync()', RUNTIME_GUI)
+        self.assertIn('private async Task RestoreMultiMailboxRouteOfflineAsync()', RUNTIME_GUI)
+        self.assertIn('reviewedMultiMailboxRestoreSha', RUNTIME_GUI)
+        self.assertIn('reviewedMultiMailboxRestoreBackupId', RUNTIME_GUI)
+        self.assertIn('reviewedMultiMailboxRestoreContext != context', RUNTIME_GUI)
+        self.assertIn('RESTORE MULTI MAILBOX OFFLINE', RUNTIME_GUI)
+        self.assertIn('BuildMultiMailboxRestoreBundle("preview")', RUNTIME_GUI)
+        self.assertIn('BuildMultiMailboxRestoreBundle("restore", sha, id)', RUNTIME_GUI)
+        self.assertIn('"MULTI_RESTORE_STATUS", @"\Arestored_offline_not_started\z"',
+                      RUNTIME_GUI)
+        self.assertIn('BuildMultiMailboxRestoreBundle(', ASSETS)
+        self.assertIn('RESTORE_MULTI_MAILBOX_OFFLINE', ASSETS)
+        self.assertIn('multi-mailbox-restore.py', PROJECT)
+        self.assertIn('restore-multi-mailbox-postfix.py', ASSETS)
+        self.assertNotIn('systemctl restart', RUNTIME_GUI)
+        self.assertNotIn('postfix reload', RUNTIME_GUI)
+
     def test_no_live_send_while_multi_selected(self):
         section = GUI.split("            case 4:", 1)[1].split(
             "        pageHost.ResumeLayout();", 1)[0]
