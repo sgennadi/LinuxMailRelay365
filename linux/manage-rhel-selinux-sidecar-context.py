@@ -186,6 +186,8 @@ def checked_tree():
     """Never restorecon recursively through symlinks or unbounded trees."""
     for _, dest in PATHS:
         path = Path(dest)
+        if any(parent.is_symlink() for parent in path.parents):
+            raise Refused("sidecar_ancestor_symlink_not_allowed")
         if not path.is_dir() or path.is_symlink():
             raise Refused("sidecar_path_missing_or_symlink")
         if path.lstat().st_uid not in (0, _postfix_uid()):
@@ -299,6 +301,7 @@ def relabel():
         if digest(before) != entry.get("after_sha"):
             raise Refused("selinux_policy_changed_since_apply")
         verify_custom(before, {dest for _, dest in PATHS}, entry["unrelated_sha"])
+        unit_stopped()
         checked_tree()
         for _, dest in PATHS:
             run(["restorecon", "-RF", dest])
