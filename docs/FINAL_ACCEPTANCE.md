@@ -41,6 +41,28 @@ trust and names, Exim ACL/routers/transports, Sendmail access maps, MTA
 queue preservation, RHEL SELinux Enforcing and actual Microsoft 365 delivery.
 Neither this inspection nor CI enables native Exim/Sendmail rewriting.
 
+## Microsoft 365 object inventory and managed Connector acceptance
+
+Read-only inventory uses an exact selected Tenant ID and optional exact
+Client ID; candidate names are NOT ownership evidence. It reports
+App Registration, Enterprise App, certificate metadata and candidate
+Exchange RBAC/Inbound Connectors without private keys or OAuth tokens.
+
+Write operations apply only to newly tenant-stamped OnPremises Connectors
+and require two PowerShell passes: Review (read-only inventory SHA) and
+Apply (fresh tenant/marker/state SHA check plus typed confirmation),
+followed by a live state readback. Enable/Disable are available; Rename
+and Delete require an already disabled Connector. The objects created
+before the marker was introduced are read-only in this release.
+
+Live acceptance must test mismatched tenant, missing marker, stale SHA,
+duplicate Connector name, permission failure, interrupted Graph/Exchange
+session, dependent multiple Linux hosts, Delete/Restore procedures and
+delivery to internal/external mailboxes. No automatic restoration of a
+deleted Connector is implemented. The manager does not remove Entra
+App Registration, Service Principal, OAuth keys, Exchange Management
+Scopes, role assignments, SMTP mailbox settings or policies.
+
 ## Preview 23: Exim/Sendmail offline recovery preview and extraction
 
 On a verified Exim or Sendmail host, the Wizard may compare each root-only

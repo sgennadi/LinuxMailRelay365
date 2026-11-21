@@ -2,6 +2,39 @@
 
 Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.23 — read-only Exim/Sendmail recovery comparison and protected offline extraction; NOT signed Stable or production-accepted.**
 
+## Microsoft 365 Objects Manager (development, after Preview 23)
+
+The Wizard now has an explicit cloud-object inventory view on the OAuth
+configuration page and in Advanced Connector options. With administrator
+Device Code sign-in it reads the **selected tenant** and, if an exact
+Client ID is provided or available in a local completed state, the
+corresponding App Registration, Enterprise Application, public OAuth
+certificate credential IDs and validity periods, candidate Exchange
+Management Scopes and SMTP role assignments. Connector inventory works
+without a Client ID. A familiar name or LMR365 prefix is a discovery
+hint, NOT proof that this tool created an object.
+
+**Managed Connector controls:** newly created tenant Connectors receive
+an exact tenant-bound Comment marker. Only OnPremises Connectors with
+the matching marker can be enabled, disabled, renamed or deleted from
+the object window. Changes require a separate fresh Exchange preview,
+SHA-256 fingerprint of the current live Connector inventory, an exact
+typed operator confirmation, tenant revalidation, and a live postcheck.
+Rename and Delete also require disabling the Connector first; Rename
+is restricted to the LinuxMailRelay365 name prefix. These actions can
+interrupt delivery from multiple Linux servers sharing one connector.
+
+**Objects created before tagging:** historical Connectors without the
+marker remain read-only. App Registrations, Service Principals, OAuth
+certificates and Exchange RBAC are currently read-only here; existing
+separate certificate addKey and application provisioning flows are
+unchanged. This preview does **not** perform cascading Entra/RBAC
+deletion or certify which Linux hosts depend on a cloud object.
+
+All report files are deleted after the Windows GUI parses them; no
+OAuth token, private key or certificate content is printed or exported.
+Live tenant tests and permissions acceptance are still outstanding.
+
 ## Preview 23: safe Exim/Sendmail offline recovery preparation
 
 After creating a verified root-only Exim/Sendmail snapshot, Windows Wizard
