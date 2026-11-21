@@ -221,6 +221,10 @@ echo "LMR365_GUEST_POSITIVE_ISOLATED_POSTFIX=verified_under_enforcing"
 # FINAL disposable guest acceptance: real native Sendmail service lifecycle.
 # Run only AFTER the primary Postfix + sidecar tests and their cleanup;
 # Sendmail may replace the default MTA provider, so never run this on a host.
+# Provision a short-lived root-only marker bound to this guest's boot ID;
+# the Sendmail test refuses to run without it and deletes it on exit.
+ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    "sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-sendmail-vm && sudo sh -c 'cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-sendmail-vm'"
 scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
     tests/rocky_vm_sendmail_systemd_enforcing.sh \
