@@ -33,13 +33,21 @@ def refuse(reason):
 def verify_disposable():
     if os.geteuid() != 0 or os.environ.get("GITHUB_ACTIONS") != "true":
         refuse("CI_ROOT_ONLY")
-    os_release = Path("/etc/os-release").read_text()
-    if not (re.search(r'(?m)^ID=rocky$', os_release)
-            and re.search(r'(?m)^VERSION_ID="?9\.9"?$', os_release)
-            and Path("/proc/1/comm").read_text().strip() == "systemd"
-            and socket.gethostname().split(".")[0] == "rocky-selinux-ci"
-            and Path("/sys/fs/selinux/enforce").read_text().strip() == "1"):
-        refuse("WRONG_GUEST_OR_SELINUX")
+    distro = {}
+    for row in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+        if row.startswith(("ID=", "VERSION_ID=")):
+            key, value = row.split("=", 1)
+            if key in distro:
+                refuse("DUPLICATE_OS_RELEASE_ID")
+            distro[key] = value.strip().strip('"').strip("'")
+    if distro.get("ID") != "rocky" or distro.get("VERSION_ID") != "9.9":
+        refuse("UNEXPECTED_ROCKY_GUEST_VERSION")
+    if Path("/proc/1/comm").read_text().strip() != "systemd":
+        refuse("NOT_SYSTEMD_GUEST")
+    if socket.gethostname().split(".")[0] != "rocky-selinux-ci":
+        refuse("UNEXPECTED_CI_GUEST_HOSTNAME")
+    if Path("/sys/fs/selinux/enforce").read_text().strip() != "1":
+        refuse("SELINUX_NOT_ENFORCING")
     st = CI_MARKER.lstat()
     if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0
             or st.st_nlink != 1 or stat.S_IMODE(st.st_mode) != 0o600
