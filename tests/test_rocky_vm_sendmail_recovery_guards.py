@@ -5,7 +5,11 @@ Does not touch /etc/mail or start any daemon. Tests parsing and root guards.
 import importlib.util
 from pathlib import Path
 import os
+import re
+import stat
+import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +18,55 @@ spec = importlib.util.spec_from_file_location(
     str(ROOT / "tests/rocky_vm_sendmail_stopped_config_restore.py"))
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
+
+
+reboot_spec = importlib.util.spec_from_file_location(
+    "lmr365_kvm_recovery_reboot_guards",
+    str(ROOT / "tests/rocky_vm_sendmail_post_reboot_check.py"))
+reboot = importlib.util.module_from_spec(reboot_spec)
+reboot_spec.loader.exec_module(reboot)
+
+
+class PostRebootReadOnlyGuardTests(unittest.TestCase):
+    def test_nonroot_reboot_probe_refuses_without_host_inspection(self):
+        with mock.patch.object(reboot.os, "geteuid", return_value=1000):
+            with self.assertRaisesRegex(RuntimeError, "ROOT_DISPOSABLE_CI_REQUIRED"):
+                reboot.verify_guest()
+
+    def test_root_without_ci_confirmation_refuses(self):
+        with mock.patch.object(reboot.os, "geteuid", return_value=0):
+            with mock.patch.dict(reboot.os.environ, {"GITHUB_ACTIONS": "false"}):
+                with self.assertRaisesRegex(RuntimeError, "ROOT_DISPOSABLE_CI_REQUIRED"):
+                    reboot.verify_guest()
+
+    def test_symlinked_snapshot_identity_refused_before_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source"
+            source.write_text("20261121T005501Z-abcdef012345\\n", encoding="ascii")
+            link = Path(td) / "identity"
+            link.symlink_to(source)
+            module = SimpleNamespace(ID=re.compile(
+                r"^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$"))
+            with mock.patch.object(reboot, "ID_FILE", link):
+                with self.assertRaisesRegex(RuntimeError, "SNAPSHOT_ID_NOT_ROOT_PRIVATE"):
+                    reboot.snapshot_id_from_root_file(module)
+
+    def test_wrong_snapshot_identity_is_rejected_without_archive_reads(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "identity"
+            path.write_text("../etc/mail\\n", encoding="ascii")
+            os.chmod(path, 0o600)
+            module = SimpleNamespace(ID=re.compile(
+                r"^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$"))
+            original_lstat = path.lstat
+            def root_owned_lstat():
+                st = original_lstat()
+                return SimpleNamespace(st_mode=st.st_mode, st_uid=0,
+                                       st_nlink=1, st_size=st.st_size)
+            with mock.patch.object(reboot, "ID_FILE", path):
+                with mock.patch.object(path, "lstat", side_effect=root_owned_lstat):
+                    with self.assertRaisesRegex(RuntimeError, "SNAPSHOT_ID_INVALID"):
+                        reboot.snapshot_id_from_root_file(module)
 
 
 class DisposableRecoveryGuardTests(unittest.TestCase):
