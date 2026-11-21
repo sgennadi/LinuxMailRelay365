@@ -570,16 +570,16 @@ def _private_export_parent(target, components, owner_uid):
     return dest
 
 
-def _write_private_export_file(path, contents, owner_uid):
-    if not isinstance(contents, bytes):
-        raise Refused("invalid_export_payload")
+def _write_private_export_file(path, contents, owner_uid, maximum=MAX_MANIFEST):
+    if not isinstance(contents, bytes) or len(contents) > maximum:
+        raise Refused("invalid_or_oversized_export_payload")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(str(path), flags, 0o600)
     with os.fdopen(fd, "wb") as output:
         output.write(contents)
         output.flush()
         os.fsync(output.fileno())
-    safe_regular(path, owner_uid, mode=0o600, maximum=MAX_MANIFEST)
+    safe_regular(path, owner_uid, mode=0o600, maximum=maximum)
 
 
 def _export_sendmail_package_v2(directory, folder, manifest, accepted, owner_uid):
@@ -633,7 +633,8 @@ def _export_sendmail_package_v2(directory, folder, manifest, accepted, owner_uid
                     raise Refused("package_export_digest_mismatch")
                 if len(payload) > MAX_SINGLE:
                     raise Refused("package_export_member_too_large")
-                _write_private_export_file(final, payload, owner_uid)
+                _write_private_export_file(final, payload, owner_uid,
+                                           maximum=MAX_SINGLE)
                 # Verify the bytes BACK from the private export, not only the
                 # TAR input. Never claim success after an incomplete write.
                 exported_meta, exported_bytes = stable_file(final, owner_uid)
