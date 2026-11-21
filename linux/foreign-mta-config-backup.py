@@ -120,9 +120,9 @@ def selected_files(mta, root=ROOT, owner_uid=0):
                             raise Refused("duplicate_configuration_path")
                         entries[relative] = path
         elif stat.S_ISREG(st.st_mode) and name in MANDATORY[mta]:
-            safe_regular(source, owner_uid)
-            entries[name] = source
-            found += 1
+            # Exim/Sendmail primary configuration roots must be directories.
+            # A file in their place is not a valid complete MTA snapshot.
+            raise Refused("primary_mta_config_root_not_directory")
         elif stat.S_ISREG(st.st_mode):
             safe_regular(source, owner_uid)
             entries[name] = source
@@ -138,8 +138,11 @@ def selected_files(mta, root=ROOT, owner_uid=0):
 def safe_backup_base(base, owner_uid=0):
     # In the real invocation the path is fixed, never a user-supplied option.
     if base == BASE:
-        for path in (Path("/var"), Path("/var/backups")):
-            safe_dir(path, owner_uid)
+        safe_dir(Path("/var"), owner_uid)
+        backups_parent = Path("/var/backups")
+        if not backups_parent.exists() and not backups_parent.is_symlink():
+            backups_parent.mkdir(mode=0o700)
+        safe_dir(backups_parent, owner_uid)
     base.mkdir(mode=0o700, parents=True, exist_ok=True)
     safe_dir(base, owner_uid)
 
@@ -275,7 +278,15 @@ def backup(mta, root=ROOT, base=BASE, owner_uid=0):
 
 
 def listed(mta, base=BASE, owner_uid=0):
-    directory = archive_folder(base, mta, owner_uid)
+    if mta not in ALLOWED:
+        raise Refused("invalid_mta")
+    if not base.exists() and not base.is_symlink():
+        return []
+    safe_dir(base, owner_uid)
+    directory = base / mta
+    if not directory.exists() and not directory.is_symlink():
+        return []
+    safe_dir(directory, owner_uid)
     results = []
     for entry in sorted(directory.iterdir(), key=lambda p: p.name):
         if not ID.fullmatch(entry.name):

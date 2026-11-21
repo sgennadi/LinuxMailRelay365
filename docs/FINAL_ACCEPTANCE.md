@@ -41,6 +41,31 @@ trust and names, Exim ACL/routers/transports, Sendmail access maps, MTA
 queue preservation, RHEL SELinux Enforcing and actual Microsoft 365 delivery.
 Neither this inspection nor CI enables native Exim/Sendmail rewriting.
 
+## Preview 22: primary Exim/Sendmail configuration archive, no restore
+
+The Backup & Restore step now splits Postfix and non-Postfix primary MTA
+operations. The primary Postfix backup/restore controls are visible only
+after matching Postfix discovery. For an active, matching Exim or Sendmail
+and inspected Linux hostname, the GUI offers **Create + verify archive**,
+**List verified archives**, and **Verify SHA-256 and contents**. The matching
+SSH identity is checked before every operation. No secondary transport
+or cross-MTA Restore is allowed.
+
+The protected archive is stored only under
+`/var/backups/linuxmailrelay365-foreign-mta/{exim,sendmail}/ID` as root-only
+0600 files in a 0700 directory. A manifest binds the archive SHA-256 and
+every regular-file SHA-256. Backups use a fixed /etc allowlist, reject
+symlinks, non-root-owned or group-writable files, and cap size and count.
+A completely verified archive is atomically published. Listing does not
+create directories. Snapshots can include SMTP credentials, so archive
+contents are NEVER copied into Windows. This is a **configuration-only**
+backup: no queue, external certificate files, unit state or package state.
+No automatic Exim/Sendmail Restore is implemented or promised.
+
+Archive verification DOES NOT prove correct mail delivery or recovery.
+Production restoration still needs a separately tested and approved
+administrator procedure and backups covering the actual live environment.
+
 ## What is implemented vs blocked
 
 | Feature | State | Acceptance evidence still needed |

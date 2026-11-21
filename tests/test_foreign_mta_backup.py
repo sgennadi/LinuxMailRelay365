@@ -86,6 +86,28 @@ class ForeignMtaBackupTests(unittest.TestCase):
             with self.assertRaises(snapshot.Refused):
                 snapshot.selected_files("unknown", root=root, owner_uid=os.getuid())
 
+    def test_listing_missing_dir_does_not_modify_filesystem(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            absent = root / "archive-root"
+            self.assertEqual(snapshot.listed(
+                "exim", base=absent, owner_uid=os.getuid()), [])
+            self.assertFalse(absent.exists())
+
+    def test_wizard_excludes_postfix_recovery_for_foreign_mta(self):
+        source = (ROOT / "src" / "LinuxMailRelay365" / "MainForm.cs").read_text()
+        resources = (ROOT / "src" / "LinuxMailRelay365" / "EmbeddedAssets.cs").read_text()
+        project = (ROOT / "src" / "LinuxMailRelay365" /
+                   "LinuxMailRelay365.csproj").read_text()
+        for fragment in ("BackupForeignMtaAsync", "ListForeignMtaBackupsAsync",
+                         "VerifyForeignMtaBackupAsync", "RequirePostfixBackup",
+                         'inspectedMail?.Mta == "postfix"',
+                         "FOREIGN_BACKUP_RESTORE_ENABLED=no"):
+            self.assertIn(fragment, source)
+        self.assertIn("BuildForeignMtaBackupBundle", resources)
+        self.assertIn("foreign-mta-config-backup.py", project)
+        self.assertNotIn("RestoreForeignMtaAsync", source)
+
     def test_cli_restoration_and_nonroot_are_refused(self):
         source = PATH.read_text()
         self.assertNotIn("--restore", source)
