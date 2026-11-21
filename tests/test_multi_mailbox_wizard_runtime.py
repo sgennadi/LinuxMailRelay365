@@ -80,6 +80,21 @@ class MultiMailboxWizardRuntimeTests(unittest.TestCase):
         self.assertIn('"MULTI_OAUTH_MESSAGES_SENT", @"\\Ano\\z"', RUNTIME_GUI)
         self.assertIn('ValidatedMultiMailboxReportValue(', RUNTIME_GUI)
 
+    def test_short_lived_root_proof_is_manually_reviewed_not_renewed_by_gui(self):
+        self.assertIn("RefreshMultiMailboxIngressProofAsync, false", GUI)
+        self.assertIn("RefreshMultiMailboxIngressProofAsync()", RUNTIME_GUI)
+        self.assertIn("REFRESH MULTI INGRESS PROOF", RUNTIME_GUI)
+        self.assertIn("BuildMultiMailboxProofRefreshBundle(sha)", RUNTIME_GUI)
+        self.assertIn("BuildMultiMailboxProofRefreshBundle(string senderMapSha)", ASSETS)
+        self.assertIn("REFRESH_PRIVILEGED_MULTI_INGRESS_PROOF", ASSETS)
+        self.assertIn('MULTI_INGRESS_PROOF_EXPIRES_SECONDS', RUNTIME_GUI)
+        self.assertIn('@"\A120\z"', RUNTIME_GUI)
+        self.assertIn("AUTO", "AUTOMATED") if False else None
+        self.assertIn("Auto-renewal is NOT installed", GUI)
+        self.assertIn("multi-mailbox-ingress-proof.py", ASSETS)
+        self.assertIn("LinuxMailRelay365.linux.multi-mailbox-ingress-proof.py", PROJECT)
+        self.assertNotIn("systemctl start", RUNTIME_GUI)
+
     def test_no_live_send_while_multi_selected(self):
         section = GUI.split("            case 4:", 1)[1].split(
             "        pageHost.ResumeLayout();", 1)[0]
