@@ -10,12 +10,20 @@ internal sealed partial class MainForm
     private string? reviewedMultiMailboxPlanSha;
     private string? reviewedMultiMailboxPlanContext;
     private string multiMailboxRouteSummary = "";
+    private string? reviewedMultiMailboxRestoreSha;
+    private string? reviewedMultiMailboxRestoreBackupId;
+    private string? reviewedMultiMailboxRestoreContext;
+    private string multiMailboxRestoreSummary = "";
 
     private void ResetMultiMailboxRouteReview()
     {
         reviewedMultiMailboxPlanSha = null;
         reviewedMultiMailboxPlanContext = null;
         multiMailboxRouteSummary = "";
+        reviewedMultiMailboxRestoreSha = null;
+        reviewedMultiMailboxRestoreBackupId = null;
+        reviewedMultiMailboxRestoreContext = null;
+        multiMailboxRestoreSummary = "";
     }
 
     private string CurrentMultiMailboxContext()
@@ -225,6 +233,105 @@ internal sealed partial class MainForm
             "אישור תצורה זמני ל-" + seconds + " שניות. שליחת דואר לא אומתה.");
         WriteLine("Privileged multi-mailbox ingress receipt refreshed for supervised tests only. " +
             "No message transmitted; never interpret the receipt as Exchange delivery proof.");
+        RenderPage();
+    }
+
+
+    private async Task PreviewMultiMailboxRestoreAsync()
+    {
+        string context = CurrentMultiMailboxContext();
+        reviewedMultiMailboxRestoreSha = null;
+        reviewedMultiMailboxRestoreBackupId = null;
+        reviewedMultiMailboxRestoreContext = null;
+        multiMailboxRestoreSummary = "";
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildMultiMailboxRestoreBundle("preview"),
+            TimeSpan.FromMinutes(4));
+        result.EnsureSuccess();
+        string sha = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_RESTORE_PLAN_SHA256", @"\A[a-f0-9]{64}\z");
+        string id = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_RESTORE_BACKUP_ID", @"\Apre-multi-[A-Za-z0-9_-]{8}\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_RESTORE_STATUS", @"\Apreview_only\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_RESTORE_MESSAGES_SENT", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_RESTORE_SERVICES_STARTED", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_RESTORE_PRIMARY_POSTFIX_CHANGED", @"\Ano\z");
+        if (context != CurrentMultiMailboxContext())
+            throw new InvalidOperationException("The SSH server, sender map, or route changed during Restore Preview.");
+        reviewedMultiMailboxRestoreSha = sha;
+        reviewedMultiMailboxRestoreBackupId = id;
+        reviewedMultiMailboxRestoreContext = context;
+        multiMailboxRestoreSummary = T(
+            "Restore Preview проверен: " + id + ". SHA-256: " + sha[..16] +
+              "… . Для применения остановите отдельный Postfix и проверьте пустую очередь.",
+            "Restore Preview verified: " + id + ". SHA-256: " + sha[..16] +
+              "… . Apply requires manually stopped sidecar, empty queue and separate approval.",
+            "בדיקת השחזור הושלמה. יש לעצור את השירות ולוודא שהתור ריק.");
+        WriteLine("Read-only experimental Multi-mailbox Restore Preview verified backup " + id +
+                  ", approved SHA256=" + sha + ". No configuration was changed.");
+        RenderPage();
+    }
+
+    private async Task RestoreMultiMailboxRouteOfflineAsync()
+    {
+        string context = CurrentMultiMailboxContext();
+        if (reviewedMultiMailboxRestoreSha is null ||
+            reviewedMultiMailboxRestoreBackupId is null ||
+            reviewedMultiMailboxRestoreContext != context)
+            throw new InvalidOperationException(
+                "Run a NEW Multi-mailbox Restore Preview on this exact SSH host and route.");
+        string sha = reviewedMultiMailboxRestoreSha;
+        string id = reviewedMultiMailboxRestoreBackupId;
+        if (!ConfirmDestructive("LinuxMailRelay365 | Restore OFFLINE multi-mailbox route",
+            T("ОПАСНОЕ ДЕЙСТВИЕ: восстановить прежний SMTP-маршрут из архива " + id +
+              ". ОБЯЗАТЕЛЬНО остановите отдельный Postfix и проверьте ПУСТУЮ очередь. " +
+              "Перед заменой создаётся аварийная копия. OAuth-файлы сохраняются в закрытом архиве, " +
+              "службы НЕ запускаются, очередь писем, основной MTA и Microsoft 365 не меняются. " +
+              "Если откат не подтверждён, не запускайте SMTP.",
+              "OFFLINE RESTORE from exact archive " + id + ". STOP the isolated sidecar manually " +
+              "and confirm the queue is EMPTY. A fresh safety snapshot is created first; " +
+              "OAuth files are quarantined, never silently deleted. No services are started, " +
+              "no mail is sent, and primary Postfix/M365 are not modified. " +
+              "If rollback is unverified, do NOT restart SMTP.",
+              "שחזור לא מקוון מתוך גיבוי מוגן. חובה לעצור את השירות ולוודא תור ריק."),
+            "RESTORE MULTI MAILBOX OFFLINE")) return;
+        // Approval cannot be replayed after a failure or uncertain SSH result.
+        reviewedMultiMailboxRestoreSha = null;
+        reviewedMultiMailboxRestoreBackupId = null;
+        reviewedMultiMailboxRestoreContext = null;
+        multiMailboxRestoreSummary = "";
+        var report = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildMultiMailboxRestoreBundle("restore", sha, id),
+            TimeSpan.FromMinutes(8));
+        report.EnsureSuccess();
+        string restored = ValidatedMultiMailboxReportValue(report.StdOut,
+            "MULTI_RESTORE_BACKUP_ID", @"\Apre-multi-[A-Za-z0-9_-]{8}\z");
+        if (restored != id)
+            throw new InvalidDataException("Restore receipt referred to a different backup.");
+        _ = ValidatedMultiMailboxReportValue(report.StdOut,
+            "MULTI_RESTORE_STATUS", @"\Arestored_offline_not_started\z");
+        _ = ValidatedMultiMailboxReportValue(report.StdOut,
+            "MULTI_RESTORE_MESSAGES_SENT", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(report.StdOut,
+            "MULTI_RESTORE_SERVICES_STARTED", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(report.StdOut,
+            "MULTI_RESTORE_PRIMARY_POSTFIX_CHANGED", @"\Ano\z");
+        if (context != CurrentMultiMailboxContext())
+            throw new InvalidOperationException(
+                "SSH host or route changed during restoration; keep the sidecar stopped and reinspect.");
+        multiMailboxRestoreSummary = T(
+            "Прежний SMTP-маршрут восстановлен из " + id +
+              ". Служба ОСТАНОВЛЕНА. Аварийная копия и архив OAuth сохранены на Linux.",
+            "Original SMTP route restored from " + id +
+              ". The sidecar remains STOPPED. Emergency backup and old OAuth files are retained on Linux.",
+            "נתיב הדואר המקורי שוחזר. השירות עדיין עצור והגיבויים נשמרו.");
+        WriteLine("Multi-mailbox route restored offline from verified archive " + id +
+                  ". Original backup and emergency snapshot retained in root-only recovery. " +
+                  "No automatic service restart, email or Microsoft 365 change.");
         RenderPage();
     }
 
