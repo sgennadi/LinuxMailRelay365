@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 umask 077
 mode="$1"
-case "$mode" in --setup|--verify) ;; *) echo "LMR365_LAB_UNSUPPORTED_MODE" >&2; exit 2;; esac
+case "$mode" in --setup|--verify|--cleanup) ;; *) echo "LMR365_LAB_UNSUPPORTED_MODE" >&2; exit 2;; esac
 test "$(cat /proc/1/comm)" = systemd
 test "$(getenforce)" = Enforcing
 test "$(cat /sys/fs/selinux/enforce)" = 1
@@ -12,6 +12,29 @@ sudo systemctl is-active --quiet postfix.service
 cert=/etc/pki/tls/certs/lmr365-ci.pem
 key=/etc/pki/tls/private/lmr365-ci.key
 secret=/home/ci/.lmr365-ci-password
+manager=/usr/local/libexec/lmr365-selinux-port.py
+sudo test -f "$manager"
+
+if test "$mode" = --cleanup; then
+  # The guest is disposable, but exercise genuine rollback of a managed port
+  # policy while ensuring no SMTP listener is still bound to TCP/2525.
+  sudo systemctl stop lmr365-ci-auth.service postfix.service
+  test -z "$(sudo ss -H -ltn '( sport = :2525 )')"
+  if sudo test -f /var/lib/linuxmailrelay365-selinux-port/active.json; then
+    summary="$(sudo python3 "$manager" --status --smtp-port 2525)"
+    expected="$(printf '%s\n' "$summary" | sed -n 's/^RHEL_PORT_CURRENT_POLICY_SHA256=//p')"
+    [[ "$expected" =~ ^[a-f0-9]{64}$ ]]
+    sudo python3 "$manager" --restore --smtp-port 2525 \
+      --expect-policy-sha256 "$expected" --confirm REMOVE_MANAGED_RHEL_SMTP_PORT
+    sudo python3 "$manager" --check-only --smtp-port 2525 | \
+      grep -Fxq 'RHEL_PORT_PREFLIGHT=ready'
+    echo "LMR365_LAB_MANAGED_SMTP_PORT_RESTORED=yes"
+  else
+    echo "LMR365_LAB_EXISTING_SMTP_PORT_POLICY_PRESERVED=yes"
+  fi
+  test "$(getenforce)" = Enforcing
+  exit 0
+fi
 
 if test "$mode" = --setup; then
   sudo dnf -y -q install dovecot openssl policycoreutils-python-utils
@@ -81,20 +104,23 @@ UNIT
   sudo restorecon -F /etc/systemd/system/lmr365-ci-auth.service
   sudo doveconf -c /etc/dovecot/lmr365-ci-auth.conf -n >/dev/null
 
-  label="$(sudo python3 - <<'PY'
-import importlib.util
-import subprocess
-spec = importlib.util.spec_from_file_location("doctor", "/tmp/lmr365-doctor.py")
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-rules = subprocess.check_output(["semanage","port","-l"], universal_newlines=True, timeout=30)
-print(module.port_label(2525, rules))
-PY
-)"
-  if test "$label" = unmapped; then
-    sudo semanage port -a -t smtp_port_t -p tcp 2525
-  elif test "$label" != smtp_port_t; then
-    echo "LMR365_LAB_SELINUX_2525_CONFLICT"
+  # Exercise the PRODUCT's own guarded SELinux port manager on this
+  # disposable guest, not a hand-written semanage command.
+  preview="$(sudo python3 "$manager" --check-only --smtp-port 2525)"
+  if printf '%s\n' "$preview" | grep -Fxq 'RHEL_PORT_PREFLIGHT=ready'; then
+    expected="$(printf '%s\n' "$preview" | sed -n 's/^RHEL_PORT_POLICY_SHA256=//p')"
+    [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || {
+      echo "LMR365_LAB_POLICY_SHA_UNVERIFIED"; exit 1;
+    }
+    sudo python3 "$manager" --apply --smtp-port 2525 \
+      --expect-policy-sha256 "$expected" --confirm ADD_REVIEWED_RHEL_SMTP_PORT
+    sudo python3 "$manager" --status --smtp-port 2525 |
+      grep -Fxq 'RHEL_PORT_STATUS=active'
+    echo "LMR365_LAB_PRODUCT_SELINUX_PORT_APPLY=verified"
+  elif printf '%s\n' "$preview" | grep -Fxq 'RHEL_PORT_PREFLIGHT=already_allowed'; then
+    echo "LMR365_LAB_SELINUX_PORT_ALREADY_ALLOWED=preserved"
+  else
+    echo "LMR365_LAB_POLICY_2525_UNVERIFIED"
     exit 1
   fi
   sudo postconf -e "smtpd_tls_cert_file = $cert"
@@ -142,6 +168,13 @@ test "$(sudo postconf -h inet_interfaces)" = loopback-only
 test -z "$(sudo postconf -h relayhost)"
 test "$(sudo postconf -P -h 2525/inet/smtpd_tls_security_level)" = encrypt
 test "$(sudo postconf -P -h 2525/inet/smtpd_sasl_auth_enable)" = yes
+if sudo test -f /var/lib/linuxmailrelay365-selinux-port/active.json; then
+  sudo python3 "$manager" --status --smtp-port 2525 |
+    grep -Fxq 'RHEL_PORT_STATUS=active'
+else
+  sudo python3 "$manager" --check-only --smtp-port 2525 |
+    grep -Fxq 'RHEL_PORT_PREFLIGHT=already_allowed'
+fi
 sudo python3 - <<'PY'
 import subprocess
 p = subprocess.run(["ss","-H","-ltn"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,

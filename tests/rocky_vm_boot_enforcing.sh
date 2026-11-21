@@ -145,6 +145,11 @@ ssh "${ssh_opts[@]}" ci@127.0.0.1 \
 scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
     tests/rocky_vm_tls_auth_enforcing.sh ci@127.0.0.1:/home/ci/lmr365-tls-auth-ci.sh
+scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+    linux/manage-rhel-selinux-port.py ci@127.0.0.1:/home/ci/lmr365-selinux-port.py
+ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    'sudo install -o root -g root -m 0755 /home/ci/lmr365-selinux-port.py /usr/local/libexec/lmr365-selinux-port.py'
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'bash /home/ci/lmr365-tls-auth-ci.sh --setup'
 echo "LMR365_GUEST_AUTH_TLS_SETUP=verified"
@@ -177,6 +182,8 @@ test "$rebooted" = yes || {
 echo "LMR365_GUEST_REBOOT=verified_new_boot_id"
 ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash /home/ci/lmr365-tls-auth-ci.sh --verify'
 echo "LMR365_GUEST_AUTH_TLS_POST_REBOOT=verified"
+ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash /home/ci/lmr365-tls-auth-ci.sh --cleanup'
+echo "LMR365_GUEST_PORT_POLICY_RESTORE=verified_if_managed"
 echo "LMR365_GUEST_MICROSOFT365_DELIVERY_TESTED=no"
 echo "LMR365_GUEST_EXTERNAL_MAIL_DELIVERY_TESTED=no"
 

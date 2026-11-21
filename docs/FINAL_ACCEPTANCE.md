@@ -41,6 +41,29 @@ trust and names, Exim ACL/routers/transports, Sendmail access maps, MTA
 queue preservation, RHEL SELinux Enforcing and actual Microsoft 365 delivery.
 Neither this inspection nor CI enables native Exim/Sendmail rewriting.
 
+## Isolated Rocky Linux KVM acceptance without Microsoft 365 tenant
+
+A separate experimental workflow uses GitHub-hosted KVM to boot the exact
+checksum-verified Rocky Linux 9.9 GenericCloud image with `systemd` PID 1
+and **real kernel SELinux Enforcing**, not a container/namespace emulation.
+The guest deliberately binds Postfix only to loopback and tests SMTP greeting,
+EHLO, QUIT and empty queue. Another isolated Dovecot SASL instance on
+127.0.0.1:2525 verifies certificate SAN/CA trust and TLS 1.2+, refuses
+AUTH before STARTTLS and a bad password, and accepts one temporary password
+only after TLS. The guest is rebooted and its **new kernel boot ID** checked;
+all tests rerun after reboot. GitHub run 44930452342 passed these checks.
+No MAIL FROM, RCPT TO, SMTP DATA, external delivery or cloud tenant
+permissions are used.
+
+A further Draft test exercises the project's real RHEL SELinux port manager
+against the disposable guest: read-only SHA-reviewed preflight, optional
+managed smtp_port_t registration, status after reboot, and guarded Restore
+after stopping services. That final managed-policy lifecycle step is **not
+yet accepted** until its own exact-HEAD VM run passes. Production installers
+still intentionally refuse unverified isolated sidecar setup under Enforcing.
+This is not signed Stable acceptance nor a substitute for host-specific
+AVC investigation, service identity, TPM and external M365 routing.
+
 ## Offline SELinux policy packages in real Enterprise Linux containers
 
 Draft CI now installs the actual `selinux-policy-targeted`, `setools-console`,
