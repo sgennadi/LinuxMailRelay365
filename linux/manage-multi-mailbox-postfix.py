@@ -90,6 +90,15 @@ def import_checked(path, label):
 
 
 def run(args):
+    allowed = {
+        'postconf': ('/usr/sbin/postconf', '/usr/bin/postconf'),
+        'postqueue': ('/usr/sbin/postqueue', '/usr/bin/postqueue'),
+        'postfix': ('/usr/sbin/postfix', '/usr/bin/postfix'),
+        'systemctl': ('/usr/bin/systemctl', '/bin/systemctl'),
+    }
+    if not args or args[0] not in allowed or shutil.which(args[0]) not in allowed[args[0]]:
+        raise Refused('untrusted_host_command')
+    args = [shutil.which(args[0])] + list(args[1:])
     result = subprocess.run(args, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, timeout=20,
                             universal_newlines=True, check=False)
@@ -169,6 +178,8 @@ def master_service(raw, map_sha):
 def plan():
     if os.geteuid() != 0:
         raise Refused("root_required")
+    secure_dir(TARGET.parent)
+    secure_dir(RUNTIME.parent)
     if TARGET.exists() or TARGET.is_symlink() or \
             RUNTIME.exists() or RUNTIME.is_symlink():
         raise Refused("multi_mailbox_route_already_present")
@@ -260,6 +271,7 @@ def replace_file(path, data, original):
 def apply_offline(review_sha, confirm):
     if not SHA.fullmatch(review_sha) or confirm != CONFIRM or os.geteuid():
         raise Refused("root_typed_approval_and_plan_sha_required")
+    secure_dir(LOCK.parent)
     fd = os.open(str(LOCK), os.O_CREAT | os.O_RDWR |
                  getattr(os, "O_NOFOLLOW", 0), 0o600)
     modified = []
@@ -339,8 +351,9 @@ def apply_offline(review_sha, confirm):
         # Never rollback while the SMTP service is active: print warning and
         # leave a separate root-only safety backup for operator recovery.
         try:
-            offline()
-            if plan_data:
+            if modified:
+                offline()
+            if plan_data and modified:
                 for kind, thing in reversed(modified):
                     if kind == "config":
                         replace_file(CONF / thing,
@@ -372,8 +385,9 @@ def main(argv=None):
         if args.plan:
             if args.approve_sha256 or args.confirm:
                 raise Refused("approval_not_allowed_in_preview")
-            data = plan()["evidence"]
-            print("MULTI_OAUTH_PLAN_SHA256=" + plan()["sha"])
+            review = plan()
+            data = review["evidence"]
+            print("MULTI_OAUTH_PLAN_SHA256=" + review["sha"])
             print("MULTI_OAUTH_MAILBOXES=" + str(data["mailboxes"]))
             print("MULTI_OAUTH_STATUS=review_only")
         else:
