@@ -68,6 +68,8 @@ printf "%s\n" "$export_report" | grep -Fxq "FOREIGN_BACKUP_OFFLINE_LINKS_MATERIA
 export_dir="$(printf "%s\n" "$export_report" | sed -n 's/^FOREIGN_BACKUP_OFFLINE_DIRECTORY=//p')"
 [[ "$export_dir" =~ ^/var/backups/linuxmailrelay365-foreign-mta/sendmail/\.offline-recovery-[A-Za-z0-9_-]{8,20}$ ]] || exit 1
 sudo -E env GITHUB_ACTIONS=true python3 tests/assert_sendmail_v2_export.py "$export_dir" "$id"
+# Rebuild package metadata in a disposable root-private tree only; never /etc.
+sudo -E env GITHUB_ACTIONS=true python3 tests/rehearse_sendmail_v2_metadata.py "$export_dir" "$id"
 echo "SENDMAIL_BACKUP_LAB_V2_RESTORE=blocked_as_designed"
 test "$(sudo find /etc/mail -xdev -type f -exec sha256sum {} + | sha256sum | cut -d " " -f 1)" = "$before" || {
   echo "SENDMAIL_BACKUP_LAB_SOURCE_MUTATED"; exit 1;
