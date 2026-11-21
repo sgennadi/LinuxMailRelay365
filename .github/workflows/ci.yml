@@ -298,6 +298,9 @@ jobs:
           python3 linux/manage-health-alerts.py --self-test
           python3 linux/manage-public-smtp.py --self-test --smtp-port 46500
           python3 linux/manage-rhel-selinux-port.py --self-test
+          python3 -m py_compile linux/manage-rhel-selinux-sidecar-context.py
+          python3 linux/manage-rhel-selinux-sidecar-context.py --self-test
+          python3 -m unittest discover -v -s tests -p test_rhel_selinux_sidecar_context.py
           python3 -m unittest discover -v -s tests -p test_sidecar_smtp_accounts.py
           python3 -m unittest discover -v -s tests -p test_smtp_credential_generator.py
           python3 linux/generate-smtp-client-credential.py --self-test
