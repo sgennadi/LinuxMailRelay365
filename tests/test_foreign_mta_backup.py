@@ -303,6 +303,15 @@ class ForeignMtaBackupTests(unittest.TestCase):
             self.assertIn(key, form)
         self.assertIn("Manual recovery only.", form)
 
+    def test_preflight_never_runs_shell_or_untrusted_path(self):
+        for value in (['bash', '-c', 'cat /etc/shadow'],
+                      ['sh', '-c', 'systemctl status sendmail']):
+            with self.assertRaises(snapshot.Refused):
+                snapshot.read_only_probe(value)
+        with patch.object(snapshot.shutil, 'which', return_value='/tmp/evil-systemctl'), \
+             patch.object(snapshot.subprocess, 'run') as runner:
+            self.assertIsNone(snapshot.read_only_probe(['systemctl', 'show']))
+            runner.assert_not_called()
     def test_cli_restoration_and_nonroot_are_refused(self):
         source = PATH.read_text()
         self.assertNotIn("--restore", source)
