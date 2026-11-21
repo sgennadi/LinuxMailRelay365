@@ -10,16 +10,16 @@ CHECK = (ROOT / "src/LinuxMailRelay365/UpdateCheck.Fallback.cs").read_text(encod
 WORKFLOW = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
 
-class UpdaterPreview19Contracts(unittest.TestCase):
+class UpdaterPreview25Contracts(unittest.TestCase):
     def test_first_page_updater_needs_no_ssh(self):
         self.assertIn("case 0:\n                AddUpdateAccess(page);\n                RenderConnectionStep(page);", MAIN)
         self.assertEqual(MAIN.count("AddUpdateAccess(page);"), 2)
         self.assertIn("SignedPortableUpdater.LastUpdateStatus()", MAIN)
 
     def test_release_and_updater_version_are_consistent(self):
-        self.assertIn("<Version>0.1.0-preview.24</Version>", PROJECT)
-        self.assertIn('internal const string Version = "0.1.0-preview.24";', CHECK)
-        self.assertIn("tag='v0.1.0-preview.24'", WORKFLOW)
+        self.assertIn("<Version>0.1.0-preview.25</Version>", PROJECT)
+        self.assertIn('internal const string Version = "0.1.0-preview.25";', CHECK)
+        self.assertIn("tag='v0.1.0-preview.25'", WORKFLOW)
         self.assertIn("Test-LinuxMailRelay365PreviewUpgrade.ps1", WORKFLOW)
 
     def test_preview_does_not_bypass_stable_signature_requirement(self):
