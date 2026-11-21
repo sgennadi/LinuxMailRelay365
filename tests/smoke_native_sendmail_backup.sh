@@ -60,11 +60,14 @@ if sudo python3 linux/restore-foreign-mta-config.py --mta sendmail \
     --plan "$id" >/dev/null 2>&1; then
   echo "SENDMAIL_BACKUP_LAB_V2_PLAN_UNEXPECTEDLY_ALLOWED"; exit 1
 fi
-if sudo python3 linux/foreign-mta-config-backup.py --mta sendmail \
-    --export-offline "$id" --confirm EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT \
-    >/dev/null 2>&1; then
-  echo "SENDMAIL_BACKUP_LAB_INCOMPLETE_EXPORT_ALLOWED"; exit 1
-fi
+export_report="$(sudo python3 linux/foreign-mta-config-backup.py --mta sendmail \
+    --export-offline "$id" --confirm EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT)"
+printf "%s\\n" "$export_report" | grep -Fxq "FOREIGN_BACKUP_STATUS=exported_offline_only"
+printf "%s\\n" "$export_report" | grep -Fxq "FOREIGN_BACKUP_FORMAT=v2_package_metadata"
+printf "%s\\n" "$export_report" | grep -Fxq "FOREIGN_BACKUP_OFFLINE_LINKS_MATERIALIZED=no"
+export_dir="$(printf "%s\\n" "$export_report" | sed -n 's/^FOREIGN_BACKUP_OFFLINE_DIRECTORY=//p')"
+[[ "$export_dir" =~ ^/var/backups/linuxmailrelay365-foreign-mta/sendmail/\\.offline-recovery-[A-Za-z0-9_-]{8,20}$ ]] || exit 1
+sudo -E env GITHUB_ACTIONS=true python3 tests/assert_sendmail_v2_export.py "$export_dir" "$id"
 echo "SENDMAIL_BACKUP_LAB_V2_RESTORE=blocked_as_designed"
 test "$(sudo find /etc/mail -xdev -type f -exec sha256sum {} + | sha256sum | cut -d " " -f 1)" = "$before" || {
   echo "SENDMAIL_BACKUP_LAB_SOURCE_MUTATED"; exit 1;
