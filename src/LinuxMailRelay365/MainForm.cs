@@ -40,6 +40,8 @@ internal sealed class MainForm : Form
     private readonly TextBox testRecipient = Field("");
     private readonly CheckBox allowExisting = new() { AutoSize = true };
     private readonly ComboBox backupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
+    private readonly ComboBox foreignBackupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
+    private string? foreignBackupListContext;
     private readonly ComboBox sidecarBackupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private string? reviewedSidecarRestoreSha;
     private string? reviewedSidecarRestoreId;
@@ -431,6 +433,8 @@ internal sealed class MainForm : Form
                 postfixBasicsSummary = "";
                 inspectedMail = null;
                 inspectedServerIdentity = null;
+                foreignBackupListContext = null;
+                foreignBackupSelector.Items.Clear();
                 existingSmtpAudit = null;
                 existingSmtpAuditIdentity = null;
             };
@@ -2704,17 +2708,64 @@ internal sealed class MainForm : Form
                         "Для Connector/Direct Send используйте выше кнопки проверки и установки отдельного Relay. Общая установка XOAUTH2 здесь не предлагается; существующий Relay изменяется только через расширенный EOP Preview/Apply.",
                         "Connector/Direct Send uses the dedicated NEW isolated gateway Preview/Install actions above. The XOAUTH2 installer is not offered; changes to an existing sidecar require advanced EOP Preview/Apply.",
                         "עבור Connector/Direct Send יש להשתמש בבדיקות ובהתקנה הייעודיות של הממסר.")));
-                AddAction(page, T("Создать проверенную резервную копию сейчас", "Create verified backup now", "יצירת גיבוי מאומת"),
-                    BackupNowAsync, false, "shield", "backup");
-                AddAction(page, T("Показать доступные резервные копии", "List verified backups", "רשימת גיבויים"),
-                    ListBackupsAsync, false, "refresh", "backup");
-                if (backupSelector.Items.Count > 0)
+                bool verifiedPrimary = inspectedServerIdentity == TryCurrentIdentity();
+                if (verifiedPrimary && inspectedMail?.Mta == "postfix")
                 {
-                    AddLine(page, UiTheme.Text(T("Выберите backup для восстановления", "Select backup to restore", "בחר גיבוי לשחזור")));
-                    AddLine(page, backupSelector);
+                    AddLine(page, UiTheme.Text(T(
+                        "Резервная копия только основного Postfix",
+                        "Backup for primary Postfix ONLY",
+                        "גיבוי לשרת Postfix ראשי בלבד"), true));
+                    AddAction(page, T("Создать проверенный архив основного Postfix",
+                        "Create verified primary Postfix backup", "צור גיבוי Postfix מאומת"),
+                        BackupNowAsync, false, "shield", "backup");
+                    AddAction(page, T("Показать проверенные архивы Postfix",
+                        "List verified Postfix backups", "הצג גיבויי Postfix"),
+                        ListBackupsAsync, false, "refresh", "backup");
+                    if (backupSelector.Items.Count > 0)
+                    {
+                        AddLine(page, UiTheme.Text(T("Выберите резервную копию Postfix",
+                            "Select a verified Postfix backup", "בחר גיבוי Postfix")));
+                        AddLine(page, backupSelector);
+                    }
+                    AddAction(page, T("Восстановить выбранный Postfix...",
+                        "Restore selected Postfix configuration...",
+                        "שחזור תצורת Postfix"),
+                        RestoreBackupAsync, false, "back", "restore");
                 }
-                AddAction(page, T("Восстановить выбранную конфигурацию...", "Restore selected configuration...", "שחזור תצורה קודמת"),
-                    RestoreBackupAsync, false, "back", "restore");
+                else if (verifiedPrimary && inspectedMail?.Mta is "exim" or "sendmail")
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "Архив конфигурации основного Exim/Sendmail",
+                        "Primary Exim/Sendmail configuration archive",
+                        "גיבוי תצורת Exim או Sendmail"), true));
+                    AddLine(page, UiTheme.Text(T(
+                        "Закрытый архив остаётся на Linux: /var/backups/linuxmailrelay365-foreign-mta. Может содержать пароли; не включает очереди, внешние сертификаты и состояние службы. Восстановление автоматически запрещено.",
+                        "Root-only archive stays on Linux under /var/backups/linuxmailrelay365-foreign-mta. May contain passwords. Excludes mail queues, external certs and service state. Automatic Restore is DISABLED.",
+                        "הגיבוי נשמר בלינוקס בלבד, ללא תור דואר או מצב שירות. השחזור האוטומטי מושבת.")));
+                    AddAction(page, T("Создать и проверить архив Exim/Sendmail",
+                        "Create and verify Exim/Sendmail archive",
+                        "צור ואמת גיבוי Exim/Sendmail"),
+                        BackupForeignMtaAsync, false, "shield", "foreign-backup");
+                    AddAction(page, T("Показать проверенные архивы Exim/Sendmail",
+                        "List verified Exim/Sendmail archives",
+                        "הצג גיבויי Exim/Sendmail"),
+                        ListForeignMtaBackupsAsync, false, "refresh", "foreign-backup-list");
+                    if (foreignBackupSelector.Items.Count > 0)
+                    {
+                        AddLine(page, UiTheme.Text(T("Выберите архив для повторной проверки",
+                            "Select archive to verify", "בחר גיבוי לאימות")));
+                        AddLine(page, foreignBackupSelector);
+                        AddAction(page, T("Проверить SHA-256 и содержимое архива",
+                            "Verify archive SHA-256 and contents",
+                            "אמת SHA-256 ותוכן הגיבוי"),
+                            VerifyForeignMtaBackupAsync, false, "check", "foreign-backup-verify");
+                    }
+                }
+                else
+                    AddLine(page, UiTheme.Text(T(
+                        "Сначала выполните анализ MTA. Архив Postfix НЕ сохраняет конфигурацию Exim/Sendmail.",
+                        "Inspect the active MTA first. A Postfix backup DOES NOT cover Exim or Sendmail.",
+                        "יש לבדוק תחילה את שרת הדואר. גיבוי Postfix אינו כולל Exim או Sendmail.")));
                 if (advancedSmtpTools.Checked && (preserveExistingMail.Checked || mailTransport.SelectedIndex != 0))
                 {
                     AddLine(page, UiTheme.Text(T(
@@ -5421,6 +5472,7 @@ internal sealed class MainForm : Form
 
     private async Task BackupNowAsync()
     {
+        RequirePostfixBackup();
         var result = await SshRemote.RunRootScriptAsync(Endpoint(),
             EmbeddedAssets.BuildRecoveryBundle("--backup"), TimeSpan.FromMinutes(3));
         result.EnsureSuccess();
@@ -5430,6 +5482,7 @@ internal sealed class MainForm : Form
 
     private async Task ListBackupsAsync()
     {
+        RequirePostfixBackup();
         var result = await SshRemote.RunRootScriptAsync(Endpoint(),
             EmbeddedAssets.BuildRecoveryBundle("--list"), TimeSpan.FromMinutes(2));
         result.EnsureSuccess();
@@ -5448,6 +5501,7 @@ internal sealed class MainForm : Form
 
     private async Task RestoreBackupAsync()
     {
+        RequirePostfixBackup();
         if (backupSelector.SelectedItem is not string backupId)
             throw new InvalidOperationException("List backups and select one verified backup before restoring.");
         if (!ConfirmDestructive("LinuxMailRelay365 | Restore Postfix",
