@@ -1,8 +1,8 @@
 # LinuxMailRelay365
 
-Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.23 — read-only Exim/Sendmail recovery comparison and protected offline extraction; NOT signed Stable or production-accepted.**
+Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.24 — Microsoft 365 object inventory and reviewed managed Connector lifecycle; NOT signed Stable or production-accepted.**
 
-## Microsoft 365 Objects Manager (development, after Preview 23)
+## Preview 24: Microsoft 365 Objects Manager (read-only discovery and reviewed Connector controls)
 
 The Wizard now has an explicit cloud-object inventory view on the OAuth
 configuration page and in Advanced Connector options. With administrator
