@@ -190,11 +190,19 @@ PY
       --plan "$backup_id" >/dev/null 2>&1; then
     echo "EL_SENDMAIL_V2_RESTORE_UNEXPECTEDLY_ALLOWED" >&2; exit 1
   fi
-  if python3 linux/foreign-mta-config-backup.py --mta sendmail \
+  export_report="$(python3 linux/foreign-mta-config-backup.py --mta sendmail \
       --export-offline "$backup_id" \
-      --confirm EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT >/dev/null 2>&1; then
-    echo "EL_SENDMAIL_V2_FLATTENED_EXPORT_UNEXPECTEDLY_ALLOWED" >&2; exit 1
-  fi
+      --confirm EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT)"
+  printf '%s\\n' "$export_report" | grep -Fxq \
+    'FOREIGN_BACKUP_STATUS=exported_offline_only'
+  printf '%s\\n' "$export_report" | grep -Fxq \
+    'FOREIGN_BACKUP_FORMAT=v2_package_metadata'
+  printf '%s\\n' "$export_report" | grep -Fxq \
+    'FOREIGN_BACKUP_OFFLINE_LINKS_MATERIALIZED=no'
+  export_dir="$(printf '%s\\n' "$export_report" | sed -n \
+    's/^FOREIGN_BACKUP_OFFLINE_DIRECTORY=//p')"
+  [[ "$export_dir" =~ ^/var/backups/linuxmailrelay365-foreign-mta/sendmail/\\.offline-recovery-[A-Za-z0-9_-]{8,20}$ ]] || exit 1
+  GITHUB_ACTIONS=true python3 tests/assert_sendmail_v2_export.py "$export_dir" "$backup_id"
   test "$(native_config_digest)" = "$before_native" || {
     echo "EL_SENDMAIL_NATIVE_CONFIG_CHANGED_BY_BACKUP" >&2; exit 1;
   }
