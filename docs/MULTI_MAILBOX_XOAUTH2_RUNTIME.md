@@ -198,3 +198,50 @@ never overwrite a manager-owned active route.
 Physical TPM, SELinux Enforcing, actual Microsoft 365/recipient delivery,
 and full Windows GUI 200% DPI visual tests remain open. Do not release
 this branch as Stable.
+
+## Controlled Microsoft 365 acceptance for one selected multi-mailbox sender
+
+The development Wizard also provides **6. Preview two M365 messages**
+(read-only, no network send) and **7. Confirm TWO real test messages**,
+visible only after a reviewed Preview. The operator chooses one sender from
+the active root-owned runtime sender map plus two consenting test recipients:
+one in the sender's domain and one in a different domain. These domain
+checks do not verify Microsoft 365 accepted-domain membership.
+
+The Preview returns a fresh 32-character run ID, SHA-256 of the sender
+and recipient values, and one immutable reviewed plan SHA. A second
+typed confirmation is required before **any** SMTP submission. Address
+values are sent only over the verified SSH session inside bounded
+Base64-encoded JSON, never as Linux command arguments or raw logs.
+An actual one-mailbox permission is checked in the active map; other
+mailbox identities and arbitrary From aliases cannot be selected.
+
+On an approved test, a root-only Linux orchestrator
+`manage-multi-mailbox-acceptance.py` obtains the shared route lock,
+rechecks the active ownership marker, pinned source and identity hashes,
+and reserves the run ID in an exclusive root-only ledger **before**
+network activity. It generates a new privileged 120-second From-Guard
+proof immediately before each of the two messages, then invokes the
+unprivileged m365mailer transport with a bounded role/recipient request.
+The transport uses its existing fixed text-only acceptance template,
+mapped OAuth certificate/hardware signer and Microsoft 365 STARTTLS +
+XOAUTH2 on TCP 587. No custom headers, Bcc, attachments, message body,
+recipient CLI switches or automatic retries are accepted.
+
+A successful SMTP result is reported as
+`MULTI_ACCEPTANCE_TWO_SMTP_SUBMISSIONS_ACCEPTED=yes` with
+`MULTI_ACCEPTANCE_RECIPIENT_INBOX_VERIFIED=no` and
+`MULTI_ACCEPTANCE_EXCHANGE_TRACE_VERIFIED=no`. A timeout, SSH loss or
+first-message partial result is **unknown**, not a failure safe to retry.
+The same run ID is permanently reserved for that host; inspect both
+test inboxes and Exchange Online Message Trace before planning a new run.
+
+The direct acceptance test validates **Entra token acquisition, Exchange
+XOAUTH2 SMTP authentication and submission for one explicitly selected
+mailbox**. It deliberately bypasses the local application's inbound SMTP
+session, so it does **not** prove local Postfix SMTP AUTH, queue-bound
+SASL ownership, the Milter's runtime reject behavior, real end-to-end
+relay delivery, Dovecot TLS client trust or a recipient's inbox.
+These require separate supervised client-to-Postfix SMTP tests and
+independent Exchange message-trace evidence. No production rollout or
+Stable release is authorized by a green CI or a successful test submission.
