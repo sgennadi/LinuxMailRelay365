@@ -310,6 +310,23 @@ def relabel():
         os.close(fd)
 
 
+def unit_stopped():
+    # Never remove the secondary instance's policy while systemd still owns
+    # a running or transitioning service. "not-found" is also safe after cleanup.
+    if not shutil.which("systemctl"):
+        raise Refused("systemctl_required_for_context_restore")
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "linuxmailrelay365-sidecar.service"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Refused("sidecar_systemd_state_unavailable")
+    if result.returncode not in (3, 4) or result.stdout.strip() not in (
+            "inactive", "failed", "unknown"):
+        raise Refused("sidecar_service_must_be_stopped_before_restore")
+
+
 def restore(expected):
     environment()
     fd = acquire_lock()
@@ -322,6 +339,7 @@ def restore(expected):
             raise Refused("selinux_policy_changed_since_restore_review")
         present = {dest for _, dest in PATHS if dest in equivalences(raw)}
         verify_custom(raw, present, entry["unrelated_sha"])
+        unit_stopped()
         # Never remove policy while a live Postfix instance could still be
         # using the secondary queue/configuration or listening socket.
         for _, dest in PATHS:
