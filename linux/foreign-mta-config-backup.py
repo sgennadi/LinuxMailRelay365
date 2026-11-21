@@ -296,6 +296,11 @@ def verify(directory, mta, owner_uid=0):
     """Validate digest + every tar member without extracting any content."""
     if mta not in ALLOWED:
         raise Refused("invalid_mta")
+    # Archive identifiers are fixed-format, but verifying a preexisting
+    # snapshot must also refuse a replaced parent path or symlink. Validate
+    # both the MTA archive folder and its backing base before any file read.
+    safe_dir(directory.parent.parent, owner_uid)
+    safe_dir(directory.parent, owner_uid)
     strict_snapshot_dir(directory, owner_uid)
     raw = stable_file(directory / "manifest.json", owner_uid)[1]
     if len(raw) > MAX_MANIFEST:
