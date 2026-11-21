@@ -1401,9 +1401,9 @@ internal static class EmbeddedAssets
     {
         if (mta is not ("exim" or "sendmail") ||
             action is not ("backup" or "list" or "verify" or
-                           "preview-recovery" or "export-offline"))
+                           "preview-recovery" or "offline-preflight" or "export-offline"))
             throw new ArgumentException("Unsupported foreign MTA backup operation.");
-        bool selected = action is ("verify" or "preview-recovery" or "export-offline");
+        bool selected = action is ("verify" or "preview-recovery" or "offline-preflight" or "export-offline");
         if (selected != (backupId is not null) ||
             (backupId is not null && !Regex.IsMatch(backupId,
                 @"\A[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\z",
@@ -1414,6 +1414,7 @@ internal static class EmbeddedAssets
             "backup" => "--backup",
             "list" => "--list",
             "preview-recovery" => "--preview-recovery " + backupId,
+            "offline-preflight" => "--offline-preflight " + backupId,
             "export-offline" => "--export-offline " + backupId +
                 " --confirm EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT",
             _ => "--verify " + backupId
