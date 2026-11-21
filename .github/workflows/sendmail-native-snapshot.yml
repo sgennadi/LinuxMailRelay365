@@ -11,6 +11,7 @@ on:
       - tests/smoke_native_sendmail_backup.sh
       - tests/test_sendmail_package_backup.py
       - tests/test_sendmail_package_snapshot_v2.py
+      - tests/assert_sendmail_v2_export.py
       - tests/test_foreign_mta_backup.py
       - tests/test_foreign_mta_restore.py
   workflow_dispatch:
@@ -21,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   snapshot-and-refusal:
-    name: Disposable Ubuntu 24.04 Sendmail v2 backup and restore refusal
+    name: Disposable Ubuntu 24.04 Sendmail v2 backup and inert export
     runs-on: ubuntu-24.04
     timeout-minutes: 18
     steps:
@@ -31,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n tests/smoke_native_foreign_mta.sh tests/smoke_native_sendmail_backup.sh
-          python3 -m py_compile linux/foreign-mta-config-backup.py linux/restore-foreign-mta-config.py
+          python3 -m py_compile linux/foreign-mta-config-backup.py linux/restore-foreign-mta-config.py tests/assert_sendmail_v2_export.py
           python3 -m unittest discover -v -s tests -p test_sendmail_package_backup.py
           python3 -m unittest discover -v -s tests -p test_sendmail_package_snapshot_v2.py
           python3 -m unittest discover -v -s tests -p test_foreign_mta_backup.py
@@ -39,6 +40,6 @@ jobs:
       - name: Install real Debian Sendmail without daemon start and run native parser
         shell: bash
         run: bash tests/smoke_native_foreign_mta.sh sendmail
-      - name: Verify package-owned v2 snapshot and explicit Restore refusal
+      - name: Verify package-owned v2 snapshot and secure inert export
         shell: bash
         run: bash tests/smoke_native_sendmail_backup.sh
