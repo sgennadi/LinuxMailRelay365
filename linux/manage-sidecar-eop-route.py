@@ -25,6 +25,7 @@ CONF = Path("/etc/linuxmailrelay365/sidecar-postfix")
 PRIMARY = Path("/etc/postfix")
 RECOVERY = Path("/var/lib/linuxmailrelay365-eop-route-recovery")
 ACTIVE = RECOVERY / "active.json"
+MULTI_ACTIVE = Path("/var/backups/linuxmailrelay365-multi-oauth/active.json")
 LOCK = Path("/run/linuxmailrelay365-sidecar-auth.lock")
 MAPS = ("eop-fixed-sender.regexp", "eop-sender-canonical.regexp", "eop-recipients.regexp",
         "eop-sender-owners.regexp", "eop-reject-trace-header.regexp")
@@ -803,6 +804,8 @@ def main():
     a = p.parse_args()
     try:
         validate(a)
+        if not a.status and (MULTI_ACTIVE.exists() or MULTI_ACTIVE.is_symlink()):
+            raise Refused("multi_mailbox_route_owned_by_another_recovery_manager")
         if a.status:
             return route_status(a)
         runtime_checks(allow_active_route=a.restore)
