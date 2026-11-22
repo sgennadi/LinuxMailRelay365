@@ -157,8 +157,12 @@ internal static class SshRemote
 
     // Strictly read-only: never invoke sudo or install packages during a probe.
     internal static Task<RemoteResult> ProbeSecurityAsync(
-        SshEndpoint endpoint, string probeScript, CancellationToken token = default) =>
-        ExecuteAsync(endpoint, "bash -s", probeScript, TimeSpan.FromSeconds(65), token);
+        SshEndpoint endpoint, string probeScript, CancellationToken token = default,
+        bool loginProfile = false) =>
+        // Login startup scripts can perform arbitrary actions, so callers may
+        // select this mode only after warning and explicit operator approval.
+        ExecuteAsync(endpoint, loginProfile ? "bash -l -s" : "bash -s",
+            probeScript, TimeSpan.FromSeconds(65), token);
 
     internal static Task<RemoteResult> CheckAsync(
         SshEndpoint endpoint, CancellationToken token = default) =>
