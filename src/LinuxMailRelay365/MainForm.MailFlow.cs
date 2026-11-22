@@ -1,0 +1,315 @@
+using System.Drawing;
+using System.Windows.Forms;
+
+namespace LinuxMailRelay365;
+
+internal sealed partial class MainForm
+{
+    private string selectedMailSource = MailFlowIntent.Unknown;
+    private string selectedMailScenario = MailScenarioPlanner.Choose;
+    private MailSubmissionEvidence? mailSubmissionEvidence;
+    private string? mailSubmissionIdentity;
+
+    private bool HasMailDiscovery()
+    {
+        string? identity = TryCurrentIdentity();
+        return identity is not null &&
+            discoveredMailIdentity == identity &&
+            inspectedServerIdentity == identity &&
+            existingSmtpAuditIdentity == identity &&
+            inspectedHostIdentity == identity &&
+            inspectedMail is not null &&
+            existingSmtpAudit is not null &&
+            inspectedHost is not null;
+    }
+
+    private static string TranslateMailFlow(int language, string ru, string en, string he) =>
+        language == 0 ? ru : language == 2 ? he : en;
+
+    private Label MailFlowText(string text, int width, bool bold = false, bool warning = false)
+    {
+        return new Label
+        {
+            AutoSize = true,
+            MaximumSize = new Size(Math.Max(240, width), 0),
+            Padding = new Padding(10, 8, 10, 8),
+            Margin = new Padding(0, 5, 0, 7),
+            BackColor = Color.White,
+            ForeColor = warning ? Color.FromArgb(151, 82, 23) : UiTheme.Navy,
+            Font = new Font("Segoe UI", bold ? 11.5f : 10.5f,
+                bold ? FontStyle.Bold : FontStyle.Regular),
+            Text = text
+        };
+    }
+
+    // These are actual selectable WinForms cards. There are no generated
+    // pictures and no artificial Microsoft 365 "available" statuses.
+    private TableLayoutPanel BuildMailFlowCards(
+        IReadOnlyList<(string Code, string Title, string Description, string Status,
+            bool Preferred, bool Enabled)> options,
+        string selected, Action<string> choose)
+    {
+        int available = Math.Max(340, pageHost.ClientSize.Width - 90);
+        int scale = Math.Clamp((int)Math.Round(DeviceDpi / 96.0 * 100), 100, 250);
+        bool wide = available >= 940 * scale / 100;
+        int columns = wide ? 2 : 1;
+        int width = Math.Max(260, (available - (columns - 1) * 14 - 12) / columns);
+        int height = (int)Math.Round(132 * scale / 100.0);
+        var grid = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = columns, RowCount = 0,
+            Width = available, Padding = new Padding(0, 6, 0, 8),
+            BackColor = UiTheme.Canvas
+        };
+        for (int i = 0; i < columns; i++)
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / columns));
+
+        for (int i = 0; i < options.Count; i++)
+        {
+            var option = options[i];
+            bool picked = selected == option.Code;
+            var card = new Button
+            {
+                Width = width, Height = height,
+                MinimumSize = new Size(240, height),
+                AutoSize = false, Enabled = !busy && option.Enabled,
+                TextAlign = ContentAlignment.MiddleLeft,
+                FlatStyle = FlatStyle.Flat,
+                UseVisualStyleBackColor = false,
+                Font = new Font("Segoe UI", 10.5f,
+                    picked ? FontStyle.Bold : FontStyle.Regular),
+                ForeColor = picked ? Color.White : UiTheme.Navy,
+                BackColor = picked ? UiTheme.Accent :
+                    option.Enabled ? Color.White : Color.FromArgb(234, 237, 242),
+                Margin = new Padding(4, 4, 10, 10),
+                Cursor = option.Enabled ? Cursors.Hand : Cursors.Default,
+                AccessibleName = option.Title,
+                AccessibleDescription = option.Description + ". " + option.Status,
+                Text = (picked ? "●  " : option.Preferred ? "★  " : "○  ") +
+                    option.Title + Environment.NewLine +
+                    option.Status + Environment.NewLine +
+                    option.Description
+            };
+            card.FlatAppearance.BorderColor = picked
+                ? UiTheme.Accent : option.Preferred
+                    ? Color.FromArgb(51, 140, 99) : Color.FromArgb(205, 215, 230);
+            card.FlatAppearance.BorderSize = picked || option.Preferred ? 2 : 1;
+            string code = option.Code;
+            card.Click += (_, _) => choose(code);
+            int row = i / columns;
+            if (row >= grid.RowCount)
+            {
+                grid.RowCount++;
+                grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            }
+            grid.Controls.Add(card, i % columns, row);
+        }
+        return grid;
+    }
+
+    private Control BuildLiveMailFlowDiagram()
+    {
+        string mailSource = selectedMailSource;
+        string configuredPorts = inspectedHost?.ConfiguredSmtpPortState ?? "";
+        if (configuredPorts is "unverified" or "none_configured" or "dynamic_or_unverified")
+            configuredPorts = "";
+        string? isolatedPort = selectedMailScenario == MailScenarioPlanner.Isolated
+            ? isolatedSmtpPort.Text.Trim() : null;
+        var topology = MailScenarioPlanner.Flow(selectedMailScenario,
+            inspectedMail?.CurrentRelay, configuredPorts, isolatedPort,
+            mailTransport.SelectedIndex switch { 1 => "connector", 2 => "direct-send", _ => "oauth2" },
+            language.SelectedIndex, mailSource);
+
+        int maxWidth = Math.Max(320, pageHost.ClientSize.Width - 90);
+        int scale = Math.Clamp((int)Math.Round(DeviceDpi / 96.0 * 100), 100, 250);
+        bool horizontal = maxWidth > 1020 * scale / 100 && topology.Nodes.Count < 5;
+        var flow = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Width = maxWidth, WrapContents = true,
+            FlowDirection = horizontal ? FlowDirection.LeftToRight : FlowDirection.TopDown,
+            BackColor = Color.FromArgb(238, 246, 253),
+            Padding = new Padding(10, 12, 10, 12),
+            Margin = new Padding(0, 5, 0, 10)
+        };
+        int nodeWidth = horizontal
+            ? Math.Max(135, (maxWidth - 38 - 37 * (topology.Nodes.Count - 1)) / topology.Nodes.Count)
+            : Math.Max(240, maxWidth - 25);
+        for (int n = 0; n < topology.Nodes.Count; n++)
+        {
+            if (n > 0)
+            {
+                flow.Controls.Add(new Label
+                {
+                    Text = horizontal ? "→" : "↓",
+                    ForeColor = UiTheme.Accent,
+                    Font = new Font("Segoe UI", 18f, FontStyle.Bold),
+                    Width = horizontal ? 30 : nodeWidth,
+                    Height = horizontal ? 70 : 31,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    Margin = new Padding(0)
+                });
+            }
+            flow.Controls.Add(new Label
+            {
+                Text = topology.Nodes[n], Width = nodeWidth,
+                Height = (int)Math.Round(80 * scale / 100.0),
+                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+                BackColor = Color.White, ForeColor = UiTheme.Navy,
+                BorderStyle = BorderStyle.FixedSingle,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Margin = new Padding(0, 2, 0, 2),
+                Padding = new Padding(7),
+                AccessibleName = topology.Nodes[n]
+            });
+        }
+        return new TableLayoutPanel
+        {
+            ColumnCount = 1, AutoSize = true,
+            Width = maxWidth,
+            Controls = { flow, MailFlowText(topology.Caption, maxWidth,
+                warning: selectedMailScenario is MailScenarioPlanner.Rebuild) }
+        };
+    }
+
+    private void ShowMailFlowPlanner(TableLayoutPanel page)
+    {
+        int languageIndex = language.SelectedIndex;
+        int width = Math.Max(300, pageHost.ClientSize.Width - 90);
+        if (!HasMailDiscovery())
+        {
+            AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+                "Сначала выполните read-only проверку Linux. Пока тип MTA, сокеты и ограничения SMTP не подтверждены, варианты настройки скрыты.",
+                "Inspect Linux first (read-only). Mail route choices remain hidden until the current MTA, listeners and SMTP policy have been checked.",
+                "יש לבדוק תחילה את Linux; אפשרויות ההגדרה מוסתרות עד השלמת הבדיקה."),
+                width, warning: true));
+            return;
+        }
+        var inventory = inspectedMail!;
+        var audit = existingSmtpAudit!;
+        var host = inspectedHost!;
+
+        AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
+            "Для чего вам нужна исходящая почта?",
+            "What will generate outgoing mail?",
+            "מהו מקור הדואר היוצא?"), true));
+        if (mailSubmissionIdentity == TryCurrentIdentity() && mailSubmissionEvidence is not null)
+            AddLine(page, MailFlowText(mailSubmissionEvidence.Brief(languageIndex), width));
+        else
+            AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+                "Фактические локальные источники не установлены. Выбор ниже описывает вашу цель, а не результаты автоматического обнаружения пользователей.",
+                "Actual message producers are not established. Your selection below is an intended use, not proof that users or jobs are mailing.",
+                "מקורות הדואר בפועל לא אומתו; הבחירה היא כוונה בלבד."),
+                width));
+
+        var sources = new[]
+        {
+            MailFlowIntent.Local, MailFlowIntent.Jobs,
+            MailFlowIntent.Smtp, MailFlowIntent.Mixed
+        }.Select(code => (
+            Code: code,
+            Title: MailFlowIntent.SourceLabel(code, languageIndex),
+            Description: TranslateMailFlow(languageIndex,
+                "Сначала только выбор задачи — ничего не изменяется.",
+                "Select the intended workload; nothing changes yet.",
+                "בחרו את סוג העבודה; לא יבוצעו שינויים."),
+            Status: selectedMailSource == code
+                ? TranslateMailFlow(languageIndex, "Выбрано", "Selected", "נבחר")
+                : TranslateMailFlow(languageIndex, "Выберите", "Choose", "בחר"),
+            Preferred: false,
+            Enabled: true
+        )).ToArray();
+        AddLine(page, BuildMailFlowCards(sources, selectedMailSource, code =>
+        {
+            if (code == selectedMailSource) return;
+            selectedMailSource = code;
+            selectedMailScenario = MailScenarioPlanner.Choose;
+            SaveRoutingChoices();
+            RenderPage();
+        }));
+        if (selectedMailSource == MailFlowIntent.Unknown)
+        {
+            AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+                "Выберите источник почты. Затем мастер предложит варианты на основе обнаруженного MTA и ваших требований.",
+                "Choose a mail source. Then the wizard will propose routes based on discovered Linux facts and your requirements.",
+                "בחרו מקור דואר ולאחר מכן יוצגו אפשרויות."), width));
+            return;
+        }
+
+        AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
+            "Как поступить с текущей конфигурацией?",
+            "What should happen to the current mail configuration?",
+            "מה לעשות עם תצורת הדואר הקיימת?"), true));
+        string recipients = recipientScope.SelectedIndex switch
+        {
+            1 => "internal-only", 2 => "external-needed", _ => "unknown"
+        };
+        var suggestions = MailFlowIntent.Suggestions(inventory, audit, host,
+            discoveredIsolatedRelay, selectedMailSource, recipients, languageIndex);
+        var choices = suggestions.Select(x => (
+            x.Code, x.Name, x.Detail, x.Status, x.Preferred, x.Enabled)).ToArray();
+        AddLine(page, BuildMailFlowCards(choices, selectedMailScenario, code =>
+        {
+            selectedMailScenario = code;
+            SaveRoutingChoices();
+            RenderPage();
+        }));
+        if (selectedMailScenario == MailScenarioPlanner.Choose)
+        {
+            AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+                "Выберите сценарий, чтобы увидеть схему с вашими реальными параметрами. Ни один сценарий не запускает установку автоматически.",
+                "Select a scenario to see a diagram containing real detected values. Choosing a card never installs or changes mail.",
+                "בחרו מסלול לצפייה בתרשים לפי הנתונים שהתגלו."), width));
+            return;
+        }
+
+        var chosen = suggestions.FirstOrDefault(x => x.Code == selectedMailScenario);
+        if (chosen is null || !chosen.Enabled)
+        {
+            AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+                "Выбранный сценарий больше не подтверждается текущей проверкой. Выполните повторный анализ и выберите другой.",
+                "The previously selected scenario is no longer supported by current evidence. Reinspect and select another.",
+                "האפשרות שנבחרה אינה נתמכת עוד. יש לבדוק מחדש."), width, warning: true));
+            return;
+        }
+        AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
+            "Предпросмотр маршрута (это не установка)",
+            "Selected mail flow (preview only)",
+            "תצוגה מקדימה של ניתוב הדואר"), true));
+        AddLine(page, BuildLiveMailFlowDiagram());
+        if (chosen.RequiresSeparatePort)
+            AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+                "Только для отдельного SMTP экземпляра понадобится собственный входящий порт. Он выбирается позже после проверки свободных портов.",
+                "Only an independent SMTP instance needs a new inbound port. Choose it after a live port conflict check.",
+                "רק ממסר עצמאי דורש יציאה נכנסת חדשה."), width));
+        if (selectedMailScenario is MailScenarioPlanner.ReplaceRelay or MailScenarioPlanner.Rebuild)
+            AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+                "Важно: замена upstream и полная переустановка — разные операции. Для замены upstream не нужен новый входящий SMTP-порт. Этот выбор пока фиксирует план; запуск изменения требует отдельного проверенного действия.",
+                "Changing an upstream route and rebuilding the MTA are different operations. Upstream migration requires NO new inbound port. This is an intent preview; execution needs a separately verified operation.",
+                "שינוי ניתוב יוצא אינו דורש יציאה חדשה, ושונה מהתקנה מחדש."), width, warning: true));
+    }
+
+    private void AddUnverifiedM365Capabilities(TableLayoutPanel page)
+    {
+        if (!HasMailDiscovery() || selectedMailScenario is MailScenarioPlanner.Choose or MailScenarioPlanner.Keep)
+            return;
+        int l = language.SelectedIndex;
+        int width = Math.Max(300, pageHost.ClientSize.Width - 90);
+        AddLine(page, UiTheme.Text(TranslateMailFlow(l,
+            "Microsoft 365 — что реально подтверждено?",
+            "Microsoft 365 — what has actually been verified?",
+            "Microsoft 365 — מה אומת בפועל?"), true));
+        AddLine(page, MailFlowText(TranslateMailFlow(l,
+            "XOAUTH2: нужно проверить разрешения приложения и mailbox, SMTP AUTH и TCP 587. Connector: проверить действующий Inbound Connector и IP/TLS, TCP 25. Direct Send: проверить accepted domain, MX и исходящий TCP 25; только внутренние получатели. Ни один режим не считается доступным по одному обнаружению Postfix.",
+            "XOAUTH2: verify app/mailbox rights, SMTP AUTH and outbound 587. Connector: verify enabled inbound connector, public IP/TLS identity and outbound 25. Direct Send: check accepted domain, MX and outbound 25; internal recipients only. Linux discovery alone proves none of these routes ready.",
+            "יש לאמת הרשאות XOAUTH2, Connector או Direct Send בנפרד מבדיקת Linux."),
+            width, warning: true));
+        AddAction(page, TranslateMailFlow(l,
+            "Проверить объекты Microsoft 365 (вход администратора)",
+            "Inspect Microsoft 365 objects (admin sign-in)",
+            "בדיקת Microsoft 365 עם כניסת מנהל"),
+            InspectCloudObjectsAsync, false, "cloud", "mail-flow-cloud-check");
+    }
+}
