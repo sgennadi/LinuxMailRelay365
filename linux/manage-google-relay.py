@@ -135,6 +135,15 @@ def preview(request):
     sha = prerequisites()
     conflict = route_conflicts()
     queue = queue_state()
+    enabled = postconf("smtp_sasl_auth_enable").lower()
+    outbound_auth = "enabled" if enabled == "yes" else (
+        "disabled" if enabled == "no" else "unverified")
+    # Report ONLY whether a credential map is configured; never read the map
+    # contents or print a sensitive static: credential value.
+    map_state = "configured" if postconf("smtp_sasl_password_maps") else "not_configured"
+    tls_mode = postconf("smtp_tls_security_level").lower()
+    if tls_mode not in ("none", "may", "encrypt", "dane", "dane-only", "fingerprint", "verify", "secure"):
+        tls_mode = "unverified"
     blocked = conflict or queue != "empty"
     print("GOOGLE_ROUTE_VERSION=1")
     print("GOOGLE_ROUTE_PROFILE=" + request["profile"])
@@ -142,6 +151,9 @@ def preview(request):
     print("GOOGLE_ROUTE_PREVIEW_SHA256=" + sha)
     print("GOOGLE_ROUTE_CONFLICTING_MAPS=" + ("yes" if conflict else "no"))
     print("GOOGLE_ROUTE_QUEUE=" + queue)
+    print("GOOGLE_ROUTE_OUTBOUND_SASL=" + outbound_auth)
+    print("GOOGLE_ROUTE_PASSWORD_MAP=" + map_state)
+    print("GOOGLE_ROUTE_TLS_LEVEL=" + tls_mode)
     print("GOOGLE_ROUTE_APPLY_ALLOWED=" + ("no" if blocked else "yes"))
     print("GOOGLE_ROUTE_INBOUND_CHANGED=no")
     print("GOOGLE_ROUTE_MAIL_SENT=no")
