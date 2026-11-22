@@ -419,14 +419,14 @@ jobs:
           if ($testProcess.ExitCode -ne 0) { throw "Windows self-test failed with exit code $($testProcess.ExitCode)." }
           $files = @(Get-ChildItem ./out/win-x64 -Filter '*.exe')
           if ($files.Count -ne 1) { throw 'Expected exactly one EXE in publish output.' }
-      - name: Test published Preview 24 -> candidate RC3 backup and rollback (disposable)
+      - name: Test published Preview 24 -> candidate RC2 backup and rollback (disposable)
         shell: pwsh
         timeout-minutes: 8
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
-          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.1'
+          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.2'
       - name: Capture actual Windows Wizard and early-route screens (CI-only)
         shell: pwsh
         timeout-minutes: 3
@@ -629,7 +629,7 @@ jobs:
             --notes "UNSIGNED TEST PREVIEW 25, NOT Stable/production approved. Adds guarded Multi-mailbox XOAUTH2 Stage, SHA256 Preview, offline Postfix apply/restore, per-SASL-login mailbox ownership, root-issued 120-second ingress proof and two-recipient operator-consented direct Microsoft 365 SMTP acceptance. Fixed test message bodies, root-owned per-run ledger, no automatic resend, and read-only last-attempt recovery. Existing EOP routes are protected by reciprocal owner locks. CI verifies published Preview 24 -> Preview 25 candidate replacement/rollback, Windows x64/ARM64 and isolated Linux tests. No real tenant/inbox delivery, physical TPM or SELinux Enforcing acceptance, 200%-DPI hardware QA, signed Stable, or production authorization is claimed."
 
   release-candidate-publish:
-    name: Publish unsigned 0.1.1 RC1 updater compatibility bridge (NOT Stable)
+    name: Publish unsigned 0.1.1 RC2 native C# Entra discovery (NOT Stable)
     if: github.event_name == 'push' && github.ref == 'refs/heads/release/v0.1.0-stable-candidate'
     needs:
       - linux-tests
@@ -652,9 +652,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          grep -Fxq '    <Version>0.1.1-rc.1</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
-          grep -Fq 'internal const string Version = "0.1.1-rc.1";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
-          grep -Fq 'internal const string Version = "0.1.1-rc.1";' src/LinuxMailRelay365/UpdateCheck.cs
+          grep -Fxq '    <Version>0.1.1-rc.2</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.1-rc.2";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fq 'internal const string Version = "0.1.1-rc.2";' src/LinuxMailRelay365/UpdateCheck.cs
           test "$GITHUB_REF" = 'refs/heads/release/v0.1.0-stable-candidate'
       - uses: actions/download-artifact@v6
         with:
@@ -700,9 +700,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='v0.1.1-rc.1'
+          tag='v0.1.1-rc.2'
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::notice::0.1.1-RC1 already published. Never replace a released candidate."
+            echo "::notice::0.1.1-RC2 already published. Never replace a released candidate."
             exit 0
           fi
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
@@ -714,5 +714,5 @@ jobs:
             out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
             out/published/preview-artifact-digests.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "LinuxMailRelay365 v0.1.1 RC1 (UNSIGNED TEST ONLY)" --prerelease \
-            --notes "UNSIGNED TEST RELEASE CANDIDATE 0.1.1 RC1. NOT STABLE AND NOT FOR PRODUCTION. Correctly stamps ProductVersion and embedded updater version 0.1.1-rc.1, adds an explicit guarded, non-elevated, operator-consented RC/Preview update path for FUTURE newer RCs, and improves safe failure diagnosis of Microsoft Entra tenant discovery. The previous 0.1.0 RC2 was stamped 0.1.0; 0.1.1-rc.1 is strictly newer so RC2's read-only update check will discover the release and offer manual download. Automatic replacement from unsigned RC2 is intentionally blocked, and users must install this bridge build manually once. GitHub SHA256 is NOT publisher Authenticode; do not use unsigned update path for production. Rocky Bash CRLF fix from RC2 is retained. No real tenant, inbox delivery, physical TPM/HSM, GUI hardware 200%-DPI or production disaster recovery acceptance. Stable release intentionally blocked."
+            --title "LinuxMailRelay365 v0.1.1 RC2 (UNSIGNED TEST ONLY)" --prerelease \
+           --notes "UNSIGNED TEST RELEASE CANDIDATE 0.1.1 RC2. NOT STABLE AND NOT FOR PRODUCTION. Introduces a reusable .NET Microsoft365Auth module with MSAL Device Code/MFA GUI and read-only C# Microsoft Graph tenant/application/service-principal/certificate discovery. Optional ARM tenant enumeration requires an explicitly approved public Client ID and delegated user_impersonation; default Graph User.Read identifies only the signed-in tenant. Removes Az.Accounts Tenant Discovery PS1 and Microsoft.Graph.Authentication from the read-only object inventory. Exchange-only PowerShell remains for Exchange Online RBAC and Connectors; Graph application provisioning is still a separate migration pending review. Preserves SMTP25 and guarded updater changes from RC1. No test tenant or production SMTP delivery, RHEL Enforcing physical acceptance, TPM/HSM, or 200% DPI physical hardware QA has been verified. Unsigned test updates require explicit user consent, SHA256 matching and an eligible non-elevated RC process; never install as signed Stable."

@@ -17,7 +17,7 @@ class CloudObjectsIdentityContracts(unittest.TestCase):
         source = FORM.read_text(encoding="utf-8")
         self.assertIn("string requestedClientField = existingAppId.Text.Trim();", source)
         self.assertIn("string requestedConnectorName = outboundConnectorName.Text.Trim();", source)
-        self.assertEqual(source.count("ValidateCloudInventorySelection("), 3)
+        self.assertEqual(source.count("ValidateCloudInventorySelection("), 4)
         self.assertIn("Guid? expectedClient", source)
         self.assertIn("chosenClient != expectedClient.Value", source)
         self.assertIn("option.Id != expectedTenant", source)
@@ -30,9 +30,16 @@ class CloudObjectsIdentityContracts(unittest.TestCase):
 
     def test_live_cloud_inventory_is_read_only_and_exact_tenant_bound(self):
         source = SHELL.read_text(encoding="utf-8")
-        for required in ("Get-InboundConnector", "TenantID", "Connect-MgGraph",
+        for required in ("Get-InboundConnector", "TenantID",
                          "Connect-ExchangeOnline", "CHANGES_APPLIED=no"):
             self.assertIn(required, source)
+        self.assertNotIn("Connect-MgGraph", source)
+        self.assertNotIn("Microsoft.Graph.Authentication", source)
+        native = (ROOT / "src" / "Microsoft365Auth" / "EntraGraphInventoryClient.cs").read_text(encoding="utf-8")
+        self.assertIn("https://graph.microsoft.com/Application.Read.All", (ROOT / "src" / "Microsoft365Auth" / "EntraTenantDiscoveryClient.cs").read_text(encoding="utf-8"))
+        self.assertIn("EntraTenantDiscoveryClient.AcquireGraphReadTokenAsync(", native)
+        self.assertIn("GuidProperty(root, \"appId\") != appId", native)
+        self.assertIn("new CloudCredentialObject(", FORM.read_text(encoding="utf-8"))
         for forbidden in ("New-MgApplication ", "Remove-MgApplication ",
                           "Remove-InboundConnector ", "Set-InboundConnector "):
             self.assertNotIn(forbidden, source)

@@ -7,6 +7,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
+using Microsoft365Auth;
 
 namespace LinuxMailRelay365;
 
@@ -21,6 +22,9 @@ internal sealed partial class MainForm : Form
     private readonly TextBox sshFingerprint = Field("");
     private readonly ComboBox sshAuthMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 420 };
     private readonly TextBox tenant = Field("");
+    private readonly TextBox entraSignInClientId = Field("");
+    private readonly CheckBox discoverAllAccessibleTenants = new() { AutoSize = true };
+
     private readonly ComboBox tenantSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private IReadOnlyList<TenantOption> discoveredTenants = Array.Empty<TenantOption>();
     private bool tenantSelectionLoading;
@@ -2183,9 +2187,22 @@ internal sealed partial class MainForm : Form
                         "בשלב הבא בחרו יציאה, MX, דומיין, שולח ושמירת שרת הדואר הקיים.")));
                     break;
                 }
-                AddAction(page, T("Подключиться к Microsoft 365 и найти организации",
-                                  "Connect to Microsoft 365 and discover tenants",
-                                  "התחברות ל-Microsoft 365 וגילוי ארגונים"),
+                discoverAllAccessibleTenants.Text = T(
+                    "Расширенный режим: показать все доступные организации через Azure ARM",
+                    "Advanced: enumerate accessible tenants via Azure ARM",
+                    "מצב מתקדם: איתור ארגונים דרך Azure ARM");
+                AddLine(page, discoverAllAccessibleTenants);
+                AddField(page, T(
+                    "Client ID одобренного публичного приложения (для ARM обязательно; иначе Graph CLI)",
+                    "Approved public client ID (required for ARM; blank uses Microsoft Graph CLI)",
+                    "מזהה יישום ציבורי מאושר (חובה עבור ARM)"), entraSignInClientId);
+                AddLine(page, UiTheme.Text(T(
+                    "Вход выполняется в C# через MSAL и MFA. По умолчанию определяется организация текущего входа через Graph User.Read; для списка организаций нужен разрешённый ARM user_impersonation. Токены не сохраняются.",
+                    "Native C# MSAL + MFA. By default, identify the signed-in organization using Graph User.Read. Listing all accessible tenants requires an approved public app with ARM user_impersonation. OAuth tokens are not saved to disk.",
+                    "כניסה דרך MSAL. ברירת המחדל היא הארגון המחובר; איתור כל הארגונים דורש הרשאה ל-ARM.")));
+                AddAction(page, T("Подключиться к Microsoft 365 через C#",
+                                  "Sign in to Microsoft Entra (C# / MSAL)",
+                                  "כניסה ל-Microsoft Entra באמצעות C#"),
                     DiscoverTenantsAsync, true, "cloud", "tenant-discovery");
                 if (discoveredTenants.Count > 0)
                 {
@@ -7188,30 +7205,25 @@ internal sealed partial class MainForm : Form
 
     private async Task DiscoverTenantsAsync()
     {
-        string scriptPath = Path.Combine(dataDirectory, "Discover-LinuxMailRelay365Tenants.ps1");
-        string resultPath = Path.Combine(dataDirectory, "tenants-discovery.json");
-        File.WriteAllText(scriptPath, EmbeddedAssets.TenantDiscoveryScript, new UTF8Encoding(false));
-        if (File.Exists(resultPath)) File.Delete(resultPath); // Prevent reuse of stale tenant lists.
-        var psi = new ProcessStartInfo("pwsh.exe")
+        Guid? approvedClient = null;
+        string supplied = entraSignInClientId.Text.Trim();
+        if (supplied.Length > 0)
         {
-            UseShellExecute = true,
-            WorkingDirectory = dataDirectory
-        };
-        foreach (string argument in new[] { "-NoLogo", "-NoProfile", "-File", scriptPath, "-ResultPath", resultPath })
-            psi.ArgumentList.Add(argument);
-        WriteLine("Tenant discovery: interactive Microsoft sign-in. Az.Accounts may be installed for CurrentUser if absent.");
-        using var process = Process.Start(psi) ?? throw new IOException("PowerShell 7 could not be started.");
-        await process.WaitForExitAsync();
-        if (process.ExitCode != 0 || !File.Exists(resultPath))
-        {
-            string failure = File.Exists(resultPath)
-                ? TenantDiscovery.FailureCode(await File.ReadAllTextAsync(resultPath))
-                : "result_missing";
-            throw new IOException("Tenant discovery failed (" + failure +
-                "). No settings were modified; manual Tenant ID remains available. " +
-                "Review the PowerShell sign-in window or retry.");
+            if (!Guid.TryParse(supplied, out Guid candidate) || candidate == Guid.Empty)
+                throw new ArgumentException("Approved public sign-in Client ID must be a nonempty GUID.");
+            approvedClient = candidate;
         }
-        var choices = TenantDiscovery.Parse(await File.ReadAllTextAsync(resultPath));
+        bool allTenants = discoverAllAccessibleTenants.Checked;
+        if (allTenants && !approvedClient.HasValue)
+            throw new ArgumentException("Azure ARM multi-tenant discovery requires your organization's approved public Client ID.");
+
+        WriteLine(allTenants
+            ? "Tenant discovery: native C# MSAL + Azure ARM (read-only). No PowerShell."
+            : "Tenant discovery: native C# MSAL + Microsoft Graph User.Read (read-only). No PowerShell.");
+        var result = await WithNativeMicrosoftSignInAsync((show, ct) =>
+            EntraTenantDiscoveryClient.DiscoverAsync(approvedClient, allTenants, show, ct));
+
+        IReadOnlyList<TenantOption> choices = result.Select(x => new TenantOption(x.Id, x.Name, x.Domain, x.Category)).ToArray();
         discoveredTenants = choices;
         tenantSelectionLoading = true;
         try
@@ -7223,12 +7235,13 @@ internal sealed partial class MainForm : Form
             tenant.Text = choices.Count == 1 ? choices[0].Id.ToString() : "";
         }
         finally { tenantSelectionLoading = false; }
+
         if (choices.Count == 0)
-            WriteLine("No accessible tenants were enumerated. Enter a Tenant GUID manually or retry sign-in.");
+            WriteLine("No accessible tenants returned. Enter Tenant GUID manually or retry with an approved public client.");
         else if (choices.Count == 1)
-            WriteLine("Single Microsoft Entra tenant selected automatically: " + choices[0].Id);
+            WriteLine("Microsoft Entra tenant selected: " + choices[0].Id);
         else
-            WriteLine("Multiple Microsoft Entra tenants detected: " + choices.Count + ". User selection required.");
+            WriteLine("Accessible Microsoft Entra tenants: " + choices.Count + ". Explicit selection required.");
         RenderPage();
     }
 

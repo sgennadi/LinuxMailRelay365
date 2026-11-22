@@ -399,14 +399,20 @@ internal static class Program
             ("Microsoft 365 read-only inventory parser", CloudObjectsInventory.SelfTest),
             ("Microsoft 365 object inspector embedded", () =>
                 EmbeddedAssets.CloudObjectsInspector.Contains("M365_OBJECT_INSPECT=read_only", StringComparison.Ordinal) &&
-                EmbeddedAssets.CloudObjectsInspector.Contains("Application.Read.All", StringComparison.Ordinal) &&
+                !EmbeddedAssets.CloudObjectsInspector.Contains("Connect-MgGraph", StringComparison.Ordinal) &&
+                 EmbeddedAssets.CloudObjectsInspector.Contains("Get-InboundConnector", StringComparison.Ordinal) &&
                 !EmbeddedAssets.CloudObjectsInspector.Contains("Remove-InboundConnector", StringComparison.Ordinal)),
             ("Managed cloud connector approval contracts", () =>
                 EmbeddedAssets.CloudConnectorManager.Contains("connector_ownership_not_verified", StringComparison.Ordinal) &&
                 EmbeddedAssets.CloudConnectorManager.Contains("ExpectedSha256", StringComparison.Ordinal) &&
                 EmbeddedAssets.CloudConnectorManager.Contains("DELETE_REVIEWED_LMR365_CONNECTOR", StringComparison.Ordinal) &&
                 EmbeddedAssets.CloudConnectorManager.Contains("connector_postcheck_not_unique", StringComparison.Ordinal)),
-            ("Tenant discovery", TenantDiscovery.SelfTest),
+            ("Tenant discovery result parser", TenantDiscovery.SelfTest),
+            ("Native C# read-only Graph app inventory", Microsoft365Auth.EntraGraphInventoryClient.SelfTest),
+            ("Native C# MSAL/Graph/ARM tenant discovery", Microsoft365Auth.EntraTenantDiscoveryClient.SelfTest),
+            ("Device code verification URL allowlist", () =>
+                NativeDeviceCodeDialog.IsTrustedMicrosoftVerificationUrl("https://microsoft.com/devicelogin") &&
+                !NativeDeviceCodeDialog.IsTrustedMicrosoftVerificationUrl("https://microsoft.com.evil.test/")),
             ("Diagnostic privacy", DiagnosticJournal.SelfTest)
         };
 #if !USE_UNIVERSAL_UPDATER

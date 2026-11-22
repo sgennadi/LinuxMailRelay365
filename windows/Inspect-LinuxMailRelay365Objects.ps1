@@ -1,5 +1,5 @@
 #requires -Version 7.0
-# Read-only tenant object inventory. Prefixes are search hints, NOT ownership proof.
+# Exchange-only read-only inventory. Graph App/SP/certificate inspection now runs in native C#; prefixes are NOT ownership proof.
 [CmdletBinding()]
 param(
   [guid]$TenantId = [guid]::Empty,
@@ -17,11 +17,6 @@ function SafeText([object]$value,[int]$limit=128) {
   $text = [string]$value
   Require ($text.Length -le $limit -and $text -notmatch '[\x00-\x1F\x7F]') 'unsafe_cloud_text'
   return $text
-}
-function SafeGuid([object]$value) {
-  $guid = [guid]::Empty
-  Require ([guid]::TryParse([string]$value,[ref]$guid) -and $guid -ne [guid]::Empty) 'unsafe_cloud_guid'
-  return $guid.ToString('D')
 }
 function ConnectorRecord($item,[guid]$exactTenant = [guid]::Empty) {
   $ips = @($item.SenderIPAddresses | ForEach-Object { SafeText $_ 64 } | Sort-Object -Unique)
@@ -42,16 +37,6 @@ function ConnectorRecord($item,[guid]$exactTenant = [guid]::Empty) {
     ownership=$provenance
   }
 }
-function CredentialRecord($key) {
-  return [ordered]@{
-    keyId=SafeGuid $key.keyId
-    label=SafeText $key.displayName 128
-    type=SafeText $key.type 32
-    usage=SafeText $key.usage 32
-    validFrom=([datetimeoffset]::Parse([string]$key.startDateTime)).ToUniversalTime().ToString('o')
-    validUntil=([datetimeoffset]::Parse([string]$key.endDateTime)).ToUniversalTime().ToString('o')
-  }
-}
 if ($SelfTest) {
   $test = ConnectorRecord ([pscustomobject]@{
     Identity='test-connector'; Name='LinuxMailRelay365 Test'
@@ -69,12 +54,6 @@ if ($SelfTest) {
     TlsSenderCertificateName=''
   }) $stampTenant
   Require ($stamped.ownership -eq 'verified') 'connector_marker_self_test_failed'
-  $cert = CredentialRecord ([pscustomobject]@{
-    keyId='11111111-1111-4111-8111-111111111111'
-    displayName='LinuxMailRelay365'; type='AsymmetricX509Cert'; usage='Verify'
-    startDateTime='2026-01-01T00:00:00Z'; endDateTime='2027-01-01T00:00:00Z'
-  })
-  Require ($cert.keyId -eq '11111111-1111-4111-8111-111111111111') 'certificate_self_test_failed'
   Write-Output 'M365_OBJECT_INSPECT_SELF_TEST=pass'
   Write-Output 'CHANGES_APPLIED=no'
   return
@@ -85,9 +64,6 @@ Require ($ConnectorName.Length -le 70 -and (-not $ConnectorName -or
   $ConnectorName -cmatch '^[A-Za-z0-9][A-Za-z0-9._ -]{2,69}$')) 'invalid_connector_name'
 Require ($null -ne (Get-Module -ListAvailable ExchangeOnlineManagement)) 'exchange_module_missing'
 $graphRequested = $ClientId -ne [guid]::Empty
-if ($graphRequested) {
-  Require ($null -ne (Get-Module -ListAvailable Microsoft.Graph.Authentication)) 'graph_module_missing'
-}
 $inventory = [ordered]@{
   schema='linuxmailrelay365-cloud-objects/v1'
   tenantId=$TenantId.ToString('D')
@@ -100,33 +76,8 @@ $inventory = [ordered]@{
   roleAssignments=@()
   changesApplied=$false
 }
-$graphOpened=$false
 $exoOpened=$false
 try {
-  if ($graphRequested) {
-    Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
-    Connect-MgGraph -TenantId $TenantId.ToString('D') -Scopes @('Application.Read.All') -UseDeviceCode -ContextScope Process -NoWelcome -ErrorAction Stop | Out-Null
-    $graphOpened=$true
-    $context=Get-MgContext -ErrorAction Stop
-    Require ($null -ne $context -and ([guid]$context.TenantId) -eq $TenantId -and
-      [string]$context.AuthType -eq 'Delegated') 'wrong_graph_tenant'
-    $url="/v1.0/applications(appId='$($ClientId.ToString('D'))')?" + '$select=id,appId,displayName,keyCredentials'
-    $app=Invoke-MgGraphRequest -Uri $url -Method GET -ErrorAction Stop
-    Require (([guid]$app.appId) -eq $ClientId) 'wrong_graph_app'
-    $inventory.application=[ordered]@{status='found';objectId=SafeGuid $app.id;name=SafeText $app.displayName}
-    $certs=@($app.keyCredentials | Where-Object { $null -ne $_ })
-    Require ($certs.Count -le 64) 'too_many_certificates'
-    $inventory.certificates=@($certs | ForEach-Object { CredentialRecord $_ })
-    try {
-      $spUrl="/v1.0/servicePrincipals(appId='$($ClientId.ToString('D'))')?" + '$select=id,appId'
-      $sp=Invoke-MgGraphRequest -Uri $spUrl -Method GET -ErrorAction Stop
-      Require (([guid]$sp.appId) -eq $ClientId) 'wrong_enterprise_app'
-      $inventory.enterpriseApplication=[ordered]@{status='found';objectId=SafeGuid $sp.id}
-    } catch {
-      # A missing object and a denied request are NOT equivalent: do not infer absence.
-      $inventory.enterpriseApplication.status='unverified'
-    }
-  }
   Import-Module ExchangeOnlineManagement -ErrorAction Stop
   $sessions=@(Get-ConnectionInformation -ErrorAction Stop)
   if ($sessions.Count -eq 0) {
@@ -177,5 +128,4 @@ try {
 }
 finally {
   if ($exoOpened) { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue | Out-Null }
-  if ($graphOpened) { Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null }
 }

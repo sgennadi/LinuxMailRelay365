@@ -1004,16 +1004,16 @@ internal static class SignedPortableUpdater
             bool duplicate = false)
         {
             string link = "https://github.com/sgennadi/LinuxMailRelay365/releases/download/" +
-                "v0.1.1-rc.2/" + asset;
+                "v0.1.1-rc.3/" + asset;
             string item = JsonSerializer.Serialize(new
             {
                 name = asset, digest = "sha256:" + digest, size = 100L,
                 browser_download_url = link
             });
-            return "[{\"tag_name\":\"v0.1.1-rc.2\",\"draft\":false," +
+            return "[{\"tag_name\":\"v0.1.1-rc.3\",\"draft\":false," +
                 "\"prerelease\":" + (preview ? "true" : "false") +
                 ",\"html_url\":\"https://github.com/sgennadi/LinuxMailRelay365/releases/tag/" +
-                "v0.1.1-rc.2\",\"assets\":[" + item +
+                "v0.1.1-rc.3\",\"assets\":[" + item +
                 (duplicate ? "," + item : "") + "]}]";
         }
         static SignedUpdateOffer? Parse(string json, bool allow)
@@ -1040,7 +1040,7 @@ internal static class SignedPortableUpdater
                    "https://github.com/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1",
                    new Uri("https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.1/" + asset),
                    asset, hash, 100L)) &&
-               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.1-rc.2" &&
+               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.1-rc.3" &&
                Parse(Fixture(asset, hash, true), false) is null &&
                Parse(Fixture(asset, hash, false), false) is null &&
                Parse(Fixture(asset, hash, true, duplicate: true), true) is null &&
