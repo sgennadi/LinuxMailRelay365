@@ -2,8 +2,8 @@ using System.Text.Json;
 
 namespace LinuxMailRelay365;
 
-// Pure parser for an allowlisted local result written by the embedded PowerShell discovery script.
-// Neither passwords nor tokens are ever returned from tenant discovery.
+// Pure legacy-result parser retained for old diagnostic export compatibility.
+// Live tenant discovery uses the reusable native C# Microsoft365Auth module; no PS1.
 internal sealed record TenantOption(Guid Id, string Name, string Domain, string Category)
 {
     public override string ToString() =>
