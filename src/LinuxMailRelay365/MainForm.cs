@@ -176,6 +176,9 @@ internal sealed partial class MainForm : Form
     private readonly CheckBox advancedSecurityTools = new() { AutoSize = true, Checked = false,
         ForeColor = UiTheme.Navy, Margin = new Padding(0, 12, 0, 12) };
     private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
+    private readonly Button headerUpdateButton = UiTheme.Action("Проверить обновления", glyph: "refresh");
+    private readonly ContextMenuStrip headerUpdateMenu = new();
+    private bool sshHelpExpanded;
     private readonly Label headline = UiTheme.Text("", true);
     private readonly Label subheading = UiTheme.Text("");
     private readonly Label brandHeading = UiTheme.Text(
@@ -602,17 +605,39 @@ internal sealed partial class MainForm : Form
         language.SelectedIndex = 0;
         language.SelectedIndexChanged += (_, _) => RenderPage();
         language.AccessibleName = "Interface language";
+        headerUpdateButton.AutoSize = true;
+        headerUpdateButton.Margin = Padding.Empty;
+        headerUpdateButton.AccessibleDescription =
+            "Check newer signed Stable or explicitly selected test Preview/RC releases. Does not install automatically.";
+        headerUpdateButton.Click += (_, _) => ShowHeaderUpdateMenu();
+        Disposed += (_, _) => headerUpdateMenu.Dispose();
 
-        var top = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1,
-            AutoSize = true, Padding = new Padding(18, 12, 18, 8) };
+        // A compact, clearly labelled update control belongs to the app header,
+        // NOT inside the SSH credentials form. It gets its own toolbar row so
+        // Russian/Hebrew text and 200%-DPI scaling cannot squeeze the server fields.
+        var top = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2,
+            AutoSize = true, Padding = new Padding(18, 8, 18, 0) };
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 51));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        top.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        top.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var logo = new PictureBox { Width = 42, Height = 42, Margin = new Padding(0, 0, 8, 0),
             SizeMode = PictureBoxSizeMode.Zoom, Image = Icon?.ToBitmap() };
         top.Controls.Add(logo, 0, 0);
         top.Controls.Add(brandHeading, 1, 0);
         top.Controls.Add(language, 2, 0);
+        var updateToolbar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false, Margin = new Padding(0, 0, 0, 1),
+            Padding = Padding.Empty
+        };
+        updateToolbar.Controls.Add(headerUpdateButton);
+        top.Controls.Add(updateToolbar, 0, 1);
+        top.SetColumnSpan(updateToolbar, 3);
 
         var header = new TableLayoutPanel
         {
@@ -1948,7 +1973,6 @@ internal sealed partial class MainForm : Form
         switch (step)
         {
             case 0:
-                AddUpdateAccess(page);
                 RenderConnectionStep(page);
                 break;
             case 1:
@@ -3219,6 +3243,9 @@ internal sealed partial class MainForm : Form
             ? T("Скрыть журнал", "Hide activity", "הסתר יומן")
             : T("Показать журнал", "Show activity", "הצג יומן");
         clearActivityButton.Text = T("Очистить лог", "Clear log", "נקה יומן");
+        headerUpdateButton.Text = T("Проверить обновления ▾",
+            "Check for updates ▾", "בדיקת עדכונים ▾");
+        headerUpdateButton.Enabled = !busy;
         status.Text = lastStatus ?? T("Готов к работе · Пароли M365 не сохраняются",
             "Ready · M365 mailbox passwords are never stored", "מוכן · סיסמאות M365 אינן נשמרות");
         status.ForeColor = lastFailed ? Color.FromArgb(174, 40, 43) : UiTheme.Muted;
@@ -8184,6 +8211,45 @@ internal sealed partial class MainForm : Form
             dialog.Close();
             updateShuttingDown = false;
         }
+    }
+
+    private void ShowHeaderUpdateMenu()
+    {
+        if (busy || updateShuttingDown || IsDisposed) return;
+        headerUpdateMenu.Items.Clear();
+        var stable = new ToolStripMenuItem(T(
+            "Проверить стабильные обновления", "Check Stable updates", "בדיקת עדכונים יציבים"));
+        stable.Click += async (_, _) =>
+        {
+            previewUpdates.Checked = false;
+            ExpandActivityForUpdates();
+            await RunBusyAsync("update", CheckUpdatesAsync);
+        };
+        var preview = new ToolStripMenuItem(T(
+            "Проверить тестовые Preview/RC…", "Check test Preview/RC updates…",
+            "בדיקת עדכוני ניסיון Preview/RC…"));
+        preview.Click += async (_, _) =>
+        {
+            previewUpdates.Checked = true;
+            ExpandActivityForUpdates();
+            await RunBusyAsync("update", CheckUpdatesAsync);
+        };
+        headerUpdateMenu.Items.Add(new ToolStripMenuItem(T(
+            "Установленная версия: ", "Installed version: ", "גרסה מותקנת: ") +
+            UpdateCheck.Version) { Enabled = false });
+        headerUpdateMenu.Items.Add(new ToolStripSeparator());
+        headerUpdateMenu.Items.Add(stable);
+        headerUpdateMenu.Items.Add(preview);
+        headerUpdateMenu.Show(headerUpdateButton, new Point(0, headerUpdateButton.Height));
+    }
+
+    private void ExpandActivityForUpdates()
+    {
+        activityPanel.Visible = true;
+        if (footerLayout is not null)
+            footerLayout.RowStyles[2].Height =
+                (int)Math.Round(145 * Math.Max(1f, DeviceDpi / 96f));
+        FitFooterHeight();
     }
 
     private void AddUpdateAccess(TableLayoutPanel page)
