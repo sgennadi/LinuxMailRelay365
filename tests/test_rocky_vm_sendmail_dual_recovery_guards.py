@@ -3,6 +3,10 @@
 No root requirement, /etc/mail modification, SMTP or real SELinux access.
 """
 import importlib.util
+import os
+import stat
+import tempfile
+from unittest import mock
 from pathlib import Path
 import unittest
 
@@ -46,6 +50,55 @@ class DualSendmailFailClosedTests(unittest.TestCase):
                                             "RESTORE_TARGET_NOT_ALLOWLISTED"):
                     dual.single.atomic_write(b"test", b"before", None, None,
                                              destination=target)
+
+    def test_attested_reader_reads_regular_file_with_original_owner(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / "submit.cf"
+            config.write_bytes(b"bounded synthetic config\n")
+            config.chmod(0o600)
+            meta, payload = dual.single.file_state_without_backup(
+                config, owner_uid=os.getuid())
+            self.assertEqual(payload, b"bounded synthetic config\n")
+            self.assertEqual(stat.S_IMODE(meta.st_mode), 0o600)
+
+    def test_attested_reader_rejects_symlinks_hardlinks_and_writable_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / "submit.cf"
+            config.write_bytes(b"test only\n")
+            config.chmod(0o600)
+            alias = Path(td) / "file-alias"
+            alias.symlink_to(config)
+            hardlink = Path(td) / "another-name"
+            os.link(str(config), str(hardlink))
+            with self.assertRaisesRegex(RuntimeError, "UNSAFE_PRIMARY_CONFIG_FILE"):
+                dual.single.file_state_without_backup(alias, owner_uid=os.getuid())
+            with self.assertRaisesRegex(RuntimeError, "UNSAFE_PRIMARY_CONFIG_FILE"):
+                dual.single.file_state_without_backup(config, owner_uid=os.getuid())
+            hardlink.unlink()
+            config.chmod(0o666)
+            with self.assertRaisesRegex(RuntimeError, "UNSAFE_PRIMARY_CONFIG_FILE"):
+                dual.single.file_state_without_backup(config, owner_uid=os.getuid())
+
+    def test_attested_reader_fails_on_mutation_during_descriptor_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / "sendmail.cf"
+            config.write_bytes(b"old payload\n")
+            config.chmod(0o600)
+            original_read = os.read
+            touched = [False]
+            def intercept_read(fd, count):
+                data = original_read(fd, count)
+                if data and not touched[0]:
+                    touched[0] = True
+                    config.write_bytes(b"new payload\n")
+                return data
+            with mock.patch.object(dual.single.os, "read",
+                                   side_effect=intercept_read):
+                with self.assertRaisesRegex(
+                        RuntimeError, "PRIMARY_CONFIG_CHANGED_DURING_READ"):
+                    dual.single.file_state_without_backup(
+                        config, owner_uid=os.getuid())
+            self.assertTrue(touched[0])
 
     def test_no_implicit_production_restore(self):
         self.assertEqual(len(dual.TARGET_NAMES), 2)

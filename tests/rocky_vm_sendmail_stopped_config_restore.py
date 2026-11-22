@@ -149,12 +149,41 @@ def atomic_write(payload, expected_current, meta, old_context, destination=CONFI
             os.unlink(name)
 
 
-def file_state_without_backup(path):
-    st = path.lstat()
-    if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or
-            st.st_nlink != 1 or st.st_mode & 0o022):
+def file_state_without_backup(path, owner_uid=0):
+    """No-follow, descriptor-attested read of a bounded primary config file.
+
+    Tests may supply their own UID for an unprivileged synthetic fixture.
+    Every real /etc/mail call uses the default root-only ownership policy.
+    """
+    if not isinstance(path, Path):
+        refuse("INVALID_CONFIG_PATH")
+    before = path.lstat()
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner_uid or
+            before.st_nlink != 1 or before.st_mode & 0o022 or
+            not 0 <= before.st_size <= 16 * 1024 * 1024):
         refuse("UNSAFE_PRIMARY_CONFIG_FILE")
-    return st, path.read_bytes()
+    identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mode,
+                          s.st_uid, s.st_gid, s.st_nlink, s.st_mtime_ns,
+                          s.st_ctime_ns)
+    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(fd)
+        if identity(before) != identity(opened):
+            refuse("PRIMARY_CONFIG_REPLACED_BEFORE_READ")
+        chunks = []
+        remaining = opened.st_size
+        while remaining:
+            part = os.read(fd, min(65536, remaining))
+            if not part:
+                refuse("PRIMARY_CONFIG_SHORT_READ")
+            chunks.append(part)
+            remaining -= len(part)
+        if (os.read(fd, 1) or identity(os.fstat(fd)) != identity(opened)
+                or identity(path.lstat()) != identity(opened)):
+            refuse("PRIMARY_CONFIG_CHANGED_DURING_READ")
+        return opened, b"".join(chunks)
+    finally:
+        os.close(fd)
 
 
 def restore_from_archive(backup, snapshot_id):
