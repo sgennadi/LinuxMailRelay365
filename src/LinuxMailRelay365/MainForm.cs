@@ -139,6 +139,7 @@ internal sealed partial class MainForm : Form
     private string tpmPlanSummary = "";
     private string hardwareOAuthSummary = "";
     private readonly CheckBox useLegacyEntraCertPowerShell = new() { AutoSize = true };
+    private readonly CheckBox useLegacyEntraSecurityPowerShell = new() { AutoSize = true };
     private EntraCertificateReview? reviewedEntraPublicCertificates;
     private string? reviewedEntraCertPlanSha;
     private string? reviewedEntraCertContext;
@@ -2162,6 +2163,12 @@ internal sealed partial class MainForm : Form
                 AddLine(page, ipRequest);
                 AddLine(page, monitoringRequest);
                 AddField(page, T("Tenant ID для необязательной проверки Entra", "Tenant ID for optional Entra check", "Tenant ID לבדיקה"), tenant);
+                useLegacyEntraSecurityPowerShell.Text = T(
+                    "Использовать старый Graph PowerShell для проверки Entra (ручной резервный способ)",
+                    "Use legacy Graph PowerShell for Entra security check (manual fallback)",
+                    "Graph PowerShell הישן עבור בדיקת Entra (חלופה ידנית)");
+                useLegacyEntraSecurityPowerShell.Enabled = !busy;
+                AddLine(page, useLegacyEntraSecurityPowerShell);
                 AddAction(page, T("Проверить возможности Entra (вход администратора, только чтение)",
                                   "Check Entra security APIs (read-only admin sign-in)",
                                   "בדוק Entra לקריאה בלבד"), CheckCloudSecurityAsync, false, "shield", "entra");
@@ -7320,6 +7327,29 @@ internal sealed partial class MainForm : Form
     {
         if (!Guid.TryParse(tenant.Text.Trim(), out var tenantId) || tenantId == Guid.Empty)
             throw new ArgumentException("Enter the exact Tenant GUID to check Entra APIs.");
+        if (!useLegacyEntraSecurityPowerShell.Checked)
+        {
+            Guid publicClient = ApprovedGraphPublicClientId();
+            string expectedTenant = tenant.Text.Trim();
+            string expectedPublicClient = entraSignInClientId.Text.Trim();
+            WriteLine("Native C# Microsoft Graph optional security check: READ ONLY, no Azure/Graph PowerShell.");
+            var result = await WithNativeMicrosoftSignInAsync((show, ct) =>
+                Microsoft365Auth.EntraGraphSecurityReadClient.InspectAsync(
+                    tenantId, publicClient, show, ct));
+            if (result.ChangesApplied || result.TenantId != tenantId ||
+                !string.Equals(expectedTenant, tenant.Text.Trim(), StringComparison.Ordinal) ||
+                !string.Equals(expectedPublicClient, entraSignInClientId.Text.Trim(), StringComparison.Ordinal))
+                throw new InvalidDataException(
+                    "Entra read-only security selection changed or response was not tenant-bound.");
+            cloudSecuritySummary = "Entra CA policy read: " + result.ConditionalAccessPolicyRead +
+                "; sign-in log read: " + result.SignInLogRead +
+                "; Workload ID Premium: " + result.WorkloadIdPremium +
+                ". No IP policy was created or enabled.";
+            WriteLine(cloudSecuritySummary);
+            RenderPage();
+            return;
+        }
+        WriteLine("Legacy Graph PowerShell 7 security check selected explicitly.");
         string path = Path.Combine(dataDirectory, "cloud-security-" + tenantId.ToString("N") + ".json");
         string script = Path.Combine(dataDirectory, "Test-LinuxMailRelay365Security.ps1");
         File.WriteAllText(script, EmbeddedAssets.CloudSecurityProbe, new UTF8Encoding(false));
