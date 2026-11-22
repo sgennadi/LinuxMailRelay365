@@ -78,7 +78,7 @@ internal sealed record GoogleSmtpAudit(
             Encoding.UTF8.GetBytes(JsonSerializer.Serialize(request)));
         // Nothing sensitive is passed as a command-line argument, environment
         // variable or file. SSH standard input is encrypted end-to-end.
-        return "set -eu\npython3 - <<'LMR365_GOOGLE_PROBE'\n" +
+        return "set +x\nset -eu\npython3 -I - <<'LMR365_GOOGLE_PROBE'\n" +
             pythonSource.Replace("# LMR365_CONFIG_MARKER",
                 "CONFIG_B64 = \"" + encoded + "\"", StringComparison.Ordinal) +
             "\nLMR365_GOOGLE_PROBE\n";
