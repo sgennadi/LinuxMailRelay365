@@ -89,7 +89,7 @@ def fingerprint_package_selinux(manifest, root=Path("/")):
     names = set(files) | set(objects)
     if (set(files) & set(objects) or
             not 1 <= len(names) <= 4096 or
-            "etc/mail" not in objects or
+            not isinstance(objects.get("etc/mail"), dict) or
             objects["etc/mail"].get("kind") != "directory"):
         refuse("INVALID_PACKAGE_LABEL_OBJECT_SET")
     digest = hashlib.sha256()
@@ -109,6 +109,17 @@ def fingerprint_package_selinux(manifest, root=Path("/")):
         if kind not in ("file", "directory", "symlink"):
             refuse("INVALID_PACKAGE_LABEL_KIND")
         path = root.joinpath(*parts)
+        # Refuse a symlink in *any* path component, including /etc itself,
+        # before observing final-object labels. Never traverse an alias.
+        parent = root
+        for part in parts[:-1]:
+            parent = parent / part
+            try:
+                parent_st = parent.lstat()
+            except OSError:
+                refuse("PACKAGE_LABEL_PARENT_UNAVAILABLE")
+            if not stat.S_ISDIR(parent_st.st_mode):
+                refuse("PACKAGE_LABEL_PARENT_NOT_DIRECTORY")
         try:
             before = path.lstat()
         except OSError:
