@@ -162,41 +162,49 @@ def systemctl(*args, allow_inactive=False):
                             universal_newlines=True, check=False)
     if len(result.stdout) > 4096:
         raise Refused("systemd_output_unbounded")
-    if result.returncode == 0:
-        return True
-    if not allow_inactive:
-        raise Refused("systemd_command_refused")
-    # systemctl --quiet conflates "inactive/disabled" with daemon errors,
-    # missing unit definitions, masked/failed units and unexpected states.
-    # Fail closed unless a SECOND, explicit property query proves safety.
+
+    # A zero exit status also needs verification: is-active/is-enabled may
+    # describe a foreign, stale or transient unit with our exact unit name.
+    # The command's status and all independently read unit properties must
+    # agree before we accept either the positive or negative answer.
     checks = {
-        ("is-active", "--quiet", TIMER.name): ("ActiveState", "inactive"),
-        ("is-active", "--quiet", SERVICE.name): ("ActiveState", "inactive"),
-        ("is-enabled", "--quiet", TIMER.name): ("UnitFileState", "disabled"),
+        ("is-active", "--quiet", TIMER.name):
+            ("ActiveState", "active", "inactive", TIMER),
+        ("is-active", "--quiet", SERVICE.name):
+            ("ActiveState", "active", "inactive", SERVICE),
+        ("is-enabled", "--quiet", TIMER.name):
+            ("UnitFileState", "enabled", "disabled", TIMER),
     }
-    expectation = checks.get(args)
-    if expectation is None:
-        raise Refused("unsupported_inactive_systemd_probe")
-    prop, required = expectation
-    # show may report inactive even when the unit is not found. Attest that
-    # systemd has loaded OUR unchanged unit, not a missing/transient alias.
-    expected_path = TIMER if args[-1] == TIMER.name else SERVICE
-    properties = (
-        (prop, required),
-        ("LoadState", "loaded"),
-        ("FragmentPath", str(expected_path)),
-        ("NeedDaemonReload", "no"),
-    )
-    for name, expected in properties:
-        state = subprocess.run(
-            [SYSTEMCTL, "show", "--property=" + name, "--value", args[-1]],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL, timeout=40,
-            universal_newlines=True, check=False)
-        if (state.returncode != 0 or len(state.stdout) > 256 or
-                state.stdout != expected + "\n"):
-            raise Refused("unverifiable_inactive_or_disabled_systemd_unit")
-    return False
+    check = checks.get(args)
+    if check is not None:
+        if result.returncode != 0 and not allow_inactive:
+            raise Refused("systemd_command_refused")
+        prop, positive, negative, expected_path = check
+        required = positive if result.returncode == 0 else negative
+        properties = (
+            (prop, required),
+            ("LoadState", "loaded"),
+            ("FragmentPath", str(expected_path)),
+            ("NeedDaemonReload", "no"),
+        )
+        for name, expected in properties:
+            state = subprocess.run(
+                [SYSTEMCTL, "show", "--property=" + name, "--value", args[-1]],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, timeout=40,
+                universal_newlines=True, check=False)
+            if (state.returncode != 0 or len(state.stdout) > 256 or
+                    state.stdout != expected + "\n"):
+                raise Refused("unverifiable_systemd_unit_state")
+        return result.returncode == 0
+
+    # Never allow a new or unexpected status query to bypass unit-identity
+    # checks just because systemctl reports success.
+    if args and args[0] in ("is-active", "is-enabled"):
+        raise Refused("unsupported_systemd_status_probe")
+    if result.returncode != 0:
+        raise Refused("systemd_command_refused")
+    return True
 
 
 def attest():
