@@ -91,18 +91,18 @@ class MailBindingTests(unittest.TestCase):
 
     def test_configured_nonstandard_port_is_in_live_socket_report(self):
         data = audit.scan_sockets(
-            "LISTEN 0 128 127.0.0.1:2526 0.0.0.0:*\\n",
+            "LISTEN 0 128 127.0.0.1:2526 0.0.0.0:*\n",
             2525, configured_ports=(2526,))
         self.assertIsNotNone(data)
         self.assertEqual(data[0], ["127.0.0.1:2526"])
         self.assertEqual(audit.scan_sockets(
-            "LISTEN 0 128 127.0.0.1:2526 0.0.0.0:*\\n", 2525)[0], [])
+            "LISTEN 0 128 127.0.0.1:2526 0.0.0.0:*\n", 2525)[0], [])
 
     def test_cli_rejects_untrusted_configured_port_instead_of_guessing(self):
         import subprocess
         import sys
         script = str(ROOT / "linux" / "audit-mail-bindings.py")
-        for value in ("0", "65536", "25,0", "25;whoami", "2526\\n25"):
+        for value in ("0", "65536", "25,0", "25;whoami", "2526\n25"):
             result = subprocess.run(
                 [sys.executable, script, "--self-test", "--configured-ports", value],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
