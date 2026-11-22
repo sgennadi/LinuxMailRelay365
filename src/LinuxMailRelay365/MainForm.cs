@@ -1234,7 +1234,9 @@ internal sealed partial class MainForm : Form
         page.MaximumSize = Size.Empty;
         page.Dock = DockStyle.Top;
         page.Padding = new Padding(12, 4, 12, 12);
-        int availableWidth = Math.Max(285, pageHost.ClientSize.Width - 34);
+        int availableWidth = Math.Max(260,
+            Math.Min(page.Width, pageHost.ClientSize.Width - 22) -
+            page.Padding.Horizontal - 8);
         var cards = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -1313,10 +1315,11 @@ internal sealed partial class MainForm : Form
             }
         }
 
-        AddLine(form, UiTheme.Text(T(
-            "Подключение проверяется кнопкой внизу окна. Пароли не сохраняются.",
-            "Use the fixed button below to verify SSH. Passwords are never saved.",
-            "בדיקת החיבור נעשית בכפתור בתחתית החלון. סיסמאות אינן נשמרות.")));
+        AddConnectionHelp(form, T(
+            "Проверка SSH — кнопкой внизу окна. Пароли не сохраняются.",
+            "Use the button below to check SSH. Passwords are not saved.",
+            "בדיקת SSH בכפתור למטה. הסיסמאות אינן נשמרות."),
+            availableWidth - 64);
 
         // Keep advanced SSH functionality, but make the main form breathable.
         // It remains reachable without a separate tab, scroll trap or popup.
