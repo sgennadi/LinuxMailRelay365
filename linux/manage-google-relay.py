@@ -233,8 +233,10 @@ def apply(request):
     try:
         # The exact newly chosen destination, never a hard-coded 2525 listener.
         if profile == "gmail":
-            prepare_gmail_map(request)
+            # An interrupted map write can leave a new credential database.
+            # Mark this transaction as modified before touching that path.
             changed = True
+            prepare_gmail_map(request)
             update_postconf("smtp_sasl_password_maps",
                             "hash:/etc/postfix/lmr365-google-sasl")
             update_postconf("smtp_sasl_auth_enable", "yes")
