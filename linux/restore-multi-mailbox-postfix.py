@@ -29,6 +29,12 @@ Refused = install.Refused
 BACKUP_ID = re.compile(r"\Apre-multi-[A-Za-z0-9_-]{8}\Z")
 CONFIRM = "RESTORE_MULTI_MAILBOX_OFFLINE"
 PROOF = Path("/etc/linuxmailrelay365/oauth-ingress-proof.json")
+# Route Restore must NOT strand any root-owned proof-renewal timer.
+TIMER_ARTIFACTS = (
+    Path("/etc/systemd/system/linuxmailrelay365-multi-proof.service"),
+    Path("/etc/systemd/system/linuxmailrelay365-multi-proof.timer"),
+    Path("/var/lib/linuxmailrelay365-multi-proof-timer"),
+)
 SAFETY_PREFIX = "pre-restore-"
 
 
@@ -122,7 +128,13 @@ def checked_record():
     return info, raw, record, backup_dir, original
 
 
+def require_proof_timer_absent():
+    if any(path.exists() or path.is_symlink() for path in TIMER_ARTIFACTS):
+        raise Refused("multi_ingress_timer_must_be_disabled_before_restore")
+
+
 def preview():
+    require_proof_timer_absent()
     marker_stat, marker_bytes, record, backup_dir, original = checked_record()
     current = {}
     for filename in ("main.cf", "master.cf"):

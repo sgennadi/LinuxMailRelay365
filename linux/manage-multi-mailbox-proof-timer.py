@@ -29,7 +29,8 @@ SERVICE = Path("/etc/systemd/system/linuxmailrelay365-multi-proof.service")
 TIMER = Path("/etc/systemd/system/linuxmailrelay365-multi-proof.timer")
 STATE_ROOT = Path("/var/lib/linuxmailrelay365-multi-proof-timer")
 STATE = STATE_ROOT / "state.json"
-LOCK = Path("/run/linuxmailrelay365-multi-proof-timer.lock")
+LOCK = Path("/run/linuxmailrelay365-sidecar-auth.lock")
+# Share the existing offline route lock with Restore/Apply/Acceptance.
 SYSTEMCTL = "/usr/bin/systemctl"
 SHA = re.compile(r"\A[a-f0-9]{64}\Z")
 NAME = re.compile(r"\A[A-Za-z0-9_.-]+\.py\Z")

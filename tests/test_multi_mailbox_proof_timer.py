@@ -317,6 +317,14 @@ class OptionalProofTimerTests(unittest.TestCase):
                 self.assertEqual(ctl.call_args_list[0].args[0], "disable")
                 self.assertEqual(ctl.call_args_list[1].args[0], "stop")
 
+    def test_timer_uses_shared_multi_route_lock(self):
+        source = SOURCE.read_text(encoding="utf-8")
+        self.assertIn('LOCK = Path("/run/linuxmailrelay365-sidecar-auth.lock")', source)
+        restore = (ROOT / "linux/restore-multi-mailbox-postfix.py").read_text(
+            encoding="utf-8")
+        self.assertIn("multi_ingress_timer_must_be_disabled_before_restore", restore)
+        self.assertIn("require_proof_timer_absent()", restore)
+
     def test_windows_stage_contains_manager_but_not_autostart(self):
         embedded = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text()
         project = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text()

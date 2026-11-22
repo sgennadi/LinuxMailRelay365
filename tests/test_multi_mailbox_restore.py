@@ -118,6 +118,9 @@ class MultiMailboxRestoreTests(unittest.TestCase):
         self.inject(install, "RUNTIME", self.runtime)
         self.inject(install, "LOCK", self.lock)
         self.inject(restore, "PROOF", self.proof)
+        self.inject(restore, "TIMER_ARTIFACTS", (
+            self.root / "timer.service", self.root / "timer.timer",
+            self.root / "timer-state"))
         self.inject(install, "secure_dir", lambda path: None)
         self.inject(install, "read", permissive_fixture_reader)
         self.inject(restore.os, "geteuid", lambda: 0)
@@ -146,6 +149,32 @@ class MultiMailboxRestoreTests(unittest.TestCase):
         p = mock.patch.object(obj, key, value)
         p.start()
         self.addCleanup(p.stop)
+
+    def test_active_timer_artifacts_refuse_restore_before_looking_at_snapshot(self):
+        for artifact in restore.TIMER_ARTIFACTS:
+            with self.subTest(artifact=str(artifact)):
+                # Existing unit file, state directory, or broken symlink
+                # means the renewal timer must be disabled first.
+                artifact.symlink_to(self.root / "nonexistent-timer")
+                with mock.patch.object(restore, "checked_record") as checked:
+                    with self.assertRaisesRegex(
+                            restore.Refused,
+                            "multi_ingress_timer_must_be_disabled_before_restore"):
+                        restore.preview()
+                    checked.assert_not_called()
+                artifact.unlink()
+        self.assertEqual(len(restore.preview()["sha"]), 64)
+
+    def test_restore_apply_refuses_when_timer_exists_without_modifying_mail(self):
+        state = restore.preview()
+        timerunit = restore.TIMER_ARTIFACTS[1]
+        timerunit.write_text("experimental\n", encoding="ascii")
+        with self.assertRaisesRegex(
+                restore.Refused, "multi_ingress_timer_must_be_disabled_before_restore"):
+            restore.apply_offline(state["sha"], self.backup_id, restore.CONFIRM)
+        self.assertEqual((self.conf / "main.cf").read_bytes(), self.installed["main.cf"])
+        self.assertTrue(self.active.is_file())
+        self.assertFalse(list(self.recovery.glob("pre-restore-*")))
 
     def test_readonly_preview_binds_exact_active_state_and_archive(self):
         before = self.active.read_bytes()

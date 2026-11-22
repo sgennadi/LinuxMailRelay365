@@ -151,6 +151,14 @@ installer or Wizard.
 
 ## Offline Multi-mailbox Restore (experimental)
 
+**Before Preview or Restore, disable the optional experimental ingress-proof
+renewal timer and revoke its receipt.** The restore tool refuses operation if
+the managed service unit, timer unit or timer state directory exists (including
+a symlink). The timer manager and route Restore share the root-only
+`/run/linuxmailrelay365-sidecar-auth.lock` so an operator cannot enable or
+disable timer units concurrently with configuration recovery.
+
+
 The installer now writes a root-only (0600) active marker under
 /var/backups/linuxmailrelay365-multi-oauth/active.json **only after** a
 successful Postfix configuration check. The marker contains the SHA-256
