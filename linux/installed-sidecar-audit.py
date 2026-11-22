@@ -452,7 +452,7 @@ def main():
     parser.add_argument("--smtp-port", type=int, required=True)
     parser.add_argument("--no-live-probe", action="store_true")
     args = parser.parse_args()
-    if not 1024 <= args.smtp_port <= 65535:
+    if not (args.smtp_port == 25 or 1024 <= args.smtp_port <= 65535):
         parser.error("Custom SMTP port must be 1024-65535")
     findings = audit(args.smtp_port, live=not args.no_live_probe)
     for key, value in findings.items():
