@@ -138,8 +138,8 @@ internal sealed partial class MainForm
                 "Google Workspace SMTP relay: smtp-relay.gmail.com · TCP 25/465/587. Google Admin must authorize the sender/IP or SMTP authentication. Open TCP/TLS alone does not prove relay permission.",
                 "Google Workspace ממסר: יש לאשר IP או SMTP AUTH ב-Google Admin.")
             : TranslateMailFlow(l,
-                "Gmail SMTP: smtp.gmail.com · предпочтительно 587 STARTTLS или 465 TLS. Для проверки входа используйте App Password (если разрешён) или OAuth2; обычный пароль аккаунта не рекомендуется.",
-                "Gmail SMTP: smtp.gmail.com · use 587 STARTTLS or 465 TLS. Authenticate with an App Password where available, or OAuth2; do not enter a normal Google account password.",
+                "Gmail SMTP: smtp.gmail.com · 587 STARTTLS или 465 TLS. Сейчас поддержан App Password (если разрешён). Gmail OAuth2 пока не реализован; обычный пароль аккаунта использовать не следует.",
+                "Gmail SMTP: smtp.gmail.com · use 587 STARTTLS or 465 TLS. App Password is supported where available; Gmail OAuth2 is not yet implemented. Do not enter your normal Google password.",
                 "Gmail SMTP: יציאות 587/465, סיסמת אפליקציה או OAuth2."),
             width));
 
