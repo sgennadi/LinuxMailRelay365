@@ -145,6 +145,7 @@ class GooglePostfixRouteTests(unittest.TestCase):
         base = {
             "default_transport": "smtp",
             "smtp_tls_secure_cert_match": "nexthop, dot-nexthop",
+            "smtp_sender_dependent_authentication": "no",
         }
         def conflicts(overrides):
             values = dict(base, **overrides)
@@ -164,6 +165,11 @@ class GooglePostfixRouteTests(unittest.TestCase):
             with self.subTest(parameter=key):
                 self.assertTrue(conflicts({key: "hash:/etc/postfix/custom"}))
         self.assertTrue(conflicts({"default_transport": "error"}))
+        self.assertTrue(conflicts({
+            "smtp_sasl_password_maps": "hash:/etc/postfix/legacy-sasl"}))
+        self.assertFalse(conflicts({
+            "smtp_sasl_password_maps": "hash:/etc/postfix/lmr365-google-sasl"}))
+        self.assertTrue(conflicts({"smtp_sender_dependent_authentication": "yes"}))
         self.assertTrue(conflicts({"smtp_tls_secure_cert_match": "hostname"}))
         self.assertTrue(conflicts({"smtp_tls_secure_cert_match": ""}))
 
