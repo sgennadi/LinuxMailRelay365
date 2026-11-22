@@ -228,7 +228,10 @@ internal static class MailRoutingPlanStore
                 defaults.SenderPolicy != "fixed-mailbox" ||
                 defaults.OAuthSenderMode != "fixed-mailbox" || defaults.OAuthSenderMapPath != "" ||
                 !defaults.PreserveExistingMail || defaults.SidecarPort != 2525 ||
-                defaults.PublicInternetRequested || defaults.ShowAdvancedSmtpTools) return false;
+                defaults.PublicInternetRequested || defaults.ShowAdvancedSmtpTools ||
+                defaults.MailSource != MailFlowIntent.Unknown ||
+                defaults.MigrationScenario != MailScenarioPlanner.Choose ||
+                defaults.Destination != MailFlowIntent.TargetM365) return false;
             Save(folder, b, new MailRoutingPlan { PublicInternetRequested = true,
                 PrivateSmtpServerName = "smtp-b.example.org", ShowAdvancedSmtpTools = true });
             if (!Load(folder, b).PublicInternetRequested ||
@@ -260,6 +263,26 @@ internal static class MailRoutingPlanStore
                 OAuthSenderMode = "authorized-multiple-mailboxes" }); return false;
             } catch (InvalidDataException) { }
             try { Validate(new MailRoutingPlan { RecipientScope = "invalid" }); return false; }
+            catch (InvalidDataException) { }
+            Save(folder, a, new MailRoutingPlan
+            {
+                MailSource = MailFlowIntent.Jobs,
+                MigrationScenario = MailScenarioPlanner.ReplaceRelay,
+                Destination = MailFlowIntent.TargetCustom,
+                CustomUpstreamHost = "smtp-relay.example.org",
+                CustomUpstreamPort = 465
+            });
+            if (Load(folder, a).MailSource != MailFlowIntent.Jobs ||
+                Load(folder, a).MigrationScenario != MailScenarioPlanner.ReplaceRelay ||
+                Load(folder, a).CustomUpstreamHost != "smtp-relay.example.org" ||
+                Load(folder, a).CustomUpstreamPort != 465) return false;
+            try { Validate(new MailRoutingPlan { MailSource = "product-specific" }); return false; }
+            catch (InvalidDataException) { }
+            try { Validate(new MailRoutingPlan { Destination = "unrecognized" }); return false; }
+            catch (InvalidDataException) { }
+            try { Validate(new MailRoutingPlan { CustomUpstreamHost = "name;shutdown" }); return false; }
+            catch (InvalidDataException) { }
+            try { Validate(new MailRoutingPlan { CustomUpstreamPort = 0 }); return false; }
             catch (InvalidDataException) { }
             Save(folder, b, new MailRoutingPlan { RecipientScope = "external-needed" });
             if (Load(folder, b).RecipientScope != "external-needed") return false;
