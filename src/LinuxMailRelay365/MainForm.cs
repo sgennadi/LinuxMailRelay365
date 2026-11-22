@@ -338,7 +338,7 @@ internal sealed class MainForm : Form
                 AddAction(page, T("Проверить TPM, HSM и PKCS#11 (только чтение)",
                                   "Inspect TPM, HSM and PKCS#11 (read-only)",
                                   "בדוק TPM/HSM לקריאה בלבד"), CheckLinuxSecurityAsync, true, "shield", "linux-security");
-                AddLine(page, UiTheme.Text(linuxSecurity?.SummaryRu() ??
+                AddLine(page, UiTheme.Text(linuxSecurity?.Summary(language.SelectedIndex) ??
                     T("Linux: проверка ещё не запускалась.", "Linux: not inspected yet.", "Linux: טרם נבדק.")));
                 hardwareRequest.Text = T("Запланировать аппаратную защиту ключа (TPM/HSM) — не активировано",
                                          "Plan TPM/HSM-backed key — NOT active",
