@@ -100,33 +100,33 @@ jobs:
     timeout-minutes: 22
     steps:
       - uses: actions/checkout@v5
-      - name: Install Postfix packages on pristine Ubuntu with primary MTA disabled
+      - name: Install Postfix on clean Ubuntu, primary MTA disabled and TCP25 free
         shell: bash
         run: |
           set -euo pipefail
-          python3 linux/prepare-clean-postfix.py --check-only --smtp-port 2525 > /tmp/lmr365-clean-preview
+          python3 linux/prepare-clean-postfix.py --check-only --smtp-port 25 > /tmp/lmr365-clean-preview
           cat /tmp/lmr365-clean-preview
           grep -Fxq 'CLEAN_POSTFIX_BOOTSTRAP_READY=yes' /tmp/lmr365-clean-preview
           plan="$(sed -n 's/^CLEAN_POSTFIX_PLAN_SHA256=//p' /tmp/lmr365-clean-preview)"
           [[ "$plan" =~ ^[a-f0-9]{64}$ ]]
-          sudo python3 linux/prepare-clean-postfix.py --apply --smtp-port 2525 \
+          sudo python3 linux/prepare-clean-postfix.py --apply --smtp-port 25 \
             --expected-plan-sha256 "$plan" --confirm INSTALL_CLEAN_POSTFIX_PACKAGES \
             > /tmp/lmr365-clean-result
           grep -Fxq 'CLEAN_POSTFIX_PACKAGES_PREPARED=yes' /tmp/lmr365-clean-result
           grep -Fxq 'PRIMARY_POSTFIX_SERVICE=disabled' /tmp/lmr365-clean-result
-          sudo python3 linux/prepare-clean-postfix.py --verify-prepared --smtp-port 2525 \
+          sudo python3 linux/prepare-clean-postfix.py --verify-prepared --smtp-port 25 \
             > /tmp/lmr365-clean-verify
           grep -Fxq 'CLEAN_POSTFIX_PREPARED_VERIFIED=yes' /tmp/lmr365-clean-verify
           grep -Fxq 'POSTFIX_PRIMARY_STARTED=no' /tmp/lmr365-clean-verify
           test "$(systemctl is-active postfix.service 2>/dev/null || true)" != active
-          ! ss -H -lnt | grep -E ':(25|465|587|2525)[[:space:]]'
+          ! ss -H -lnt | grep -E ':(25|465|587|25)[[:space:]]'
           echo 'CLEAN_POSTFIX_UBUNTU_PACKAGE_BOOTSTRAP=passed_real_systemd'
-      - name: Install isolated Direct Send using ONLY the prepared Postfix package
+      - name: Install isolated Direct Send on TCP25 without starting primary Postfix
         shell: bash
         run: |
           set -euo pipefail
           sudo bash linux/install-direct-send-sidecar.sh --apply \
-            --smtp-port 2525 \
+            --smtp-port 25 \
             --mx-host example-org.mail.protection.outlook.com \
             --accepted-domain example.org --fixed-sender alerts@example.org \
             --confirm-accepted-domain TENANT_DOMAIN_CHECKED \
@@ -135,16 +135,16 @@ jobs:
           grep -Fxq 'PRIMARY_POSTFIX_CONFIG_UNCHANGED=yes' /tmp/lmr365-clean-isolated
           systemctl is-active --quiet linuxmailrelay365-sidecar.service
           test "$(systemctl is-active postfix.service 2>/dev/null || true)" != active
-          ss -H -lnt | grep -E '127[.]0[.]0[.]1:2525[[:space:]]'
-          ! ss -H -lnt | grep -E ':(25|465|587)[[:space:]]'
+          ss -H -lnt | grep -E '127[.]0[.]0[.]1:25[[:space:]]'
+          ! ss -H -lnt | grep -E ':(465|587|2525)[[:space:]]'
           # The clean bootstrap marker is no longer authority to install a
-          # second gateway once port 2525 has become a live SMTP listener.
-          if sudo python3 linux/prepare-clean-postfix.py --verify-prepared --smtp-port 2525 \
+          # second gateway once port 25 has become a live SMTP listener.
+          if sudo python3 linux/prepare-clean-postfix.py --verify-prepared --smtp-port 25 \
               > /tmp/lmr365-replay 2>&1; then
             echo 'ERROR: clean-bootstrap marker could be reused after sidecar install' >&2
             exit 1
           fi
-          echo 'CLEAN_POSTFIX_TO_ISOLATED_DIRECT_SEND=passed_no_messages_sent'
+          echo 'CLEAN_POSTFIX_TO_ISOLATED_DIRECT_SEND_PORT25=passed_no_messages_sent'
 
   ubuntu-native-foreign-mta-smoke:
     # Actual Debian-packaged Exim and Sendmail CLI checks on separate
