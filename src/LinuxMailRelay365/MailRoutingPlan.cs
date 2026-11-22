@@ -21,6 +21,11 @@ internal sealed class MailRoutingPlan
     // to alter an existing active MTA.
     public string MailSource { get; set; } = MailFlowIntent.Unknown;
     public string MigrationScenario { get; set; } = MailScenarioPlanner.Choose;
+    public string Destination { get; set; } = MailFlowIntent.TargetM365;
+    // Nonsecret planning data only. No SMTP passwords or authorization grants
+    // and no generic SMTP smarthost deployment is implied.
+    public string CustomUpstreamHost { get; set; } = "";
+    public int CustomUpstreamPort { get; set; } = 587;
     public string SenderPolicy { get; set; } = "fixed-mailbox";
     // Operator intent only. Multi-mailbox XOAUTH2 is NOT applied until
     // authenticated sender ownership and Exchange rights are validated.
@@ -126,8 +131,16 @@ internal static class MailRoutingPlanStore
         if (state.RecipientScope is not ("unknown" or "internal-only" or "external-needed"))
             throw new InvalidDataException("Invalid recipient scope.");
         if (!MailFlowIntent.Supported(state.MailSource) ||
-            !MailScenarioPlanner.Supported(state.MigrationScenario))
-            throw new InvalidDataException("Unknown mail source or migration scenario.");
+            !MailScenarioPlanner.Supported(state.MigrationScenario) ||
+            !MailFlowIntent.SupportedTarget(state.Destination))
+            throw new InvalidDataException("Unknown mail source, destination or migration scenario.");
+        if (state.CustomUpstreamPort is < 1 or > 65535 ||
+            state.CustomUpstreamHost.Length > 253 ||
+            (state.CustomUpstreamHost.Length > 0 &&
+             !Regex.IsMatch(state.CustomUpstreamHost,
+                @"\A[A-Za-z0-9](?:[A-Za-z0-9.\-]{0,251}[A-Za-z0-9])?\z",
+                RegexOptions.CultureInvariant)))
+            throw new InvalidDataException("Invalid custom upstream SMTP host or outbound port.");
         if (state.Transport is not ("oauth2" or "connector" or "direct-send") ||
             state.SenderPolicy is not ("fixed-mailbox" or "preserve-domain" or "masquerade") ||
             state.OAuthSenderMode is not ("fixed-mailbox" or "authorized-multiple-mailboxes"))
