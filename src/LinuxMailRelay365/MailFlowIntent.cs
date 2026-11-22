@@ -46,14 +46,18 @@ internal static class MailFlowIntent
     {
         if (!Supported(source)) throw new ArgumentOutOfRangeException(nameof(source));
         if (!SupportedTarget(destination)) throw new ArgumentOutOfRangeException(nameof(destination));
-        bool postfix = inventory.Mta == "postfix" && audit.Mta == "postfix";
+        bool postfix = inventory.Mta == "postfix" && audit.Mta == "postfix" &&
+            host.MtaState == "active";
         bool unsafeRelay = audit.SuspectedUnsafeRelay;
         bool local = source is Local or Jobs;
         bool smtpClients = source is Smtp or Mixed;
         bool needsAudience = recipients == "unknown";
         string review = T(language, "Нужна проверка", "Inspection required", "נדרשת בדיקה");
-        string preliminary = T(language, "Кандидат · права M365 не проверены",
-            "Candidate · M365 rights not verified", "מועמד · זכויות M365 לא אומתו");
+        string preliminary = destination == TargetM365
+            ? T(language, "Кандидат · права M365 не проверены",
+                "Candidate · M365 rights not verified", "מועמד · זכויות M365 לא אומתו")
+            : T(language, "Кандидат · SMTP/TLS/AUTH не проверены",
+                "Candidate · SMTP/TLS/AUTH not verified", "מועמד · TLS ואימות לא אומתו");
         string safe = T(language, "Без изменений", "No changes", "ללא שינוי");
 
         string destinationName = destination == TargetM365
@@ -71,10 +75,15 @@ internal static class MailFlowIntent
         options.Add(new(MailScenarioPlanner.ReplaceRelay,
             T(language, "Заменить исходящий маршрут → ", "Replace outbound route → ", "החלף ניתוב יוצא → ") +
                 destinationName,
-            postfix ? T(language,
-                "Оставить локальных отправителей, Postfix и входящий SMTP. Заменить только исходящий upstream после проверки M365 и backup.",
-                "Keep local senders, Postfix and inbound SMTP. Change only the outbound upstream after M365 checks and backup.",
-                "שמור שולחים מקומיים ו-Postfix; שנה רק ניתוב יוצא לאחר בדיקות וגיבוי.")
+            postfix ? (smtpClients && audit.PublicBind == "loopback_only"
+                ? T(language,
+                    "SMTP сейчас слушает только loopback. Смена upstream НЕ откроет доступ сетевым приложениям — потребуется отдельная проверка входящего listener/firewall.",
+                    "Current SMTP is loopback-only. Changing the upstream will NOT enable network clients; separately inspect inbound listeners and firewall.",
+                    "ההאזנה המקומית אינה מאפשרת גישת לקוחות רשת ללא שינוי נפרד.")
+                : T(language,
+                    "Сохранить локальные отправители, Postfix и входящий SMTP. Заменить только исходящий upstream после проверки назначения и backup.",
+                    "Keep local senders, Postfix and inbound SMTP. Change only the upstream after checking destination and backup.",
+                    "שמור שולחים מקומיים ו-Postfix; שנה רק ניתוב יוצא לאחר בדיקות וגיבוי."))
                 : T(language,
                 "Автоматическая замена upstream на этом MTA пока не поддержана. Основной MTA не будет заменён.",
                 "In-place upstream migration for this MTA is not implemented; it will not be silently replaced.",
