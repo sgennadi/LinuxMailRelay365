@@ -1539,6 +1539,7 @@ internal sealed partial class MainForm : Form
         {
             int index = mode;
             bool selected = mailTransport.SelectedIndex == mode;
+            bool incompatibleWithRecipients = mode == 2 && recipientScope.SelectedIndex == 2;
             var tile = new Button
             {
                 Text = labels[mode],
@@ -1557,9 +1558,10 @@ internal sealed partial class MainForm : Form
                 Cursor = Cursors.Hand,
                 AccessibleName = labels[mode].Replace('\n', ' '),
                 AccessibleDescription = DeliveryModeOverview.Describe(mode,
-                    language.SelectedIndex, oauthSenderMode.SelectedIndex == 1).Safety,
+                    language.SelectedIndex, oauthSenderMode.SelectedIndex == 1).Safety +
+                    (incompatibleWithRecipients ? " Direct Send cannot deliver to external recipients." : ""),
                 TabStop = !busy,
-                Enabled = !busy
+                Enabled = !busy && !incompatibleWithRecipients
             };
             tile.FlatAppearance.BorderColor = selected
                 ? UiTheme.Accent : Color.FromArgb(205, 217, 230);
