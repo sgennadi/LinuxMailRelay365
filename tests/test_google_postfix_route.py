@@ -61,16 +61,19 @@ class GooglePostfixRouteTests(unittest.TestCase):
             master = pathlib.Path(folder) / "master.cf"
             main.write_text("relayhost=[old.example]:587\n")
             master.write_text("smtp inet n - y - - smtpd\n")
+            real_stat = pathlib.Path.stat
+            def root_stat(file, *args, **kwargs):
+                from types import SimpleNamespace
+                original = real_stat(file, *args, **kwargs)
+                return SimpleNamespace(st_uid=0, st_mode=original.st_mode)
             with mock.patch.object(mod, "MAIN", main), \
                  mock.patch.object(mod, "MASTER", master), \
-                 mock.patch.object(mod.os, "geteuid", return_value=0), \
-                 mock.patch.object(pathlib.Path, "stat", autospec=True) as stat_mock:
-                # Simulate root-owned files without changing the container's uid.
-                original_stat = pathlib.Path.stat
-                def local_stat(file, **kwargs):
-                    return original_stat(file, **kwargs)
-                # No need for platform fakes on root-owned CI containers.
-            self.assertNotEqual(main.read_bytes(), master.read_bytes())
+                 mock.patch.object(pathlib.Path, "stat", side_effect=root_stat):
+                before = mod.fingerprint()
+                main.write_text("relayhost=[new.example]:465\n")
+                after = mod.fingerprint()
+            self.assertEqual(len(before), 64)
+            self.assertNotEqual(before, after)
 
     def test_preview_blocks_nonempty_queue_and_transport_maps(self):
         request = self.request(profile="workspace", port=587)
