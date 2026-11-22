@@ -65,7 +65,11 @@ internal sealed class MailHostInspection
         bool possibleState = ports is ("unverified" or "dynamic_or_unverified" or
             "none_configured") || Regex.IsMatch(ports,
             @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z", RegexOptions.CultureInvariant);
-        if (!possibleSource || !possibleState ||
+        bool sourceMatchesMta = source == "unverified" ||
+            (source == "postfix_master_cf" && values["MAIL_HOST_MTA"] == "postfix") ||
+            (source == "exim_daemon_smtp_ports" && values["MAIL_HOST_MTA"] == "exim") ||
+            (source == "sendmail_cf" && values["MAIL_HOST_MTA"] == "sendmail");
+        if (!possibleSource || !possibleState || !sourceMatchesMta ||
             (source == "unverified" && ports != "unverified") ||
             (ports is not ("unverified" or "dynamic_or_unverified" or "none_configured") &&
              ports.Split(',').Any(x => !int.TryParse(x, out int n) || n > 65535)))
@@ -359,6 +363,8 @@ internal sealed class MailHostInspection
             configured.ConfiguredSmtpPorts().Count != 2 ||
             configured.ConfiguredSmtpPorts()[1] != 2525) return false;
         try { Parse(configPorts.Replace("25,2525", "25,0")); return false; }
+        catch (InvalidDataException) { }
+        try { Parse(configPorts.Replace("postfix_master_cf", "sendmail_cf")); return false; }
         catch (InvalidDataException) { }
         try { Parse(exim.Replace("MAIL_HOST_EXIM_BIND_POLICY=loopback_declared",
             "MAIL_HOST_EXIM_BIND_POLICY=unsafe_verified")); return false; }
