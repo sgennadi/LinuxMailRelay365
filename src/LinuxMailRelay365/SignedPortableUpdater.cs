@@ -107,11 +107,16 @@ internal static class SignedPortableUpdater
         return aTags.Length.CompareTo(bTags.Length);
     }
 
+    // Unsigned update policy covers only numbered Preview/RC packages.
+    // Stable releases and signed apps do not use this deliberately weaker path.
+    private static bool IsUnsignedTestVersion(string version) =>
+        Regex.IsMatch(version,
+            @"\A(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(?:preview|rc)\.(0|[1-9]\d*)\z",
+            RegexOptions.CultureInvariant);
+
     internal static bool IsPreviewRelease(SignedUpdateOffer offer) =>
-        Regex.IsMatch(offer.Tag,
-            @"\Av(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-preview\.(0|[1-9]\d*)\z",
-            RegexOptions.CultureInvariant) &&
-        string.Equals(offer.Tag[1..], offer.Version, StringComparison.Ordinal) &&
+        IsUnsignedTestVersion(offer.Version) &&
+        string.Equals(offer.Tag, "v" + offer.Version, StringComparison.Ordinal) &&
         CompareVersions(offer.Version, UpdateCheck.Version) > 0;
 
     internal static SignedUpdateOffer? SelectRelease(
@@ -271,9 +276,9 @@ internal static class SignedPortableUpdater
     {
         whyNot = "";
         if (!OperatingSystem.IsWindows() ||
-            !UpdateCheck.Version.Contains("-preview.", StringComparison.Ordinal))
+            !IsUnsignedTestVersion(UpdateCheck.Version))
         {
-            whyNot = "Unsigned Preview updates require a Windows Preview build.";
+            whyNot = "Unsigned Preview/RC updates require a Windows Preview/RC build.";
             return false;
         }
         string? path = Environment.ProcessPath;
@@ -288,7 +293,7 @@ internal static class SignedPortableUpdater
         {
             if (!IsNonElevatedWindowsProcess())
             {
-                whyNot = "Unsigned Preview updating is blocked when elevated. Restart the GUI without administrator rights.";
+                whyNot = "Unsigned Preview/RC updating is blocked when elevated. Restart the GUI without administrator rights.";
                 return false;
             }
             RejectLinks(path);
@@ -296,7 +301,7 @@ internal static class SignedPortableUpdater
                 !CorrectVersion(path, UpdateCheck.Version) ||
                 VerifiedPublisher(path) is not null)
             {
-                whyNot = "The current Preview is signed, changed or has the wrong architecture.";
+                whyNot = "The current test build is signed, changed or has the wrong architecture.";
                 return false;
             }
             return true;
@@ -304,7 +309,7 @@ internal static class SignedPortableUpdater
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or
             CryptographicException or ArgumentException or System.Security.SecurityException)
         {
-            whyNot = "Current Preview executable could not be verified.";
+            whyNot = "Current Preview/RC executable could not be verified.";
             return false;
         }
     }
@@ -803,10 +808,8 @@ internal static class SignedPortableUpdater
                 : Digest(args[4])) ||
             !VersionPattern.IsMatch(args[6]) ||
             (unsignedPreview &&
-                (!UpdateCheck.Version.Contains("-preview.", StringComparison.Ordinal) ||
-                 !Regex.IsMatch(args[6],
-                     @"\A\d+\.\d+\.\d+-preview\.(0|[1-9]\d*)\z",
-                     RegexOptions.CultureInvariant) ||
+                (!IsUnsignedTestVersion(UpdateCheck.Version) ||
+                 !IsUnsignedTestVersion(args[6]) ||
                  CompareVersions(args[6], UpdateCheck.Version) <= 0 ||
                  !IsNonElevatedWindowsProcess())))
             return 2;
@@ -1001,16 +1004,16 @@ internal static class SignedPortableUpdater
             bool duplicate = false)
         {
             string link = "https://github.com/sgennadi/LinuxMailRelay365/releases/download/" +
-                "v0.1.0-preview.26/" + asset;
+                "v0.1.0-rc.4/" + asset;
             string item = JsonSerializer.Serialize(new
             {
                 name = asset, digest = "sha256:" + digest, size = 100L,
                 browser_download_url = link
             });
-            return "[{\"tag_name\":\"v0.1.0-preview.26\",\"draft\":false," +
+            return "[{\"tag_name\":\"v0.1.0-rc.4\",\"draft\":false," +
                 "\"prerelease\":" + (preview ? "true" : "false") +
                 ",\"html_url\":\"https://github.com/sgennadi/LinuxMailRelay365/releases/tag/" +
-                "v0.1.0-preview.26\",\"assets\":[" + item +
+                "v0.1.0-rc.4\",\"assets\":[" + item +
                 (duplicate ? "," + item : "") + "]}]";
         }
         static SignedUpdateOffer? Parse(string json, bool allow)
@@ -1037,7 +1040,7 @@ internal static class SignedPortableUpdater
                    "https://github.com/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1",
                    new Uri("https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.1/" + asset),
                    asset, hash, 100L)) &&
-               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.0-preview.26" &&
+               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.0-rc.4" &&
                Parse(Fixture(asset, hash, true), false) is null &&
                Parse(Fixture(asset, hash, false), false) is null &&
                Parse(Fixture(asset, hash, true, duplicate: true), true) is null &&
