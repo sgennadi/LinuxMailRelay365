@@ -57,7 +57,7 @@ class CleanPostfixTests(unittest.TestCase):
                 module.verify_prepared(2525)
 
     def test_port_bounds(self):
-        for bad in (25, 0, 65536):
+        for bad in (587, 0, 65536):
             with self.assertRaises(ValueError):
                 module.inspect(bad)
 
