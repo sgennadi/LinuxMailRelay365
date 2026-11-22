@@ -175,6 +175,12 @@ internal sealed partial class MainForm : Form
     private readonly CheckBox previewUpdates = new() { AutoSize = true, Checked = false };
     private readonly CheckBox advancedSecurityTools = new() { AutoSize = true, Checked = false,
         ForeColor = UiTheme.Navy, Margin = new Padding(0, 12, 0, 12) };
+    private readonly CheckBox showMailTechnicalDetails = new()
+    {
+        AutoSize = true, Checked = false, ForeColor = UiTheme.Navy,
+        Font = new Font("Segoe UI", 10.5f),
+        Margin = new Padding(0, 10, 0, 10)
+    };
     private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
     private readonly Button headerUpdateButton = UiTheme.Action("Проверить обновления", glyph: "refresh");
     private readonly ContextMenuStrip headerUpdateMenu = new();
@@ -605,6 +611,13 @@ internal sealed partial class MainForm : Form
         language.SelectedIndex = 0;
         language.SelectedIndexChanged += (_, _) => RenderPage();
         language.AccessibleName = "Interface language";
+        showMailTechnicalDetails.CheckedChanged += (_, _) =>
+        {
+            if (busy || step is not (1 or 2 or 3)) return;
+            int previousScroll = -pageHost.AutoScrollPosition.Y;
+            RenderPage();
+            pageHost.AutoScrollPosition = new Point(0, previousScroll);
+        };
         headerUpdateButton.AutoSize = true;
         headerUpdateButton.Margin = Padding.Empty;
         headerUpdateButton.AccessibleDescription =
@@ -1589,75 +1602,110 @@ internal sealed partial class MainForm : Form
 
     private void ShowMailDiscovery(TableLayoutPanel page, bool showRefresh)
     {
+        // The operator needs an actionable summary, not a multi-page 9pt
+        // dump of raw MTA and socket data. Preserve full diagnostics behind
+        // an explicit disclosure control; no active functions are removed.
+        var identity = TryCurrentIdentity();
         bool sameServer = discoveredMailIdentity is not null &&
-            discoveredMailIdentity == TryCurrentIdentity();
+            discoveredMailIdentity == identity;
         var inventory = sameServer ? inspectedMail : null;
         var audit = sameServer ? existingSmtpAudit : null;
-        bool? sidecar = sameServer ? discoveredIsolatedRelay : null;
-        var decision = MailServerDiscoveryDecision.Assess(inventory, audit, sidecar);
+        bool? isolated = sameServer ? discoveredIsolatedRelay : null;
+        var hostInspection = sameServer && inspectedHostIdentity == identity
+            ? inspectedHost : null;
+        var decision = MailServerDiscoveryDecision.Assess(inventory, audit, isolated);
+        var brief = MailDiscoveryBrief.Build(inventory, audit, hostInspection, isolated,
+            decision, recipientScope.SelectedIndex, isolatedSmtpPort.Text.Trim(),
+            language.SelectedIndex);
 
-        AddLine(page, UiTheme.Text(T("Обнаруженная почтовая конфигурация Linux",
-                                    "Detected Linux mail configuration",
-                                    "תצורת דואר שזוהתה בלינוקס"), true));
-        var overview = new Label
+        int contentWidth = Math.Max(300, Math.Min(940, pageHost.ClientSize.Width - 76));
+        AddLine(page, UiTheme.Text(T("Обнаруженная почта — кратко",
+            "Detected mail configuration — summary", "תצורת דואר — סיכום"), true));
+        Label Body(string caption, float fontSize = 11f, bool bold = false, bool caution = false)
         {
-            AutoSize = true, MaximumSize = new Size(Math.Max(390, pageHost.ClientSize.Width - 72), 0),
-            Text = decision.Explain(language.SelectedIndex, inventory, audit, sidecar),
-            Font = new Font("Segoe UI", 9.5f),
-            ForeColor = decision.ManualReviewRequired
-                ? Color.FromArgb(143, 72, 22) : UiTheme.Navy,
-            BackColor = Color.White,
-            Padding = new Padding(10, 9, 10, 9),
-            Margin = new Padding(0, 7, 0, 10)
-        };
-        AddLine(page, overview);
-        if (sameServer && inspectedHostIdentity == TryCurrentIdentity() &&
-            inspectedHost is not null)
-        {
-            AddLine(page, new Label
+            return new Label
             {
-                AutoSize = true, MaximumSize = new Size(Math.Max(390, pageHost.ClientSize.Width - 72), 0),
-                Text = inspectedHost.Summary(language.SelectedIndex),
-                Font = new Font("Segoe UI", 9f), ForeColor = UiTheme.Muted,
-                BackColor = Color.White, Padding = new Padding(10, 6, 10, 6),
-                Margin = new Padding(0, 4, 0, 10)
-            });
-            if (inspectedHost.HasFqdn)
-                AddAction(page, inspectedMail?.Mta is "exim" or "sendmail"
-                    ? T("Предложить отдельное DNS-имя для Relay (без установки)",
-                        "Suggest separate Relay DNS name (no install)",
-                        "הצע שם DNS נפרד לממסר")
-                    : T("Использовать найденный FQDN в настройках SMTP (без установки)",
-                        "Use detected FQDN for SMTP settings (no install)",
-                        "השתמש בשם המארח שהתגלה בהגדרות SMTP"),
-                    UseDetectedFqdnAsync, false, "check", "mail-hostname");
-            if (inspectedHost.HasDomain)
-                AddAction(page, T("Подставить домен в поле M365 (потребуется подтверждение)",
-                    "Prefill M365 domain (tenant verification still required)",
-                    "מלא דומיין, כפוף לאימות Microsoft 365"),
-                    UseDetectedDomainAsync, false, "check", "mail-domain");
-        }
-        else AddLine(page, UiTheme.Text(T(
-            "Hostname и настройки MTA ещё не проверены.",
-            "OS hostname and MTA-specific settings are not verified.",
-            "שם המארח והגדרות הדואר טרם נבדקו.")));
-        if (audit is not null)
-        {
-            var details = new Label
-            {
-                AutoSize = true, MaximumSize = new Size(Math.Max(390, pageHost.ClientSize.Width - 72), 0),
-                Text = audit.Summary(language.SelectedIndex),
-                Font = new Font("Segoe UI", 9f),
-                ForeColor = UiTheme.Muted,
-                Margin = new Padding(0, 0, 0, 8)
+                Text = caption, AutoSize = true, MaximumSize = new Size(contentWidth, 0),
+                Font = new Font("Segoe UI", fontSize, bold ? FontStyle.Bold : FontStyle.Regular),
+                ForeColor = caution ? Color.FromArgb(145, 80, 28) : UiTheme.Navy,
+                BackColor = Color.White,
+                Padding = new Padding(12, 7, 12, 7),
+                Margin = new Padding(0, 3, 0, 4),
+                RightToLeft = language.SelectedIndex == 2 ? RightToLeft.Yes : RightToLeft.No
             };
-            AddLine(page, details);
         }
+        AddLine(page, Body(brief.Headline, 12f, bold: true));
+        foreach (var fact in brief.Facts)
+            AddLine(page, Body(fact.Caption + ": " + fact.Value, 10.5f));
+        AddLine(page, UiTheme.Text(T("Что предлагаю дальше",
+            "Suggested next step", "השלב הבא המוצע"), true));
+        AddLine(page, Body(brief.SuggestedNextStep, 11f));
+        AddLine(page, Body(brief.ReviewWarning, 10.5f, caution: true));
+        if (brief.ExtraNote is not null)
+            AddLine(page, Body(brief.ExtraNote, 10.5f, caution: true));
+
+        // The current SMTP AUTH=no audit flag is an *inbound* server setting.
+        // It says nothing about Postfix client authentication to an upstream
+        // relay, and must never be used to approve a migration.
+        if (audit is not null)
+            AddLine(page, Body(T(
+                "Внимание: SMTP AUTH в аудите относится к входящим подключениям. Аутентификация к текущему исходящему relay не проверена.",
+                "Note: SMTP AUTH in the audit describes incoming connections; outbound relay authentication has not been verified.",
+                "הערה: SMTP AUTH בבדיקה מתייחס לחיבורים נכנסים; אימות הממסר היוצא לא נבדק."), 10f));
+
         if (showRefresh)
-            AddAction(page, T("Повторно проверить работающий MTA, SMTP и Relay (без изменений)",
-                              "Reinspect active MTA, SMTP and Relay (read-only)",
-                              "בדיקה חוזרת של MTA ו-SMTP ללא שינוי"),
-                InspectMailRoutingAsync, false, "check", "mta-discovery");
+            AddAction(page, T("Обновить результаты без изменений Linux",
+                "Refresh discovery (read-only)", "רענן גילוי ללא שינויים"),
+                InspectMailRoutingAsync, false, "refresh", "mta-discovery");
+
+        showMailTechnicalDetails.Text = showMailTechnicalDetails.Checked
+            ? T("Скрыть технический отчёт и действия",
+                "Hide technical details and actions", "הסתר פרטים טכניים ופעולות")
+            : T("Показать технический отчёт и действия",
+                "Show technical details and actions", "הצג פרטים טכניים ופעולות");
+        AddLine(page, showMailTechnicalDetails);
+
+        if (!showMailTechnicalDetails.Checked) return;
+
+        var details = new StringBuilder();
+        details.AppendLine(decision.Explain(language.SelectedIndex, inventory, audit, isolated));
+        details.AppendLine();
+        if (hostInspection is not null)
+            details.AppendLine(hostInspection.Summary(language.SelectedIndex));
+        else
+            details.AppendLine(T("Профиль hostname/MTA не прочитан.",
+                "Hostname/MTA profile not read.", "פרופיל השרת לא נקרא."));
+        details.AppendLine();
+        if (audit is not null)
+            details.AppendLine(audit.Summary(language.SelectedIndex));
+        else
+            details.AppendLine(T("SMTP-аудит не завершён.",
+                "SMTP audit is incomplete.", "בדיקת SMTP לא הושלמה."));
+
+        AddLine(page, new TextBox
+        {
+            Multiline = true, ReadOnly = true, WordWrap = true,
+            ScrollBars = ScrollBars.Vertical, Text = details.ToString(),
+            Width = Math.Max(280, contentWidth - 14), Height = 250,
+            Font = new Font("Segoe UI", 10.5f),
+            BackColor = Color.White, ForeColor = UiTheme.Navy,
+            BorderStyle = BorderStyle.FixedSingle,
+            AccessibleName = T("Подробный технический отчёт",
+                "Full technical discovery report", "דוח טכני מלא")
+        });
+
+        if (hostInspection?.HasFqdn == true)
+            AddAction(page, inventory?.Mta is "exim" or "sendmail"
+                ? T("Предложить отдельный DNS-адрес Relay",
+                    "Suggest a separate relay DNS name", "הצע כתובת DNS נפרדת")
+                : T("Предложить обнаруженный FQDN для SMTP TLS",
+                    "Suggest detected FQDN for SMTP TLS", "הצע שם FQDN ל-TLS"),
+                UseDetectedFqdnAsync, false, "check", "mail-hostname");
+        if (hostInspection?.HasDomain == true)
+            AddAction(page, T("Заполнить домен M365 из Linux (проверка tenant отдельно)",
+                "Prefill M365 domain (tenant must still verify)",
+                "מלא דומיין M365 לאחר אימות"),
+                UseDetectedDomainAsync, false, "check", "mail-domain");
     }
 
     private Task UseDetectedFqdnAsync()
