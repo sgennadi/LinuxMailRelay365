@@ -120,10 +120,22 @@ internal sealed partial class MainForm
             configuredPorts = "";
         string? isolatedPort = selectedMailScenario == MailScenarioPlanner.Isolated
             ? isolatedSmtpPort.Text.Trim() : null;
-        string mode = selectedMailTarget == MailFlowIntent.TargetCustom ? "custom" :
-            mailTransport.SelectedIndex switch { 1 => "connector", 2 => "direct-send", _ => "oauth2" };
-        string? customEndpoint = string.IsNullOrWhiteSpace(alternateUpstreamHost.Text)
-            ? null : alternateUpstreamHost.Text.Trim() + ":" + alternateUpstreamPort.Text.Trim();
+        string mode = selectedMailTarget switch
+        {
+            MailFlowIntent.TargetCustom => "custom",
+            MailFlowIntent.TargetGmail => "google-gmail",
+            MailFlowIntent.TargetWorkspace => "google-workspace",
+            _ => mailTransport.SelectedIndex switch
+            {
+                1 => "connector", 2 => "direct-send", _ => "oauth2"
+            }
+        };
+        string? customEndpoint = mode is "google-gmail" or "google-workspace"
+            ? googleOutboundPort.Text.Trim()
+            : selectedMailTarget == MailFlowIntent.TargetCustom &&
+              !string.IsNullOrWhiteSpace(alternateUpstreamHost.Text)
+                ? alternateUpstreamHost.Text.Trim() + ":" + alternateUpstreamPort.Text.Trim()
+                : null;
         var topology = MailScenarioPlanner.Flow(selectedMailScenario,
             inspectedMail?.CurrentRelay, configuredPorts, isolatedPort, mode,
             language.SelectedIndex, mailSource, customEndpoint);
@@ -259,6 +271,24 @@ internal sealed partial class MainForm
              Status: TranslateMailFlow(languageIndex,
                  "Требуется проверка M365", "Requires M365 verification", "נדרשת בדיקת M365"),
              Preferred: false, Enabled: true),
+            (Code: MailFlowIntent.TargetGmail,
+             Title: "Gmail SMTP · smtp.gmail.com",
+             Description: TranslateMailFlow(languageIndex,
+                 "Отправка через Google-аккаунт: 587 STARTTLS или 465 TLS, App Password либо OAuth2.",
+                 "Google account submission: 587 STARTTLS or 465 TLS, App Password or OAuth2.",
+                 "שליחה דרך חשבון Google עם TLS."),
+             Status: TranslateMailFlow(languageIndex,
+                 "Проверить порты и учётные данные", "Check TLS and credentials", "בדיקת TLS והרשאות"),
+             Preferred: false, Enabled: true),
+            (Code: MailFlowIntent.TargetWorkspace,
+             Title: "Google Workspace SMTP Relay",
+             Description: TranslateMailFlow(languageIndex,
+                 "smtp-relay.gmail.com · 25/465/587. Авторизация по IP или SMTP AUTH после проверки Admin Console.",
+                 "smtp-relay.gmail.com · 25/465/587. Authorized IP or SMTP AUTH per Workspace Admin Console.",
+                 "ממסר Google Workspace בכפוף למדיניות הארגון."),
+             Status: TranslateMailFlow(languageIndex,
+                 "Проверить IP/TLS и правила Google", "Check IP/TLS and Google policy", "בדיקת IP/TLS"),
+             Preferred: false, Enabled: true),
             (Code: MailFlowIntent.TargetCustom,
              Title: TranslateMailFlow(languageIndex,
                  "Другой SMTP-сервер", "Another SMTP server / smarthost", "שרת SMTP אחר"),
@@ -273,10 +303,16 @@ internal sealed partial class MainForm
         AddLine(page, BuildMailFlowCards(targetChoices, selectedMailTarget, code =>
         {
             selectedMailTarget = code;
+            if (code == MailFlowIntent.TargetGmail && googleOutboundPort.Text.Trim() == "25")
+                googleOutboundPort.Text = "587";
+            googleSmtpAudit = null;
+            googleSmtpAuditIdentity = null;
             selectedMailScenario = MailScenarioPlanner.Choose;
             SaveRoutingChoices();
             RenderPage();
         }));
+        if (IsGoogleTarget)
+            ShowGoogleSmtpChecks(page);
         if (selectedMailTarget == MailFlowIntent.TargetCustom)
         {
             AddField(page, TranslateMailFlow(languageIndex,
@@ -349,6 +385,15 @@ internal sealed partial class MainForm
 
     private void AddUnverifiedM365Capabilities(TableLayoutPanel page)
     {
+        if (IsGoogleTarget)
+        {
+            AddLine(page, MailFlowText(TranslateMailFlow(language.SelectedIndex,
+                "Google SMTP: проверка портов и App Password не подтверждает право отправлять письма с любого адреса и не меняет Postfix. Сначала подтвердите настройки Google и активный исходящий маршрут.",
+                "Google SMTP port and credential checks do not prove permitted sender addresses or modify Postfix. Confirm Google service policy and the active route before applying.",
+                "בדיקת יציאות וסיסמה אינה משנה Postfix או מאמתת משלוח."),
+                Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
+            return;
+        }
         if (selectedMailTarget == MailFlowIntent.TargetCustom)
         {
             AddLine(page, MailFlowText(TranslateMailFlow(language.SelectedIndex,
