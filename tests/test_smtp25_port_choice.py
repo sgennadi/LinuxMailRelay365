@@ -40,8 +40,7 @@ class StandardSMTP25ChoiceTests(unittest.TestCase):
         for script, _ in SCRIPT_CASES:
             content = (ROOT / script).read_text(encoding="utf-8")
             self.assertIn("smtp_socket_scan_failed", content)
-            self.assertIn("port_already_bound" if "preserve" not in script
-                          else "Port", content)
+            self.assertIn("port_already_bound", content)
             self.assertIn("primary_mta_may_claim_port25" if "preserve" not in script
                           else "primary_mta_may_claim_port25", content)
             self.assertIn("postfix.service exim.service exim4.service sendmail.service", content)
