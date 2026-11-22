@@ -371,6 +371,45 @@ def enable(reviewed_sha):
         raise
 
 
+def receipt_age_status(map_sha, now=None):
+    """TTL-only, read-only information; never a live SMTP acceptance result.
+
+    Checks the transport's exact receipt schema, sender-map pin and age,
+    without modifying, refreshing or accepting a policy. A malformed
+    receipt is an error rather than a reassuring successful status.
+    """
+    if not isinstance(map_sha, str) or not SHA.fullmatch(map_sha):
+        raise Refused("invalid_status_map_pin")
+    if not PROOF.exists() and not PROOF.is_symlink():
+        return "missing"
+    gid = grp.getgrnam("m365mailer").gr_gid
+    candidate = record(read(PROOF, 2048, (0o640,), gid))
+    required = {"version", "map_sha256", "issued_at", "expires_at",
+                "mailboxes", "main_meta", "master_meta", "ingress"}
+    issued, expires = candidate.get("issued_at"), candidate.get("expires_at")
+    if (set(candidate) != required or candidate.get("version") != 1 or
+            candidate.get("ingress") !=
+            "root_static_audit_consistent_not_live_delivery" or
+            not isinstance(candidate.get("map_sha256"), str) or
+            not SHA.fullmatch(candidate["map_sha256"]) or
+            type(issued) is not int or type(expires) is not int or
+            expires - issued != 120 or
+            type(candidate.get("mailboxes")) is not int or
+            not 1 <= candidate["mailboxes"] <= 64 or
+            not isinstance(candidate.get("main_meta"), list) or
+            not isinstance(candidate.get("master_meta"), list)):
+        raise Refused("invalid_receipt_status_metadata")
+    current = int(time.time()) if now is None else int(now)
+    if (candidate["map_sha256"] != map_sha or
+            digest(read(MAP, 65536, (0o640,), gid)) != map_sha):
+        return "map_changed"
+    if issued > current + 5:
+        raise Refused("receipt_from_future")
+    if current >= expires:
+        return "expired"
+    return "fresh_ttl_only"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -407,11 +446,14 @@ def main(argv=None):
                           for p in (SERVICE, TIMER, STATE, STATE_ROOT))
             if not present:
                 print("MULTI_PROOF_TIMER=not_installed")
+                print("MULTI_PROOF_RECEIPT=not_applicable")
             else:
-                installed()
+                state = installed()
                 active = systemctl("is-active", "--quiet", TIMER.name,
                                    allow_inactive=True)
                 print("MULTI_PROOF_TIMER=" + ("active" if active else "inactive"))
+                print("MULTI_PROOF_RECEIPT=" +
+                      receipt_age_status(state["map"]))
         print("MULTI_PROOF_TIMER_MESSAGES_SENT=no")
         print("MULTI_PROOF_TIMER_PRIMARY_MTA_CHANGED=no")
         print("MULTI_PROOF_TIMER_M365_DELIVERY_VERIFIED=no")

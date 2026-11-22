@@ -319,7 +319,10 @@ sandbox, and its entrypoint never uses a stored OAuth token, SMTP password,
 or network SMTP connection. An audit failure does **not** make a stale
 receipt valid: the transport refuses an expired proof after 120 seconds.
 Service activation also refuses changed runtime map or changed source/config
-SHA. Check status with `--status`.
+SHA. `--status` reports both timer state and `MULTI_PROOF_RECEIPT`: `fresh_ttl_only`,
+`expired`, `missing`, `map_changed` or `not_applicable`. A receipt within its
+120-second lifetime is **not** evidence of successful SMTP AUTH or inbox
+delivery; it is only an age and sender-map consistency indicator.
 
 To disable renewal and revoke the current local proof (messages then fail
 closed until a separately approved fresh proof exists), run:

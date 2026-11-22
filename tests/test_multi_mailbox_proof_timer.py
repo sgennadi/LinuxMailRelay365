@@ -178,6 +178,65 @@ class OptionalProofTimerTests(unittest.TestCase):
                                  str(caught.exception))
                 self.assertFalse((root / "__pycache__").exists())
 
+    def test_receipt_status_distinguishes_fresh_expired_drift_and_missing(self):
+        map_bytes = b"test-only sender map\n"
+        pinned = timer.digest(map_bytes)
+        receipt = {
+            "version": 1, "map_sha256": pinned, "issued_at": 1000,
+            "expires_at": 1120, "mailboxes": 1,
+            "main_meta": [], "master_meta": [],
+            "ingress": "root_static_audit_consistent_not_live_delivery",
+        }
+        def reader(path, maximum, modes, gid=None):
+            if path == timer.PROOF:
+                return json.dumps(receipt).encode("ascii")
+            if path == timer.MAP:
+                return map_bytes
+            raise AssertionError("unexpected protected file")
+        with mock.patch.object(timer.PROOF, "exists", return_value=True), \
+             mock.patch.object(timer.grp, "getgrnam",
+                               return_value=SimpleNamespace(gr_gid=4242)), \
+             mock.patch.object(timer, "read", side_effect=reader):
+            self.assertEqual(timer.receipt_age_status(pinned, now=1000),
+                             "fresh_ttl_only")
+            self.assertEqual(timer.receipt_age_status(pinned, now=1119),
+                             "fresh_ttl_only")
+            self.assertEqual(timer.receipt_age_status(pinned, now=1120),
+                             "expired")
+            self.assertEqual(timer.receipt_age_status("b" * 64, now=1000),
+                             "map_changed")
+            with mock.patch.object(timer, "read",
+                                   side_effect=lambda path, maximum, modes, gid=None:
+                                   json.dumps(receipt).encode("ascii")
+                                   if path == timer.PROOF else b"modified map"):
+                self.assertEqual(timer.receipt_age_status(pinned, now=1000),
+                                 "map_changed")
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(timer, "PROOF", Path(td) / "missing"):
+            self.assertEqual(timer.receipt_age_status(pinned), "missing")
+
+    def test_receipt_status_rejects_invalid_age_and_boolean_timestamp(self):
+        data = {"version": 1, "map_sha256": "a" * 64,
+                "issued_at": 1010, "expires_at": 1130,
+                "mailboxes": 1, "main_meta": [], "master_meta": [],
+                "ingress": "root_static_audit_consistent_not_live_delivery"}
+        with mock.patch.object(timer.PROOF, "exists", return_value=True), \
+             mock.patch.object(timer.grp, "getgrnam",
+                               return_value=SimpleNamespace(gr_gid=4242)), \
+             mock.patch.object(timer, "read",
+                               side_effect=lambda path, *args, **kwargs:
+                               json.dumps(data).encode("ascii")
+                               if path == timer.PROOF else b"ignored"):
+            with self.assertRaisesRegex(timer.Refused, "receipt_from_future"):
+                timer.receipt_age_status("a" * 64, now=1000)
+            data["issued_at"] = True
+            with self.assertRaisesRegex(timer.Refused, "invalid_receipt_status_metadata"):
+                timer.receipt_age_status("a" * 64, now=1000)
+            data["issued_at"] = 1010
+            data["expires_at"] = 1010 + 3600
+            with self.assertRaisesRegex(timer.Refused, "invalid_receipt_status_metadata"):
+                timer.receipt_age_status("a" * 64, now=1000)
+
     def test_status_without_timer_reports_not_installed(self):
         with tempfile.TemporaryDirectory() as td, \
              mock.patch.object(timer.os, "geteuid", return_value=0):
@@ -193,6 +252,7 @@ class OptionalProofTimerTests(unittest.TestCase):
                 with contextlib.redirect_stdout(report):
                     self.assertEqual(timer.main(["--status"]), 0)
                 self.assertIn("MULTI_PROOF_TIMER=not_installed", report.getvalue())
+                self.assertIn("MULTI_PROOF_RECEIPT=not_applicable", report.getvalue())
 
     def test_installed_state_and_exact_unit_bytes_must_agree(self):
         data = {"version": 1, "plan": "a" * 64, "map": "b" * 64,

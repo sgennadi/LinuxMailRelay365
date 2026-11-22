@@ -123,6 +123,9 @@ class MultiMailboxWizardRuntimeTests(unittest.TestCase):
         self.assertIn("reviewedMultiProofTimerContext != context", RUNTIME_GUI)
         self.assertIn("reviewedMultiProofTimerSha = null;", RUNTIME_GUI)
         self.assertIn("MULTI_PROOF_TIMER_M365_DELIVERY_VERIFIED", RUNTIME_GUI)
+        self.assertIn("MULTI_PROOF_RECEIPT", RUNTIME_GUI)
+        self.assertIn("fresh_ttl_only", RUNTIME_GUI)
+        self.assertIn("map_changed", RUNTIME_GUI)
         self.assertNotIn("systemctl start", RUNTIME_GUI)
 
     def test_offline_restore_is_explicitly_reviewed_and_not_auto_started(self):

@@ -496,14 +496,34 @@ internal sealed partial class MainForm
         result.EnsureSuccess();
         string state = ValidatedMultiMailboxReportValue(result.StdOut,
             "MULTI_PROOF_TIMER", @"\A(?:not_installed|active|inactive)\z");
+        string receipt = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_RECEIPT",
+            @"\A(?:not_applicable|missing|map_changed|expired|fresh_ttl_only)\z");
         _ = ValidatedMultiMailboxReportValue(result.StdOut,
             "MULTI_PROOF_TIMER_M365_DELIVERY_VERIFIED", @"\Ano\z");
         if (context != CurrentMultiMailboxContext())
             throw new InvalidOperationException("Host or route changed during timer inspection.");
+        string receiptDescription = receipt switch
+        {
+            "fresh_ttl_only" => T("срок действия не истёк, но SMTP не проверен",
+                "within 120-second TTL; SMTP not reverified",
+                "בתוקף לפי זמן בלבד; SMTP לא אומת מחדש"),
+            "expired" => T("срок действия истёк",
+                "expired", "פג תוקף"),
+            "map_changed" => T("изменена карта отправителей",
+                "sender map changed", "מפת השולחים השתנתה"),
+            "missing" => T("подтверждение отсутствует",
+                "receipt missing", "אין אישור"),
+            _ => T("таймер не установлен",
+                "timer not installed", "התזמון לא הותקן"),
+        };
         multiProofTimerSummary = T(
-            "Таймер: " + state + ". Это НЕ подтверждение доставки.",
-            "Timer: " + state + ". NOT a delivery acceptance result.",
-            "מצב התזמון: " + state + ". אין אישור מסירה.");
+            "Таймер: " + state + ". Подтверждение: " + receiptDescription +
+              ". Доставка Microsoft 365 НЕ проверена.",
+            "Timer: " + state + ". Receipt: " + receiptDescription +
+              ". M365 delivery NOT verified.",
+            "מצב תזמון: " + state + ". אישור: " + receiptDescription +
+              ". מסירת Microsoft 365 לא אומתה.");
         RenderPage();
     }
 
