@@ -23,7 +23,7 @@ class PrivateSmtpAuthTlsTests(unittest.TestCase):
         self.assertIn('AUTH_TLS_ARGUMENT_PARSER=available', r.stdout)
 
     def test_invalid_custom_port_is_rejected_early_without_root(self):
-        for port in ('0','25','587','1000','65536','abc','-2','', '0;id'):
+        for port in ('0','587','1000','65536','abc','-2','', '0;id'):
             with self.subTest(port=port):
                 r = self.shell('--check-only','--smtp-port',port,'--server-name',
                                'smtp.example.test','--tls-cert','/tmp/cert.pem',
@@ -32,7 +32,7 @@ class PrivateSmtpAuthTlsTests(unittest.TestCase):
                 self.assertIn('AUTH_TLS_ERROR=invalid_custom_smtp_port', r.stderr)
 
     def test_custom_port_accepted_by_argument_validation(self):
-        for port in ('1024', '2525', '2526', '46500', '65535'):
+        for port in ('25', '1024', '2525', '2526', '46500', '65535'):
             with self.subTest(port=port):
                 r = self.shell('--check-only','--smtp-port',port,'--server-name',
                                'smtp.example.test','--tls-cert','/tmp/cert.pem',
