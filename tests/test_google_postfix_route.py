@@ -107,6 +107,7 @@ class GooglePostfixRouteTests(unittest.TestCase):
              mock.patch.object(mod, "scope_status", return_value="verified"), \
              mock.patch.object(mod, "client_sasl_status", return_value="ready"), \
              mock.patch.object(mod, "fingerprint", return_value="a" * 64), \
+             mock.patch.object(mod, "inbound_snapshot", return_value=(b"unchanged", ())), \
              mock.patch.object(mod.pathlib.Path, "is_file", return_value=True), \
              mock.patch.object(mod, "verified_backup", return_value="20261122T010101Z-abcdef123456"), \
              mock.patch.object(mod, "prepare_gmail_map", side_effect=RuntimeError("synthetic map failure")), \
@@ -176,6 +177,46 @@ class GooglePostfixRouteTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 mod.apply(request)
             backup.assert_not_called()
+
+    def test_apply_rollback_when_local_mail_policy_changes(self):
+        """A verified backup alone is insufficient if inbound settings drift."""
+        profile = self.request(operation="apply", expected_sha="a" * 64,
+                               user="mail@example.org", secret="one-use")
+        reverted = []
+        backup_id = "20261122T010101Z-abcdef123456"
+        def configured(key):
+            return {
+                "relayhost": "[smtp.gmail.com]:587",
+                "smtp_tls_security_level": "secure",
+                "smtp_tls_wrappermode": "no",
+                "smtp_sasl_auth_enable": "yes",
+            }[key]
+        with mock.patch.object(mod, "prerequisites", return_value="a" * 64), \
+             mock.patch.object(mod, "route_conflicts", return_value=False), \
+             mock.patch.object(mod, "queue_state", return_value="empty"), \
+             mock.patch.object(mod, "scope_status", return_value="verified"), \
+             mock.patch.object(mod, "client_sasl_status", return_value="ready"), \
+             mock.patch.object(mod, "fingerprint", return_value="a" * 64), \
+             mock.patch.object(mod, "inbound_snapshot", side_effect=[
+                 (b"original", ("127.0.0.1",)),
+                 (b"unexpected", ("0.0.0.0",))
+             ]), \
+             mock.patch.object(mod.pathlib.Path, "is_file", return_value=True), \
+             mock.patch.object(mod, "verified_backup", return_value=backup_id), \
+             mock.patch.object(mod, "prepare_gmail_map"), \
+             mock.patch.object(mod, "require_gmail_password_map"), \
+             mock.patch.object(mod, "update_postconf"), \
+             mock.patch.object(mod, "postconf", side_effect=configured), \
+             mock.patch.object(mod, "run", return_value=CommandResult()), \
+             mock.patch.object(mod, "restore_backup",
+                               side_effect=lambda bid: reverted.append(bid) or True):
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                with self.assertRaises(RuntimeError):
+                    mod.apply(profile)
+        self.assertEqual(reverted, [backup_id])
+        self.assertIn("GOOGLE_ROUTE_ROLLBACK=ok", stdout.getvalue())
+        self.assertNotIn(profile["secret"], stdout.getvalue())
 
     def test_reject_stale_sha_before_any_backup(self):
         request = self.request(
