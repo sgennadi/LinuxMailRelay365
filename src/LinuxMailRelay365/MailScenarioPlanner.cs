@@ -90,6 +90,12 @@ internal static class MailScenarioPlanner
         {
             "connector" => "Microsoft 365 EOP · TCP 25",
             "direct-send" => "Microsoft 365 MX · TCP 25",
+            "google-gmail" => "Gmail · smtp.gmail.com" +
+                (string.IsNullOrWhiteSpace(customTarget) ? ":587" : ":" + customTarget) +
+                " (SMTP/TLS verification required)",
+            "google-workspace" => "Google Workspace · smtp-relay.gmail.com" +
+                (string.IsNullOrWhiteSpace(customTarget) ? ":587" : ":" + customTarget) +
+                " (policy verification required)",
             "custom" => string.IsNullOrWhiteSpace(customTarget)
                 ? L(language, "Другой SMTP relay (не проверен)",
                     "Custom SMTP relay (unverified)", "ממסר SMTP אחר (לא אומת)")
