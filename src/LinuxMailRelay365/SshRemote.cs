@@ -212,6 +212,79 @@ internal static class SshRemote
         }, cancellationToken);
     }
 
+    // The normal SSH remote-command and bash -s paths are deliberately
+    // NON-login shells. Never source /etc/profile or a user's dotfiles during
+    // unattended setup, privileged Apply/Restore, or MTA discovery: those
+    // scripts may run arbitrary commands and alter PATH/output.
+    //
+    // The operator can explicitly inspect the LOGIN shell environment. This
+    // is a separate one-shot SSH session and never changes later commands.
+    // No profile stdout/stderr, shell variables, filenames or PATH contents
+    // are returned to the activity log.
+    private const string LoginProfileProbeCommand =
+        "bash -lc 'printf \"LMR365_LOGIN_PROBE=ok\\n\"; " +
+        "for name in python3 openssl postconf exim exim4 sendmail; do " +
+        "if command -v \"$name\" >/dev/null 2>&1; then result=available; " +
+        "else result=missing; fi; " +
+        "printf \"LMR365_TOOL_%s=%s\\n\" \"$name\" \"$result\"; done'";
+
+    internal static Task<RemoteResult> ProbeLoginProfileAsync(
+        SshEndpoint endpoint, CancellationToken token = default) =>
+        ExecuteAsync(endpoint, LoginProfileProbeCommand, null,
+            TimeSpan.FromSeconds(40), token);
+
+    internal static string SummarizeLoginProfileProbe(RemoteResult report)
+    {
+        if (report.ExitCode != 0)
+            return "Login-shell probe failed (exit " + report.ExitCode +
+                "). Profile output was not logged; normal non-login SSH mode is unchanged.";
+        if (report.StdOut.Length > 16384)
+            return "Login-shell probe output exceeded the safety limit. " +
+                "Profile output was not logged; normal non-login SSH mode is unchanged.";
+        string[] names = ["python3", "openssl", "postconf", "exim", "exim4", "sendmail"];
+        bool marker = false;
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string line in report.StdOut.Split('\n'))
+        {
+            string row = line.TrimEnd('\r');
+            if (row == "LMR365_LOGIN_PROBE=ok")
+            {
+                if (marker) return "Login-shell probe returned duplicate markers; result unverified.";
+                marker = true;
+                continue;
+            }
+            var matched = Regex.Match(row,
+                @"\ALMR365_TOOL_(python3|openssl|postconf|exim|exim4|sendmail)=(available|missing)\z",
+                RegexOptions.CultureInvariant);
+            if (matched.Success &&
+                !values.TryAdd(matched.Groups[1].Value, matched.Groups[2].Value))
+                return "Login-shell probe returned duplicate tools; result unverified.";
+        }
+        if (!marker || names.Any(name => !values.ContainsKey(name)))
+            return "Login-shell probe was incomplete; no login profile or tool availability was verified.";
+        return "Optional SSH login shell completed; tools on its PATH: " +
+            string.Join(", ", names.Select(name => name + "=" + values[name])) +
+            ". This does NOT change PATH or source profile in subsequent setup commands.";
+    }
+
+    internal static bool LoginProfileProbeSelfTest()
+    {
+        const string report =
+            "Unrelated profile banner omitted\nLMR365_LOGIN_PROBE=ok\n" +
+            "LMR365_TOOL_python3=available\nLMR365_TOOL_openssl=available\n" +
+            "LMR365_TOOL_postconf=missing\nLMR365_TOOL_exim=missing\n" +
+            "LMR365_TOOL_exim4=missing\nLMR365_TOOL_sendmail=missing\n";
+        string summary = SummarizeLoginProfileProbe(new RemoteResult(0, report, "secret-ignored"));
+        return LoginProfileProbeCommand.StartsWith("bash -lc '", StringComparison.Ordinal) &&
+            summary.Contains("postconf=missing", StringComparison.Ordinal) &&
+            !summary.Contains("Unrelated", StringComparison.Ordinal) &&
+            !summary.Contains("secret", StringComparison.Ordinal) &&
+            SummarizeLoginProfileProbe(new RemoteResult(2, "secret", "secret")).Contains(
+                "exit 2", StringComparison.Ordinal) &&
+            SummarizeLoginProfileProbe(new RemoteResult(0, "not a probe", "")).Contains(
+                "incomplete", StringComparison.Ordinal);
+    }
+
     // Strictly read-only: never invoke sudo or install packages during a probe.
     internal static Task<RemoteResult> ProbeSecurityAsync(
         SshEndpoint endpoint, string probeScript, CancellationToken token = default) =>
@@ -220,6 +293,7 @@ internal static class SshRemote
     internal static Task<RemoteResult> CheckAsync(
         SshEndpoint endpoint, CancellationToken token = default) =>
         ExecuteAsync(endpoint,
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}; export PATH; " +
             "printf 'Kernel: '; uname -s; . /etc/os-release; printf 'Distribution: %s\\n' \"$PRETTY_NAME\"; " +
             "printf 'Python: '; command -v python3 || true; printf 'OpenSSL: '; command -v openssl || true; " +
             "printf 'Postfix: '; command -v postconf || true; " +

@@ -194,6 +194,7 @@ internal sealed partial class MainForm : Form
         WrapContents = false, FlowDirection = FlowDirection.RightToLeft
     };
     private readonly Panel activityPanel = new() { Dock = DockStyle.Fill, Height = 124, Visible = false };
+    private readonly Button clearActivityButton = UiTheme.Action("Clear log", glyph: "trash");
     private readonly LinkLabel activityToggle = new()
     {
         AutoSize = true, LinkColor = UiTheme.Navy,
@@ -633,7 +634,33 @@ internal sealed partial class MainForm : Form
         footerStatus.Controls.Add(status, 0, 0);
         footerStatus.Controls.Add(activityToggle, 1, 0);
         footerStatusLayout = footerStatus;
-        activityPanel.Controls.Add(activity);
+        // Keep the clear button INSIDE the expandable log panel so it does not
+        // consume fixed footer-status space on compact or 200%-DPI screens.
+        var activityLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2,
+            Margin = Padding.Empty, Padding = Padding.Empty
+        };
+        activityLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        activityLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        activityLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var activityActions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false, Margin = new Padding(0, 0, 0, 3),
+            Padding = Padding.Empty
+        };
+        clearActivityButton.AutoSize = true;
+        clearActivityButton.Margin = Padding.Empty;
+        clearActivityButton.AccessibleDescription =
+            "Clear visible activity only. Privacy-safe diagnostic report history is retained.";
+        clearActivityButton.Click += (_, _) => ClearActivityWindow();
+        activityActions.Controls.Add(clearActivityButton);
+        activityLayout.Controls.Add(activityActions, 0, 0);
+        activityLayout.Controls.Add(activity, 0, 1);
+        activityPanel.Controls.Add(activityLayout);
         var bottom = new TableLayoutPanel
         {
             Dock = DockStyle.None, AutoSize = false,
@@ -1284,6 +1311,15 @@ internal sealed partial class MainForm : Form
               "When possible, compare the SHA256 with the Linux console. Passwords are not saved. The Next button skips this check; it does not verify connectivity.",
               "רצוי להשוות את טביעת המפתח במסוף השרת. סיסמאות אינן נשמרות."),
             connectionWideLayout ? (int)(pageHost.Width * .34) - 56 : pageHost.Width - 100);
+        AddLine(details, UiTheme.Text(T(
+            "Обычные SSH-команды запускаются НЕ как login shell: /etc/profile и ~/.bash_profile не читаются автоматически. Для основных проверок используется системный PATH; режим установки не меняется.",
+            "Normal SSH commands are NON-login shells: /etc/profile and ~/.bash_profile are not sourced automatically. Core checks use a system PATH; setup behavior is unchanged.",
+            "פקודות SSH רגילות אינן login shell. קובצי profile אינם נטענים אוטומטית. נתיב כלי המערכת נבדק בנפרד.")));
+        AddAction(details, T(
+            "Проверить login-profile и доступность утилит (по запросу)",
+            "Inspect login profile and tool availability (opt-in)",
+            "בדוק סביבת login ופקודות (לפי בקשה)"),
+            InspectSshLoginProfileAsync, false, "check", "ssh-login-profile");
         AddLine(page, cards);
     }
 
@@ -3182,6 +3218,7 @@ internal sealed partial class MainForm : Form
         activityToggle.Text = activityPanel.Visible
             ? T("Скрыть журнал", "Hide activity", "הסתר יומן")
             : T("Показать журнал", "Show activity", "הצג יומן");
+        clearActivityButton.Text = T("Очистить лог", "Clear log", "נקה יומן");
         status.Text = lastStatus ?? T("Готов к работе · Пароли M365 не сохраняются",
             "Ready · M365 mailbox passwords are never stored", "מוכן · סיסמאות M365 אינן נשמרות");
         status.ForeColor = lastFailed ? Color.FromArgb(174, 40, 43) : UiTheme.Muted;
@@ -3398,6 +3435,24 @@ internal sealed partial class MainForm : Form
         return captured;
     }
 
+    // Only clear the visible TextBox. Do not delete diagnostic reports, reset
+    // security state, or clear the independent privacy-safe operation journal.
+    private void ClearActivityWindow()
+    {
+        if (InvokeRequired) { BeginInvoke(() => ClearActivityWindow()); return; }
+        ClearVisibleActivityText(activity);
+        clearActivityButton.Enabled = false;
+    }
+
+    private static void ClearVisibleActivityText(TextBox textbox) => textbox.Clear();
+
+    internal static bool ClearActivityWindowSelfTest()
+    {
+        using var textbox = new TextBox { Multiline = true, Text = "old activity" };
+        ClearVisibleActivityText(textbox);
+        return textbox.TextLength == 0;
+    }
+
     private void WriteLine(string message)
     {
         if (InvokeRequired) { BeginInvoke(() => WriteLine(message)); return; }
@@ -3405,6 +3460,7 @@ internal sealed partial class MainForm : Form
         activity.AppendText($"{time}  {DiagnosticJournal.SanitizeLocalActivity(message).TrimEnd()}\r\n");
         if (activity.TextLength > 150000)
             activity.Text = activity.Text[^90000..];
+        clearActivityButton.Enabled = activity.TextLength > 0;
     }
 
     private async Task RunBusyAsync(string category, Func<Task> work)
@@ -7514,9 +7570,26 @@ internal sealed partial class MainForm : Form
         return Task.CompletedTask;
     }
 
+    private async Task InspectSshLoginProfileAsync()
+    {
+        var answer = MessageBox.Show(this, T(
+            "Эта отдельная проверка запускает bash -lc от имени SSH-пользователя. Файлы /etc/profile и ~/.bash_profile могут содержать собственные команды и побочные эффекты. Продолжить? Основная диагностика и установка не будут переключены на login shell.",
+            "This optional check starts bash -lc as the SSH user. /etc/profile and ~/.bash_profile may contain arbitrary startup commands and have side effects. Continue? Normal diagnostics and installation will NOT switch to login shells.",
+            "הבדיקה מפעילה bash -lc ויכולה להריץ פקודות מקובצי profile. להמשיך? התקנה רגילה לא תשתנה."),
+            T("Проверить SSH login-profile", "Inspect SSH login profile", "בדיקת login profile"),
+            MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (answer != DialogResult.Yes) return;
+        WriteLine("Optional SSH login shell probe started (profile startup code may run). " +
+            "Profile content, raw PATH, stdout and stderr are not logged.");
+        var result = await SshRemote.ProbeLoginProfileAsync(Endpoint());
+        WriteLine(SshRemote.SummarizeLoginProfileProbe(result));
+    }
+
     private async Task CheckSshAsync()
     {
         WriteLine("Checking Linux connection and OpenSSH host-key trust...");
+        WriteLine("Normal SSH script checks run without login profiles. Core tool discovery uses a standard system PATH.");
         var result = await SshRemote.CheckAsync(Endpoint());
         result.EnsureSuccess();
         WriteLine(result.StdOut);

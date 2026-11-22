@@ -46,6 +46,10 @@ internal static class Program
                 }
                 catch (ArgumentException) { return true; }
             }),
+            ("Optional SSH login-shell profile probe never logs raw profile output",
+                SshRemote.LoginProfileProbeSelfTest),
+            ("Clear activity only affects the visible log TextBox",
+                MainForm.ClearActivityWindowSelfTest),
             ("Responsive window sizing and high-DPI readable wizard", () =>
             {
                 var fullHd = MainForm.PreferredWizardSize(new Size(1920, 1080), 96);
