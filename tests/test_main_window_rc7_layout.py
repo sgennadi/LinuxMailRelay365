@@ -46,6 +46,13 @@ class MainWindowLayoutRC7Contracts(unittest.TestCase):
         self.assertIn('bool pairFields = connectionWideLayout;', section)
         self.assertIn('UseWideConnectionLayout(pageHost.ClientSize.Width, DeviceDpi)', section)
 
+        # Card dimensions must also track window resizes within a breakpoint.
+        reflow = MAIN.split("private void FitCurrentPage()", 1)[1].split(
+            "private void LocalizeSshAuthMethods()", 1)[0]
+        self.assertIn("if (step == 0)", reflow)
+        self.assertIn("cards.MaximumSize = new Size(cardWidth, 0);", reflow)
+        self.assertIn("card.MaximumSize = new Size(cardWidth, 0);", reflow)
+
     def test_login_checks_and_safe_update_workflow_are_unchanged(self):
         self.assertIn('RunBusyAsync("ssh", CheckSshAndContinueAsync)', MAIN)
         self.assertIn('SshRemote.ProbeLoginProfileAsync(Endpoint())', MAIN)
