@@ -141,10 +141,12 @@ exact map SHA-256 run on Linux:
 
     sudo python3 /opt/linuxmailrelay365/multi-oauth/refresh-multi-mailbox-proof.py --map-sha256 REVIEWED_MAP_SHA256 --confirm REFRESH_PRIVILEGED_MULTI_INGRESS_PROOF
 
-**No automatic proof timer is installed.** A real production deployment
-needs a root-owned, validated periodic renewal service and an independently
-verified policy revocation/stop pathway; this 120-second manual receipt is
-appropriate only for supervised tests. It does not prove any real SMTP AUTH
+**By default no automatic proof timer is installed.** An optional,
+SHA-reviewed systemd renewal manager is provided below, but it is not
+activated during source staging or offline route installation. Actual
+production use still requires root-owned renewal validation and independent
+policy revocation/stop acceptance; manual 120-second receipts are appropriate
+only for supervised tests. It does not prove any real SMTP AUTH
 client's identity, Exchange mailbox permissions, external recipient delivery,
 or successful login to Microsoft 365. The sidecar is never started by the
 installer or Wizard.

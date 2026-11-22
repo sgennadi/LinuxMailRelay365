@@ -8,6 +8,8 @@ import io
 import json
 import os
 import time
+import shutil
+import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 import tempfile
@@ -40,6 +42,20 @@ class OptionalProofTimerTests(unittest.TestCase):
                           "wget ", "SMTP_DATA", "sendmail "):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, unit + schedule)
+
+    @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd analyzer unavailable")
+    def test_generated_service_and_timer_pass_native_systemd_verify(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder = Path(td)
+            service = folder / "linuxmailrelay365-multi-proof.service"
+            clock = folder / "linuxmailrelay365-multi-proof.timer"
+            service.write_bytes(timer.service_text("a" * 64))
+            clock.write_bytes(timer.timer_text())
+            result = subprocess.run(
+                ["systemd-analyze", "verify", str(service), str(clock)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+                universal_newlines=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr[:2000])
 
     def test_only_exact_lowercase_sha_can_be_embedded(self):
         for invalid in ("", "A" * 64, "a" * 63, "a" * 65,
