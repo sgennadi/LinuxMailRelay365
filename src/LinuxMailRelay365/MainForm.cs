@@ -75,6 +75,8 @@ internal sealed class MainForm : Form
     private readonly Label status = UiTheme.Text("");
     private readonly Button clearActivityButton = UiTheme.Action("Clear log", glyph: "trash");
     private readonly Button headerUpdateButton = UiTheme.Action("Check updates", glyph: "download");
+    private readonly Label activityLogLabel = UiTheme.Text("Activity log");
+    private readonly CheckBox loadLinuxLoginProfile = new() { AutoSize = true, Checked = false };
     private bool sshTwoColumns;
     private bool showAdvancedSsh;
     private LinuxServerOverview? serverOverview;
@@ -180,6 +182,16 @@ internal sealed class MainForm : Form
         sshAuthMode.SelectedIndex = 0;
         sshAuthMode.SelectedIndexChanged += (_, _) => { if (!busy && step == 0) RenderPage(); };
         headerUpdateButton.Click += async (_, _) => await RunBusyAsync("update", CheckUpdatesAsync);
+        loadLinuxLoginProfile.CheckedChanged += (_, _) =>
+        {
+            if (!loadLinuxLoginProfile.Checked) return;
+            var answer = MessageBox.Show(this, T(
+                "Загрузка login shell (~/.bash_profile и системного профиля) может выполнять произвольные команды на Linux. Только для доверенных серверов. Продолжить?",
+                "Starting the Linux login shell may execute arbitrary commands in /etc/profile or ~/.bash_profile. Use only on a trusted server. Continue?",
+                "טעינת פרופיל התחברות עשויה להפעיל פקודות בשרת. להמשיך?"),
+                Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (answer != DialogResult.Yes) loadLinuxLoginProfile.Checked = false;
+        };
         headerUpdateButton.AccessibleDescription = "Checks GitHub releases; opens the release page if requested. Does not install automatically.";
         Shown += (_, _) => { if (step == 0) RenderPage(); };
         hardwareRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
@@ -223,7 +235,7 @@ internal sealed class MainForm : Form
         var journalToolbar = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
         journalToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         journalToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        journalToolbar.Controls.Add(UiTheme.Text("Activity log"), 0, 0);
+        journalToolbar.Controls.Add(activityLogLabel, 0, 0);
         clearActivityButton.AutoSize = true;
         clearActivityButton.Click += (_, _) => activity.Clear();
         journalToolbar.Controls.Add(clearActivityButton, 1, 0);
@@ -340,10 +352,15 @@ internal sealed class MainForm : Form
             if (sshAuthMode.SelectedIndex == 0)
                 AddField(page, T("Путь к SSH-ключу (пусто = ssh-agent)", "SSH key path (blank = ssh-agent)", "נתיב למפתח SSH"), sshKey);
             AddField(page, T("Пароль sudo (не сохраняется)", "sudo password (not saved)", "סיסמת sudo"), sudoPassword);
+            loadLinuxLoginProfile.Text = T(
+                "Загружать профиль login shell при обнаружении Linux (опасные startup scripts)",
+                "Load Linux login shell profile during discovery (startup scripts may run)",
+                "טעינת פרופיל התחברות בלינוקס (סקריפטים עלולים לפעול)");
+            AddLine(page, loadLinuxLoginProfile);
             AddLine(page, UiTheme.Text(T(
-                "Проверка host key обязательна: known_hosts для режима ключа, подтверждённый SHA256 для пароля.",
-                "Host-key verification: known_hosts with keys, trusted SHA256 fingerprint with password.",
-                "אימות מפתח השרת נדרש.")));
+                "Ключ хоста проверяется обязательно. Без этой опции Bash запускается без пользовательского профиля.",
+                "Host-key verification is mandatory. By default Bash does not source login shell startup files.",
+                "אימות מפתח שרת חובה. כברירת מחדל פרופיל התחברות אינו נטען.")));
         }
         AddAction(page, T("Подключить и определить конфигурацию",
             "Connect and inspect Linux server", "התחבר ובדוק את שרת Linux"),
@@ -391,7 +408,10 @@ internal sealed class MainForm : Form
     private async Task RefreshServerProfileAsync()
     {
         var endpoint = Endpoint();
-        var result = await SshRemote.ProbeSecurityAsync(endpoint, EmbeddedAssets.SecurityProbe);
+        serverOverview = null;
+        serverOverviewIdentity = null;
+        var result = await SshRemote.ProbeSecurityAsync(endpoint, EmbeddedAssets.SecurityProbe,
+            loginProfile: loadLinuxLoginProfile.Checked);
         result.EnsureSuccess();
         var overview = LinuxServerOverview.Parse(result.StdOut);
         // Connecting discovers the MTA but does NOT authorize Force Replace:
@@ -535,8 +555,12 @@ internal sealed class MainForm : Form
                         "Copy detected domain (not M365-verified): ", "השתמש בדומיין Linux: ") + linuxDomain,
                         () =>
                         {
+                            // Linux DNS/Postfix domains are candidates, never
+                            // evidence of Microsoft 365 domain verification.
+                            MailRoutingPlanStore.Validate(new MailRoutingPlan { VerifiedDomain = linuxDomain });
                             acceptedDomain.Text = linuxDomain;
                             SaveRoutingChoices();
+                            WriteLine("Detected Linux domain copied into routing plan; Microsoft 365 verification remains required.");
                             return Task.CompletedTask;
                         }, false, "copy", "routing");
                 }
@@ -696,6 +720,7 @@ internal sealed class MainForm : Form
         pageHost.ResumeLayout();
         headerUpdateButton.Text = T("Проверить обновления", "Check updates", "בדיקת עדכונים");
         headerUpdateButton.Enabled = !busy;
+        activityLogLabel.Text = T("Журнал событий", "Activity log", "יומן פעילות");
 
         navigation.Controls.Clear();
         clearActivityButton.Text = T("Очистить журнал", "Clear log", "נקה יומן");
@@ -1310,6 +1335,13 @@ internal sealed class MainForm : Form
 
     private async Task CheckSshAsync()
     {
+        inspectedMail = null;
+        inspectedServerIdentity = null;
+        existingSmtpAudit = null;
+        existingSmtpAuditIdentity = null;
+        allowExisting.Checked = false;
+        serverOverview = null;
+        serverOverviewIdentity = null;
         WriteLine("Checking Linux connection and OpenSSH host-key trust...");
         var result = await SshRemote.CheckAsync(Endpoint());
         result.EnsureSuccess();
