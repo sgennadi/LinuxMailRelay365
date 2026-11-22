@@ -79,7 +79,12 @@ class GooglePostfixRouteTests(unittest.TestCase):
         request = self.request(profile="workspace", port=587)
         with mock.patch.object(mod, "prerequisites", return_value="a" * 64), \
              mock.patch.object(mod, "route_conflicts", return_value=True), \
-             mock.patch.object(mod, "queue_state", return_value="nonempty"):
+             mock.patch.object(mod, "queue_state", return_value="nonempty"), \
+             mock.patch.object(mod, "postconf", side_effect=lambda name: {
+                 "smtp_sasl_auth_enable": "yes",
+                 "smtp_sasl_password_maps": "hash:/etc/postfix/sasl_passwd",
+                 "smtp_tls_security_level": "encrypt"
+             }.get(name, "")):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 mod.preview(request)
