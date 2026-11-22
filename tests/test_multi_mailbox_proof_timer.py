@@ -95,13 +95,13 @@ class OptionalProofTimerTests(unittest.TestCase):
                             return CompletedProcess(command, 3, stdout="")
                         property_name = command[2].split("=", 1)[1]
                         return CompletedProcess(command, 0,
-                                                stdout=values[property_name] + "\\n")
+                                                stdout=values[property_name] + "\n")
                     with mock.patch.object(timer.subprocess, "run",
                                            side_effect=respond) as run:
                         self.assertFalse(timer.systemctl(*args, allow_inactive=True))
                         self.assertEqual(run.call_count, 5)
                     for bad in ("failed", "masked", "not-found", "activating",
-                                "active", "", good + "\\nactive"):
+                                "active", "", good + "\nactive"):
                         if bad == good:
                             continue
                         with self.subTest(property=prop, bad=bad):
@@ -141,7 +141,7 @@ class OptionalProofTimerTests(unittest.TestCase):
             def bad_property(command, **kwargs):
                 if command[1] != "show":
                     return CompletedProcess(command, 1, stdout="")
-                return CompletedProcess(command, 1, stdout="disabled\\n")
+                return CompletedProcess(command, 1, stdout="disabled\n")
             with mock.patch.object(timer.subprocess, "run",
                                    side_effect=bad_property):
                 with self.assertRaisesRegex(
@@ -515,8 +515,8 @@ class OptionalProofTimerTests(unittest.TestCase):
                 return True
             return False if args[0] in ("is-active", "is-enabled") else True
         with mock.patch.object(timer, "installed",
-                               return_value={"map": "a" * 64}), \\
-             mock.patch.object(timer, "systemctl", side_effect=status), \\
+                               return_value={"map": "a" * 64}), \
+             mock.patch.object(timer, "systemctl", side_effect=status), \
              mock.patch.object(timer, "revoke") as revoke:
             with self.assertRaisesRegex(timer.Refused, "still_active_or_enabled"):
                 timer.disable()
