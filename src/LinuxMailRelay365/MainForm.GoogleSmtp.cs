@@ -15,6 +15,14 @@ internal sealed partial class MainForm
         ShortcutsEnabled = true
     };
     private readonly TextBox googleOutboundPort = Field("587");
+    private readonly CheckBox workspaceAuthDiagnostics = new()
+    {
+        AutoSize = true, Checked = false,
+        Font = new Font("Segoe UI", 10.5f),
+        ForeColor = UiTheme.Navy,
+        Margin = new Padding(0, 8, 0, 10)
+    };
+    private bool workspaceAuthDiagnosticsWired;
     private GoogleSmtpAudit? googleSmtpAudit;
     private string? googleSmtpAuditIdentity;
     private GoogleRoutePreview? googleRoutePreview;
@@ -168,7 +176,23 @@ internal sealed partial class MainForm
                 width, warning: audit.AuthResult is "rejected" or "rejected_or_policy"));
         }
 
-        if (!workspace)
+        if (workspace)
+        {
+            workspaceAuthDiagnostics.Text = TranslateMailFlow(l,
+                "Показать дополнительную проверку SMTP AUTH Workspace (не используется режимом Relay по IP)",
+                "Show optional Workspace SMTP AUTH diagnostic (not used by IP relay)",
+                "בדיקה אופציונלית של SMTP AUTH שאינה חלק מממסר IP");
+            if (!workspaceAuthDiagnosticsWired)
+            {
+                workspaceAuthDiagnosticsWired = true;
+                workspaceAuthDiagnostics.CheckedChanged += (_, _) =>
+                {
+                    if (!busy && !IsDisposed) RenderPage();
+                };
+            }
+            AddLine(page, workspaceAuthDiagnostics);
+        }
+        if (!workspace || workspaceAuthDiagnostics.Checked)
         {
         AddLine(page, UiTheme.Text(TranslateMailFlow(l,
             "Необязательная разовая проверка учётных данных",
@@ -196,9 +220,9 @@ internal sealed partial class MainForm
         }
         else
             AddLine(page, MailFlowText(TranslateMailFlow(l,
-                "Выбран режим Google Workspace с авторизацией по публичному IP. SMTP App Password здесь не применяется. Проверьте разрешённый IP, домен отправителя и TLS в Google Admin.",
-                "Google Workspace IP-authorized relay is selected. App Password login is not used by this route. Check the approved public IP, sender domain and TLS in Google Admin.",
-                "החיבור מבוסס IP מאושר; סיסמת אפליקציה אינה בשימוש."),
+                "Выбран режим Google Workspace с авторизацией по публичному IP. Пароль не требуется для применения этого режима. Дополнительная проверка SMTP AUTH доступна выше, но НЕ подтверждает правила Google Admin.",
+                "Google Workspace IP-authorized relay is selected. This Apply mode does not require an App Password. Optional SMTP AUTH diagnostics remain available above, but do NOT verify Google Admin relay policy.",
+                "החיבור מבוסס IP; בדיקת SMTP AUTH נפרדת ואינה מאשרת מדיניות."),
                 width, warning: true));
 
         if (selectedMailScenario == MailScenarioPlanner.ReplaceRelay &&
