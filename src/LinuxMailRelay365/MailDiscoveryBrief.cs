@@ -27,7 +27,8 @@ internal sealed record MailDiscoveryBrief(
         MailServerDiscoveryDecision decision,
         int recipientScope,
         string? proposedPort,
-        int language, string selectedScenario = MailScenarioPlanner.Choose)
+        int language, string selectedScenario = MailScenarioPlanner.Choose,
+        string destination = MailFlowIntent.TargetM365)
     {
         int l = language;
         bool postfix = inventory?.Mta == "postfix";
@@ -65,7 +66,11 @@ internal sealed record MailDiscoveryBrief(
                 (gmail ? "Gmail · " : "") + existingRelay),
             new(T(l, "Локальный приём SMTP", "Inbound SMTP", "SMTP נכנס"), inbound),
             new(T(l, "Имя Linux", "Linux host", "שם שרת Linux"), hostName),
-            new(T(l, "Домен Linux (не проверен в M365)", "Linux domain (not M365 verified)", "דומיין Linux (לא אומת ב-M365)"), domain)
+            new(destination == MailFlowIntent.TargetM365
+                ? T(l, "Домен Linux (не проверен в M365)", "Linux domain (not M365 verified)", "דומיין Linux (לא אומת ב-M365)")
+                : T(l, "Домен Linux (права отправителя не проверены)",
+                    "Linux domain (sender authorization unverified)", "דומיין Linux (שולח לא אומת)"),
+                domain)
         };
         if (!string.IsNullOrWhiteSpace(proposedPort))
             facts.Add(new(T(l, "Порт нового Relay (предложение)", "Proposed new relay port", "יציאת ממסר חדשה מוצעת"),
@@ -119,7 +124,8 @@ internal sealed record MailDiscoveryBrief(
                     "Inspect current mail delivery and the feasibility of an independent relay. Do not change the primary configuration.",
                     "בדקו ממסר נפרד, ללא שינוי התצורה הקיימת.");
 
-        string audience = selectedScenario == MailScenarioPlanner.Keep ? "" : recipientScope switch
+        string audience = selectedScenario == MailScenarioPlanner.Keep ? ""
+            : destination == MailFlowIntent.TargetM365 ? recipientScope switch
         {
             1 => T(l,
                 "Только внутренние получатели M365: возможен Direct Send (исходящий TCP 25). XOAUTH2 — альтернатива при одобренном почтовом ящике.",
@@ -133,7 +139,10 @@ internal sealed record MailDiscoveryBrief(
                 "Укажите, нужны ли внешние получатели: только после этого можно выбирать XOAUTH2, Connector или Direct Send.",
                 "Choose whether external recipients are needed before selecting XOAUTH2, Connector or Direct Send.",
                 "בחרו אם נדרשים נמענים חיצוניים לפני בחירת שיטה.")
-        };
+        } : T(l,
+            "Для выбранного SMTP-провайдера проверьте разрешённые адреса отправителей, домены и политику доставки. Доступ TCP не доказывает разрешения или доставку.",
+            "Verify authorized sender identities, domains and recipient policy for the selected SMTP provider. TCP connectivity proves neither permission nor delivery.",
+            "יש לבדוק את מדיניות השולחים והנמענים של ספק SMTP.");
 
         string warning = decision.Code switch
         {
