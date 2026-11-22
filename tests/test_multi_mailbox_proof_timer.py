@@ -193,7 +193,7 @@ class OptionalProofTimerTests(unittest.TestCase):
             if path == timer.MAP:
                 return map_bytes
             raise AssertionError("unexpected protected file")
-        with mock.patch.object(timer.PROOF, "exists", return_value=True), \
+        with mock.patch.object(Path, "exists", return_value=True), \
              mock.patch.object(timer.grp, "getgrnam",
                                return_value=SimpleNamespace(gr_gid=4242)), \
              mock.patch.object(timer, "read", side_effect=reader):
@@ -216,26 +216,28 @@ class OptionalProofTimerTests(unittest.TestCase):
             self.assertEqual(timer.receipt_age_status(pinned), "missing")
 
     def test_receipt_status_rejects_invalid_age_and_boolean_timestamp(self):
-        data = {"version": 1, "map_sha256": "a" * 64,
+        map_bytes = b"test-only-map-for-time-validation"
+        pinned = timer.digest(map_bytes)
+        data = {"version": 1, "map_sha256": pinned,
                 "issued_at": 1010, "expires_at": 1130,
                 "mailboxes": 1, "main_meta": [], "master_meta": [],
                 "ingress": "root_static_audit_consistent_not_live_delivery"}
-        with mock.patch.object(timer.PROOF, "exists", return_value=True), \
+        with mock.patch.object(Path, "exists", return_value=True), \
              mock.patch.object(timer.grp, "getgrnam",
                                return_value=SimpleNamespace(gr_gid=4242)), \
              mock.patch.object(timer, "read",
                                side_effect=lambda path, *args, **kwargs:
                                json.dumps(data).encode("ascii")
-                               if path == timer.PROOF else b"ignored"):
+                               if path == timer.PROOF else map_bytes):
             with self.assertRaisesRegex(timer.Refused, "receipt_from_future"):
-                timer.receipt_age_status("a" * 64, now=1000)
+                timer.receipt_age_status(pinned, now=1000)
             data["issued_at"] = True
             with self.assertRaisesRegex(timer.Refused, "invalid_receipt_status_metadata"):
-                timer.receipt_age_status("a" * 64, now=1000)
+                timer.receipt_age_status(pinned, now=1000)
             data["issued_at"] = 1010
             data["expires_at"] = 1010 + 3600
             with self.assertRaisesRegex(timer.Refused, "invalid_receipt_status_metadata"):
-                timer.receipt_age_status("a" * 64, now=1000)
+                timer.receipt_age_status(pinned, now=1000)
 
     def test_status_without_timer_reports_not_installed(self):
         with tempfile.TemporaryDirectory() as td, \
