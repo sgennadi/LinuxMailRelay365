@@ -137,6 +137,8 @@ ssh "${ssh_opts[@]}" ci@127.0.0.1 \
 grep -Fxq 'LMR365_VM_TIMER_PREVIEW=read_only' "$work/proof-timer"
 grep -Fxq 'LMR365_VM_TIMER_SYSTEMD=active_under_enforcing' "$work/proof-timer"
 grep -Fxq 'LMR365_VM_TIMER_SCHEDULED=renewed' "$work/proof-timer"
+grep -Fxq 'LMR365_VM_TIMER_MAP_DRIFT=fail_closed' "$work/proof-timer"
+grep -Fxq 'LMR365_VM_TIMER_MAP_RECOVERY=verified' "$work/proof-timer"
 grep -Fxq 'LMR365_VM_TIMER_REVOCATION=verified' "$work/proof-timer"
 grep -Fxq 'LMR365_VM_TIMER_FIXTURE=removed' "$work/proof-timer"
 grep -Fxq 'LMR365_VM_TIMER_REAL_M365_ACCEPTANCE=no' "$work/proof-timer"

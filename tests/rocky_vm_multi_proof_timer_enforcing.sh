@@ -101,6 +101,38 @@ sleep 75
 after="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["issued_at"])' "$proof")"
 test "$after" -gt "$before"
 echo 'LMR365_VM_TIMER_SCHEDULED=renewed'
+
+# Negative lifecycle: altered sender map must NOT refresh an existing proof.
+# A failed oneshot must leave the previous receipt intact and the manager
+# must refuse even a read-only approval plan while its SHA pin is violated.
+map="$parent/oauth-runtime-senders.tsv"
+original_map_sha="$(sha256sum "$map" | cut -d ' ' -f 1)"
+proof_before_drift="$(sha256sum "$proof" | cut -d ' ' -f 1)"
+printf 'unapproved_synthetic_sender_change\n' > "$map"
+test "$(sha256sum "$map" | cut -d ' ' -f 1)" != "$original_map_sha"
+if systemctl start linuxmailrelay365-multi-proof.service >/dev/null 2>&1; then
+    echo 'LMR365_VM_TIMER_MAP_DRIFT=unsafe_refresh_succeeded' >&2
+    exit 1
+fi
+test "$(sha256sum "$proof" | cut -d ' ' -f 1)" = "$proof_before_drift"
+if python3 "$manager" --plan >/dev/null 2>&1; then
+    echo 'LMR365_VM_TIMER_MAP_DRIFT=unapproved_plan_accepted' >&2
+    exit 1
+fi
+echo 'LMR365_VM_TIMER_MAP_DRIFT=fail_closed'
+
+# Restore exactly the fixture map, clear only the test's failed unit state,
+# and prove the original signed SHA can be refreshed again.
+printf 'synthetic_no_real_mailbox\n' > "$map"
+test "$(sha256sum "$map" | cut -d ' ' -f 1)" = "$original_map_sha"
+systemctl reset-failed linuxmailrelay365-multi-proof.service
+sleep 2
+systemctl start linuxmailrelay365-multi-proof.service
+systemctl is-active --quiet linuxmailrelay365-multi-proof.timer
+proof_after_recovery="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["issued_at"])' "$proof")"
+test "$proof_after_recovery" -gt "$after"
+echo 'LMR365_VM_TIMER_MAP_RECOVERY=verified'
+
 python3 "$manager" --disable-reviewed --confirm DISABLE_AND_REVOKE_MULTI_INGRESS_TIMER |
     grep -Fxq 'MULTI_PROOF_TIMER=disabled_and_receipt_revoked'
 test ! -e "$proof" && test ! -e "$service" && test ! -e "$timer" && test ! -e "$state"
