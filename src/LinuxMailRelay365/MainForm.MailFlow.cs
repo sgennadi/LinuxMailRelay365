@@ -303,6 +303,7 @@ internal sealed partial class MainForm
         AddLine(page, BuildMailFlowCards(targetChoices, selectedMailTarget, code =>
         {
             selectedMailTarget = code;
+            googleAppPassword.Clear(); // Never carry Google credentials between destinations.
             if (code == MailFlowIntent.TargetGmail && googleOutboundPort.Text.Trim() == "25")
                 googleOutboundPort.Text = "587";
             googleSmtpAudit = null;
