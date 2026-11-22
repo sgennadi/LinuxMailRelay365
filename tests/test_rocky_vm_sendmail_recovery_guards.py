@@ -47,6 +47,22 @@ class PostRebootListenerGuardTests(unittest.TestCase):
                         RuntimeError, "UNEXPECTED_SMTP_LISTENER"):
                     reboot.require_only_primary_postfix_listener(capture)
 
+    def test_failure_identifies_port_and_binding_scope_without_exposing_address(self):
+        base = "LISTEN 0 4096 127.0.0.1:25 0.0.0.0:*\n"
+        cases = (("0.0.0.0", 25, "WILDCARD_IPV4_25"),
+                 ("[::]", 587, "WILDCARD_IPV6_587"),
+                 ("[::1]", 25, "LOOPBACK_IPV6_25"),
+                 ("192.0.2.23", 2525, "OTHER_BIND_2525"),
+                 ("127.0.0.1", 2526, "LOOPBACK_IPV4_2526"))
+        for addr, port, expected in cases:
+            with self.subTest(addr=addr, port=port):
+                capture = base + ("LISTEN 0 4096 %s:%d 0.0.0.0:*\n" % (addr, port))
+                with self.assertRaisesRegex(
+                        RuntimeError, "UNEXPECTED_SMTP_LISTENER_AFTER_RECOVERY_" + expected
+                        ) as caught:
+                    reboot.require_only_primary_postfix_listener(capture)
+                self.assertNotIn("192.0.2.23", str(caught.exception))
+
     def test_ipv6_loopback_mismatches_explicit_ipv4_fixture(self):
         with self.assertRaisesRegex(
                 RuntimeError, "UNEXPECTED_SMTP_LISTENER"):

@@ -46,6 +46,37 @@ function Invoke-SelfTest([string]$file) {
     $p = Start-Process -FilePath $file -ArgumentList '--self-test' -Wait -PassThru
     Assert ($null -ne $p -and $p.ExitCode -eq 0) 'EXE built-in self-test failed.'
 }
+function Invoke-VerifiedFileReplace(
+    [string]$source, [string]$destination, [string]$backup,
+    [string]$sourceDigest, [string]$destinationDigest) {
+    # Windows AV/indexers may briefly hold an EXE after its process exits.
+    # Only retry ERROR_SHARING_VIOLATION=32 / ERROR_LOCK_VIOLATION=33.
+    # Reject changed bytes, missing files and all other errors immediately.
+    for ($attempt = 0; $attempt -lt 8; $attempt++) {
+        Assert ((Test-Path -LiteralPath $source -PathType Leaf) -and
+                (Test-Path -LiteralPath $destination -PathType Leaf)) 'Replace source/destination vanished.'
+        Assert ((Sha $source) -ceq $sourceDigest -and
+                (Sha $destination) -ceq $destinationDigest) 'Replace input hash drift.'
+        try {
+            [IO.File]::Replace($source, $destination, $backup, $false)
+            return
+        }
+        catch {
+            $cause = $_.Exception
+            while ($cause.InnerException) { $cause = $cause.InnerException }
+            $code = $cause.HResult -band 0xffff
+            if ($cause -isnot [IO.IOException] -or
+                $code -notin @(32, 33) -or $attempt -ge 7) {
+                throw
+            }
+            # A failed atomic replace must not consume the source file.
+            Assert ((Test-Path -LiteralPath $source -PathType Leaf) -and
+                    (Test-Path -LiteralPath $destination -PathType Leaf)) 'Ambiguous replace outcome.'
+            Start-Sleep -Milliseconds (200 * ($attempt + 1))
+        }
+    }
+    throw 'File replacement did not complete.'
+}
 $root = Join-Path $env:RUNNER_TEMP ("LMRPreviewUpgrade-" + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($root) | Out-Null
 try {
@@ -90,14 +121,14 @@ try {
     [IO.File]::Copy($CandidateExe, $candidate)
     $oldHash = Sha $target
     $newHash = Sha $candidate
-    [IO.File]::Replace($candidate, $target, $backup, $false)
+    Invoke-VerifiedFileReplace $candidate $target $backup $newHash $oldHash
     Assert ((Sha $target) -ceq $newHash -and (Sha $backup) -ceq $oldHash) 'Upgrade/backup digest mismatch.'
     Invoke-SelfTest $target
     Write-Output 'PUBLISHED_PREVIEW_TO_CANDIDATE_DISPOSABLE_REPLACEMENT=PASS'
     # Match the actual updater: Windows File.Replace needs a real third path.
     # The consumed .update-new pathname is available for the failed version.
     $failedVersion = "$target.update-new"
-    [IO.File]::Replace($backup, $target, $failedVersion, $false)
+    Invoke-VerifiedFileReplace $backup $target $failedVersion $oldHash $newHash
     Assert ((Sha $failedVersion) -ceq $newHash) 'Preserved failed-version digest mismatch.'
     Assert ((Sha $target) -ceq $oldHash) 'Rollback digest mismatch.'
     Invoke-SelfTest $target

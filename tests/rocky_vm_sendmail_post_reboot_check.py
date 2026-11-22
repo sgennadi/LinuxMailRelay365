@@ -73,6 +73,19 @@ def verify_guest():
 
 
 
+def smtp_listener_scope(address):
+    """Only categorical diagnostics leave the disposable guest; never log IPs."""
+    if address == "127.0.0.1":
+        return "LOOPBACK_IPV4"
+    if address in ("::1", "[::1]"):
+        return "LOOPBACK_IPV6"
+    if address == "0.0.0.0":
+        return "WILDCARD_IPV4"
+    if address in ("::", "[::]"):
+        return "WILDCARD_IPV6"
+    return "OTHER_BIND"
+
+
 def require_only_primary_postfix_listener(output):
     """KVM fixture contract: exactly one loopback IPv4 SMTP listener on 25.
 
@@ -92,7 +105,8 @@ def require_only_primary_postfix_listener(output):
         number = int(port)
         if number in smtp_ports:
             if address != "127.0.0.1" or number != 25:
-                refuse("UNEXPECTED_SMTP_LISTENER_AFTER_RECOVERY")
+                refuse("UNEXPECTED_SMTP_LISTENER_AFTER_RECOVERY_" +
+                       smtp_listener_scope(address) + "_" + str(number))
             listeners.append((address, number))
     if listeners != [("127.0.0.1", 25)]:
         refuse("MISSING_OR_DUPLICATE_PRIMARY_POSTFIX_LISTENER")

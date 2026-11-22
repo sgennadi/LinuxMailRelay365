@@ -762,6 +762,37 @@ internal static class SignedPortableUpdater
         }
     }
 
+
+    // Only transient Windows sharing/lock errors may be retried, and only
+    // while BOTH EXE byte hashes remain exactly equal to approved inputs.
+    // This routine cannot turn a changed or ambiguous replace into success.
+    private static void ReplaceWithVerifiedSharingRetry(
+        string source, string destination, string backup,
+        string sourceDigest, string destinationDigest)
+    {
+        const int maximumAttempts = 8;
+        for (int attempt = 0; attempt < maximumAttempts; attempt++)
+        {
+            if (!File.Exists(source) || !File.Exists(destination) ||
+                !string.Equals(FileSha256(source), sourceDigest, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(FileSha256(destination), destinationDigest, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("EXE changed while waiting for a file lock.");
+            try
+            {
+                File.Replace(source, destination, backup, ignoreMetadataErrors: false);
+                return;
+            }
+            catch (IOException ex) when (((ex.HResult & 0xffff) is 32 or 33) &&
+                                          attempt < maximumAttempts - 1)
+            {
+                if (!File.Exists(source) || !File.Exists(destination))
+                    throw new InvalidDataException("Ambiguous EXE replacement outcome.", ex);
+                System.Threading.Thread.Sleep(200 * (attempt + 1));
+            }
+        }
+        throw new IOException("The EXE replacement could not finish.");
+    }
+
     internal static int ApplyFromHelper(string[] args, bool unsignedPreview = false)
     {
         if (!OperatingSystem.IsWindows() || args.Length != 7 ||
@@ -840,7 +871,9 @@ internal static class SignedPortableUpdater
                 File.Move(backup, previousBackup);
                 movedPreviousBackup = true;
             }
-            File.Replace(next, target, backup, ignoreMetadataErrors: false);
+            string approvedOldHash = FileSha256(target);
+            ReplaceWithVerifiedSharingRetry(next, target, backup,
+                args[3], approvedOldHash);
             replaced = true;
             if (RunInstalledHealth(target) != 0 ||
                 !string.Equals(FileSha256(target), args[3], compare))
@@ -871,7 +904,8 @@ internal static class SignedPortableUpdater
                     // Windows File.Replace requires a non-empty backup pathname.
                     // The previously consumed .update-new name is available and
                     // will be removed in finally after restoring the old EXE.
-                    File.Replace(backup, target, next, ignoreMetadataErrors: false);
+                    ReplaceWithVerifiedSharingRetry(backup, target, next,
+                        FileSha256(backup), FileSha256(target));
                     rolledBack = true;
                 }
                 catch (Exception) { rolledBack = false; }
@@ -900,6 +934,15 @@ internal static class SignedPortableUpdater
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
         }
+    }
+
+    private static bool ReplaceSharingRetryContractSelfTest()
+    {
+        // The only retriable HRESULTs are Windows sharing and lock violations.
+        // Reusing the same selection as the helper prevents widening the gate.
+        return (new IOException("sharing", unchecked((int)0x80070020)).HResult & 0xffff) == 32 &&
+               (new IOException("locking", unchecked((int)0x80070021)).HResult & 0xffff) == 33 &&
+               (new IOException("disk", unchecked((int)0x80070070)).HResult & 0xffff) != 32;
     }
 
     private static bool ArchiveAndPeSafetySelfTest()
@@ -1000,6 +1043,7 @@ internal static class SignedPortableUpdater
                ParseUpdateStatus("UNSIGNED_PREVIEW_UPDATE_FAILED_MANUAL_REVIEW") ==
                    "MANUAL_REVIEW_REQUIRED" &&
                ParseUpdateStatus("untrusted message\r\nDOWNLOADED") == "UNKNOWN" &&
+               ReplaceSharingRetryContractSelfTest() &&
                ArchiveAndPeSafetySelfTest();
     }
 }
