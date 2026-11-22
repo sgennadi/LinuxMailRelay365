@@ -406,7 +406,11 @@ internal static class Program
                 EmbeddedAssets.CloudConnectorManager.Contains("ExpectedSha256", StringComparison.Ordinal) &&
                 EmbeddedAssets.CloudConnectorManager.Contains("DELETE_REVIEWED_LMR365_CONNECTOR", StringComparison.Ordinal) &&
                 EmbeddedAssets.CloudConnectorManager.Contains("connector_postcheck_not_unique", StringComparison.Ordinal)),
-            ("Tenant discovery", TenantDiscovery.SelfTest),
+            ("Tenant discovery result parser", TenantDiscovery.SelfTest),
+            ("Native C# MSAL/Graph/ARM tenant discovery", Microsoft365Auth.EntraTenantDiscoveryClient.SelfTest),
+            ("Device code verification URL allowlist", () =>
+                NativeDeviceCodeDialog.IsTrustedMicrosoftVerificationUrl("https://microsoft.com/devicelogin") &&
+                !NativeDeviceCodeDialog.IsTrustedMicrosoftVerificationUrl("https://microsoft.com.evil.test/")),
             ("Diagnostic privacy", DiagnosticJournal.SelfTest)
         };
 #if !USE_UNIVERSAL_UPDATER
