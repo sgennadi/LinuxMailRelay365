@@ -5896,6 +5896,7 @@ internal sealed partial class MainForm : Form
             WriteLine("Isolated Relay presence unverified (" + error.GetType().Name +
                       "); do not assume absence.");
         }
+        // No implicit TCP 2525 fallback.
         // Probe a proposed inbound port only for the explicitly selected
         // independent sidecar. Switching an existing upstream uses its
         // current local mail submission paths and needs NO new TCP listener.
