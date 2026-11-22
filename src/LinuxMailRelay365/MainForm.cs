@@ -539,6 +539,11 @@ internal sealed partial class MainForm : Form
             SaveRoutingChoices();
             if (!busy && step is 1 or 2 or 3) RenderPage();
         };
+        googleOutboundPort.Leave += (_, _) =>
+        {
+            SaveRoutingChoices();
+            if (!busy && step is 1 or 2 or 3) RenderPage();
+        };
         foreignSidecarHostname.Leave += (_, _) => UpdatePreserveFlowPreview();
         foreach (var field in new[] { postfixBasicsHostname, postfixBasicsDomain })
         {
@@ -2422,11 +2427,19 @@ internal sealed partial class MainForm : Form
                         "בחרתם להשאיר את הדואר הקיים ללא שינוי.")));
                     break;
                 }
-                if (selectedMailTarget == MailFlowIntent.TargetCustom)
+                if (selectedMailTarget != MailFlowIntent.TargetM365)
                 {
-                    AddUnverifiedM365Capabilities(page);
                     AddLine(page, BuildLiveMailFlowDiagram());
-                    break; // Custom upstream has no reviewed installer yet.
+                    if (IsGoogleTarget)
+                        ShowGoogleSmtpChecks(page);
+                    else
+                        AddUnverifiedM365Capabilities(page);
+                    AddLine(page, MailFlowText(T(
+                        "Настройка исходящего Relay пока не включена. Проверка портов/пароля ничего не меняет на Linux.",
+                        "Changing the upstream relay is not yet enabled. Port/auth checks never change Linux.",
+                        "בדיקות SMTP אינן משנות את Linux."),
+                        Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
+                    break;
                 }
                 AddUnverifiedM365Capabilities(page);
                 AddLine(page, UiTheme.Text(T(
@@ -2522,14 +2535,17 @@ internal sealed partial class MainForm : Form
                         Math.Max(300, pageHost.ClientSize.Width - 90)));
                     break;
                 }
-                if (selectedMailTarget == MailFlowIntent.TargetCustom)
+                if (selectedMailTarget != MailFlowIntent.TargetM365)
                 {
                     AddLine(page, BuildLiveMailFlowDiagram());
-                    AddUnverifiedM365Capabilities(page);
+                    if (IsGoogleTarget)
+                        ShowGoogleSmtpChecks(page);
+                    else
+                        AddUnverifiedM365Capabilities(page);
                     AddLine(page, MailFlowText(T(
-                        "Перевод на произвольный SMTP-сервер пока сохраняется только как план. Применение без проверки TLS, AUTH и резервной копии не предлагается.",
-                        "Custom SMTP migration is planning-only until TLS, AUTH and rollback can be verified. No apply action is offered.",
-                        "מעבר לממסר SMTP אחר הוא תכנון בלבד."),
+                        "Отдельный исходящий SMTP-сервер выбирается независимо от входящего порта Linux. Перед включением требуются подтверждённый TLS/AUTH, резервная копия и проверка маршрута.",
+                        "Outgoing SMTP server settings are independent of Linux inbound ports. Deployment requires verified TLS/AUTH, backup and routing review.",
+                        "הגדרות SMTP יוצאות אינן קשורות ליציאות הכניסה."),
                         Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
                     break;
                 }
@@ -3337,7 +3353,7 @@ internal sealed partial class MainForm : Form
                 }
                 if (selectedMailScenario is MailScenarioPlanner.Keep or
                     MailScenarioPlanner.ReplaceRelay ||
-                    selectedMailTarget == MailFlowIntent.TargetCustom)
+                    selectedMailTarget != MailFlowIntent.TargetM365)
                 {
                     AddLine(page, BuildLiveMailFlowDiagram());
                     AddLine(page, MailFlowText(T(
@@ -3924,6 +3940,7 @@ internal sealed partial class MainForm : Form
             selectedMailSource = routingPlan.MailSource;
             selectedMailScenario = routingPlan.MigrationScenario;
             selectedMailTarget = routingPlan.Destination;
+            googleOutboundPort.Text = routingPlan.GoogleOutboundPort.ToString();
             alternateUpstreamHost.Text = routingPlan.CustomUpstreamHost;
             alternateUpstreamPort.Text = routingPlan.CustomUpstreamPort.ToString();
             mailTransport.SelectedIndex = routingPlan.Transport switch
@@ -3999,6 +4016,8 @@ internal sealed partial class MainForm : Form
         routingPlan.MailSource = selectedMailSource;
         routingPlan.MigrationScenario = selectedMailScenario;
         routingPlan.Destination = selectedMailTarget;
+        if (int.TryParse(googleOutboundPort.Text.Trim(), out int googlePort))
+            routingPlan.GoogleOutboundPort = googlePort;
         routingPlan.CustomUpstreamHost = alternateUpstreamHost.Text.Trim();
         if (int.TryParse(alternateUpstreamPort.Text.Trim(), out int upstreamPort))
             routingPlan.CustomUpstreamPort = upstreamPort;
