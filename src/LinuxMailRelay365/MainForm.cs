@@ -74,6 +74,8 @@ internal sealed class MainForm : Form
     };
     private readonly Label status = UiTheme.Text("");
     private readonly Button clearActivityButton = UiTheme.Action("Clear log", glyph: "trash");
+    private readonly Button headerUpdateButton = UiTheme.Action("Check updates", glyph: "download");
+    private bool sshTwoColumns;
     private bool showAdvancedSsh;
     private LinuxServerOverview? serverOverview;
     private string? serverOverviewIdentity;
@@ -177,6 +179,9 @@ internal sealed class MainForm : Form
         };
         sshAuthMode.SelectedIndex = 0;
         sshAuthMode.SelectedIndexChanged += (_, _) => { if (!busy && step == 0) RenderPage(); };
+        headerUpdateButton.Click += async (_, _) => await RunBusyAsync("update", CheckUpdatesAsync);
+        headerUpdateButton.AccessibleDescription = "Checks GitHub releases; opens the release page if requested. Does not install automatically.";
+        Shown += (_, _) => { if (step == 0) RenderPage(); };
         hardwareRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
         ipRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
         monitoringRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
@@ -193,37 +198,39 @@ internal sealed class MainForm : Form
         };
         language.AccessibleName = "Interface language";
 
-        var top = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1,
+        var top = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1,
             AutoSize = true, Padding = new Padding(18, 12, 18, 8) };
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 51));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var logo = new PictureBox { Width = 42, Height = 42, Margin = new Padding(0, 0, 8, 0),
             SizeMode = PictureBoxSizeMode.Zoom, Image = Icon?.ToBitmap() };
         top.Controls.Add(logo, 0, 0);
         top.Controls.Add(UiTheme.Text("LINUX MAIL RELAY 365  ·  " + UpdateCheck.Version, true), 1, 0);
-        top.Controls.Add(language, 2, 0);
+        top.Controls.Add(headerUpdateButton, 2, 0);
+        top.Controls.Add(language, 3, 0);
 
         var header = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Padding = new Padding(18, 0, 18, 6) };
         header.Controls.Add(headline);
         header.Controls.Add(subheading);
 
-        var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(18, 2, 18, 12) };
+        var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1, Padding = new Padding(18, 2, 18, 12) };
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        bottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var journalToolbar = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, AutoSize = true, WrapContents = true,
-            FlowDirection = FlowDirection.LeftToRight
-        };
-        journalToolbar.Controls.Add(navigation);
+        bottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
+        bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var journalToolbar = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
+        journalToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        journalToolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        journalToolbar.Controls.Add(UiTheme.Text("Activity log"), 0, 0);
         clearActivityButton.AutoSize = true;
         clearActivityButton.Click += (_, _) => activity.Clear();
-        journalToolbar.Controls.Add(clearActivityButton);
-        bottom.Controls.Add(journalToolbar, 0, 0);
-        bottom.Controls.Add(activity, 0, 1);
-        bottom.Controls.Add(status, 0, 2);
+        journalToolbar.Controls.Add(clearActivityButton, 1, 0);
+        bottom.Controls.Add(navigation, 0, 0);
+        bottom.Controls.Add(journalToolbar, 0, 1);
+        bottom.Controls.Add(activity, 0, 2);
+        bottom.Controls.Add(status, 0, 3);
 
         var shell = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1 };
         shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -235,7 +242,16 @@ internal sealed class MainForm : Form
         shell.Controls.Add(pageHost, 0, 2);
         shell.Controls.Add(bottom, 0, 3);
         Controls.Add(shell);
-        pageHost.SizeChanged += (_, _) => ResizePreserveFlowHelp();
+        pageHost.SizeChanged += (_, _) =>
+        {
+            ResizePreserveFlowHelp();
+            if (step == 0 && !busy && IsHandleCreated &&
+                sshTwoColumns != (pageHost.ClientSize.Width >= 900))
+                BeginInvoke(new Action(() =>
+                {
+                    if (!IsDisposed && step == 0 && !busy) RenderPage();
+                }));
+        };
         RenderPage();
         WriteLine("Ready. No user passwords, app secrets, or OAuth tokens are stored by this manager.");
     }
@@ -650,6 +666,8 @@ internal sealed class MainForm : Form
                 break;
         }
         pageHost.ResumeLayout();
+        headerUpdateButton.Text = T("Проверить обновления", "Check updates", "בדיקת עדכונים");
+        headerUpdateButton.Enabled = !busy;
 
         navigation.Controls.Clear();
         clearActivityButton.Text = T("Очистить журнал", "Clear log", "נקה יומן");
