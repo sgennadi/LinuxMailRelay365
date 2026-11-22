@@ -837,9 +837,12 @@ internal static class EmbeddedAssets
             Encode(MailHostInspector) + "\nLMR365_MAIL_HOST\n" +
             "base64 -d > \"$work/audit-mail-bindings.py\" <<'LMR365_MAIL_BIND'\n" +
             Encode(MailBindInspector) + "\nLMR365_MAIL_BIND\n" +
-            "python3 \"$work/inspect-mail-host.py\" --inspect\n" +
+            "mail_host_report=$(python3 \"$work/inspect-mail-host.py\" --inspect)\n" +
+            "printf '%s\\n' \"$mail_host_report\"\n" +
+            "mail_host_ports=$(printf '%s\\n' \"$mail_host_report\" | sed -n 's/^MAIL_HOST_SMTP_CONFIG_PORTS=//p')\n" +
+            "test -n \"$mail_host_ports\" || mail_host_ports=unverified\n" +
             "python3 \"$work/audit-mail-bindings.py\" --smtp-port " + selectedPort +
-            " --mta " + currentMta + "\n";
+            " --mta " + currentMta + " --configured-ports \"$mail_host_ports\"\n";
     }
 
     internal static string BuildExistingSmtpAuditBundle()
