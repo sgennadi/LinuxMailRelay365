@@ -58,7 +58,7 @@ internal sealed class MainForm : Form
     private string? securityServerIdentity;
     private SecurityOptions securityOptions = new();
     private LinuxSecurityInventory? linuxSecurity;
-    private string cloudSecuritySummary = "Не проверено";
+    private string cloudSecuritySummary = "";
     private readonly CheckBox previewUpdates = new() { AutoSize = true, Checked = true };
     private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
     private readonly Label headline = UiTheme.Text("", true);
@@ -177,8 +177,16 @@ internal sealed class MainForm : Form
         ipRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
         monitoringRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
         language.Items.AddRange(["Русский", "English", "עברית"]);
-        language.SelectedIndex = 0;
-        language.SelectedIndexChanged += (_, _) => RenderPage();
+        // First launch is English, independently of the Windows display language.
+        // Respect an explicit language choice on subsequent launches.
+        language.SelectedIndex = UiLanguagePreference.Load(dataDirectory);
+        language.SelectedIndexChanged += (_, _) =>
+        {
+            try { UiLanguagePreference.Save(dataDirectory, language.SelectedIndex); }
+            catch (IOException ex) { WriteLine("WARNING: Could not save UI language: " + ex.Message); }
+            catch (UnauthorizedAccessException ex) { WriteLine("WARNING: Could not save UI language: " + ex.Message); }
+            RenderPage();
+        };
         language.AccessibleName = "Interface language";
 
         var top = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1,
@@ -330,7 +338,7 @@ internal sealed class MainForm : Form
                 AddAction(page, T("Проверить TPM, HSM и PKCS#11 (только чтение)",
                                   "Inspect TPM, HSM and PKCS#11 (read-only)",
                                   "בדוק TPM/HSM לקריאה בלבד"), CheckLinuxSecurityAsync, true, "shield", "linux-security");
-                AddLine(page, UiTheme.Text(linuxSecurity?.SummaryRu() ??
+                AddLine(page, UiTheme.Text(linuxSecurity?.Summary(language.SelectedIndex) ??
                     T("Linux: проверка ещё не запускалась.", "Linux: not inspected yet.", "Linux: טרם נבדק.")));
                 hardwareRequest.Text = T("Запланировать аппаратную защиту ключа (TPM/HSM) — не активировано",
                                          "Plan TPM/HSM-backed key — NOT active",
@@ -348,7 +356,8 @@ internal sealed class MainForm : Form
                 AddAction(page, T("Проверить возможности Entra (вход администратора, только чтение)",
                                   "Check Entra security APIs (read-only admin sign-in)",
                                   "בדוק Entra לקריאה בלבד"), CheckCloudSecurityAsync, false, "shield", "entra");
-                AddLine(page, UiTheme.Text(cloudSecuritySummary));
+                AddLine(page, UiTheme.Text(string.IsNullOrEmpty(cloudSecuritySummary)
+                    ? T("Не проверено", "Not checked", "לא נבדק") : cloudSecuritySummary));
                 AddAction(page, T("Как включить защиту вручную сейчас или позже",
                                   "How to enable protection manually now or later",
                                   "כיצד להפעיל הגנה באופן ידני"), ShowSecurityHelpAsync, false, "shield");

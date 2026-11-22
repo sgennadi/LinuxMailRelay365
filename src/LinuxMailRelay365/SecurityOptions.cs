@@ -84,6 +84,23 @@ internal sealed class LinuxSecurityInventory
     internal bool HasPkcs11TokenHint => Get("PKCS11_TOKENS") == "detected_unverified";
     internal bool HardwareSigningReady => Get("HARDWARE_SIGNING_CONFIGURED") == "yes";
 
+    internal string Summary(int language) => language switch
+    {
+        1 => $"OS: {Get("OS_ID")} {Get("OS_VERSION")}; MTA: {Get("MTA")}\n" +
+             $"TPM: version {Get("TPM_VERSION")}, device {Get("TPM_DEVICE")}; access: {Get("TPM_DEVICE_ACCESS")}\n" +
+             $"TPM2 tools: {Get("TPM2_TOOLS")}; command probe: {Get("TPM2_COMMAND_PROBE")}\n" +
+             $"PKCS#11 tools: {Get("PKCS11_TOOL")}; tokens: {Get("PKCS11_TOKENS")}\n" +
+             $"TPM2 PKCS#11: {Get("TPM2_PKCS11_TOOL")}; p11-kit: {Get("PKCS11_MIDDLEWARE")}\n" +
+             "Hardware-backed signing has not been verified or enabled. Transport compatibility remains untested.",
+        2 => $"מערכת: {Get("OS_ID")} {Get("OS_VERSION")}; שרת דואר: {Get("MTA")}\n" +
+             $"TPM: גרסה {Get("TPM_VERSION")}, התקן {Get("TPM_DEVICE")}; גישה: {Get("TPM_DEVICE_ACCESS")}\n" +
+             $"כלי TPM2: {Get("TPM2_TOOLS")}; בדיקת תגובה: {Get("TPM2_COMMAND_PROBE")}\n" +
+             $"כלי PKCS#11: {Get("PKCS11_TOOL")}; אסימונים: {Get("PKCS11_TOKENS")}\n" +
+             $"TPM2 PKCS#11: {Get("TPM2_PKCS11_TOOL")}; p11-kit: {Get("PKCS11_MIDDLEWARE")}\n" +
+             "חתימה בחומרה לא אומתה ולא הופעלה. תאימות תעבורת הדואר טרם נבדקה.",
+        _ => SummaryRu()
+    };
+
     internal string SummaryRu() =>
         $"ОС: {Get("OS_ID")} {Get("OS_VERSION")}; MTA: {Get("MTA")}\n" +
         $"TPM: версия {Get("TPM_VERSION")}, устройство {Get("TPM_DEVICE")}; доступ: {Get("TPM_DEVICE_ACCESS")}\n" +

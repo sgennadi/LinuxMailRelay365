@@ -55,7 +55,8 @@ internal static class Program
                 catch (ArgumentException) { return true; }
             }),
             ("Tenant discovery", TenantDiscovery.SelfTest),
-            ("Diagnostic privacy", DiagnosticJournal.SelfTest)
+            ("Diagnostic privacy", DiagnosticJournal.SelfTest),
+            ("UI language preference", UiLanguagePreference.SelfTest)
         };
 #if !USE_UNIVERSAL_UPDATER
         checks.Add(("Release ordering", ReleaseVersion.SelfTest));
