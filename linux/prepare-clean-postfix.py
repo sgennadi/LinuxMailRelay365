@@ -90,7 +90,7 @@ def installed(manager):
 
 
 def inspect(port):
-    if not 1024 <= port <= 65535:
+    if not (port == 25 or 1024 <= port <= 65535):
         raise ValueError("invalid_custom_smtp_port")
     os_id, major, manager = platform()
     required = ("python3", "ss", "systemctl", manager,
@@ -139,7 +139,7 @@ def verify_prepared(port):
     Only a one-time clean bootstrap may authorize an inactive installed Postfix
     for a guarded isolated EOP sidecar; an arbitrary disabled Postfix cannot.
     """
-    if not 1024 <= port <= 65535:
+    if not (port == 25 or 1024 <= port <= 65535):
         raise ValueError("invalid_custom_smtp_port")
     if os.geteuid() != 0:
         raise ValueError("root_required")
