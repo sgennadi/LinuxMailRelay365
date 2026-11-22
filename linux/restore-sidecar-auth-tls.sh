@@ -36,7 +36,7 @@ command -v python3 >/dev/null || {
 python3 - "$PORT" "$MODE" "$EXPECT" <<'PY'
 import re, sys
 port, mode, expect = sys.argv[1:]
-if not re.fullmatch(r'[1-9][0-9]{3,4}', port) or not (1024 <= int(port) <= 65535):
+if not re.fullmatch(r'(25|[1-9][0-9]{3,4})', port) or not (int(port) == 25 or 1024 <= int(port) <= 65535):
     raise SystemExit('AUTH_TLS_RESTORE_ERROR=invalid_custom_smtp_port')
 if mode == 'restore' and not re.fullmatch(r'[a-f0-9]{64}', expect):
     raise SystemExit('AUTH_TLS_RESTORE_ERROR=expected_main_sha256_required')
