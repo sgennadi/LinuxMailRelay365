@@ -1,9 +1,10 @@
 # LinuxMailRelay365
 
-> **Development branch (not yet released):** test candidate `0.1.1-rc.4` adds C#-native Graph addKey for staged PEM/TPM OAuth certificate rotation, with Linux-signed proof verification, SHA-bound preview, preserve-all-keys postcheck and a manually selectable PS1 fallback. Earlier RC3 C# App Registration provisioning and Exchange-only PowerShell are retained. Exchange Online RBAC and Connector cmdlets remain in EXO-only PowerShell 7. Do not use as signed Stable or on production without live tenant acceptance.
+> **Unsigned RC5 test candidate:** `0.1.1-rc.5` adds read-only detection of existing inbound SMTP ports from Postfix `master.cf`, Exim `daemon_smtp_ports` and compiled Sendmail `sendmail.cf`. The wizard compares configured ports with observed listening sockets and the separately chosen relay port, warns about conflicts and never silently chooses 2525 for an invalid entry. RC4's native C# Microsoft Graph certificate addKey, security readiness, Linux-signed proof checks and explicit legacy PS1 fallback remain available. Exchange Online RBAC and Connector cmdlets remain in EXO-only PowerShell 7. This is NOT signed Stable, production authorization, or proof of live Microsoft 365 delivery.
 
 
 Native Microsoft authentication design: [docs/NATIVE_CSHARP_MICROSOFT365_AUTH.md](docs/NATIVE_CSHARP_MICROSOFT365_AUTH.md).
+SMTP configured-port inspection: [docs/SMTP_CONFIG_PORT_DISCOVERY.md](docs/SMTP_CONFIG_PORT_DISCOVERY.md).
 
 Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.25 — guarded Multi-mailbox XOAUTH2 offline configuration, Restore and approved SMTP acceptance; UNSIGNED TEST Preview, NOT Stable or production-accepted.**
 

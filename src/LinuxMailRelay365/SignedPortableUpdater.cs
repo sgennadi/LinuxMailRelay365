@@ -1004,16 +1004,16 @@ internal static class SignedPortableUpdater
             bool duplicate = false)
         {
             string link = "https://github.com/sgennadi/LinuxMailRelay365/releases/download/" +
-                "v0.1.1-rc.5/" + asset;
+                "v0.1.1-rc.6/" + asset;
             string item = JsonSerializer.Serialize(new
             {
                 name = asset, digest = "sha256:" + digest, size = 100L,
                 browser_download_url = link
             });
-            return "[{\"tag_name\":\"v0.1.1-rc.5\",\"draft\":false," +
+            return "[{\"tag_name\":\"v0.1.1-rc.6\",\"draft\":false," +
                 "\"prerelease\":" + (preview ? "true" : "false") +
                 ",\"html_url\":\"https://github.com/sgennadi/LinuxMailRelay365/releases/tag/" +
-                "v0.1.1-rc.5\",\"assets\":[" + item +
+                "v0.1.1-rc.6\",\"assets\":[" + item +
                 (duplicate ? "," + item : "") + "]}]";
         }
         static SignedUpdateOffer? Parse(string json, bool allow)
@@ -1025,6 +1025,9 @@ internal static class SignedPortableUpdater
         using var previewFixture = JsonDocument.Parse(Fixture(asset, hash, true));
         var fixtureOffer = SelectRelease(previewFixture.RootElement, true,
             "0.1.0-preview.25", asset);
+        // Equal installed prerelease version must never count as an update.
+        bool sameVersionRejected = SelectRelease(previewFixture.RootElement,
+            true, "0.1.1-rc.6", asset) is null;
         bool installedStable = !IsUnsignedTestVersion(UpdateCheck.Version);
         // Confirm a verified historical Preview offer is NEVER eligible as an
         // unsigned Preview upgrade for an already installed numeric Stable.
@@ -1035,12 +1038,12 @@ internal static class SignedPortableUpdater
             : (fixtureOffer is not null && IsPreviewRelease(fixtureOffer));
         return ApplyFromHelper(Array.Empty<string>()) == 2 &&
                ApplyFromHelper(Array.Empty<string>(), unsignedPreview: true) == 2 &&
-               previewSafety &&
+               previewSafety && sameVersionRejected &&
                !IsPreviewRelease(new SignedUpdateOffer("0.1.1", "v0.1.1",
                    "https://github.com/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1",
                    new Uri("https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.1/" + asset),
                    asset, hash, 100L)) &&
-               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.1-rc.5" &&
+               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.1-rc.6" &&
                Parse(Fixture(asset, hash, true), false) is null &&
                Parse(Fixture(asset, hash, false), false) is null &&
                Parse(Fixture(asset, hash, true, duplicate: true), true) is null &&
