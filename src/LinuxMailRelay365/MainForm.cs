@@ -2532,9 +2532,26 @@ internal sealed partial class MainForm : Form
                         "Separate SMTP must use a DNS name DISTINCT from the active Sendmail/Exim host. Suggested relay.<domain> is only a draft: verify DNS/TLS. The original service and queue remain untouched.",
                         "לממסר נדרש שם DNS שונה מהשרת הראשי. יש לאמת DNS ו-TLS.")));
                 }
-                AddField(page, T("Порт отдельного SMTP (Preserve Existing Mail; по умолчанию 2525)",
-                                 "Isolated SMTP port (Preserve Existing Mail; default 2525)",
-                                 "פורט SMTP נפרד (ברירת מחדל 2525)"), isolatedSmtpPort);
+                AddField(page, T("Входящий SMTP-порт Linux (25 или 1024–65535; по умолчанию 2525)",
+                                 "Linux inbound SMTP port (25 or 1024–65535; default 2525)",
+                                 "יציאת SMTP נכנסת (25 או 1024–65535; ברירת מחדל 2525)"), isolatedSmtpPort);
+                AddLine(page, UiTheme.Text(T(
+                    "25 — стандартный SMTP, но его нельзя занимать у основного MTA. Выберите 25 только после проверки служб и слушателей; 2525 — запасной порт. 587 на стороне Microsoft 365 — отдельное ИСХОДЯЩЕЕ соединение. Порты 465/587 как входящие требуют отдельной настройки TLS/AUTH и пока не предлагаются.",
+                    "25 is standard SMTP but must not replace the primary MTA listener. Select 25 only after service/socket checks; 2525 is an alternative. Microsoft 365:587 is a separate OUTBOUND port. Inbound 465/587 need a separately proven TLS/AUTH configuration and are not offered here.",
+                    "25 היא יציאת SMTP סטנדרטית; נדרשת בדיקת שירותים ושקעים. 2525 היא חלופה. 587 ל-M365 היא יציאה יוצאת.")));
+                var useStandard25 = UiTheme.Action(T(
+                    "Использовать стандартный SMTP 25 (только план)",
+                    "Choose standard SMTP 25 (plan only)",
+                    "בחירת SMTP 25 (תכנון בלבד)"), false, "check");
+                useStandard25.Enabled = !busy;
+                useStandard25.Click += (_, _) =>
+                {
+                    isolatedSmtpPort.Text = "25";
+                    SaveRoutingChoices();
+                    WriteLine("Inbound SMTP/25 selected as a plan only. Before Apply, Linux must prove port 25 free and all primary mail services disabled or absent. No service or firewall changed.");
+                    RenderPage();
+                };
+                AddLine(page, useStandard25);
                 AddField(page, T("Локальный IPv4 для SMTP (пусто = только loopback)",
                                  "Local IPv4 SMTP listener (blank = loopback only)",
                                  "כתובת IPv4 מקומית לקבלת SMTP"), smtpListenIp);
@@ -3631,7 +3648,7 @@ internal sealed partial class MainForm : Form
     private string[] NetworkFirewallArguments(string action, bool includePublic)
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int smtpPort))
-            throw new InvalidDataException("Isolated SMTP port must be a number from 1024 to 65535.");
+            throw new InvalidDataException("Isolated SMTP port must be a number 25 or 1024 to 65535.");
         routingPlan.SidecarPort = smtpPort;
         routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
         routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
@@ -3655,8 +3672,8 @@ internal sealed partial class MainForm : Form
     private string[] PrivateAuthTlsArguments(bool apply)
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort)
-            || selectedPort is < 1024 or > 65535)
-            throw new InvalidDataException("Custom isolated SMTP port must be 1024-65535.");
+            || !SmtpIngressPort.Supported(selectedPort))
+            throw new InvalidDataException("Custom isolated SMTP port must be 25 or 1024-65535.");
         var settings = new[]
         {
             "--smtp-port", selectedPort.ToString(),
@@ -3828,8 +3845,8 @@ internal sealed partial class MainForm : Form
     private async Task AuditInstalledPrivateSmtpAsync()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) ||
-            selectedPort is < 1024 or > 65535)
-            throw new InvalidDataException("Choose a custom isolated SMTP port from 1024 to 65535.");
+            !SmtpIngressPort.Supported(selectedPort))
+            throw new InvalidDataException("Choose a custom isolated SMTP port 25 or 1024 to 65535.");
         var endpoint = Endpoint();
         int checkPort = selectedPort;
         if (await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
@@ -3863,8 +3880,8 @@ internal sealed partial class MainForm : Form
 
     private (int Port, string Operation, string Username, string HashPath) GetSmtpAccountChange()
     {
-        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || port is < 1024 or > 65535)
-            throw new InvalidDataException("Choose a custom SMTP port from 1024 to 65535.");
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || !SmtpIngressPort.Supported(port))
+            throw new InvalidDataException("Choose a custom SMTP port 25 or 1024 to 65535.");
         string operation = smtpAccountOperation.SelectedIndex switch
         {
             0 => "add",
@@ -4553,8 +4570,8 @@ internal sealed partial class MainForm : Form
         EnsureRoutingLoaded();
         if (mailTransport.SelectedIndex is not (1 or 2))
             throw new InvalidOperationException("Clean Postfix package preparation is for Connector or Direct Send.");
-        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || port is < 1024 or > 65535)
-            throw new ArgumentException("Choose a private SMTP port 1024..65535.");
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || !SmtpIngressPort.Supported(port))
+            throw new ArgumentException("Choose a private SMTP port 25 or 1024..65535.");
         var endpoint = Endpoint();
         if (inspectedMail?.Mta != "none" ||
             inspectedServerIdentity != SecurityOptionsStore.Identity(endpoint) ||
@@ -4826,8 +4843,8 @@ internal sealed partial class MainForm : Form
         if (publicInternetRequested.Checked)
             throw new InvalidOperationException("Public SMTP inbound requires a separate authenticated TLS workflow; outbound EOP setup never opens public SMTP.");
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
-            port is < 1024 or > 65535)
-            throw new InvalidDataException("Select an inbound custom SMTP port 1024–65535.");
+            !SmtpIngressPort.Supported(port))
+            throw new InvalidDataException("Select an inbound custom SMTP port 25 or 1024–65535.");
         return (port, mailTransport.SelectedIndex == 1 ? "connector" : "direct-send",
             outboundMxHost.Text.Trim(), outboundFixedSender.Text.Trim(),
             acceptedDomain.Text.Trim(), outboundPublicIp.Text.Trim(),
@@ -4992,7 +5009,7 @@ internal sealed partial class MainForm : Form
     private async Task RestoreEopRouteAsync()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selected) ||
-            selected is < 1024 or > 65535)
+            !SmtpIngressPort.Supported(selected))
             throw new InvalidDataException("Choose the installed private SMTP port.");
         var (endpoint, port) = await EopInstalledEndpointAsync(selected);
         var status = await SshRemote.RunRootScriptAsync(endpoint,
@@ -5043,8 +5060,8 @@ internal sealed partial class MainForm : Form
         if (mailTransport.SelectedIndex is not (1 or 2))
             throw new InvalidOperationException("Select Connector or Direct Send first.");
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int customPort) ||
-            customPort is < 1024 or > 65535)
-            throw new InvalidDataException("Choose private Linux SMTP port 1024-65535.");
+            !SmtpIngressPort.Supported(customPort))
+            throw new InvalidDataException("Choose private Linux SMTP port 25 or 1024-65535.");
         var report = await SshRemote.RunRootScriptAsync(Endpoint(),
             EmbeddedAssets.BuildOutboundModePreflightBundle(
                 mailTransport.SelectedIndex == 1 ? "connector" : "direct-send",
@@ -5060,8 +5077,8 @@ internal sealed partial class MainForm : Form
     private async Task InspectRelayHealthAsync()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) ||
-            selectedPort is < 1024 or > 65535)
-            throw new InvalidDataException("Custom SMTP port must be 1024-65535.");
+            !SmtpIngressPort.Supported(selectedPort))
+            throw new InvalidDataException("Custom SMTP port must be 25 or 1024-65535.");
         var endpoint = Endpoint();
         int installedPort = await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None)
             ? await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None)
@@ -5082,8 +5099,8 @@ internal sealed partial class MainForm : Form
     private async Task InspectRhelSelinuxAsync()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) ||
-            selectedPort is < 1024 or > 65535)
-            throw new InvalidDataException("Custom SMTP port must be 1024-65535.");
+            !SmtpIngressPort.Supported(selectedPort))
+            throw new InvalidDataException("Custom SMTP port must be 25 or 1024-65535.");
         var endpoint = Endpoint();
         int actualPort = await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None)
             ? await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None)
@@ -5127,8 +5144,8 @@ internal sealed partial class MainForm : Form
     private int RhelCustomPort()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
-            port is < 1024 or > 65535)
-            throw new InvalidDataException("Choose a custom SMTP port 1024-65535.");
+            !SmtpIngressPort.Supported(port))
+            throw new InvalidDataException("Choose a custom SMTP port 25 or 1024-65535.");
         return port;
     }
 
@@ -5207,8 +5224,8 @@ internal sealed partial class MainForm : Form
     private async Task InspectPlatformAsync()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
-            port is < 1024 or > 65535)
-            throw new InvalidDataException("Custom SMTP port must be 1024-65535.");
+            !SmtpIngressPort.Supported(port))
+            throw new InvalidDataException("Custom SMTP port must be 25 or 1024-65535.");
         WriteLine("Read-only platform preflight for the selected TCP port " + port +
                   ": RHEL/Oracle/Rocky/Alma/CentOS Stream, Ubuntu/Debian, Dovecot, Postfix and SELinux.");
         var report = await SshRemote.ExecuteAsync(Endpoint(), "bash -s",
@@ -5226,8 +5243,8 @@ internal sealed partial class MainForm : Form
     private (int Port, string Listener, string Dns) PublicSmtpOptions()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
-            port is < 1024 or > 65535)
-            throw new InvalidDataException("Choose the installed SMTP port 1024-65535.");
+            !SmtpIngressPort.Supported(port))
+            throw new InvalidDataException("Choose the installed SMTP port 25 or 1024-65535.");
         string listen = smtpListenIp.Text.Trim();
         string dns = privateAuthDns.Text.Trim();
         if (string.IsNullOrEmpty(listen) || string.IsNullOrEmpty(dns))
@@ -5425,7 +5442,7 @@ internal sealed partial class MainForm : Form
             var detected = await SshRemote.ExecuteAsync(endpoint, "bash -s",
                 EmbeddedAssets.BuildMailHostInspectionBundle(
                     int.TryParse(isolatedSmtpPort.Text.Trim(), out int checkPort) &&
-                        checkPort is >= 1024 and <= 65535 ? checkPort : 2525,
+                        SmtpIngressPort.Supported(checkPort) ? checkPort : 2525,
                     inventory.Mta), timeout: TimeSpan.FromSeconds(90));
             detected.EnsureSuccess();
             inspectedHost = MailHostInspection.Parse(detected.StdOut);
@@ -7519,7 +7536,7 @@ internal sealed partial class MainForm : Form
         routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
         routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort))
-            throw new InvalidDataException("Enter an isolated SMTP port from 1024 to 65535.");
+            throw new InvalidDataException("Enter an isolated SMTP port 25 or 1024 to 65535.");
         routingPlan.SidecarPort = selectedPort;
         MailRoutingPlanStore.Validate(routingPlan);
         if (publicInternetRequested.Checked)
@@ -7551,8 +7568,8 @@ internal sealed partial class MainForm : Form
             // restart its service, or write to its existing mail queue.
             var sidecarState = await ReadyStateAsync();
             var confirmation = MessageBox.Show(this, T(
-                "Установить отдельный экземпляр Postfix на TCP " + routingPlan.SidecarPort + "? Существующий Postfix (порт 25) и его очередь останутся без изменений. Сетевой SMTP допускается только из доверенных подсетей.",
-                "Install isolated Postfix on TCP " + routingPlan.SidecarPort + "? Existing port 25, mail routing and queue stay untouched. Remote clients require trusted subnets.",
+                "Установить отдельный экземпляр Postfix на TCP " + routingPlan.SidecarPort + "? Существующий Postfix и его очередь останутся без изменений. Для TCP 25 сервер обязан подтвердить, что основной MTA не активен и не включён при загрузке. Сетевой SMTP только из доверенных подсетей.",
+                "Install isolated Postfix on TCP " + routingPlan.SidecarPort + "? Existing primary mail routing and queue stay untouched. TCP 25 requires all primary MTA services disabled/inactive and no existing listener. Remote clients require trusted subnets.",
                 "להתקין מופע Postfix נפרד בפורט " + routingPlan.SidecarPort + "?"),
                 Text, MessageBoxButtons.YesNo, MessageBoxIcon.Information);
             if (confirmation != DialogResult.Yes) return;
