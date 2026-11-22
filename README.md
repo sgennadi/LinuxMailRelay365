@@ -4,6 +4,23 @@ Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Po
 
 ## Development after published Preview 25 (Draft PR; not yet an update)
 
+- Experimental Multi-mailbox SMTP-ingress proof renewal is now an **optional**
+  root-reviewed systemd timer. It verifies a pinned sender-map SHA, runs a
+  local static ingress audit every 60 seconds, issues a receipt valid for
+  120 seconds, and offers separate Preview / Enable / Status / Disable actions
+  in the Windows Wizard. It is **not automatically enabled** by staging an
+  SMTP route. The status UI distinguishes timer activity from receipt
+  `fresh_ttl_only`, `expired`, `missing` and `map_changed`; a fresh
+  receipt is not evidence of real SMTP authentication or Microsoft 365
+  delivery.
+- A disposable Rocky Linux 9.9 VM under SELinux Enforcing has exercised
+  systemd timer activation, renewal, sender-map drift refusal and revocation
+  with a deliberately **synthetic ingress auditor**. Real inbound SMTP
+  login-to-queue identity, per-mailbox XOAUTH2 and Microsoft 365 recipient
+  delivery remain independent, unverified acceptance steps.
+- CI now checks Python syntax before long Linux test matrices and KVM boot.
+  Root-managed proof JSON and the unprivileged delivery transport refuse
+  ambiguous duplicate fields and nonfinite values before outbound OAuth.
 - Exim/Sendmail recovery readiness: added read-only root-only preflight for
   verified archive SHA, current-config drift, systemd state, running MTA
   processes, TCP listener hints and Exim/Sendmail server/client queue status.
@@ -38,9 +55,12 @@ The actual inboxes and Exchange Message Trace must be checked separately.
 
 The test helper requires a root-owned runuser parent; the unprivileged
 m365mailer worker does not have access to SMTP password hashes.
-The guarded 120-second root ingress proof expires and has no automatic
-production renewal service yet. Physical TPM, SELinux Enforcing, real
-tenant/recipient acceptance, and 200% DPI visual acceptance remain open.
+The guarded 120-second root ingress proof has an optional reviewed
+**experimental** systemd renewal timer in the Draft branch (not in published
+Preview 25). It is off by default and does not authenticate actual SMTP
+clients. Physical TPM, real authenticated ingress and tenant/recipient
+delivery, production host SELinux acceptance and 200% DPI visual QA remain
+separate release blockers.
 New Preview 25 updates are opt-in, non-elevated, unsigned test deployments
 only and **do not** satisfy the signed Stable release gate.
 
