@@ -140,7 +140,7 @@ internal static class MailScenarioPlanner
         var keep = Flow(Keep, "[smtp.gmail.com]:587", "25", "2525", "oauth2", 1);
         return cards.Count == 4 &&
             cards.Any(c => c.Code == ReplaceRelay) &&
-            replace.Nodes.SequenceEqual(new [] { "Existing applications", "Postfix · SMTP 25",
+            replace.Nodes.SequenceEqual(new [] { "Local submissions / SMTP clients (source not established)", "Postfix · SMTP 25",
                 "Microsoft 365 XOAUTH2 · TCP 587" }) &&
             !replace.ShowsSeparatePort &&
             !replace.Nodes.Any(n => n.Contains("2525", StringComparison.Ordinal)) &&
