@@ -218,6 +218,41 @@ class GooglePostfixRouteTests(unittest.TestCase):
         self.assertIn("GOOGLE_ROUTE_ROLLBACK=ok", stdout.getvalue())
         self.assertNotIn(profile["secret"], stdout.getvalue())
 
+    def test_google_password_map_requires_root_only_and_never_prints_value(self):
+        from types import SimpleNamespace
+
+        class FakeMap:
+            def __init__(self, mode):
+                self.mode = mode
+            def is_file(self):
+                return True
+            def is_symlink(self):
+                return False
+            def stat(self):
+                return SimpleNamespace(st_uid=0, st_mode=self.mode)
+
+        fake_password_result = CommandResult(
+            stdout=b"ci@example.invalid:NONREAL-DUMMY-SECRET")
+        output = io.StringIO()
+        with mock.patch.object(mod, "MAP", FakeMap(0o100600)), \
+             mock.patch.object(mod, "run", return_value=fake_password_result) as lookup, \
+             contextlib.redirect_stdout(output):
+            mod.require_gmail_password_map(587)
+        self.assertEqual(output.getvalue(), "")
+        lookup.assert_called_once_with([
+            "postmap", "-q", "[smtp.gmail.com]:587",
+            "hash:/etc/postfix/lmr365-google-sasl"])
+        with mock.patch.object(mod, "MAP", FakeMap(0o100640)), \
+             mock.patch.object(mod, "run") as lookup:
+            with self.assertRaises(RuntimeError):
+                mod.require_gmail_password_map(587)
+            lookup.assert_not_called()
+
+    def test_unavailable_postfix_capabilities_never_approve_apply(self):
+        with mock.patch.object(mod, "postconf", side_effect=RuntimeError("unavailable")):
+            self.assertEqual(mod.scope_status(), "unverified")
+            self.assertEqual(mod.client_sasl_status(), "unverified")
+
     def test_reject_stale_sha_before_any_backup(self):
         request = self.request(
             profile="workspace", port=587, operation="apply",
