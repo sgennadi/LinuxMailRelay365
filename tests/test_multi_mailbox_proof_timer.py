@@ -178,6 +178,29 @@ class OptionalProofTimerTests(unittest.TestCase):
                                  str(caught.exception))
                 self.assertFalse((root / "__pycache__").exists())
 
+    def test_protected_json_rejects_duplicate_keys_and_nonfinite_values(self):
+        bad_records = (
+            b'{"version":1,"version":2}',
+            b'{"outer":{"map":"one","map":"two"}}',
+            b'{"version":NaN}',
+            b'{"version":Infinity}',
+            b'{"version":-Infinity}',
+        )
+        for value in bad_records:
+            with self.subTest(value=value), self.assertRaises(timer.Refused):
+                timer.record(value)
+        self.assertEqual(timer.record(b'{"version":1}')["version"], 1)
+
+    def test_installed_timer_refuses_boolean_version_even_if_true_equals_one(self):
+        state = {"version": True, "plan": "a" * 64, "map": "b" * 64,
+                 "service": timer.digest(timer.service_text("b" * 64)),
+                 "timer": timer.digest(timer.timer_text())}
+        with mock.patch.object(timer, "read",
+                               side_effect=lambda *args, **kwargs:
+                               json.dumps(state).encode("ascii")):
+            with self.assertRaisesRegex(timer.Refused, "invalid_installed_timer"):
+                timer.installed()
+
     def test_receipt_status_distinguishes_fresh_expired_drift_and_missing(self):
         map_bytes = b"test-only sender map\n"
         pinned = timer.digest(map_bytes)

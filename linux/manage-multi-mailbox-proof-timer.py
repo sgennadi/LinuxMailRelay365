@@ -90,7 +90,20 @@ def read(path, maximum, modes, gid=None):
 
 
 def record(raw):
-    obj = json.loads(raw.decode("ascii"))
+    """Reject duplicate, nested duplicate or nonfinite protected JSON keys."""
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Refused("duplicate_protected_json_key")
+            result[key] = value
+        return result
+
+    def nonfinite(_):
+        raise Refused("nonfinite_protected_json_value")
+
+    obj = json.loads(raw.decode("ascii"), object_pairs_hook=unique,
+                     parse_constant=nonfinite)
     if not isinstance(obj, dict):
         raise Refused("invalid_state_record")
     return obj
@@ -260,6 +273,7 @@ def locked(callback):
 def installed():
     state = record(read(STATE, 1024, (0o600,)))
     if set(state) != {"version", "plan", "map", "service", "timer"} or \
+            type(state["version"]) is not int or
             state["version"] != 1 or not all(
                 isinstance(state[k], str) and SHA.fullmatch(state[k])
                 for k in ("plan", "map", "service", "timer")):
@@ -387,7 +401,9 @@ def receipt_age_status(map_sha, now=None):
     required = {"version", "map_sha256", "issued_at", "expires_at",
                 "mailboxes", "main_meta", "master_meta", "ingress"}
     issued, expires = candidate.get("issued_at"), candidate.get("expires_at")
-    if (set(candidate) != required or candidate.get("version") != 1 or
+    if (set(candidate) != required or
+            type(candidate.get("version")) is not int or
+            candidate["version"] != 1 or
             candidate.get("ingress") !=
             "root_static_audit_consistent_not_live_delivery" or
             not isinstance(candidate.get("map_sha256"), str) or
