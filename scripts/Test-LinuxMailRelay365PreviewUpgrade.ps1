@@ -9,7 +9,7 @@ No production files, registry, tenant, SMTP or Linux service is modified.
 param(
     [Parameter(Mandatory=$true)][string]$CandidateExe,
     [ValidatePattern('^0\.1\.0(?:-(?:preview|rc)\.\d+)?
-    [string]$ExpectedCandidateVersion = '0.1.0-preview.25'
+    [string]$ExpectedCandidateVersion = '0.1.1-rc.1'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -143,7 +143,7 @@ finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 )]
-    [string]$ExpectedCandidateVersion = '0.1.0-preview.25'
+    [string]$ExpectedCandidateVersion = '0.1.1-rc.1'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
