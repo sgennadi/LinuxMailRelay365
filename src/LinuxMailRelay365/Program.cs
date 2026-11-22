@@ -411,6 +411,7 @@ internal static class Program
             ("Native C# read-only Graph app inventory", Microsoft365Auth.EntraGraphInventoryClient.SelfTest),
             ("Native C# Graph app and public-certificate provisioning contracts", Microsoft365Auth.EntraGraphProvisioner.SelfTest),
             ("Native C# Graph signed addKey preview and apply contracts", Microsoft365Auth.EntraGraphCertificateAddKeyClient.SelfTest),
+            ("Native C# read-only Entra security policies/sign-ins/SKU contracts", Microsoft365Auth.EntraGraphSecurityReadClient.SelfTest),
             ("Native C# MSAL/Graph/ARM tenant discovery", Microsoft365Auth.EntraTenantDiscoveryClient.SelfTest),
             ("Device code verification URL allowlist", () =>
                 NativeDeviceCodeDialog.IsTrustedMicrosoftVerificationUrl("https://microsoft.com/devicelogin") &&
