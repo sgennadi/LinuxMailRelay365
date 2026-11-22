@@ -181,19 +181,36 @@ def client_sasl_status():
     if configured != "cyrus":
         return "unverified"
     filter_value = postconf("smtp_sasl_mechanism_filter").upper()
-    if filter_value and not any(
-            mechanism in re.findall(r"[A-Z0-9_-]+", filter_value)
-            for mechanism in ("PLAIN", "LOGIN")):
-        return "missing"
     viewer = shutil.which("saslpluginviewer")
     if viewer is None:
         return "unverified"
     result = run([viewer, "-c"])
     if result.returncode != 0:
         return "unverified"
-    # Inspect fixed mechanism names only; do not expose paths or plugin output.
-    client_mechanisms = result.stdout.decode("utf-8", "replace").upper()
-    return "ready" if re.search(r"\b(?:PLAIN|LOGIN)\b", client_mechanisms) else "missing"
+    # Inspect only mechanism names; never expose SASL plugin output.
+    mechanisms = set(re.findall(
+        r"\b(?:PLAIN|LOGIN)\b", result.stdout.decode("utf-8", "replace").upper()))
+    if not mechanisms:
+        return "missing"
+    if filter_value:
+        # Negative filters (!login) and static:rest must be respected. Merely
+        # finding the word LOGIN inside "!login" is a false positive.
+        tokens = [item for item in re.split(r"[\s,]+", filter_value) if item]
+        known = {"PLAIN", "LOGIN", "GSSAPI", "XOAUTH2", "OAUTHBEARER",
+                 "CRAM-MD5", "DIGEST-MD5", "NTLM", "ANONYMOUS"}
+        if any(token not in known and
+               token not in {"STATIC:ALL", "STATIC:REST"} and
+               not (token.startswith("!") and token[1:] in known)
+               for token in tokens):
+            # Dynamic lookup tables, file patterns, or unfamiliar filters
+            # cannot be evaluated by a static preflight. Fail closed.
+            return "unverified"
+        included = set(token for token in tokens if token in mechanisms)
+        if "STATIC:ALL" in tokens or "STATIC:REST" in tokens:
+            included.update(mechanisms)
+        excluded = set(token[1:] for token in tokens if token.startswith("!"))
+        mechanisms = included - excluded
+    return "ready" if mechanisms else "missing"
 
 
 # Values which must survive an outbound-only upstream migration unchanged.
