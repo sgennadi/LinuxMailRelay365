@@ -7510,7 +7510,7 @@ internal sealed partial class MainForm : Form
         var graph = await WithNativeMicrosoftSignInAsync((show, ct) =>
             EntraGraphProvisioner.ProvisionAsync(
                 selected.Tenant, bootstrapClient, requestedApp, displayName,
-                certificateLabel, pem, show, ct));
+                certificateLabel, pem, show, ct), mayModifyEntra: true);
         // Recheck exact UI and certificate origin after user has completed MFA.
         if (CloudInputs() != selected ||
             !string.Equals(rawExisting, existingAppId.Text.Trim(), StringComparison.Ordinal) ||
