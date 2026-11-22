@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-> **Development branch (not yet released):** test candidate `0.1.1-rc.3` migrates Entra App Registration and public-certificate write provisioning from PowerShell to C# / MSAL / Microsoft Graph, with explicit admin consent, exact tenant and App Client ID, credential preservation and Graph postchecks. Exchange Online RBAC and Connector cmdlets remain in EXO-only PowerShell 7. Do not use as signed Stable or on production without live tenant acceptance.
+> **Development branch (not yet released):** test candidate `0.1.1-rc.4` adds C#-native Graph addKey for staged PEM/TPM OAuth certificate rotation, with Linux-signed proof verification, SHA-bound preview, preserve-all-keys postcheck and a manually selectable PS1 fallback. Earlier RC3 C# App Registration provisioning and Exchange-only PowerShell are retained. Exchange Online RBAC and Connector cmdlets remain in EXO-only PowerShell 7. Do not use as signed Stable or on production without live tenant acceptance.
 
 
 Native Microsoft authentication design: [docs/NATIVE_CSHARP_MICROSOFT365_AUTH.md](docs/NATIVE_CSHARP_MICROSOFT365_AUTH.md).
