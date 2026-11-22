@@ -209,6 +209,35 @@ class MultiMailboxTests(unittest.TestCase):
                 with self.assertRaises(dispatch.Unverified):
                     dispatch.secure_runtime_map(auditor, 4242, sha)
 
+    def test_protected_receipt_decoder_denies_duplicate_nested_and_nonfinite_json(self):
+        bad = (
+            b'{"version":1,"version":true}',
+            b'{"main_meta":{"version":1,"version":2}}',
+            b'{"issued_at":NaN}',
+            b'{"issued_at":Infinity}',
+            b'{"issued_at":-Infinity}',
+            b'[]',
+            b'null',
+        )
+        for raw in bad:
+            with self.subTest(raw=raw), self.assertRaises(dispatch.Unverified):
+                dispatch.decode_protected_ingress_receipt(raw)
+        self.assertEqual(dispatch.decode_protected_ingress_receipt(
+            b'{"version":1}')["version"], 1)
+
+    def test_ingress_receipt_boolean_version_fails_closed_before_token(self):
+        from types import SimpleNamespace
+        raw = b'{"version":true,"map_sha256":"abc","issued_at":1,' \
+              b'"expires_at":121,"mailboxes":2,"main_meta":[],' \
+              b'"master_meta":[],' \
+              b'"ingress":"root_static_audit_consistent_not_live_delivery"}'
+        with mock.patch.object(auditor, "secure_read", return_value=raw), \
+             mock.patch.object(dispatch.grp, "getgrnam",
+                               return_value=SimpleNamespace(gr_gid=4242)):
+            with self.assertRaisesRegex(dispatch.Unverified,
+                                        "privileged_ingress_receipt_invalid"):
+                dispatch.ingress_ready(ROWS, auditor)
+
     def test_ingress_guard_requires_fresh_protected_privileged_receipt(self):
         from types import SimpleNamespace
         metadata = [1, 2, 3, 4, 5, 33188, 0, 0]

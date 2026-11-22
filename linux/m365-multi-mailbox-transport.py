@@ -98,6 +98,26 @@ def config_metadata(path):
             meta.st_ctime_ns, meta.st_mode, meta.st_uid, meta.st_gid]
 
 
+def decode_protected_ingress_receipt(raw):
+    """Unprivileged consumer rejects ambiguous root-issued proof JSON."""
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Unverified("duplicate_privileged_ingress_receipt_key")
+            result[key] = value
+        return result
+
+    def refuse_nonfinite(_):
+        raise Unverified("nonfinite_privileged_ingress_receipt_value")
+
+    value = json.loads(raw.decode("ascii"), object_pairs_hook=unique,
+                       parse_constant=refuse_nonfinite)
+    if not isinstance(value, dict):
+        raise Unverified("invalid_privileged_ingress_receipt_type")
+    return value
+
+
 def ingress_ready(rows, auditor):
     """Check a fresh privileged receipt, not root:dovecot SMTP password hashes.
 
@@ -109,12 +129,13 @@ def ingress_ready(rows, auditor):
     try:
         service_gid = grp.getgrnam("m365mailer").gr_gid
         raw = auditor.secure_read(PROOF_FILE, 2048, 0o640, service_gid)
-        receipt = json.loads(raw.decode("ascii"))
+        receipt = decode_protected_ingress_receipt(raw)
         expected = {"version", "map_sha256", "issued_at", "expires_at",
                     "mailboxes", "main_meta", "master_meta", "ingress"}
-        if not isinstance(receipt, dict) or set(receipt) != expected or \
-                receipt["version"] != 1 or \
-                receipt["ingress"] != "root_static_audit_consistent_not_live_delivery":
+        if (set(receipt) != expected or
+                type(receipt["version"]) is not int or
+                receipt["version"] != 1 or
+                receipt["ingress"] != "root_static_audit_consistent_not_live_delivery"):
             raise Unverified("privileged_ingress_receipt_invalid")
         now = int(time.time())
         issued, expires = receipt["issued_at"], receipt["expires_at"]
