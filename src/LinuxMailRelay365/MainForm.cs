@@ -297,25 +297,37 @@ internal sealed class MainForm : Form
 
     private void RenderSshPage(TableLayoutPanel page)
     {
+        sshTwoColumns = pageHost.ClientSize.Width >= 900;
+        int count = sshTwoColumns ? 2 : 1;
+        int total = sshAuthMode.SelectedIndex == 1 ? 6 : 4;
         var basics = new TableLayoutPanel
         {
-            ColumnCount = 2, RowCount = 2, Width = 850, AutoSize = true,
+            ColumnCount = count, RowCount = (total + count - 1) / count,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(Math.Clamp(pageHost.ClientSize.Width - 64, 500, 940), 0),
             Dock = DockStyle.Top, Margin = new Padding(0, 6, 0, 8)
         };
-        basics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 57));
-        basics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 43));
-        AddSshGridField(basics, 0, 0,
-            T("Linux: имя DNS или IPv4", "Linux host (DNS or IPv4)", "כתובת שרת Linux"), host);
-        AddSshGridField(basics, 1, 0, T("SSH-порт", "SSH port", "פורט SSH"), sshPort);
-        AddSshGridField(basics, 0, 1, T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser);
-        AddSshGridField(basics, 1, 1, T("SSH-аутентификация", "SSH authentication", "שיטת SSH"), sshAuthMode);
-        AddLine(page, basics);
-
+        for (int i = 0; i < count; i++)
+            basics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / count));
+        for (int i = 0; i < basics.RowCount; i++)
+            basics.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        int position = 0;
+        void AddBasic(string caption, Control value)
+        {
+            AddSshGridField(basics, position % count, position / count, caption, value);
+            position++;
+        }
+        AddBasic(T("Linux: имя DNS или IPv4", "Linux host (DNS or IPv4)", "כתובת שרת Linux"), host);
+        AddBasic(T("SSH-порт", "SSH port", "פורט SSH"), sshPort);
+        AddBasic(T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser);
+        AddBasic(T("SSH-аутентификация", "SSH authentication", "שיטת SSH"), sshAuthMode);
         if (sshAuthMode.SelectedIndex == 1)
         {
-            AddField(page, T("Пароль SSH (не сохраняется)", "SSH password (not saved)", "סיסמת SSH"), sshPassword);
-            AddField(page, T("Проверенный отпечаток SSH SHA256", "Trusted SSH host key SHA256", "טביעת SSH SHA256"), sshFingerprint);
+            AddBasic(T("Пароль SSH (не сохраняется)", "SSH password (not saved)", "סיסמת SSH"), sshPassword);
+            AddBasic(T("Обязательный SSH host key SHA256", "Required trusted SSH host-key SHA256",
+                "טביעת SHA256 מאומתת חובה"), sshFingerprint);
         }
+        AddLine(page, basics);
         var advanced = UiTheme.Action(showAdvancedSsh
             ? T("Скрыть расширенные настройки", "Hide advanced SSH options", "הסתר אפשרויות מתקדמות")
             : T("Дополнительные настройки SSH", "Advanced SSH options", "אפשרויות SSH מתקדמות"), glyph: "gear");
@@ -323,6 +335,8 @@ internal sealed class MainForm : Form
         AddLine(page, advanced);
         if (showAdvancedSsh)
         {
+            sshKey.Width = Math.Clamp(pageHost.ClientSize.Width - 100, 380, 730);
+            sudoPassword.Width = Math.Clamp(pageHost.ClientSize.Width - 100, 380, 730);
             if (sshAuthMode.SelectedIndex == 0)
                 AddField(page, T("Путь к SSH-ключу (пусто = ssh-agent)", "SSH key path (blank = ssh-agent)", "נתיב למפתח SSH"), sshKey);
             AddField(page, T("Пароль sudo (не сохраняется)", "sudo password (not saved)", "סיסמת sudo"), sudoPassword);
@@ -342,7 +356,8 @@ internal sealed class MainForm : Form
             {
                 Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
                 BackColor = Color.White, BorderStyle = BorderStyle.FixedSingle,
-                Font = new Font("Consolas", 9), Height = 150, Width = 830,
+                Font = new Font("Segoe UI", 9.5f), Height = 155,
+                Width = Math.Clamp(pageHost.ClientSize.Width - 75, 500, 910),
                 Text = serverOverview.Display(language.SelectedIndex)
             };
             AddLine(page, overview);
@@ -379,11 +394,11 @@ internal sealed class MainForm : Form
         var result = await SshRemote.ProbeSecurityAsync(endpoint, EmbeddedAssets.SecurityProbe);
         result.EnsureSuccess();
         var overview = LinuxServerOverview.Parse(result.StdOut);
-        inspectedMail = MailRoutingInventory.Parse(result.StdOut);
-        inspectedServerIdentity = SecurityOptionsStore.Identity(endpoint);
+        // Connecting discovers the MTA but does NOT authorize Force Replace:
+        // that option still requires the separately initiated MTA inspection.
         serverOverview = overview;
-        serverOverviewIdentity = inspectedServerIdentity;
-        WriteLine("Linux server profile: " + overview.Display(1));
+        serverOverviewIdentity = SecurityOptionsStore.Identity(endpoint);
+        WriteLine("Linux server profile (read-only): " + overview.Display(language.SelectedIndex));
         RenderPage();
     }
 
@@ -499,12 +514,25 @@ internal sealed class MainForm : Form
                 AddField(page, T("Подтверждённый домен (необязательно для XOAUTH2)",
                                  "Verified accepted domain (not needed for XOAUTH2)",
                                  "דומיין מאומת (לא נדרש ל-XOAUTH2)"), acceptedDomain);
-                if (serverOverview is not null && serverOverviewIdentity == TryCurrentIdentity() &&
-                    !string.IsNullOrWhiteSpace(serverOverview.Domain))
+                if (serverOverview is not null && serverOverviewIdentity == TryCurrentIdentity())
                 {
-                    var linuxDomain = serverOverview.Domain;
+                    AddLine(page, UiTheme.Text(T("SMTP-порты из Linux: настроено — ",
+                        "Linux SMTP ports: configured — ", "יציאות SMTP בלינוקס: מוגדרות — ") +
+                        (string.IsNullOrWhiteSpace(serverOverview.ConfiguredSmtpPorts)
+                            ? T("не обнаружено", "not detected", "לא זוהה") : serverOverview.ConfiguredSmtpPorts) +
+                        "  |  " + T("прослушиваются — ", "listening — ", "מאזינות — ") +
+                        (string.IsNullOrWhiteSpace(serverOverview.ListeningSmtpPorts)
+                            ? T("не обнаружено", "not detected", "לא זוהה") : serverOverview.ListeningSmtpPorts)));
+                }
+                if (serverOverview is not null && serverOverviewIdentity == TryCurrentIdentity() &&
+                    !string.IsNullOrWhiteSpace(serverOverview.Domain) ||
+                    serverOverview is not null && serverOverviewIdentity == TryCurrentIdentity() &&
+                    !string.IsNullOrWhiteSpace(serverOverview.PostfixDomain))
+                {
+                    var linuxDomain = !string.IsNullOrWhiteSpace(serverOverview!.PostfixDomain)
+                        ? serverOverview.PostfixDomain : serverOverview.Domain;
                     AddAction(page, T("Использовать обнаруженный домен Linux: ",
-                        "Copy detected Linux domain into field: ", "השתמש בדומיין Linux: ") + linuxDomain,
+                        "Copy detected domain (not M365-verified): ", "השתמש בדומיין Linux: ") + linuxDomain,
                         () =>
                         {
                             acceptedDomain.Text = linuxDomain;
