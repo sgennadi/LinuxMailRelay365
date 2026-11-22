@@ -8,7 +8,6 @@ using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 using Microsoft365Auth;
-using Microsoft.Identity.Client;
 
 namespace LinuxMailRelay365;
 
@@ -7218,48 +7217,11 @@ internal sealed partial class MainForm : Form
         if (allTenants && !approvedClient.HasValue)
             throw new ArgumentException("Azure ARM multi-tenant discovery requires your organization's approved public Client ID.");
 
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(12));
-        using var dialog = new NativeDeviceCodeDialog(cancellation.Cancel);
         WriteLine(allTenants
-            ? "Tenant discovery: native C# MSAL + Azure ARM (read-only). No PowerShell or cached disk credentials."
+            ? "Tenant discovery: native C# MSAL + Azure ARM (read-only). No PowerShell."
             : "Tenant discovery: native C# MSAL + Microsoft Graph User.Read (read-only). No PowerShell.");
-
-        async Task ShowDeviceCodeAsync(DeviceCodeResult code)
-        {
-            var shown = new TaskCompletionSource<bool>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-            void Show()
-            {
-                try
-                {
-                    if (IsDisposed || cancellation.IsCancellationRequested)
-                        throw new OperationCanceledException("Sign-in cancelled.");
-                    dialog.Present(code, this);
-                    shown.TrySetResult(true);
-                }
-                catch (Exception ex) { shown.TrySetException(ex); }
-            }
-            if (InvokeRequired) BeginInvoke((Action)Show);
-            else Show();
-            await shown.Task;
-        }
-
-        IReadOnlyList<EntraTenantEntry> result;
-        try
-        {
-            result = await EntraTenantDiscoveryClient.DiscoverAsync(
-                approvedClient, allTenants, ShowDeviceCodeAsync, cancellation.Token);
-        }
-        catch (EntraDiscoveryException ex)
-        {
-            // Only a fixed diagnostic code is displayed. Never show MSAL
-            // exception text, raw Microsoft challenges, access/refresh tokens.
-            WriteLine("Microsoft Entra C# discovery failed (" + ex.Code +
-                "); no cloud or Linux settings were changed.");
-            throw new IOException("Tenant discovery failed (" + ex.Code +
-                "). Review the app's delegated permissions or use manual Tenant ID.");
-        }
-        finally { dialog.Finish(); }
+        var result = await WithNativeMicrosoftSignInAsync((show, ct) =>
+            EntraTenantDiscoveryClient.DiscoverAsync(approvedClient, allTenants, show, ct));
 
         var choices = result.Select(x => new TenantOption(x.Id, x.Name, x.Domain, x.Category)).ToArray();
         discoveredTenants = choices;
