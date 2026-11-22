@@ -617,7 +617,7 @@ internal static class EmbeddedAssets
         string acceptedDomain, string sender, string listenIpv4,
         string[] trustedNetworks, bool apply, string foreignMta = "", string sidecarHostname = "")
     {
-        if (port is < 1024 or > 65535 || trustedNetworks.Length > 8)
+        if (!SmtpIngressPort.Supported(port) || trustedNetworks.Length > 8)
             throw new ArgumentException("Invalid private SMTP custom port or CIDR count.");
         const string dns = @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z";
         const string email = @"\A[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{4,253}\z";
@@ -679,8 +679,8 @@ internal static class EmbeddedAssets
         string[] trustedNetworks, string publicIp, string certPath, string keyPath, bool apply,
         string foreignMta = "", string sidecarHostname = "")
     {
-        if (port is < 1024 or > 65535 || trustedNetworks.Length > 8)
-            throw new ArgumentException("Connector custom SMTP port must be 1024-65535.");
+        if (!SmtpIngressPort.Supported(port) || trustedNetworks.Length > 8)
+            throw new ArgumentException("Connector custom SMTP port must be 25 or 1024-65535.");
         const string dns = @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z";
         const string email = @"\A[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{4,253}\z";
         if (!Regex.IsMatch(mxHost, dns, RegexOptions.CultureInvariant) ||
@@ -802,7 +802,7 @@ internal static class EmbeddedAssets
     internal static string BuildCleanPostfixBundle(
         int port, string operation, string? expectedSha = null)
     {
-        if (port is < 1024 or > 65535 ||
+        if (!SmtpIngressPort.Supported(port) ||
             operation is not ("check" or "apply" or "verify"))
             throw new ArgumentException("Invalid clean Postfix bootstrap operation or port.");
         if (operation == "apply")
@@ -828,7 +828,7 @@ internal static class EmbeddedAssets
     internal static string BuildMailHostInspectionBundle(int selectedPort = 2525,
         string currentMta = "unknown")
     {
-        if (selectedPort is < 1024 or > 65535 ||
+        if (!SmtpIngressPort.Supported(selectedPort) ||
             currentMta is not ("postfix" or "exim" or "sendmail" or "none" or "unknown"))
             throw new ArgumentException("Invalid selected SMTP port or discovered MTA.");
         return "set -Eeuo pipefail\numask 077\n" +
@@ -858,7 +858,7 @@ internal static class EmbeddedAssets
     internal static string BuildPublicSmtpBundle(int port, string listener, string dns,
         string operation = "check", string? expectedSha = null, bool approved = false)
     {
-        if (port is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(port))
             throw new ArgumentOutOfRangeException(nameof(port));
         if (operation is not ("check" or "apply" or "status" or "restore"))
             throw new ArgumentException("Unsupported public SMTP operation.");
@@ -912,7 +912,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildTlsIdentityProbeBundle(int selectedPort, string serverName, string? linuxCaFile)
     {
-        if (selectedPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(selectedPort))
             throw new ArgumentOutOfRangeException(nameof(selectedPort));
         if (serverName.Length is < 4 or > 253 ||
             !Regex.IsMatch(serverName,
@@ -950,7 +950,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildInstalledSidecarAuditBundle(int selectedPort)
     {
-        if (selectedPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(selectedPort))
             throw new ArgumentOutOfRangeException(nameof(selectedPort));
         // The audit only queries local instance metadata and a loopback SMTP
         // greeting. It never authenticates, queues mail or changes firewall.
@@ -964,7 +964,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildAuthTlsRestoreBundle(int selectedPort, string? expectedMainSha = null)
     {
-        if (selectedPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(selectedPort))
             throw new ArgumentOutOfRangeException(nameof(selectedPort));
         if (expectedMainSha is not null &&
             !Regex.IsMatch(expectedMainSha, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
@@ -1004,7 +1004,7 @@ internal static class EmbeddedAssets
     internal static string BuildTlsRotationBundle(int selectedPort, string serverName,
         string certificate, string privateKey, string? trustCaFile, string? expectedCertSha = null)
     {
-        if (selectedPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(selectedPort))
             throw new ArgumentOutOfRangeException(nameof(selectedPort));
         if (!Regex.IsMatch(serverName,
              @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z"))
@@ -1042,7 +1042,7 @@ internal static class EmbeddedAssets
     internal static string BuildFromOwnerGuardBundle(int port, string senderOwnerFile,
         string? expectedOwnerSha = null, string? expectedEngineSha = null)
     {
-        if (port is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(port))
             throw new ArgumentOutOfRangeException(nameof(port));
         if (string.IsNullOrWhiteSpace(senderOwnerFile) || senderOwnerFile.Length > 255 ||
             !Regex.IsMatch(senderOwnerFile, @"\A/[A-Za-z0-9_./-]{1,255}\z",
@@ -1081,7 +1081,7 @@ internal static class EmbeddedAssets
         string senderPolicy = "fixed-mailbox", string senderOwnerFile = "",
         string? expectedOwnerSha = null)
     {
-        if (port is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(port))
             throw new ArgumentOutOfRangeException(nameof(port));
         if (status && (restore || expectedMainSha is not null))
             throw new ArgumentException("Invalid EOP route action.");
@@ -1164,7 +1164,7 @@ internal static class EmbeddedAssets
         string mxHost, string acceptedDomain, string publicIpv4, string linuxCert, bool checkNetwork)
     {
         if (mode is not ("connector" or "direct-send") ||
-            customPort is < 1024 or > 65535)
+            !SmtpIngressPort.Supported(customPort))
             throw new ArgumentException("Invalid Microsoft 365 outbound plan.");
         const string dns = @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z";
         if (!Regex.IsMatch(mxHost, dns, RegexOptions.CultureInvariant) ||
@@ -1193,7 +1193,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildRebootContinuityBundle(int selectedPort, bool prepare)
     {
-        if (selectedPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(selectedPort))
             throw new ArgumentOutOfRangeException(nameof(selectedPort));
         string mode = prepare ? "--record-baseline" : "--verify-after-reboot";
         return "set -Eeuo pipefail\numask 077\n" +
@@ -1207,7 +1207,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildHealthMonitorBundle(int selectedPort, bool install)
     {
-        if (selectedPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(selectedPort))
             throw new ArgumentOutOfRangeException(nameof(selectedPort));
         string args = install
             ? "--install --smtp-port " + selectedPort + " --confirm ENABLE_PRIVATE_SMTP_MONITOR"
@@ -1246,7 +1246,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildHealthAlertsBundle(int port, string action, string? configSha = null)
     {
-        if (port is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(port))
             throw new ArgumentOutOfRangeException(nameof(port));
         if (action is not ("check" or "enable" or "disable" or "status"))
             throw new ArgumentException("Unsupported health alert operation.");
@@ -1278,7 +1278,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildRelayHealthBundle(int selectedPort)
     {
-        if (selectedPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(selectedPort))
             throw new ArgumentOutOfRangeException(nameof(selectedPort));
         return "set -Eeuo pipefail\numask 077\n" +
                "work=$(mktemp -d /tmp/lmr365-health.XXXXXXXX)\n" +
@@ -1304,7 +1304,7 @@ internal static class EmbeddedAssets
     internal static string BuildSmtpAccountManagerBundle(
         int selectedPort, string operation, string username, string? hashPath, string? stateSha = null)
     {
-        if (selectedPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(selectedPort))
             throw new ArgumentOutOfRangeException(nameof(selectedPort));
         if (operation is not ("add" or "rotate" or "revoke" or "status"))
             throw new ArgumentException("Unsupported client account change.");
@@ -1336,7 +1336,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildRhelEnforcingLiveSmokeBundle(int port, string serverDns, string linuxCa = "")
     {
-        if (port is < 1024 or > 65535 ||
+        if (!SmtpIngressPort.Supported(port) ||
             serverDns.Length is < 4 or > 253 ||
             !Regex.IsMatch(serverDns,
                 @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z"))
@@ -1357,7 +1357,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildRhelSelinuxDoctorBundle(int selectedPort)
     {
-        if (selectedPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(selectedPort))
             throw new ArgumentOutOfRangeException(nameof(selectedPort));
         return "set -Eeuo pipefail\numask 077\n" +
                "work=$(mktemp -d /tmp/lmr365-selinux-doctor.XXXXXXXX)\n" +
@@ -1370,7 +1370,7 @@ internal static class EmbeddedAssets
     internal static string BuildRhelSelinuxPortBundle(int selectedPort, string operation = "check",
         string? expectedSha = null)
     {
-        if (selectedPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(selectedPort))
             throw new ArgumentOutOfRangeException(nameof(selectedPort));
         if (operation is not ("check" or "apply" or "status" or "restore"))
             throw new ArgumentException("Unsupported SELinux port action.");
@@ -1402,7 +1402,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildMtaCoexistenceBundle(int port)
     {
-        if (port is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(port))
             throw new ArgumentOutOfRangeException(nameof(port));
         return "set -Eeuo pipefail\numask 077\n" +
                "work=$(mktemp -d /tmp/lmr365-mta-audit.XXXXXXXX)\n" +
@@ -1414,7 +1414,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildPlatformCompatBundle(int smtpPort)
     {
-        if (smtpPort is < 1024 or > 65535)
+        if (!SmtpIngressPort.Supported(smtpPort))
             throw new ArgumentOutOfRangeException(nameof(smtpPort));
         return "set -Eeuo pipefail\numask 077\n" +
                "work=$(mktemp -d /tmp/lmr365-platform.XXXXXXXX)\n" +
