@@ -119,7 +119,7 @@ def try_one_auth(client, mechanism, user, password):
             client.user = user
             client.password = password
             code, _ = client.auth("LOGIN", client.auth_login, initial_response_ok=False)
-        return "accepted" if code in (235, 503) else "rejected"
+        return "accepted" if code == 235 else "unverified"
     except smtplib.SMTPAuthenticationError as error:
         # Classify SMTP reply CODE only; response body can contain sensitive
         # provider diagnostics or echoed identifiers.
@@ -161,7 +161,9 @@ def run(config):
         # One port is retained only if this is the user-selected auth test.
         if client is not None and (not config["authenticate"] or
                                    port != config["auth_port"]):
-            client.quit()
+            # Closing a diagnostic connection never sends MAIL FROM/RCPT/DATA,
+            # and does not add another network round-trip or mask the report.
+            client.close()
             evidence[port] = (None, mechanism, tls)
     auth_result = "not_requested"
     if config["authenticate"]:
