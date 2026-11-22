@@ -2417,7 +2417,7 @@ internal sealed partial class MainForm : Form
                 if (selectedMailScenario == MailScenarioPlanner.Keep)
                 {
                     AddLine(page, UiTheme.Text(T(
-                        "Вы выбрали сохранение текущей почты. Microsoft 365 не требуется на этом этапе.
+                        "Вы выбрали сохранение текущей почты. Microsoft 365 не требуется на этом этапе.",
                         "You chose to keep existing mail unchanged. Microsoft 365 configuration is not required for this plan.",
                         "בחרתם להשאיר את הדואר הקיים ללא שינוי.")));
                     break;
@@ -2513,7 +2513,7 @@ internal sealed partial class MainForm : Form
                 if (selectedMailScenario == MailScenarioPlanner.Keep)
                 {
                     AddLine(page, MailFlowText(T(
-                        "Сохранить существующую почту: никакая установка или смена SMTP-маршрута не требуется.
+                        "Сохранить существующую почту: никакая установка или смена SMTP-маршрута не требуется.",
                         "Keep current mail: no installation or SMTP route changes are required.",
                         "ללא שינוי בתצורת הדואר הקיימת."),
                         Math.Max(300, pageHost.ClientSize.Width - 90)));
