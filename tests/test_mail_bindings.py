@@ -89,6 +89,31 @@ class MailBindingTests(unittest.TestCase):
             "postfix", "all", [], interfaces(), clipped, 2525),
             "incomplete_network_or_socket_inventory")
 
+    def test_configured_nonstandard_port_is_in_live_socket_report(self):
+        data = audit.scan_sockets(
+            "LISTEN 0 128 127.0.0.1:2526 0.0.0.0:*\\n",
+            2525, configured_ports=(2526,))
+        self.assertIsNotNone(data)
+        self.assertEqual(data[0], ["127.0.0.1:2526"])
+        self.assertEqual(audit.scan_sockets(
+            "LISTEN 0 128 127.0.0.1:2526 0.0.0.0:*\\n", 2525)[0], [])
+
+    def test_cli_rejects_untrusted_configured_port_instead_of_guessing(self):
+        import subprocess
+        import sys
+        script = str(ROOT / "linux" / "audit-mail-bindings.py")
+        for value in ("0", "65536", "25,0", "25;whoami", "2526\\n25"):
+            result = subprocess.run(
+                [sys.executable, script, "--self-test", "--configured-ports", value],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0, value)
+        good = subprocess.run(
+            [sys.executable, script, "--self-test", "--configured-ports", "2526,25"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=10)
+        self.assertEqual(good.returncode, 0, good.stderr)
+
     def test_report_never_claims_socket_owner_or_internet_reachability(self):
         def runner(argv, cap=32768):
             if argv[:2] == ["ip", "-j"]:
