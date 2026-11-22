@@ -212,7 +212,15 @@ internal sealed partial class MainForm
                     "Предварительная проверка: ", "Preflight: ", "בדיקה: ") +
                     "queue=" + planned.Queue + "  ·  " +
                     "sender/transport maps=" + (planned.HasConflictingMaps ? "detected" : "not detected") +
-                    "  ·  apply=" + (planned.ApplyAllowed ? "eligible for review" : "blocked"),
+                    "  ·  apply=" + (planned.ApplyAllowed ? "eligible for review" : "blocked") +
+                    Environment.NewLine +
+                    "Outbound SASL: " + planned.OutboundSasl +
+                    "  ·  credential map: " + planned.PasswordMap +
+                    "  ·  TLS: " + planned.TlsLevel +
+                    Environment.NewLine + TranslateMailFlow(l,
+                        "Наличие password map НЕ доказывает действительность пароля.",
+                        "A configured password map does NOT prove that its credentials work.",
+                        "קובץ אישורים מוגדר אינו הוכחה לתקינות הסיסמה."),
                     width, warning: !planned.ApplyAllowed));
             }
             AddAction(page, TranslateMailFlow(l,
@@ -288,6 +296,8 @@ internal sealed partial class MainForm
         googleRoutePreviewContext = CurrentGoogleRouteContext(plan.Fingerprint);
         WriteLine("Read-only Google Postfix relayhost preview: queue=" + plan.Queue +
             "; sender-specific maps=" + (plan.HasConflictingMaps ? "present" : "absent") +
+            "; outbound SASL=" + plan.OutboundSasl +
+            "; credential map=" + plan.PasswordMap +
             "; guarded apply=" + (plan.ApplyAllowed ? "eligible" : "blocked") + ".");
         RenderPage();
     }
