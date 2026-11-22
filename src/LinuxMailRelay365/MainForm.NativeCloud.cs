@@ -4,6 +4,17 @@ namespace LinuxMailRelay365;
 
 internal sealed partial class MainForm
 {
+    private Guid ApprovedGraphPublicClientId()
+    {
+        string raw = entraSignInClientId.Text.Trim();
+        if (raw.Length == 0)
+            return Microsoft365Auth.EntraTenantDiscoveryClient.DefaultGraphClientId;
+        if (!Guid.TryParse(raw, out var id) || id == Guid.Empty)
+            throw new ArgumentException(
+                "Enter the approved Microsoft Graph public Client ID as a GUID.");
+        return id;
+    }
+
     /// <summary>Reusable WinForms Device Code interaction for Graph and ARM C# calls.</summary>
     private async Task<T> WithNativeMicrosoftSignInAsync<T>(
         Func<Func<DeviceCodeResult, Task>, CancellationToken, Task<T>> operation,

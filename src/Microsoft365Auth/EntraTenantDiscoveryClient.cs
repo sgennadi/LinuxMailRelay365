@@ -73,22 +73,40 @@ public static class EntraTenantDiscoveryClient
         Guid exactTenant, Guid approvedClientId,
         Func<DeviceCodeResult, Task> showDeviceCode, CancellationToken ct) =>
         AcquireGraphTokenAsync(exactTenant, approvedClientId,
-            "https://graph.microsoft.com/Application.Read.All", showDeviceCode, ct);
+            ["https://graph.microsoft.com/Application.Read.All"], showDeviceCode, ct);
 
     internal static Task<string> AcquireGraphWriteTokenAsync(
         Guid exactTenant, Guid approvedClientId,
         Func<DeviceCodeResult, Task> showDeviceCode, CancellationToken ct) =>
         AcquireGraphTokenAsync(exactTenant, approvedClientId,
-            "https://graph.microsoft.com/Application.ReadWrite.All", showDeviceCode, ct);
+            ["https://graph.microsoft.com/Application.ReadWrite.All"], showDeviceCode, ct);
+
+    internal static Task<string> AcquireGraphSecurityReadTokenAsync(
+        Guid exactTenant, Guid approvedClientId,
+        Func<DeviceCodeResult, Task> showDeviceCode, CancellationToken ct) =>
+        AcquireGraphTokenAsync(exactTenant, approvedClientId,
+        [
+            "https://graph.microsoft.com/Policy.Read.All",
+            "https://graph.microsoft.com/AuditLog.Read.All",
+            "https://graph.microsoft.com/Organization.Read.All"
+        ], showDeviceCode, ct);
 
     private static async Task<string> AcquireGraphTokenAsync(
-        Guid exactTenant, Guid approvedClientId, string exactScope,
+        Guid exactTenant, Guid approvedClientId, string[] scopes,
         Func<DeviceCodeResult, Task> showDeviceCode, CancellationToken ct)
     {
         if (exactTenant == Guid.Empty || approvedClientId == Guid.Empty)
             throw new EntraDiscoveryException("invalid_graph_tenant_or_public_client");
-        if (exactScope is not ("https://graph.microsoft.com/Application.Read.All" or
-                              "https://graph.microsoft.com/Application.ReadWrite.All"))
+        bool permitted = (scopes.Length == 1 &&
+                          scopes[0] is ("https://graph.microsoft.com/Application.Read.All" or
+                                         "https://graph.microsoft.com/Application.ReadWrite.All")) ||
+                         scopes.SequenceEqual(
+                         [
+                             "https://graph.microsoft.com/Policy.Read.All",
+                             "https://graph.microsoft.com/AuditLog.Read.All",
+                             "https://graph.microsoft.com/Organization.Read.All"
+                         ], StringComparer.Ordinal);
+        if (!permitted)
             throw new EntraDiscoveryException("invalid_graph_scope");
         var app = Clients.GetOrAdd(approvedClientId, id =>
             PublicClientApplicationBuilder.Create(id.ToString("D"))
@@ -100,7 +118,7 @@ public static class EntraTenantDiscoveryClient
             {
                 try
                 {
-                    var silent = await app.AcquireTokenSilent([exactScope], account)
+                    var silent = await app.AcquireTokenSilent(scopes, account)
                         .WithTenantId(exactTenant.ToString("D"))
                         .ExecuteAsync(ct).ConfigureAwait(false);
                     if (Guid.TryParse(silent.TenantId, out var found) && found == exactTenant)
@@ -111,7 +129,7 @@ public static class EntraTenantDiscoveryClient
                 }
                 catch (MsalUiRequiredException) { }
             }
-            credential ??= await app.AcquireTokenWithDeviceCode([exactScope], showDeviceCode)
+            credential ??= await app.AcquireTokenWithDeviceCode(scopes, showDeviceCode)
                 .WithTenantId(exactTenant.ToString("D"))
                 .ExecuteAsync(ct).ConfigureAwait(false);
         }
