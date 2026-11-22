@@ -7223,7 +7223,7 @@ internal sealed partial class MainForm : Form
         var result = await WithNativeMicrosoftSignInAsync((show, ct) =>
             EntraTenantDiscoveryClient.DiscoverAsync(approvedClient, allTenants, show, ct));
 
-        var choices = result.Select(x => new TenantOption(x.Id, x.Name, x.Domain, x.Category)).ToArray();
+        IReadOnlyList<TenantOption> choices = result.Select(x => new TenantOption(x.Id, x.Name, x.Domain, x.Category)).ToArray();
         discoveredTenants = choices;
         tenantSelectionLoading = true;
         try
