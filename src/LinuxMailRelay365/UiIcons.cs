@@ -36,6 +36,10 @@ internal static class UiIcons
                 g.DrawLine(p, 5, 20, 19, 20); break;
             case "copy":
                 g.DrawRectangle(p, 7, 7, 13, 14); g.DrawLine(p, 4, 17, 4, 4); g.DrawLine(p, 4, 4, 17, 4); break;
+            case "trash":
+                g.DrawLine(p, 5, 6, 19, 6); g.DrawLine(p, 9, 3, 15, 3);
+                g.DrawLines(p, [new Point(7, 7), new Point(8, 21), new Point(16, 21), new Point(17, 7)]);
+                g.DrawLine(p, 10, 10, 10, 18); g.DrawLine(p, 14, 10, 14, 18); break;
             case "gear":
                 g.DrawEllipse(p, 8, 8, 8, 8); g.DrawEllipse(p, 3, 3, 18, 18); break;
             case "back":
