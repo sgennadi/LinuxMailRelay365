@@ -29,7 +29,14 @@ class UpdaterPreview25Contracts(unittest.TestCase):
                        "MANUAL_REVIEW_REQUIRED", "RejectLinks"):
             self.assertIn(marker, UPDATER)
         self.assertIn("!IsNonElevatedWindowsProcess()", UPDATER)
-        self.assertIn("File.Replace(backup, target, next, ignoreMetadataErrors: false)", UPDATER)
+        # Both install and rollback must use the same verified, bounded retry.
+        self.assertIn("ReplaceWithVerifiedSharingRetry(next, target, backup,", UPDATER)
+        self.assertIn("ReplaceWithVerifiedSharingRetry(backup, target, next,", UPDATER)
+        self.assertIn("File.Replace(source, destination, backup, ignoreMetadataErrors: false)", UPDATER)
+        self.assertIn("ex.HResult & 0xffff) is 32 or 33", UPDATER)
+        self.assertIn("string.Equals(FileSha256(source), sourceDigest", UPDATER)
+        self.assertIn("string.Equals(FileSha256(destination), destinationDigest", UPDATER)
+        self.assertNotIn("File.Replace(backup, target, next, ignoreMetadataErrors: false)", UPDATER)
         self.assertNotIn("File.Replace(backup, target, null", UPDATER)
 
 
