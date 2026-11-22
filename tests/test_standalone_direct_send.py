@@ -33,13 +33,13 @@ class StandaloneDirectSendTests(unittest.TestCase):
         self.assertEqual(self.cli("--self-test").returncode,0)
 
     def test_private_custom_port_range(self):
-        for port in ("1024","2525","2529","46500","65535"):
+        for port in ("25","1024","2525","2529","46500","65535"):
             with self.subTest(port=port):
                 result=self.cli(*self.valid(port))
                 self.assertEqual(result.returncode,0,result.stderr)
                 self.assertIn("CHANGES_APPLIED=no",result.stdout)
                 self.assertIn("DIRECT_SEND_CUSTOM_PORT="+port,result.stdout)
-        for port in ("25","587","1023","65536","oops"):
+        for port in ("587","1023","65536","oops"):
             with self.subTest(port=port):
                 self.assertIn("invalid_custom_port",self.cli(*self.valid(port)).stderr)
 
