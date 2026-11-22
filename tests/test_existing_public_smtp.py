@@ -81,6 +81,33 @@ class ExistingPublicSmtpAuditTests(unittest.TestCase):
         self.assertNotIn('sendmail -', source)
         self.assertNotIn('postconf -e', source)
 
+    def test_custom_inbound_port_socket_evidence(self):
+        busy = MOD.analyze(None, None, {}, [("0.0.0.0", 25),
+            ("127.0.0.1", 2525)], mta="no_active_mta_verified",
+            selected_port=2525)
+        self.assertEqual(busy["SMTP_SELECTED_PORT"], "2525")
+        self.assertEqual(busy["SMTP_SELECTED_PORT_SOCKET"], "occupied_loopback")
+        self.assertEqual(busy["SMTP_STANDARD_PORT_SOCKETS"],
+                         "potentially_public_unattributed")
+        free = MOD.analyze(None, None, {}, [("127.0.0.1", 2526)],
+                           mta="no_active_mta_verified", selected_port=2525)
+        self.assertEqual(free["SMTP_SELECTED_PORT_SOCKET"], "no_listener_observed")
+        unknown = MOD.analyze(None, None, {}, None,
+                              mta="no_active_mta_verified", selected_port=2525)
+        self.assertEqual(unknown["SMTP_SELECTED_PORT_SOCKET"], "scan_unavailable")
+        self.assertEqual(MOD.selected_port_socket_status(
+            [("127.0.0.1", 2525), ("0.0.0.0", 2525)], 2525),
+            "occupied_potentially_public")
+
+    def test_invalid_custom_port_fails_before_host_scan(self):
+        for port in ("25", "587", "0", "65536", "-1"):
+            proc = subprocess.run(
+                ["python3", str(AUDIT), "--smtp-port", port],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True, timeout=10)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("--smtp-port must be 1024..65535", proc.stderr)
+
     def test_wizard_audit_embedded_and_displayed(self):
         gui = (ROOT / 'src/LinuxMailRelay365/MainForm.cs').read_text()
         for token in ('InspectExistingPublicSmtpAsync', 'BuildExistingSmtpAuditBundle',

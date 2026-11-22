@@ -1,0 +1,47 @@
+name: Rocky Linux SELinux VM acceptance (experimental)
+
+# Independent of the Preview release gate; nested KVM on GitHub runners is
+# experimental and not guaranteed to be available.
+on:
+  push:
+    branches:
+      - feature/private-smtp-auth-tls
+    paths:
+      - .github/workflows/rocky-enforcing-vm.yml
+      - tests/rocky_vm_*.sh
+      - tests/rocky_vm_*.py
+      - linux/foreign-mta-config-backup.py
+      - linux/manage-multi-mailbox-proof-timer.py
+      - tests/assert_sendmail_v2_export.py
+      - tests/rehearse_sendmail_v2_metadata.py
+      - linux/manage-rhel-selinux-sidecar-context.py
+      - linux/manage-rhel-selinux-port.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rocky-selinux-vm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kvm-host-capability:
+    name: Verify nested KVM availability on GitHub-hosted Ubuntu
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Fail fast on experimental proof-timer source syntax
+        shell: bash
+        run: |
+          python3 -m py_compile linux/manage-multi-mailbox-proof-timer.py linux/refresh-multi-mailbox-proof.py linux/audit-oauth-ingress.py linux/audit-oauth-sender-map.py
+          bash -n tests/rocky_vm_multi_proof_timer_enforcing.sh tests/rocky_vm_boot_enforcing.sh
+      - name: Inspect kernel KVM and perform real KVM ioctl
+        shell: bash
+        run: bash tests/rocky_vm_kvm_probe.sh
+      - name: Boot official checksum-verified Rocky 9.9 VM and verify SELinux Enforcing
+        shell: bash
+        run: bash tests/rocky_vm_boot_enforcing.sh

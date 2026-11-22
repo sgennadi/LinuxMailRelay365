@@ -52,6 +52,10 @@ class IsolatedSidecarTests(unittest.TestCase):
         self.assertIn('--smtp-port', s)
         self.assertIn('printf', s)
         self.assertIn('PRIMARY_POSTFIX_CONFIG_UNCHANGED=yes', s)
+        self.assertIn('SIDECAR_ERROR=selinux_enforcing_sidecar_not_integration_verified', s)
+        self.assertIn('SIDECAR_ERROR=rhel_selinux_state_not_verified', s)
+        self.assertLess(s.index('SIDECAR_ERROR=selinux_enforcing_sidecar_not_integration_verified'),
+                        s.index('install -d -o root -g root -m 0755 /etc/linuxmailrelay365'))
         for blocked in (
             "postconf -e ", "systemctl reload postfix", "systemctl restart postfix",
             "systemctl stop postfix.service", "systemctl start postfix.service",
@@ -62,7 +66,10 @@ class IsolatedSidecarTests(unittest.TestCase):
     def test_transport_allowlisted_identity_per_instance(self):
         t = (ROOT/'linux/m365_xoauth2_transport.py').read_text()
         self.assertIn('SIDECAR_CONF_FILE',t)
-        self.assertIn('if path not in (CONF_FILE, SIDECAR_CONF_FILE):',t)
+        self.assertIn('if not mapped and path not in (CONF_FILE, SIDECAR_CONF_FILE) + STAGED_CONF_FILES:', t)
+        self.assertIn('args.mapped_identity_config is not None', t)
+        self.assertIn("ap.error('Mapped identity permits local config/signing checks only')", t)
+        self.assertIn("if not (args.token_check or args.signing_check or args.config_check or args.smtp_auth_check) or args.recipient:", t)
         self.assertIn("ap.add_argument('--config', choices=", t)
         m = (ROOT/'src/LinuxMailRelay365/MainForm.cs').read_text()
         for token in ('BuildSidecarBundle', 'HasIsolatedSidecarAsync',
