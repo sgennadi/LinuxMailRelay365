@@ -608,8 +608,18 @@ internal sealed partial class MainForm : Form
         ipRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
         monitoringRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
         language.Items.AddRange(["Русский", "English", "עברית"]);
-        language.SelectedIndex = 0;
-        language.SelectedIndexChanged += (_, _) => RenderPage();
+        // English on first launch. Preserve explicit user choice, not Windows UI language.
+        language.SelectedIndex = UiLanguagePreference.Load(dataDirectory);
+        language.SelectedIndexChanged += (_, _) =>
+        {
+            if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true")
+            {
+                try { UiLanguagePreference.Save(dataDirectory, language.SelectedIndex); }
+                catch (IOException ex) { WriteLine("WARNING: Could not save UI language: " + ex.GetType().Name); }
+                catch (UnauthorizedAccessException ex) { WriteLine("WARNING: Could not save UI language: " + ex.GetType().Name); }
+            }
+            RenderPage();
+        };
         language.AccessibleName = "Interface language";
         showMailTechnicalDetails.CheckedChanged += (_, _) =>
         {
