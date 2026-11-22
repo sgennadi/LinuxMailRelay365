@@ -28,7 +28,7 @@ done
 python3 - "$PORT" "$DNS" "$CERT" "$KEY" "$CAFILE" "$MODE" "$EXPECT" <<'PY'
 import ipaddress,re,sys
 port,dns,cert,key,ca,mode,sha=sys.argv[1:]
-if not re.fullmatch(r'[0-9]{4,5}',port) or not 1024<=int(port)<=65535:
+if not re.fullmatch(r'(25|[1-9][0-9]{3,4})',port) or not (int(port)==25 or 1024<=int(port)<=65535):
     raise SystemExit('TLS_ROTATE_ERROR=invalid_custom_port')
 if not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+',dns):
     raise SystemExit('TLS_ROTATE_ERROR=invalid_dns')
