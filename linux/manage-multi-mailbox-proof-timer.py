@@ -297,6 +297,7 @@ def enable(reviewed_sha):
                 (STATE, state_bytes, 0o600))
     created = []
     state_dir_created = False
+    refresh_attempted = False
     try:
         STATE_ROOT.mkdir(mode=0o700)
         state_dir_created = True
@@ -305,6 +306,8 @@ def enable(reviewed_sha):
             created.append((path, data, mode))
         systemctl("daemon-reload")
         # An initial successful audit is mandatory before timer activation.
+        # Even a reported start failure may have already written a receipt.
+        refresh_attempted = True
         systemctl("start", SERVICE.name)
         gid = grp.getgrnam("m365mailer").gr_gid
         proof = record(read(PROOF, 2048, (0o640,), gid))
@@ -330,6 +333,10 @@ def enable(reviewed_sha):
                     systemctl("is-active", "--quiet", SERVICE.name,
                               allow_inactive=True):
                 raise Refused("timer_or_service_remains_active_after_failure")
+            if refresh_attempted:
+                # A failed activation must never leave its newly issued
+                # authorization receipt usable for another 120 seconds.
+                revoke(info["map"])
             for path, data, mode in reversed(created):
                 if read(path, len(data), (mode,)) != data:
                     raise Refused("partial_timer_write_changed")

@@ -185,6 +185,39 @@ class OptionalProofTimerTests(unittest.TestCase):
                 self.assertFalse(state_dir.exists())
                 self.assertTrue(any(c.args[0] == "disable" for c in ctl.call_args_list))
 
+    def test_failed_first_refresh_revokes_any_issued_receipt(self):
+        approved = "e" * 64
+        values = {"map": "a" * 64, "service": "b" * 64, "timer": "c" * 64}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            service, timerpath = root / "service", root / "timer"
+            private = root / "private"
+            state = private / "state.json"
+            def create(path, data, mode):
+                path.write_bytes(data)
+            def systemctl(*args, **kwargs):
+                if args[0] == "start":
+                    raise timer.Refused("simulated_first_audit_failure")
+                return False if args[0] == "is-active" else True
+            with mock.patch.object(timer, "SERVICE", service), \
+                 mock.patch.object(timer, "TIMER", timerpath), \
+                 mock.patch.object(timer, "STATE_ROOT", private), \
+                 mock.patch.object(timer, "STATE", state), \
+                 mock.patch.object(timer, "parents"), \
+                 mock.patch.object(timer, "plan", return_value=(
+                     approved, values, b"known-service", b"known-timer")), \
+                 mock.patch.object(timer, "create_file", side_effect=create), \
+                 mock.patch.object(timer, "read",
+                     side_effect=lambda path, *args: path.read_bytes()), \
+                 mock.patch.object(timer, "systemctl", side_effect=systemctl), \
+                 mock.patch.object(timer, "revoke") as revoked:
+                with self.assertRaisesRegex(timer.Refused, "simulated_first_audit_failure"):
+                    timer.enable(approved)
+                revoked.assert_called_once_with("a" * 64)
+                self.assertFalse(service.exists())
+                self.assertFalse(timerpath.exists())
+                self.assertFalse(private.exists())
+
     def test_changed_unit_blocks_unsafe_rollback_and_requires_review(self):
         approved = "e" * 64
         evidence = {"map": "a" * 64, "service": "b" * 64, "timer": "c" * 64}

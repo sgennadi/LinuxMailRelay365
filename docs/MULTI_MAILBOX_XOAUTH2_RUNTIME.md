@@ -316,6 +316,8 @@ closed until a separately approved fresh proof exists), run:
 
     sudo python3 /usr/local/libexec/linuxmailrelay365-multi-oauth/manage-multi-mailbox-proof-timer.py --disable-reviewed --confirm DISABLE_AND_REVOKE_MULTI_INGRESS_TIMER
 
+If initial activation fails after a refresh attempt, the manager also attempts
+to revoke that newly issued local receipt before removing verified unit files.
 If any unit, ownership or state has unexpected content, the manager stops
 and requires manual review instead of replacing or deleting it. Do not
 modify these systemd units by hand while enabled. This workflow is not
