@@ -17,6 +17,10 @@ internal sealed class MailRoutingPlan
     public string PostfixBasicsInterfaces { get; set; } = "loopback-only";
     // Recipient preference only. Never evidence of tenant authorization.
     public string RecipientScope { get; set; } = "unknown";
+    // Operator intention, not proof of observed message source or approval
+    // to alter an existing active MTA.
+    public string MailSource { get; set; } = MailFlowIntent.Unknown;
+    public string MigrationScenario { get; set; } = MailScenarioPlanner.Choose;
     public string SenderPolicy { get; set; } = "fixed-mailbox";
     // Operator intent only. Multi-mailbox XOAUTH2 is NOT applied until
     // authenticated sender ownership and Exchange rights are validated.
@@ -121,6 +125,9 @@ internal static class MailRoutingPlanStore
             throw new InvalidDataException("Inbound SMTP port must be 25 or between 1024 and 65535.");
         if (state.RecipientScope is not ("unknown" or "internal-only" or "external-needed"))
             throw new InvalidDataException("Invalid recipient scope.");
+        if (!MailFlowIntent.Supported(state.MailSource) ||
+            !MailScenarioPlanner.Supported(state.MigrationScenario))
+            throw new InvalidDataException("Unknown mail source or migration scenario.");
         if (state.Transport is not ("oauth2" or "connector" or "direct-send") ||
             state.SenderPolicy is not ("fixed-mailbox" or "preserve-domain" or "masquerade") ||
             state.OAuthSenderMode is not ("fixed-mailbox" or "authorized-multiple-mailboxes"))
