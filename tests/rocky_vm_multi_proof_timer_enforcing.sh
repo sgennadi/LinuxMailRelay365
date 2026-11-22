@@ -97,10 +97,14 @@ systemctl is-active --quiet linuxmailrelay365-multi-proof.timer
 systemctl is-enabled --quiet linuxmailrelay365-multi-proof.timer
 before="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["issued_at"])' "$proof")"
 echo 'LMR365_VM_TIMER_SYSTEMD=active_under_enforcing'
+python3 "$manager" --status | grep -Fxq 'MULTI_PROOF_RECEIPT=fresh_ttl_only'
+echo 'LMR365_VM_TIMER_RECEIPT_INITIAL=fresh_ttl_only'
 sleep 75
 after="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["issued_at"])' "$proof")"
 test "$after" -gt "$before"
 echo 'LMR365_VM_TIMER_SCHEDULED=renewed'
+python3 "$manager" --status | grep -Fxq 'MULTI_PROOF_RECEIPT=fresh_ttl_only'
+echo 'LMR365_VM_TIMER_RECEIPT_RENEWED=fresh_ttl_only'
 
 # Negative lifecycle: altered sender map must NOT refresh an existing proof.
 # A failed oneshot must leave the previous receipt intact and the manager
@@ -115,6 +119,8 @@ if systemctl start linuxmailrelay365-multi-proof.service >/dev/null 2>&1; then
     exit 1
 fi
 test "$(sha256sum "$proof" | cut -d ' ' -f 1)" = "$proof_before_drift"
+python3 "$manager" --status | grep -Fxq 'MULTI_PROOF_RECEIPT=map_changed'
+echo 'LMR365_VM_TIMER_RECEIPT_MAP_DRIFT=detected'
 if python3 "$manager" --plan >/dev/null 2>&1; then
     echo 'LMR365_VM_TIMER_MAP_DRIFT=unapproved_plan_accepted' >&2
     exit 1
@@ -132,11 +138,15 @@ systemctl is-active --quiet linuxmailrelay365-multi-proof.timer
 proof_after_recovery="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["issued_at"])' "$proof")"
 test "$proof_after_recovery" -gt "$after"
 echo 'LMR365_VM_TIMER_MAP_RECOVERY=verified'
+python3 "$manager" --status | grep -Fxq 'MULTI_PROOF_RECEIPT=fresh_ttl_only'
+echo 'LMR365_VM_TIMER_RECEIPT_RECOVERY=fresh_ttl_only'
 
 python3 "$manager" --disable-reviewed --confirm DISABLE_AND_REVOKE_MULTI_INGRESS_TIMER |
     grep -Fxq 'MULTI_PROOF_TIMER=disabled_and_receipt_revoked'
 test ! -e "$proof" && test ! -e "$service" && test ! -e "$timer" && test ! -e "$state"
 python3 "$manager" --status | grep -Fxq 'MULTI_PROOF_TIMER=not_installed'
+python3 "$manager" --status | grep -Fxq 'MULTI_PROOF_RECEIPT=not_applicable'
+echo 'LMR365_VM_TIMER_RECEIPT_REVOKED=not_applicable'
 echo 'LMR365_VM_TIMER_REVOCATION=verified'
 rm -- "$lock" "$backup/active.json" "$manager" \
     "$root/refresh-multi-mailbox-proof.py" \
