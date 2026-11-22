@@ -66,6 +66,46 @@ public static class EntraTenantDiscoveryClient
         }
     }
 
+    // Shared, in-process token acquisition for strictly read-only Graph object
+    // inspection. Exact tenant bound. No token is returned to the WinForms UI.
+    internal static async Task<string> AcquireGraphReadTokenAsync(
+        Guid exactTenant, Guid approvedClientId,
+        Func<DeviceCodeResult, Task> showDeviceCode, CancellationToken ct)
+    {
+        if (exactTenant == Guid.Empty || approvedClientId == Guid.Empty)
+            throw new EntraDiscoveryException("invalid_graph_tenant_or_public_client");
+        var app = Clients.GetOrAdd(approvedClientId, id =>
+            PublicClientApplicationBuilder.Create(id.ToString("D"))
+                .WithAuthority(AzureCloudInstance.AzurePublic, "organizations").Build());
+        const string readScope = "https://graph.microsoft.com/Application.Read.All";
+        AuthenticationResult? credential = null;
+        try
+        {
+            foreach (var account in await app.GetAccountsAsync().ConfigureAwait(false))
+            {
+                try
+                {
+                    var silent = await app.AcquireTokenSilent([readScope], account)
+                        .ExecuteAsync(ct).ConfigureAwait(false);
+                    if (Guid.TryParse(silent.TenantId, out var found) && found == exactTenant)
+                    {
+                        credential = silent;
+                        break;
+                    }
+                }
+                catch (MsalUiRequiredException) { }
+            }
+            credential ??= await app.AcquireTokenWithDeviceCode([readScope], showDeviceCode)
+                .WithAuthority("https://login.microsoftonline.com/" + exactTenant.ToString("D"))
+                .ExecuteAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (MsalException) { throw new EntraDiscoveryException("graph_device_sign_in_failed"); }
+        if (!Guid.TryParse(credential.TenantId, out Guid received) || received != exactTenant)
+            throw new EntraDiscoveryException("graph_wrong_tenant");
+        return credential.AccessToken;
+    }
+
     private static async Task<AuthenticationResult> AcquireSessionTokenAsync(
         IPublicClientApplication app, string[] scopes,
         Func<DeviceCodeResult, Task> showDeviceCode, CancellationToken ct)
