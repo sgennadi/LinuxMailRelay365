@@ -101,7 +101,16 @@ internal static class MailScenarioPlanner
             incoming = L(language, "Локальные письма / SMTP-клиенты (проверьте источник)",
                 "Local submissions / SMTP clients (source not established)",
                 "שליחה מקומית / לקוחות SMTP (לא אומת)");
-        string postfix = "Postfix · SMTP " + localPort;
+        string postfix = mailSource switch
+        {
+            MailFlowIntent.Local or MailFlowIntent.Jobs =>
+                L(language, "Postfix · локальная очередь/pickup",
+                    "Postfix · local pickup / queue", "Postfix · תור מקומי"),
+            MailFlowIntent.Mixed =>
+                L(language, "Postfix · pickup + SMTP ", "Postfix · pickup + SMTP ",
+                    "Postfix · pickup + SMTP ") + localPort,
+            _ => "Postfix · SMTP " + localPort
+        };
         return code switch
         {
             Keep => new([incoming, postfix, existing],
@@ -138,6 +147,10 @@ internal static class MailScenarioPlanner
         var replace = Flow(ReplaceRelay, "[smtp.gmail.com]:587", "25", "2525", "oauth2", 1);
         var isolated = Flow(Isolated, "[smtp.gmail.com]:587", "25", "2525", "oauth2", 1);
         var keep = Flow(Keep, "[smtp.gmail.com]:587", "25", "2525", "oauth2", 1);
+        var localMail = Flow(ReplaceRelay, "[relay.example.org]:465", "25", "2525",
+            "oauth2", 1, MailFlowIntent.Local);
+        var custom = Flow(ReplaceRelay, "[relay.example.org]:465", "25", "2525",
+            "custom", 1, MailFlowIntent.Jobs, "smtp.example.net:587");
         return cards.Count == 4 &&
             cards.Any(c => c.Code == ReplaceRelay) &&
             replace.Nodes.SequenceEqual(new [] { "Local submissions / SMTP clients (source not established)", "Postfix · SMTP 25",
@@ -147,6 +160,9 @@ internal static class MailScenarioPlanner
             isolated.ShowsSeparatePort &&
             isolated.Nodes.Any(n => n.Contains("2525", StringComparison.Ordinal)) &&
             keep.Nodes.Last() == "[smtp.gmail.com]:587" &&
+            localMail.Nodes[1] == "Postfix · local pickup / queue" &&
+            !localMail.Nodes.Any(node => node.Contains("2525", StringComparison.Ordinal)) &&
+            custom.Nodes.Last().Contains("smtp.example.net:587", StringComparison.Ordinal) &&
             !RequiresSeparateInboundPort(Rebuild) &&
             !Supported("arbitrary");
     }
