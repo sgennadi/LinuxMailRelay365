@@ -139,7 +139,7 @@ internal static class GooglePostfixRoute
                 "CONFIG_B64 = \"" + config + "\"", StringComparison.Ordinal)
             .Replace("# LMR365_RECOVERY_MARKER",
                 "RECOVERY_B64 = \"" + recovery + "\"", StringComparison.Ordinal);
-        return "set -eu\npython3 - <<'LMR365_POSTFIX_GOOGLE_ROUTE'\n" +
+        return "set +x\nset -eu\npython3 -I - <<'LMR365_POSTFIX_GOOGLE_ROUTE'\n" +
             script + "\nLMR365_POSTFIX_GOOGLE_ROUTE\n";
     }
 
