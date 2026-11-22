@@ -9,6 +9,13 @@ test "$(getenforce)" = Enforcing
 test "$(cat /sys/fs/selinux/enforce)" = 1
 test "$(id -u)" != 0  # Admin operations must use visible sudo.
 sudo systemctl start postfix.service
+# The earlier STARTTLS fixture MUST restore master.cf, not merely stop 2525.
+test -z "$(sudo postconf -M '2525/inet' 2>/dev/null || true)" || {
+  echo "LMR365_POSITIVE_SIDECAR_INHERITED_TEST_SMTP_2525"; exit 1;
+}
+test -z "$(sudo ss -H -ltn '( sport = :2525 )')" || {
+  echo "LMR365_POSITIVE_SIDECAR_UNEXPECTED_SMTP_2525"; exit 1;
+}
 sudo systemctl is-active --quiet postfix.service
 test -z "$(sudo postqueue -j)"
 

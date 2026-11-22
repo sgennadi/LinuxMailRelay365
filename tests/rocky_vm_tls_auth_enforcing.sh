@@ -14,12 +14,51 @@ key=/etc/pki/tls/private/lmr365-ci.key
 secret=/home/ci/.lmr365-ci-password
 manager=/usr/local/libexec/lmr365-selinux-port.py
 sudo test -f "$manager"
+baseline=/var/lib/lmr365-ci-postfix-baseline
 
 if test "$mode" = --cleanup; then
   # The guest is disposable, but exercise genuine rollback of a managed port
   # policy while ensuring no SMTP listener is still bound to TCP/2525.
   sudo systemctl stop lmr365-ci-auth.service postfix.service
   test -z "$(sudo ss -H -ltn '( sport = :2525 )')"
+  # Port-policy teardown does NOT remove a Postfix master.cf SMTP service.
+  # Recover the two pre-STARTTLS files while Postfix is stopped.
+  test "$(sudo stat -c '%u:%g:%a' "$baseline")" = "0:0:700" || {
+    echo "LMR365_LAB_BASELINE_PARENT_UNTRUSTED"; exit 1;
+  }
+  for name in main.cf master.cf; do
+    old="$baseline/$name"
+    sudo test -f "$old" && sudo test ! -L "$old" || {
+      echo "LMR365_LAB_BASELINE_FILE_MISSING_OR_LINKED"; exit 1;
+    }
+    test "$(sudo stat -c '%u:%g:%a:%h' "$old")" = "0:0:644:1" || {
+      echo "LMR365_LAB_BASELINE_FILE_UNTRUSTED"; exit 1;
+    }
+    sudo test -f "/etc/postfix/$name" && sudo test ! -L "/etc/postfix/$name" || {
+      echo "LMR365_LAB_PRIMARY_CONFIG_CHANGED_TYPE"; exit 1;
+    }
+  done
+  test "$(sudo postconf -P -h '2525/inet/smtpd_sasl_auth_enable')" = yes || {
+    echo "LMR365_LAB_2525_NOT_OUR_SERVICE"; exit 1;
+  }
+  for name in main.cf master.cf; do
+    candidate="/etc/postfix/.lmr365-ci-$name-restored"
+    sudo test ! -e "$candidate" && sudo test ! -L "$candidate" || {
+      echo "LMR365_LAB_TEMP_RESTORE_PATH_EXISTS"; exit 1;
+    }
+    sudo cp -p -- "$baseline/$name" "$candidate"
+    sudo cmp -s -- "$candidate" "$baseline/$name"
+    sudo mv -T -- "$candidate" "/etc/postfix/$name"
+    sudo restorecon -F "/etc/postfix/$name"
+    sudo cmp -s -- "/etc/postfix/$name" "$baseline/$name" || {
+      echo "LMR365_LAB_CONFIG_RESTORE_READBACK_MISMATCH"; exit 1;
+    }
+  done
+  test -z "$(sudo postconf -M '2525/inet' 2>/dev/null || true)" || {
+    echo "LMR365_LAB_2525_SERVICE_LEFT_IN_MASTER_CF"; exit 1;
+  }
+  sudo postfix check
+  echo "LMR365_LAB_POSTFIX_BASELINE=restored_exact_bytes"
   if sudo test -f /var/lib/linuxmailrelay365-selinux-port/active.json; then
     summary="$(sudo python3 "$manager" --status --smtp-port 2525)"
     expected="$(printf '%s\n' "$summary" | sed -n 's/^RHEL_PORT_CURRENT_POLICY_SHA256=//p')"
@@ -33,10 +72,34 @@ if test "$mode" = --cleanup; then
     echo "LMR365_LAB_EXISTING_SMTP_PORT_POLICY_PRESERVED=yes"
   fi
   test "$(getenforce)" = Enforcing
+  sudo rm -f -- "$baseline/main.cf" "$baseline/master.cf"
+  sudo rmdir -- "$baseline"
+  echo "LMR365_LAB_2525_MASTER_CF_ENTRY_REMOVED=yes"
   exit 0
 fi
 
 if test "$mode" = --setup; then
+  # Snapshot exactly the pre-lab configuration, not any existing user object.
+  if sudo test -e "$baseline" || sudo test -L "$baseline"; then
+    echo "LMR365_LAB_PREEXISTING_BASELINE_REFUSED"; exit 1;
+  fi
+  if test -n "$(sudo postconf -M '2525/inet' 2>/dev/null || true)"; then
+    echo "LMR365_LAB_PREEXISTING_SMTP_2525_REFUSED"; exit 1;
+  fi
+  for name in main.cf master.cf; do
+    sudo test -f "/etc/postfix/$name" && sudo test ! -L "/etc/postfix/$name" || {
+      echo "LMR365_LAB_UNSAFE_INITIAL_CONFIG"; exit 1;
+    }
+    test "$(sudo stat -c '%u:%g:%a:%h' "/etc/postfix/$name")" = "0:0:644:1" || {
+      echo "LMR365_LAB_UNEXPECTED_INITIAL_CONFIG_METADATA"; exit 1;
+    }
+  done
+  sudo install -o root -g root -m 0700 -d "$baseline"
+  for name in main.cf master.cf; do
+    sudo cp -p -- "/etc/postfix/$name" "$baseline/$name"
+    sudo cmp -s -- "/etc/postfix/$name" "$baseline/$name"
+  done
+  echo "LMR365_LAB_POSTFIX_BASELINE=sealed_before_lab_changes"
   sudo dnf -y -q install dovecot openssl policycoreutils-python-utils
   sudo postconf -a | grep -Fxq dovecot
   sudo openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 2 \

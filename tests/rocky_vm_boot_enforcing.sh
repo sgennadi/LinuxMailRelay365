@@ -196,8 +196,11 @@ test "$rebooted" = yes || {
 echo "LMR365_GUEST_REBOOT=verified_new_boot_id"
 ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash /home/ci/lmr365-tls-auth-ci.sh --verify'
 echo "LMR365_GUEST_AUTH_TLS_POST_REBOOT=verified"
-ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash /home/ci/lmr365-tls-auth-ci.sh --cleanup'
+ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash /home/ci/lmr365-tls-auth-ci.sh --cleanup' > "$work/tls-cleanup"
+grep -Fxq "LMR365_LAB_POSTFIX_BASELINE=restored_exact_bytes" "$work/tls-cleanup"
+grep -Fxq "LMR365_LAB_2525_MASTER_CF_ENTRY_REMOVED=yes" "$work/tls-cleanup"
 echo "LMR365_GUEST_PORT_POLICY_RESTORE=verified_if_managed"
+echo "LMR365_GUEST_POSTFIX_CONFIG_RESTORED=exact_pre_tls_baseline"
 
 # Experimental fcontext manager is tested only in this disposable KVM
 # guest; it is NOT wired into production installers.
