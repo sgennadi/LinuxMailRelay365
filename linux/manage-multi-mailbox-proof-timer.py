@@ -178,14 +178,24 @@ def systemctl(*args, allow_inactive=False):
     if expectation is None:
         raise Refused("unsupported_inactive_systemd_probe")
     prop, required = expectation
-    state = subprocess.run(
-        [SYSTEMCTL, "show", "--property=" + prop, "--value", args[-1]],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL, timeout=40,
-        universal_newlines=True, check=False)
-    if (state.returncode != 0 or len(state.stdout) > 64 or
-            state.stdout.strip() != required):
-        raise Refused("unverifiable_inactive_or_disabled_systemd_unit")
+    # show may report inactive even when the unit is not found. Attest that
+    # systemd has loaded OUR unchanged unit, not a missing/transient alias.
+    expected_path = TIMER if args[-1] == TIMER.name else SERVICE
+    properties = (
+        (prop, required),
+        ("LoadState", "loaded"),
+        ("FragmentPath", str(expected_path)),
+        ("NeedDaemonReload", "no"),
+    )
+    for name, expected in properties:
+        state = subprocess.run(
+            [SYSTEMCTL, "show", "--property=" + name, "--value", args[-1]],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, timeout=40,
+            universal_newlines=True, check=False)
+        if (state.returncode != 0 or len(state.stdout) > 256 or
+                state.stdout != expected + "\n"):
+            raise Refused("unverifiable_inactive_or_disabled_systemd_unit")
     return False
 
 
@@ -325,9 +335,12 @@ def disable():
     state = installed()
     systemctl("disable", "--now", TIMER.name)
     systemctl("stop", SERVICE.name)
+    # Stopping the timer does not prove a currently running one-shot worker
+    # stopped. Never revoke its receipt while it can still be rewritten.
     if (systemctl("is-active", "--quiet", TIMER.name, allow_inactive=True) or
+            systemctl("is-active", "--quiet", SERVICE.name, allow_inactive=True) or
             systemctl("is-enabled", "--quiet", TIMER.name, allow_inactive=True)):
-        raise Refused("timer_still_active_or_enabled")
+        raise Refused("timer_or_service_still_active_or_enabled")
     revoke(state["map"])
     for path in (TIMER, SERVICE):
         read(path, 4096, (0o644,))
