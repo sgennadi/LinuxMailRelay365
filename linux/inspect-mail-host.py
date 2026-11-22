@@ -33,7 +33,8 @@ def call(argv):
         inactive_unit = (argv[:2] == ["systemctl", "is-active"] and
                          p.returncode in (3, 4) and
                          p.stdout.strip() in ("inactive", "failed", "unknown", "dead"))
-        if (p.returncode == 0 or inactive_unit) and len(p.stdout) <= 4096:
+        output_cap = 65536 if argv == ["postconf", "-M"] else 4096
+        if (p.returncode == 0 or inactive_unit) and len(p.stdout) <= output_cap:
             return p.stdout.strip()
     except (OSError, subprocess.TimeoutExpired, UnicodeError):
         pass
@@ -181,6 +182,97 @@ def exim_ports(tool, runner=call):
         numbers.append(value)
     return ",".join(str(n) for n in sorted(set(numbers)))
 
+
+
+# Explicit service names map to TCP ports. Never infer ports from non-literal
+# macros or from an unrelated process listening on a socket.
+SMTP_SERVICE_PORTS = {"smtp": 25, "submission": 587, "submissions": 465,
+                      "smtps": 465}
+
+
+def literal_smtp_port(name):
+    name = name.strip().lower()
+    if name in SMTP_SERVICE_PORTS:
+        return SMTP_SERVICE_PORTS[name]
+    if re.fullmatch(r"[0-9]{1,5}", name):
+        number = int(name)
+        return number if 1 <= number <= 65535 else None
+    return None
+
+
+def format_configured_ports(ports):
+    if len(ports) > 16:
+        return "dynamic_or_unverified"
+    return ",".join(str(n) for n in sorted(set(ports))) if ports else "none_configured"
+
+
+def postfix_ports(runner=call):
+    """Read effective active master.cf inet services via postconf -M.
+
+    smtp/unix is an outbound transport, NOT a listening TCP/25 service.
+    An unknown service name means the complete port set is unverified.
+    """
+    raw = runner(["postconf", "-M"])
+    if not isinstance(raw, str) or not raw or len(raw) > 65536:
+        return "unverified"
+    found = []
+    for line in raw.splitlines():
+        row = line.strip()
+        if not row or row.startswith("#") or (line[:1].isspace() and row.startswith("-o ")):
+            continue
+        fields = row.split()
+        if len(fields) < 2:
+            return "dynamic_or_unverified"
+        if fields[1] not in ("inet", "unix", "fifo", "pass", "unix-dgram"):
+            return "dynamic_or_unverified"
+        if fields[1] != "inet":
+            continue
+        service = fields[0]
+        if "=" in service:
+            left, right = service.split("=", 1)
+            if left != right + "/inet":
+                return "dynamic_or_unverified"
+            service = right
+        # Postfix supports optional IP/hostname:port service names.
+        if ":" in service:
+            service = service.rsplit(":", 1)[-1]
+        port = literal_smtp_port(service)
+        if port is None:
+            return "dynamic_or_unverified"
+        found.append(port)
+    return format_configured_ports(found)
+
+
+def sendmail_cf_ports(path):
+    """Use only the compiled .cf DaemonPortOptions, NOT a possibly stale .mc.
+
+    An omitted Port in a declared daemon uses Sendmail's documented smtp
+    default (TCP 25). Missing/unreadable compiled config stays UNKNOWN.
+    """
+    text = limited_config_text(path)
+    if text is None:
+        return "unverified"
+    declarations = [line for line in text.splitlines()
+                    if re.match(r"^O\s+DaemonPortOptions\s*=", line)]
+    if not declarations:
+        return "unverified"
+    found = []
+    for line in declarations:
+        raw = line.split("=", 1)[1]
+        options = {}
+        for item in raw.split(","):
+            match = re.fullmatch(r"\s*([A-Za-z][A-Za-z0-9]*)\s*=\s*(\S.*?)\s*", item)
+            if not match:
+                return "dynamic_or_unverified"
+            key = match.group(1).lower()
+            if key in options:
+                return "dynamic_or_unverified"
+            options[key] = match.group(2)
+        port = literal_smtp_port(options.get("port", "smtp"))
+        if port is None:
+            return "dynamic_or_unverified"
+        found.append(port)
+    return format_configured_ports(found)
 
 def exim_security_declarations(tool, runner=call):
     """Only MAIN option declarations; never live SMTP AUTH or TLS proof."""
@@ -342,9 +434,13 @@ def inspect(runner=call):
         "MAIL_HOST_FQDN": fqdn, "MAIL_HOST_DOMAIN": domain,
         "MAIL_HOST_MTA": mta, "MAIL_HOST_MTA_STATE": state,
         "MAIL_HOST_TRUST": "os_report_unverified",
-        "MAIL_HOST_CHANGES": "no"
+        "MAIL_HOST_CHANGES": "no",
+        "MAIL_HOST_SMTP_CONFIG_SOURCE": "unverified",
+        "MAIL_HOST_SMTP_CONFIG_PORTS": "unverified"
     }
     if mta == "postfix":
+        result["MAIL_HOST_SMTP_CONFIG_SOURCE"] = "postfix_master_cf"
+        result["MAIL_HOST_SMTP_CONFIG_PORTS"] = postfix_ports(runner)
         for key in POSTFIX:
             result["MAIL_HOST_POSTFIX_" + key.upper()] = safe(
                 runner(["postconf", "-h", key]))
@@ -354,6 +450,8 @@ def inspect(runner=call):
             result["MAIL_HOST_EXIM_" + key.upper()] = exim_setting(tool, key, runner)
         result["MAIL_HOST_EXIM_LOCAL_DOMAINS"] = "routers_and_acls_require_review"
         result["MAIL_HOST_EXIM_SMTP_PORTS"] = exim_ports(tool, runner)
+        result["MAIL_HOST_SMTP_CONFIG_SOURCE"] = "exim_daemon_smtp_ports"
+        result["MAIL_HOST_SMTP_CONFIG_PORTS"] = result["MAIL_HOST_EXIM_SMTP_PORTS"]
         result["MAIL_HOST_EXIM_BIND_POLICY"] = exim_bind_policy(
             result["MAIL_HOST_EXIM_LOCAL_INTERFACES"])
         result["MAIL_HOST_EXIM_SMARTHOST_HINT"] = exim_debian_router_hint(
@@ -365,6 +463,8 @@ def inspect(runner=call):
     elif mta == "sendmail":
         mc, listener, masquerade = sendmail_mc_flags(pathlib.Path("/etc/mail/sendmail.mc"))
         cf_path = pathlib.Path("/etc/mail/sendmail.cf")
+        result["MAIL_HOST_SMTP_CONFIG_SOURCE"] = "sendmail_cf"
+        result["MAIL_HOST_SMTP_CONFIG_PORTS"] = sendmail_cf_ports(cf_path)
         effective_listener, smarthost, effective_masquerade = sendmail_cf_summary(cf_path)
         tls, auth = sendmail_cf_security(cf_path)
         result.update({
@@ -409,6 +509,9 @@ def main(argv=None):
         assert exim_setting("exim", "primary_hostname",
                             lambda _: "primary_hostname = smtp.example.com") == "smtp.example.com"
         assert exim_ports("exim", lambda _: "daemon_smtp_ports = smtp : submission") == "25,587"
+        assert postfix_ports(lambda _: "smtp inet n - n - - smtpd\n"
+                             "smtp unix - - n - - smtp\n"
+                             "2525 inet n - n - - smtpd") == "25,2525"
         assert exim_bind_policy("127.0.0.1 ::1") == "loopback_declared"
         assert exim_bind_policy("0.0.0.0") == "non_loopback_declared_requires_review"
         print("MAIL_HOST_SELF_TEST=pass")

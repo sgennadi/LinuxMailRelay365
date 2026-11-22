@@ -73,6 +73,50 @@ class MailHostInspectorTests(unittest.TestCase):
             self.assertEqual(module.sendmail_cf_summary(link),
                              ("unverified", "unverified", "unverified"))
 
+    def test_postfix_master_cf_configured_ports_are_distinct_from_outbound_unix(self):
+        raw = ("smtp inet n - n - - smtpd\n"
+               "smtp unix - - n - - smtp\n"
+               "submission/inet=submission inet n - n - - smtpd\n"
+               "postlog unix-dgram n - n - 1 postlogd\n"
+               "127.0.0.1:2526 inet n - n - - smtpd\n")
+        self.assertEqual(module.postfix_ports(lambda _: raw), "25,587,2526")
+        self.assertEqual(module.postfix_ports(lambda _: "smtp unix - - n - - smtp\n"),
+                         "none_configured")
+        self.assertEqual(module.postfix_ports(lambda _: None), "unverified")
+        self.assertEqual(module.postfix_ports(lambda _: "custom inet n - n - - smtpd\n"),
+                         "dynamic_or_unverified")
+
+    def test_sendmail_compiled_daemon_options_custom_ports(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / "sendmail.cf"
+            path.write_text("O DaemonPortOptions=Name=MTA, Port=smtp, Addr=0.0.0.0\n"
+                            "O DaemonPortOptions=Port=2526, Name=SECONDARY\n"
+                            "O DaemonPortOptions=Name=MSA, Port=submission\n",
+                            encoding="utf-8")
+            self.assertEqual(module.sendmail_cf_ports(path), "25,587,2526")
+            path.write_text("O DaemonPortOptions=Name=MTA\n", encoding="utf-8")
+            self.assertEqual(module.sendmail_cf_ports(path), "25")
+            path.write_text("O DaemonPortOptions=Port=$macro\n", encoding="utf-8")
+            self.assertEqual(module.sendmail_cf_ports(path), "dynamic_or_unverified")
+            path.write_text("DSrelay\n", encoding="utf-8")
+            self.assertEqual(module.sendmail_cf_ports(path), "unverified")
+            link = pathlib.Path(temp) / "alias.cf"
+            link.symlink_to(path)
+            self.assertEqual(module.sendmail_cf_ports(link), "unverified")
+
+    def test_gui_inspection_consumes_configured_ports_without_mutation(self):
+        assets = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
+        gui = (ROOT / "src/LinuxMailRelay365/MailHostInspection.cs").read_text(encoding="utf-8")
+        main = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
+        for key in ("MAIL_HOST_SMTP_CONFIG_PORTS", "MAIL_HOST_SMTP_CONFIG_SOURCE"):
+            self.assertIn(key, gui)
+            self.assertIn(key, (ROOT / "linux/inspect-mail-host.py").read_text(encoding="utf-8"))
+        self.assertIn("--configured-ports", assets)
+        self.assertIn("ConfiguredSmtpPorts()", gui)
+        self.assertIn("alreadyConfigured.Contains(selected)", main)
+        self.assertIn("inspectedHost.ConfiguredSmtpPortSource", main)
+
     def test_exim_tls_auth_statuses_are_not_live_verification(self):
         options = {"tls_advertise_hosts": "*",
                    "tls_certificate": "/etc/exim4/mail.pem",

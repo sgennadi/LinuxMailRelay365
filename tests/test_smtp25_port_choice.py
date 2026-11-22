@@ -58,5 +58,23 @@ class StandardSMTP25ChoiceTests(unittest.TestCase):
         self.assertIn('relayhost = [$MX]:25', (ROOT /
             "linux/install-connector-sidecar.sh").read_text(encoding="utf-8"))
 
+    def test_hostname_probe_never_silently_uses_2525(self):
+        main = (ROOT / "src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
+        assets = (ROOT / "src/LinuxMailRelay365/EmbeddedAssets.cs").read_text(encoding="utf-8")
+        section = main.split("private async Task InspectMailRoutingAsync()", 1)[1]
+        section = section.split("private string? TryCurrentIdentity()", 1)[0]
+        self.assertIn("int? checkPort = null;", section)
+        self.assertIn("int.TryParse(isolatedSmtpPort.Text.Trim(), out int candidatePort)", section)
+        self.assertIn("SmtpIngressPort.Supported(candidatePort)", section)
+        self.assertIn("No implicit TCP 2525 fallback.", section)
+        self.assertIn("EmbeddedAssets.BuildMailHostInspectionBundle(checkPort, inventory.Mta)", section)
+        self.assertIn("Configured inbound SMTP ports: ", section)
+        self.assertNotIn("? checkPort : 2525", section)
+        self.assertNotIn("BuildMailHostInspectionBundle(2525", section)
+        self.assertIn("BuildMailHostInspectionBundle(int? selectedPort = null,", assets)
+        self.assertIn("--configured-ports", assets)
+        self.assertIn("selectedPort.HasValue ? \"--smtp-port \"", assets)
+
+
 if __name__ == "__main__":
     unittest.main()

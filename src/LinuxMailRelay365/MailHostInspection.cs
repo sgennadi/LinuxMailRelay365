@@ -12,6 +12,18 @@ internal sealed class MailHostInspection
     internal string ShortHostname => Get("MAIL_HOST_SHORT");
     internal string Mta => Get("MAIL_HOST_MTA");
     internal string MtaState => Get("MAIL_HOST_MTA_STATE");
+    internal string ConfiguredSmtpPortState => Get("MAIL_HOST_SMTP_CONFIG_PORTS");
+    internal string ConfiguredSmtpPortSource => Get("MAIL_HOST_SMTP_CONFIG_SOURCE");
+
+    internal IReadOnlyList<int> ConfiguredSmtpPorts()
+    {
+        if (ConfiguredSmtpPortSource is not
+            ("postfix_master_cf" or "exim_daemon_smtp_ports" or "sendmail_cf") ||
+            !System.Text.RegularExpressions.Regex.IsMatch(ConfiguredSmtpPortState,
+                @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z"))
+            return Array.Empty<int>();
+        return ConfiguredSmtpPortState.Split(',').Select(int.Parse).ToArray();
+    }
     internal bool HasFqdn => Fqdn != "unavailable";
     internal bool HasDomain => Domain != "unavailable";
     internal string Get(string name) => values.TryGetValue(name, out var result) ? result : "unavailable";
@@ -42,6 +54,26 @@ internal sealed class MailHostInspection
             values["MAIL_HOST_TRUST"] != "os_report_unverified" ||
             values["MAIL_HOST_MTA"] is not ("postfix" or "exim" or "sendmail" or "none" or "unknown"))
             throw new InvalidDataException("Untrusted hostname report.");
+        // Configuration ports are NOT an assertion of live socket ownership.
+        // Optional for older read-only fixture schemas; never trusted if absent.
+        string source = values.TryGetValue("MAIL_HOST_SMTP_CONFIG_SOURCE", out var declaredSource)
+            ? declaredSource : "unverified";
+        string ports = values.TryGetValue("MAIL_HOST_SMTP_CONFIG_PORTS", out var declaredPorts)
+            ? declaredPorts : "unverified";
+        bool possibleSource = source is ("postfix_master_cf" or "exim_daemon_smtp_ports" or
+            "sendmail_cf" or "unverified");
+        bool possibleState = ports is ("unverified" or "dynamic_or_unverified" or
+            "none_configured") || Regex.IsMatch(ports,
+            @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z", RegexOptions.CultureInvariant);
+        bool sourceMatchesMta = source == "unverified" ||
+            (source == "postfix_master_cf" && values["MAIL_HOST_MTA"] == "postfix") ||
+            (source == "exim_daemon_smtp_ports" && values["MAIL_HOST_MTA"] == "exim") ||
+            (source == "sendmail_cf" && values["MAIL_HOST_MTA"] == "sendmail");
+        if (!possibleSource || !possibleState || !sourceMatchesMta ||
+            (source == "unverified" && ports != "unverified") ||
+            (ports is not ("unverified" or "dynamic_or_unverified" or "none_configured") &&
+             ports.Split(',').Any(x => !int.TryParse(x, out int n) || n > 65535)))
+            throw new InvalidDataException("Untrusted configured SMTP port inventory.");
         const string dns = @"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+";
         foreach (string key in new[] { "MAIL_HOST_FQDN", "MAIL_HOST_DOMAIN" })
         {
@@ -81,11 +113,11 @@ internal sealed class MailHostInspection
                 "declared", "not_declared") ||
             !OneOf(values, "MAIL_HOST_SENDMAIL_RELAY_POLICY",
                 "access_maps_and_relay_checks_unverified") ||
-            (values.TryGetValue("MAIL_HOST_EXIM_SMTP_PORTS", out var ports) &&
-             ports != "unverified" &&
-             (!Regex.IsMatch(ports, @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z",
+            (values.TryGetValue("MAIL_HOST_EXIM_SMTP_PORTS", out var eximPorts) &&
+             eximPorts is not ("unverified" or "dynamic_or_unverified") &&
+             (!Regex.IsMatch(eximPorts, @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z",
                  RegexOptions.CultureInvariant) ||
-              ports.Split(',').Any(p => !int.TryParse(p, out int n) || n > 65535))))
+              eximPorts.Split(',').Any(p => !int.TryParse(p, out int n) || n > 65535))))
             throw new InvalidDataException("Untrusted MTA setting status.");
         return new MailHostInspection(values);
     }
@@ -94,6 +126,14 @@ internal sealed class MailHostInspection
         values.Where(pair => pair.Key.StartsWith(prefix, StringComparison.Ordinal))
             .OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .Take(count).Select(pair => pair.Value);
+
+    // Prefix MAIL_HOST_SOCKET_ also matches status/owner metadata. Include
+    // all 01..24 numbered sockets without accidentally displaying those flags.
+    private IEnumerable<string> ReadSocketRows() =>
+        values.Where(pair => System.Text.RegularExpressions.Regex.IsMatch(pair.Key,
+            @"\AMAIL_HOST_SOCKET_[0-9]{2}\z", RegexOptions.CultureInvariant))
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Take(24).Select(pair => pair.Value);
 
     // A suggested listener must be attached to an administratively UP and
     // operationally UP interface and be RFC1918 IPv4. This is UI intent only,
@@ -160,7 +200,7 @@ internal sealed class MailHostInspection
                 "Network interfaces not inspected.", "ממשקי הרשת לא נבדקו.");
         string interfaces = string.Join("; ", ReadRows("MAIL_HOST_IFACE_", 12));
         string addresses = string.Join("; ", ReadRows("MAIL_HOST_ADDR_", 14));
-        string sockets = string.Join("; ", ReadRows("MAIL_HOST_SOCKET_0", 12));
+        string sockets = string.Join("; ", ReadSocketRows());
         string status = Get("MAIL_HOST_NET_BIND_RESULT");
         string unknown = Tr(language, "не подтверждено", "unverified", "לא אומת");
         string noSocket = Get("MAIL_HOST_SOCKET_STATE") == "ok"
@@ -259,9 +299,20 @@ internal sealed class MailHostInspection
                 "; access maps, relay restrictions, SMTP TLS handshake and AUTH require review.",
             _ => "MTA settings not verified."
         };
+        string configPorts = ConfiguredSmtpPortState;
+        string configLabel = language == 0 ? "Настроенные входящие TCP/SMTP порты" :
+            language == 2 ? "יציאות TCP/SMTP נכנסות מוגדרות" : "Configured inbound TCP/SMTP ports";
+        string state = configPorts is "unavailable" or "unverified" or "dynamic_or_unverified"
+            ? (language == 0 ? "не подтверждены" : language == 2 ? "לא אומתו" : "unverified")
+            : configPorts == "none_configured"
+                ? (language == 0 ? "нет активных объявлений" : language == 2 ? "לא הוגדרו" : "none declared")
+                : configPorts;
         return prefix + ": FQDN=" + Fqdn + "; domain=" + Domain +
             "; MTA=" + Mta + " (" + MtaState + ")." +
-            Environment.NewLine + config + Environment.NewLine + NetworkSummary(language) +
+            Environment.NewLine + config +
+            Environment.NewLine + configLabel + ": " + state +
+            " [source=" + ConfiguredSmtpPortSource + "; configured, not necessarily listening]" +
+            Environment.NewLine + NetworkSummary(language) +
             Environment.NewLine + reminder;
     }
 
@@ -297,6 +348,12 @@ internal sealed class MailHostInspection
             "MAIL_HOST_SOCKET_STATE=ok\nMAIL_HOST_SOCKET_TRUNCATED=no\n")
                 .StandardPort25Observation() != "no_listener_observed" ||
             withNetwork.StandardPort25Observation() != "unverified") return false;
+        var tenSockets = Parse(valid + network +
+            "MAIL_HOST_SOCKET_10=127.0.0.1:2526\n" +
+            "MAIL_HOST_SOCKET_OWNER=unverified\n");
+        if (!tenSockets.Summary(1).Contains("127.0.0.1:2526", StringComparison.Ordinal) ||
+            tenSockets.Summary(1).Contains("unverified; unverified", StringComparison.Ordinal))
+            return false;
         if (!withNetwork.Summary(1).Contains("eth0,up,up", StringComparison.Ordinal) ||
             !withNetwork.Summary(1).Contains("127.0.0.1:25", StringComparison.Ordinal) ||
             withNetwork.ActivePrivateIPv4s().Count != 1 ||
@@ -313,6 +370,24 @@ internal sealed class MailHostInspection
             "MAIL_HOST_EXIM_AUTH_DECLARATION=auth_hosts_declared_backend_unverified\n";
         if (!Parse(exim).Summary(1).Contains("daemon_smtp_ports=25,587,2525",
                 StringComparison.Ordinal)) return false;
+        var dynamicExim = Parse(exim.Replace(
+            "MAIL_HOST_EXIM_SMTP_PORTS=25,587,2525",
+            "MAIL_HOST_EXIM_SMTP_PORTS=dynamic_or_unverified")
+            + "MAIL_HOST_SMTP_CONFIG_SOURCE=exim_daemon_smtp_ports\n" +
+              "MAIL_HOST_SMTP_CONFIG_PORTS=dynamic_or_unverified\n");
+        if (dynamicExim.ConfiguredSmtpPorts().Count != 0 ||
+            !dynamicExim.Summary(1).Contains("unverified", StringComparison.Ordinal))
+            return false;
+        string configPorts = valid + "MAIL_HOST_SMTP_CONFIG_SOURCE=postfix_master_cf\n" +
+            "MAIL_HOST_SMTP_CONFIG_PORTS=25,2525\n";
+        var configured = Parse(configPorts);
+        if (!configured.Summary(0).Contains("25,2525", StringComparison.Ordinal) ||
+            configured.ConfiguredSmtpPorts().Count != 2 ||
+            configured.ConfiguredSmtpPorts()[1] != 2525) return false;
+        try { Parse(configPorts.Replace("25,2525", "25,0")); return false; }
+        catch (InvalidDataException) { }
+        try { Parse(configPorts.Replace("postfix_master_cf", "sendmail_cf")); return false; }
+        catch (InvalidDataException) { }
         try { Parse(exim.Replace("MAIL_HOST_EXIM_BIND_POLICY=loopback_declared",
             "MAIL_HOST_EXIM_BIND_POLICY=unsafe_verified")); return false; }
         catch (InvalidDataException) { }

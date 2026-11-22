@@ -1306,6 +1306,30 @@ internal sealed partial class MainForm : Form
             discoveredMailIdentity = null;
             WriteLine("Automatic MTA discovery incomplete; manual review required before any installation. " +
                 "Read-only probe failed (" + error.GetType().Name + ").");
+            // A failed general MTA probe must not prevent independent, read-only
+            // effective SMTP port inspection. This DOES NOT unlock Apply.
+            try
+            {
+                var fallback = await SshRemote.ExecuteAsync(Endpoint(), "bash -s",
+                    EmbeddedAssets.BuildMailHostInspectionBundle(null, "unknown"),
+                    timeout: TimeSpan.FromSeconds(90));
+                fallback.EnsureSuccess();
+                inspectedHost = MailHostInspection.Parse(fallback.StdOut);
+                inspectedHostIdentity = TryCurrentIdentity();
+                discoveredMailIdentity = inspectedHostIdentity;
+                WriteLine("Independent read-only MTA port discovery: " +
+                    inspectedHost.ConfiguredSmtpPortState + " (" +
+                    inspectedHost.ConfiguredSmtpPortSource + "). " +
+                    "Main MTA safety inventory remains UNVERIFIED; installation is not authorized.");
+            }
+            catch (Exception discoveryError)
+            {
+                inspectedHost = null;
+                inspectedHostIdentity = null;
+                discoveredMailIdentity = null;
+                WriteLine("Independent SMTP port inspection also failed (" +
+                    discoveryError.GetType().Name + "). Port status UNVERIFIED.");
+            }
         }
         step = 1;
     }
@@ -2572,6 +2596,27 @@ internal sealed partial class MainForm : Form
                 AddField(page, T("Входящий SMTP-порт Linux (25 или 1024–65535; по умолчанию 2525)",
                                  "Linux inbound SMTP port (25 or 1024–65535; default 2525)",
                                  "יציאת SMTP נכנסת (25 או 1024–65535; ברירת מחדל 2525)"), isolatedSmtpPort);
+                if (inspectedHostIdentity == TryCurrentIdentity() && inspectedHost is not null)
+                {
+                    var alreadyConfigured = inspectedHost.ConfiguredSmtpPorts();
+                    var configuredState = inspectedHost.ConfiguredSmtpPortState;
+                    AddLine(page, UiTheme.Text(T(
+                        "В конфигурации основного MTA входящие SMTP-порты: ",
+                        "Primary MTA configured inbound SMTP ports: ",
+                        "יציאות SMTP נכנסות שהוגדרו בשרת הראשי: ") +
+                        (alreadyConfigured.Count > 0 ? string.Join(", ", alreadyConfigured) :
+                            configuredState == "none_configured" ? T("не объявлены", "none declared", "לא הוגדרו") :
+                            T("не подтверждены", "unverified", "לא אומתו")) +
+                        " (" + inspectedHost.ConfiguredSmtpPortSource + ")."));
+                    if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int selected) &&
+                        alreadyConfigured.Contains(selected))
+                        AddLine(page, UiTheme.Text(T(
+                            "ВНИМАНИЕ: выбранный TCP/" + selected +
+                            " уже указан в конфигурации основного MTA. Не использовать для отдельного Relay без проверки служб, автозапуска и сокетов.",
+                            "WARNING: TCP/" + selected +
+                            " belongs to the primary MTA configuration. Do not share it with an isolated relay without checking listeners and service restart state.",
+                            "זהירות: יציאה TCP/" + selected + " מוגדרת בשרת הדואר הראשי. יש לאמת שירותים ושקעים.")));
+                }
                 AddLine(page, UiTheme.Text(T(
                     "25 — стандартный SMTP, но его нельзя занимать у основного MTA. Выберите 25 только после проверки служб и слушателей; 2525 — запасной порт. 587 на стороне Microsoft 365 — отдельное ИСХОДЯЩЕЕ соединение. Порты 465/587 как входящие требуют отдельной настройки TLS/AUTH и пока не предлагаются.",
                     "25 is standard SMTP but must not replace the primary MTA listener. Select 25 only after service/socket checks; 2525 is an alternative. Microsoft 365:587 is a separate OUTBOUND port. Inbound 465/587 need a separately proven TLS/AUTH configuration and are not offered here.",
@@ -5490,18 +5535,27 @@ internal sealed partial class MainForm : Form
             WriteLine("Isolated Relay presence unverified (" + error.GetType().Name +
                       "); do not assume absence.");
         }
+        int? checkPort = null;
+        if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int candidatePort) &&
+            SmtpIngressPort.Supported(candidatePort))
+            checkPort = candidatePort;
+        else
+            WriteLine("Selected inbound port is invalid or empty. " +
+                "Checking configured MTA SMTP ports and live listening sockets without a wizard-port assumption. " +
+                "No implicit TCP 2525 fallback.");
         try
         {
             var detected = await SshRemote.ExecuteAsync(endpoint, "bash -s",
-                EmbeddedAssets.BuildMailHostInspectionBundle(
-                    int.TryParse(isolatedSmtpPort.Text.Trim(), out int checkPort) &&
-                        SmtpIngressPort.Supported(checkPort) ? checkPort : 2525,
-                    inventory.Mta), timeout: TimeSpan.FromSeconds(90));
+                EmbeddedAssets.BuildMailHostInspectionBundle(checkPort, inventory.Mta),
+                timeout: TimeSpan.FromSeconds(90));
             detected.EnsureSuccess();
             inspectedHost = MailHostInspection.Parse(detected.StdOut);
             inspectedHostIdentity = SecurityOptionsStore.Identity(endpoint);
             WriteLine("Read-only Linux hostname and Postfix/Exim/Sendmail settings inspected. " +
-                "Use the wizard buttons to fill fields explicitly; M365 domain ownership is unverified.");
+                "Configured inbound SMTP ports: " + inspectedHost.ConfiguredSmtpPortState +
+                "; source: " + inspectedHost.ConfiguredSmtpPortSource +
+                "; selected wizard port: " + (checkPort.HasValue ? checkPort.Value.ToString() : "unverified") +
+                ". Socket observations do not prove process ownership or firewall reachability.");
         }
         catch (Exception ex)
         {

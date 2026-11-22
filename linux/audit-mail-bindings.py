@@ -93,10 +93,12 @@ def ip_interfaces(payload):
         return None
 
 
-def scan_sockets(payload, selected_port):
+def scan_sockets(payload, selected_port, configured_ports=()):
     if payload is None:
         return None
-    ports = set(PORTS + (selected_port,))
+    # No guessed wizard port: always observe the configured MTA ports.
+    chosen = (selected_port,) if selected_port is not None else ()
+    ports = set(PORTS + chosen + tuple(configured_ports))
     found = set()
     for line in payload.splitlines():
         parts = line.split()
@@ -200,21 +202,21 @@ def bind_assessment(mta, configured, wanted, ip_data, socket_data, selected_port
         return "loopback_configured_other_smtp_socket_unattributed"
     if any(address in ("wildcard", "0.0.0.0", "::") for address, _ in sockets):
         return "wildcard_smtp_socket_unattributed"
-    if any(port == selected_port for _, port in sockets):
+    if selected_port is not None and any(port == selected_port for _, port in sockets):
         return "selected_port_listening_owner_unverified"
     return "observed_no_proof_of_reachability"
 
 
-def inspect(mta, smtp_port, runner=call):
+def inspect(mta, smtp_port, runner=call, configured_ports=()):
     ip_data = ip_interfaces(runner(["ip", "-j", "address", "show"]))
-    socket_data = scan_sockets(runner(["ss", "-H", "-lnt"]), smtp_port)
+    socket_data = scan_sockets(runner(["ss", "-H", "-lnt"]), smtp_port, configured_ports)
     configured, wanted = configured_addresses(mta, runner)
     assessment = bind_assessment(mta, configured, wanted, ip_data, socket_data, smtp_port)
     out = {
         "MAIL_HOST_NET_AUDIT_VERSION": "1",
         "MAIL_HOST_NET_STATE": "ok" if ip_data is not None else "unavailable",
         "MAIL_HOST_SOCKET_STATE": "ok" if socket_data is not None else "unavailable",
-        "MAIL_HOST_NET_PORT": str(smtp_port),
+        "MAIL_HOST_NET_PORT": str(smtp_port) if smtp_port is not None else "unverified",
         "MAIL_HOST_NET_CONFIG_KIND": configured,
         "MAIL_HOST_NET_BIND_RESULT": assessment,
         "MAIL_HOST_SOCKET_OWNER": "unverified",
@@ -241,13 +243,25 @@ def inspect(mta, smtp_port, runner=call):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--smtp-port", type=int, default=2525)
+    parser.add_argument("--smtp-port", type=int, default=None)
     parser.add_argument("--mta", choices=("postfix", "exim", "sendmail", "none", "unknown"),
                         default="unknown")
+    parser.add_argument("--configured-ports", default="unverified",
+                        help="Read-only discovered MTA port list or unverified status")
     parser.add_argument("--self-test", action="store_true")
     opts = parser.parse_args(argv)
-    if not (opts.smtp_port == 25 or 1024 <= opts.smtp_port <= 65535):
-        parser.error("custom port must be 1024..65535")
+    if opts.smtp_port is not None and not (
+            opts.smtp_port == 25 or 1024 <= opts.smtp_port <= 65535):
+        parser.error("custom port must be 25 or 1024..65535")
+    if opts.configured_ports in ("unverified", "dynamic_or_unverified", "none_configured"):
+        configured_ports = ()
+    elif re.fullmatch(r"[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}",
+                      opts.configured_ports):
+        configured_ports = tuple(int(value) for value in opts.configured_ports.split(","))
+        if any(port > 65535 for port in configured_ports):
+            parser.error("invalid configured SMTP port")
+    else:
+        parser.error("invalid configured SMTP port inventory")
     if opts.self_test:
         ip_data = ip_interfaces(json.dumps([
             {"ifname": "lo", "flags": ["UP"], "operstate": "UNKNOWN",
@@ -264,9 +278,14 @@ def main(argv=None):
         assert bind_assessment("postfix", "all", [],
                                ip_data, socket_data, 2525) == "all_configured_loopback_sockets_only_review"
         assert scan_sockets(None, 2525) is None
+        assert scan_sockets("LISTEN 0 128 127.0.0.1:2526 0.0.0.0:*\n", None,
+                            (2526,))[0] == ["127.0.0.1:2526"]
+        assert scan_sockets("LISTEN 0 128 127.0.0.1:2526 0.0.0.0:*\n", 2525,
+                            (2526,))[0] == ["127.0.0.1:2526"]
         print("MAIL_HOST_NET_SELF_TEST=pass")
         return 0
-    for key, value in inspect(opts.mta, opts.smtp_port).items():
+    for key, value in inspect(opts.mta, opts.smtp_port,
+                              configured_ports=configured_ports).items():
         print(key + "=" + value)
 
 
