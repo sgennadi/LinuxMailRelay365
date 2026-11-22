@@ -168,7 +168,7 @@ internal sealed record MailDiscoveryBrief(
             "smtp", new string('a', 64));
         var review = new MailServerDiscoveryDecision("postfix_needs_review", true, true);
         var result = Build(active, null, null, false, review, 2, "2525", 0);
-        if (!result.Headline.Contains("сохраните", StringComparison.Ordinal) ||
+        if (!result.Headline.Contains("Сначала выберите", StringComparison.Ordinal) ||
             !result.Facts.Any(x => x.Value.Contains("[smtp.gmail.com]:587", StringComparison.Ordinal)) ||
             !result.Facts.Any(x => x.Value.Contains("не считайте работающим", StringComparison.Ordinal)) ||
             !result.SuggestedNextStep.Contains("XOAUTH2", StringComparison.Ordinal) ||
