@@ -85,6 +85,24 @@ software PEM cutover, SMTP AUTH and actual mail delivery require separate live
 acceptance. MSAL tokens are volatile and no private Linux PEM or TPM handles
 leave the server.
 
+## RC4: Entra security-readiness read-only C# probe
+
+The optional security diagnostics have also been migrated from
+`Test-LinuxMailRelay365Security.ps1` to native MSAL + Graph. The security
+button requests the same exact-tenant delegated scopes (`Policy.Read.All`,
+`AuditLog.Read.All`, `Organization.Read.All`) only when selected.
+It makes three bounded GET requests to determine whether Conditional Access
+policies and sign-in logs are readable, and whether SKU metadata can be read.
+Reading SKU metadata does **not** establish an active Entra Workload ID Premium
+assignment; manual licensing verification is still required. No usernames,
+actual sign-in records, policy contents, refresh tokens or passwords are saved.
+
+The old `Test-LinuxMailRelay365Security.ps1` is still bundled as an
+explicit manual fallback checkbox, not silently removed or run automatically.
+A Graph read permission error is recorded as unavailable, not as evidence
+that Conditional Access is disabled. No policy, mailbox, MTA or firewall
+settings change during this check.
+
 ## What still needs Exchange Online PowerShell
 
 - Exchange Online scoped `Application SMTP.SendAsApp` RBAC, recipient
