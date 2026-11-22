@@ -2430,9 +2430,9 @@ internal sealed partial class MainForm : Form
                 if (selectedMailTarget != MailFlowIntent.TargetM365)
                 {
                     AddLine(page, BuildLiveMailFlowDiagram());
-                    if (IsGoogleTarget)
-                        ShowGoogleSmtpChecks(page);
-                    else
+                    // Destination checks are already shown by ShowMailFlowPlanner
+                    // on this step; do not duplicate password fields and controls.
+                    if (!IsGoogleTarget)
                         AddUnverifiedM365Capabilities(page);
                     AddLine(page, MailFlowText(T(
                         "Настройка исходящего Relay пока не включена. Проверка портов/пароля ничего не меняет на Linux.",
