@@ -267,7 +267,7 @@ def main():
     if a.self_test:
         report("RHEL_PORT_MANAGER_PARSER", "ready")
         return 0
-    if not 1024 <= a.smtp_port <= 65535:
+    if not (a.smtp_port == 25 or 1024 <= a.smtp_port <= 65535):
         p.error("Custom SMTP port must be 1024-65535")
     if a.apply or a.restore:
         target = "ADD_REVIEWED_RHEL_SMTP_PORT" if a.apply else "REMOVE_MANAGED_RHEL_SMTP_PORT"
