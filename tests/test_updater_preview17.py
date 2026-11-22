@@ -12,8 +12,15 @@ WORKFLOW = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
 class UpdaterPreview25Contracts(unittest.TestCase):
     def test_first_page_updater_needs_no_ssh(self):
-        self.assertIn("case 0:\n                AddUpdateAccess(page);\n                RenderConnectionStep(page);", MAIN)
-        self.assertEqual(MAIN.count("AddUpdateAccess(page);"), 2)
+        # RC7: clear header control replaces the crowded update card on SSH page.
+        # The original diagnostics page retains its full update controls.
+        self.assertIn("case 0:\n                RenderConnectionStep(page);", MAIN)
+        self.assertEqual(MAIN.count("AddUpdateAccess(page);"), 1)
+        self.assertIn("headerUpdateButton.Click += (_, _) => ShowHeaderUpdateMenu();", MAIN)
+        self.assertIn('headerUpdateButton.Text = T("Проверить обновления', MAIN)
+        self.assertIn("previewUpdates.Checked = false;", MAIN)
+        self.assertIn("previewUpdates.Checked = true;", MAIN)
+        self.assertIn('RunBusyAsync("update", CheckUpdatesAsync)', MAIN)
         self.assertIn("SignedPortableUpdater.LastUpdateStatus()", MAIN)
 
     def test_release_and_updater_version_are_consistent(self):

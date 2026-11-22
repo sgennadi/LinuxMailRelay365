@@ -16,7 +16,7 @@ class SshProfileAndActivityTests(unittest.TestCase):
         self.assertIn('ProbeLoginProfileAsync', ssh)
         self.assertIn('SummarizeLoginProfileProbe(RemoteResult report)', ssh)
         self.assertIn('LoginProfileProbeSelfTest', program)
-        self.assertIn('InspectSshLoginProfileAsync, false, "check", "ssh-login-profile"', gui)
+        self.assertIn('InspectSshLoginProfileAsync, false, "ssh", "ssh-login-profile"', gui)
         section = gui.split("private async Task InspectSshLoginProfileAsync()", 1)[1].split(
             "private async Task CheckSshAsync()", 1)[0]
         self.assertIn("MessageBoxButtons.YesNo", section)

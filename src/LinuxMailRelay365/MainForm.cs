@@ -176,6 +176,9 @@ internal sealed partial class MainForm : Form
     private readonly CheckBox advancedSecurityTools = new() { AutoSize = true, Checked = false,
         ForeColor = UiTheme.Navy, Margin = new Padding(0, 12, 0, 12) };
     private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
+    private readonly Button headerUpdateButton = UiTheme.Action("Проверить обновления", glyph: "refresh");
+    private readonly ContextMenuStrip headerUpdateMenu = new();
+    private bool sshHelpExpanded;
     private readonly Label headline = UiTheme.Text("", true);
     private readonly Label subheading = UiTheme.Text("");
     private readonly Label brandHeading = UiTheme.Text(
@@ -602,17 +605,39 @@ internal sealed partial class MainForm : Form
         language.SelectedIndex = 0;
         language.SelectedIndexChanged += (_, _) => RenderPage();
         language.AccessibleName = "Interface language";
+        headerUpdateButton.AutoSize = true;
+        headerUpdateButton.Margin = Padding.Empty;
+        headerUpdateButton.AccessibleDescription =
+            "Check newer signed Stable or explicitly selected test Preview/RC releases. Does not install automatically.";
+        headerUpdateButton.Click += (_, _) => ShowHeaderUpdateMenu();
+        Disposed += (_, _) => headerUpdateMenu.Dispose();
 
-        var top = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1,
-            AutoSize = true, Padding = new Padding(18, 12, 18, 8) };
+        // A compact, clearly labelled update control belongs to the app header,
+        // NOT inside the SSH credentials form. It gets its own toolbar row so
+        // Russian/Hebrew text and 200%-DPI scaling cannot squeeze the server fields.
+        var top = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2,
+            AutoSize = true, Padding = new Padding(18, 8, 18, 0) };
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 51));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        top.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        top.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var logo = new PictureBox { Width = 42, Height = 42, Margin = new Padding(0, 0, 8, 0),
             SizeMode = PictureBoxSizeMode.Zoom, Image = Icon?.ToBitmap() };
         top.Controls.Add(logo, 0, 0);
         top.Controls.Add(brandHeading, 1, 0);
         top.Controls.Add(language, 2, 0);
+        var updateToolbar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false, Margin = new Padding(0, 0, 0, 1),
+            Padding = Padding.Empty
+        };
+        updateToolbar.Controls.Add(headerUpdateButton);
+        top.Controls.Add(updateToolbar, 0, 1);
+        top.SetColumnSpan(updateToolbar, 3);
 
         var header = new TableLayoutPanel
         {
@@ -834,7 +859,7 @@ internal sealed partial class MainForm : Form
 
     private void FitCurrentPage()
     {
-        if (IsDisposed || step == 0 || !IsHandleCreated || busy) return;
+        if (IsDisposed || !IsHandleCreated || busy) return;
         if (pageHost.Controls.OfType<TableLayoutPanel>().FirstOrDefault() is not { } page)
             return;
         int width = Math.Max(270, Math.Min(
@@ -844,6 +869,27 @@ internal sealed partial class MainForm : Form
         {
             page.MaximumSize = new Size(width, 0);
             page.Width = width;
+        }
+        if (step == 0)
+        {
+            // Resize the one-column SSH card even when the pairing breakpoint
+            // is unchanged. Previously small window resizes kept a stale
+            // maximum card width and could clip the card on compact displays.
+            int cardWidth = Math.Max(260,
+                Math.Min(page.Width, pageHost.ClientSize.Width - 22) -
+                page.Padding.Horizontal - 8);
+            if (page.Controls.OfType<TableLayoutPanel>().FirstOrDefault() is { } cards)
+            {
+                cards.MaximumSize = new Size(cardWidth, 0);
+                cards.Width = cardWidth;
+                foreach (var card in cards.Controls.OfType<TableLayoutPanel>())
+                {
+                    card.MaximumSize = new Size(cardWidth, 0);
+                    foreach (Label label in card.Controls.OfType<Label>())
+                        label.MaximumSize = new Size(Math.Max(230, cardWidth - 64), 0);
+                }
+            }
+            return;
         }
         int textWidth = Math.Max(230, width - page.Padding.Horizontal - 18);
         foreach (Control child in page.Controls)
@@ -1201,69 +1247,74 @@ internal sealed partial class MainForm : Form
 
     private void RenderConnectionStep(TableLayoutPanel page)
     {
+        // RC7: one full-width credentials card. Never compress SSH credentials
+        // into 63% of the window or render several paragraphs in a narrow
+        // column. All secondary guidance is accessible in a collapsible panel.
         connectionWideLayout = UseWideConnectionLayout(pageHost.ClientSize.Width, DeviceDpi);
-        // Even a single-column card can fit two short input fields at 760px,
-        // avoiding unnecessary vertical scrolling to the primary action.
-        bool pairFields = (long)pageHost.ClientSize.Width * 96 >=
-            690L * Math.Max(DeviceDpi, 96);
+        bool pairFields = connectionWideLayout;
         page.MaximumSize = Size.Empty;
         page.Dock = DockStyle.Top;
-        page.Padding = new Padding(18, 4, 8, 12);
-        int availableWidth = Math.Max(300, pageHost.ClientSize.Width - 38);
+        page.Padding = new Padding(12, 4, 12, 12);
+        int availableWidth = Math.Max(260,
+            Math.Min(page.Width, pageHost.ClientSize.Width - 22) -
+            page.Padding.Horizontal - 8);
         var cards = new TableLayoutPanel
         {
-            Dock = DockStyle.Top, AutoSize = true,
+            Dock = DockStyle.Top,
+            AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            ColumnCount = connectionWideLayout ? 2 : 1,
-            RowCount = connectionWideLayout ? 1 : 2,
+            ColumnCount = 1, RowCount = 0,
             BackColor = UiTheme.Canvas,
-            Margin = new Padding(0),
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
             Width = availableWidth,
             MaximumSize = new Size(availableWidth, 0)
         };
-        if (connectionWideLayout)
-        {
-            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 63));
-            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 37));
-        }
-        else
-            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var form = ConnectionCard(Color.White);
-        var details = ConnectionCard(Color.FromArgb(238, 243, 248));
-        form.MaximumSize = new Size(connectionWideLayout
-            ? Math.Max(340, availableWidth * 63 / 100 - 12) : availableWidth, 0);
-        details.MaximumSize = new Size(connectionWideLayout
-            ? Math.Max(260, availableWidth * 37 / 100 - 12) : availableWidth, 0);
-        cards.Controls.Add(form, 0, 0);
-        cards.Controls.Add(details, connectionWideLayout ? 1 : 0,
-            connectionWideLayout ? 0 : 1);
+        form.Margin = new Padding(0, 0, 0, 8);
+        form.MaximumSize = new Size(availableWidth, 0);
+        AddLine(cards, form);
 
-        var heading = UiTheme.Text(T("Данные сервера", "Server connection", "פרטי השרת"), true);
-        AddLine(form, heading);
-        AddConnectionPair(form,
-            T("Linux: DNS или IPv4", "Linux DNS or IPv4", "כתובת Linux"), host,
-            T("SSH-порт", "SSH port", "פורט SSH"), sshPort, 73);
+        AddLine(form, UiTheme.Text(T(
+            "Подключение к Linux по SSH",
+            "Connect to Linux using SSH",
+            "חיבור ל-Linux באמצעות SSH"), true));
+        if (pairFields)
+            AddConnectionPair(form,
+                T("Linux: DNS или IPv4", "Linux DNS or IPv4", "כתובת Linux"), host,
+                T("SSH-порт", "SSH port", "פורט SSH"), sshPort, 77);
+        else
+        {
+            AddConnectionField(form,
+                T("Linux: DNS или IPv4", "Linux DNS or IPv4", "כתובת Linux"), host);
+            AddConnectionField(form,
+                T("SSH-порт", "SSH port", "פורט SSH"), sshPort);
+        }
         if (pairFields)
             AddConnectionPair(form,
                 T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser,
-                T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode, 43);
+                T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode, 42);
         else
         {
-            AddConnectionField(form, T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser);
-            AddConnectionField(form, T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode);
+            AddConnectionField(form,
+                T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser);
+            AddConnectionField(form,
+                T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode);
         }
+
         if (sshAuthMode.SelectedIndex == 1)
         {
             if (pairFields)
                 AddConnectionPair(form,
                     T("SSH-пароль", "SSH password", "סיסמת SSH"), sshPassword,
-                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 54);
+                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 56);
             else
             {
-                AddConnectionField(form, T("SSH-пароль (не сохраняется)",
-                    "SSH password (not saved)", "סיסמת SSH"), sshPassword);
-                AddConnectionField(form, T("Пароль sudo (если нужен)",
-                    "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
+                AddConnectionField(form,
+                    T("SSH-пароль (не сохраняется)", "SSH password (not saved)", "סיסמת SSH"), sshPassword);
+                AddConnectionField(form,
+                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
             }
             specifyHostKeyManually.Text = T(
                 "Указать SSH host key SHA256 вручную (необязательно)",
@@ -1273,8 +1324,9 @@ internal sealed partial class MainForm : Form
             if (specifyHostKeyManually.Checked)
             {
                 sshFingerprint.PlaceholderText = "SHA256:...";
-                AddConnectionField(form, T("Подтверждённый SSH SHA256", "Verified SSH SHA256",
-                    "טביעת SHA256 מאומתת"), sshFingerprint);
+                AddConnectionField(form,
+                    T("Подтверждённый SSH SHA256", "Verified SSH SHA256",
+                      "טביעת SHA256 מאומתת"), sshFingerprint);
             }
         }
         else
@@ -1282,44 +1334,74 @@ internal sealed partial class MainForm : Form
             if (pairFields)
                 AddConnectionPair(form,
                     T("SSH-ключ / ssh-agent", "SSH key / ssh-agent", "מפתח SSH"), sshKey,
-                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 60);
+                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 62);
             else
             {
-                AddConnectionField(form, T("SSH-ключ / ssh-agent", "SSH key / ssh-agent", "מפתח SSH"), sshKey);
-                AddConnectionField(form, T("Пароль sudo (если нужен)",
-                    "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
+                AddConnectionField(form,
+                    T("SSH-ключ / ssh-agent", "SSH key / ssh-agent", "מפתח SSH"), sshKey);
+                AddConnectionField(form,
+                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
             }
         }
-        // The primary SSH action is anchored in the footer so it remains
-        // visible at 100–200% DPI and does not require scrolling the card.
-        AddLine(form, UiTheme.Text(T(
-            "После заполнения полей нажмите «Проверить подключение» внизу окна.",
-            "After entering the details, select Check connection in the fixed footer.",
-            "לאחר הזנת הפרטים לחצו בדיקת חיבור בתחתית החלון.")));
-        AddLine(details, UiTheme.Text(T("Как это работает", "What happens next", "כיצד זה עובד"), true));
-        AddConnectionHelp(details, sshAuthMode.SelectedIndex == 1
-            ? T("1. Введи SSH-пароль. SHA256 вводить необязательно.\n\n2. При первом соединении программа покажет отпечаток сервера. Подтверди его перед входом.\n\n3. После проверки откроется следующий шаг.",
-                "1. Enter your SSH password. SHA256 is optional.\n\n2. On first contact, verify and approve the server key before login.\n\n3. A successful check opens the next step.",
-                "יש להזין סיסמת SSH; טביעת SHA256 אופציונלית ודורשת אישור בחיבור ראשון.")
-            : T("1. Используется установленный Windows OpenSSH.\n\n2. SSH host key должен быть подтверждён в known_hosts.\n\n3. Успешная проверка откроет следующий шаг.",
-                "1. Uses Windows OpenSSH key or agent.\n\n2. The host key must already be trusted in known_hosts.\n\n3. A successful check opens the next step.",
-                "נעשה שימוש ב-Windows OpenSSH וב-known_hosts."),
-            connectionWideLayout ? (int)(pageHost.Width * .34) - 56 : pageHost.Width - 100);
-        AddLine(details, UiTheme.Text(T("Важно", "Security note", "הערת אבטחה"), true));
-        AddConnectionHelp(details,
-            T("При первом подключении сравни SHA256 с ключом на консоли Linux, если есть такая возможность. Пароли в настройках не сохраняются. Кнопка «Далее» пропускает проверку, но не подтверждает подключение.",
-              "When possible, compare the SHA256 with the Linux console. Passwords are not saved. The Next button skips this check; it does not verify connectivity.",
-              "רצוי להשוות את טביעת המפתח במסוף השרת. סיסמאות אינן נשמרות."),
-            connectionWideLayout ? (int)(pageHost.Width * .34) - 56 : pageHost.Width - 100);
-        AddLine(details, UiTheme.Text(T(
-            "Обычные SSH-команды запускаются НЕ как login shell: /etc/profile и ~/.bash_profile не читаются автоматически. Для основных проверок используется системный PATH; режим установки не меняется.",
-            "Normal SSH commands are NON-login shells: /etc/profile and ~/.bash_profile are not sourced automatically. Core checks use a system PATH; setup behavior is unchanged.",
-            "פקודות SSH רגילות אינן login shell. קובצי profile אינם נטענים אוטומטית. נתיב כלי המערכת נבדק בנפרד.")));
-        AddAction(details, T(
-            "Проверить login-profile и доступность утилит (по запросу)",
-            "Inspect login profile and tool availability (opt-in)",
-            "בדוק סביבת login ופקודות (לפי בקשה)"),
-            InspectSshLoginProfileAsync, false, "check", "ssh-login-profile");
+
+        AddConnectionHelp(form, T(
+            "Проверка SSH — кнопкой внизу окна. Пароли не сохраняются.",
+            "Use the button below to check SSH. Passwords are not saved.",
+            "בדיקת SSH בכפתור למטה. הסיסמאות אינן נשמרות."),
+            availableWidth - 64);
+
+        // Keep advanced SSH functionality, but make the main form breathable.
+        // It remains reachable without a separate tab, scroll trap or popup.
+        var helpToggle = UiTheme.Action(sshHelpExpanded
+            ? T("Скрыть справку и дополнительные SSH-проверки ▲",
+                "Hide help and advanced SSH checks ▲", "הסתר עזרה ובדיקות SSH ▲")
+            : T("Справка и дополнительные SSH-проверки ▼",
+                "Help and advanced SSH checks ▼", "עזרה ובדיקות SSH נוספות ▼"),
+            glyph: "");
+        helpToggle.Margin = new Padding(2, 4, 0, 9);
+        helpToggle.Enabled = !busy;
+        helpToggle.AccessibleDescription =
+            "Expand or collapse SSH guidance and optional login-profile diagnostics.";
+        helpToggle.Click += (_, _) =>
+        {
+            int previousScroll = -pageHost.AutoScrollPosition.Y;
+            sshHelpExpanded = !sshHelpExpanded;
+            RenderPage();
+            pageHost.AutoScrollPosition = new Point(0, previousScroll);
+        };
+        AddLine(cards, helpToggle);
+
+        if (sshHelpExpanded)
+        {
+            var details = ConnectionCard(Color.FromArgb(238, 243, 248));
+            details.MaximumSize = new Size(availableWidth, 0);
+            AddLine(details, UiTheme.Text(T(
+                "Как работает SSH-подключение", "How SSH connection works",
+                "כיצד פועל חיבור SSH"), true));
+            AddConnectionHelp(details, sshAuthMode.SelectedIndex == 1
+                ? T("1. Введите SSH-пароль. Поле SHA256 необязательно. При первом подключении проверьте отпечаток сервера и подтвердите доверие. Затем мастер проверит Linux и почтовую конфигурацию в режиме чтения.",
+                    "1. Enter the SSH password. SHA256 entry is optional. Verify and approve the server fingerprint on first contact. The wizard then performs read-only Linux and mail configuration checks.",
+                    "יש להזין סיסמת SSH ולאשר את טביעת מפתח השרת. בדיקות Linux והדואר הן לקריאה בלבד.")
+                : T("Windows OpenSSH использует выбранный ключ или ssh-agent. Host key должен быть подтверждён в known_hosts. После проверки мастер определит почтовый сервер без изменений.",
+                    "Windows OpenSSH uses the chosen key or ssh-agent. Trust the host key in known_hosts. The wizard then discovers the mail server without modifying it.",
+                    "החיבור משתמש במפתח SSH או ssh-agent ונדרש אישור מפתח ב-known_hosts."),
+                availableWidth - 64);
+            AddLine(details, UiTheme.Text(T(
+                "Login-profile — дополнительная проверка, не часть установки",
+                "Login profile — optional diagnostic, not part of setup",
+                "פרופיל login — בדיקה אופציונלית בלבד"), true));
+            AddConnectionHelp(details, T(
+                "Обычные SSH-команды работают без загрузки /etc/profile и ~/.bash_profile. Проверка login shell по запросу может выполнять команды из этих файлов; она требует отдельного подтверждения.",
+                "Normal SSH commands do not load /etc/profile or ~/.bash_profile. Optional login-shell checking can execute startup commands and requires separate approval.",
+                "פקודות SSH רגילות אינן טוענות קובצי profile. בדיקת login נפרדת דורשת אישור."),
+                availableWidth - 64);
+            AddAction(details, T(
+                "Проверить login-profile и доступность утилит…",
+                "Inspect login profile and available tools…",
+                "בדוק סביבת login ופקודות…"),
+                InspectSshLoginProfileAsync, false, "ssh", "ssh-login-profile");
+            AddLine(cards, details);
+        }
         AddLine(page, cards);
     }
 
@@ -1948,7 +2030,6 @@ internal sealed partial class MainForm : Form
         switch (step)
         {
             case 0:
-                AddUpdateAccess(page);
                 RenderConnectionStep(page);
                 break;
             case 1:
@@ -3219,6 +3300,9 @@ internal sealed partial class MainForm : Form
             ? T("Скрыть журнал", "Hide activity", "הסתר יומן")
             : T("Показать журнал", "Show activity", "הצג יומן");
         clearActivityButton.Text = T("Очистить лог", "Clear log", "נקה יומן");
+        headerUpdateButton.Text = T("Проверить обновления ▾",
+            "Check for updates ▾", "בדיקת עדכונים ▾");
+        headerUpdateButton.Enabled = !busy;
         status.Text = lastStatus ?? T("Готов к работе · Пароли M365 не сохраняются",
             "Ready · M365 mailbox passwords are never stored", "מוכן · סיסמאות M365 אינן נשמרות");
         status.ForeColor = lastFailed ? Color.FromArgb(174, 40, 43) : UiTheme.Muted;
@@ -3359,6 +3443,19 @@ internal sealed partial class MainForm : Form
                 finally { routingLoading = false; }
             }
         }
+        // New main-window layout: record both the default compact form and
+        // the operator-expandable help. Real Windows controls, never mockups.
+        step = 0;
+        Size = new Size(1050, 830);
+        sshHelpExpanded = true;
+        RenderPage();
+        Screenshot("01-linux-help-expanded.png");
+        Screenshot("01-linux-help-expanded-bottom.png", scrollToBottom: true);
+        Size = new Size(760, 700);
+        RenderPage();
+        Screenshot("01-linux-help-compact.png");
+        sshHelpExpanded = false;
+
         // Additional compact-window QA across ALL five pages. These are
         // captured on actual WinForms controls, not assistant mockups.
         // A compact viewport exposes text wrapping and footer regressions.
@@ -8184,6 +8281,45 @@ internal sealed partial class MainForm : Form
             dialog.Close();
             updateShuttingDown = false;
         }
+    }
+
+    private void ShowHeaderUpdateMenu()
+    {
+        if (busy || updateShuttingDown || IsDisposed) return;
+        headerUpdateMenu.Items.Clear();
+        var stable = new ToolStripMenuItem(T(
+            "Проверить стабильные обновления", "Check Stable updates", "בדיקת עדכונים יציבים"));
+        stable.Click += async (_, _) =>
+        {
+            previewUpdates.Checked = false;
+            ExpandActivityForUpdates();
+            await RunBusyAsync("update", CheckUpdatesAsync);
+        };
+        var preview = new ToolStripMenuItem(T(
+            "Проверить тестовые Preview/RC…", "Check test Preview/RC updates…",
+            "בדיקת עדכוני ניסיון Preview/RC…"));
+        preview.Click += async (_, _) =>
+        {
+            previewUpdates.Checked = true;
+            ExpandActivityForUpdates();
+            await RunBusyAsync("update", CheckUpdatesAsync);
+        };
+        headerUpdateMenu.Items.Add(new ToolStripMenuItem(T(
+            "Установленная версия: ", "Installed version: ", "גרסה מותקנת: ") +
+            UpdateCheck.Version) { Enabled = false });
+        headerUpdateMenu.Items.Add(new ToolStripSeparator());
+        headerUpdateMenu.Items.Add(stable);
+        headerUpdateMenu.Items.Add(preview);
+        headerUpdateMenu.Show(headerUpdateButton, new Point(0, headerUpdateButton.Height));
+    }
+
+    private void ExpandActivityForUpdates()
+    {
+        activityPanel.Visible = true;
+        if (footerLayout is not null)
+            footerLayout.RowStyles[2].Height =
+                (int)Math.Round(145 * Math.Max(1f, DeviceDpi / 96f));
+        FitFooterHeight();
     }
 
     private void AddUpdateAccess(TableLayoutPanel page)
