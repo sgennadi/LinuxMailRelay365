@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Windows.Forms;
 
 namespace LinuxMailRelay365;
@@ -36,6 +37,81 @@ internal sealed partial class MainForm
             !GoogleSmtpAudit.PortsFor(GoogleProbeProfile()).Contains(parsed))
             throw new InvalidDataException("Choose a supported Google outbound SMTP port.");
         return parsed;
+    }
+
+    private Control BuildGooglePortCards(GoogleSmtpAudit audit)
+    {
+        int l = language.SelectedIndex;
+        int width = Math.Max(310, pageHost.ClientSize.Width - 90);
+        int dpi = Math.Max(96, DeviceDpi);
+        int columns = (long)width * 96 >= 940L * dpi ? 3 : 1;
+        int cardWidth = Math.Max(260, (width - columns * 12) / columns);
+        int height = Math.Max(145, 125 * dpi / 96);
+        var grid = new TableLayoutPanel
+        {
+            Width = width, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = columns, RowCount = 0,
+            Padding = new Padding(0, 8, 0, 8),
+            BackColor = UiTheme.Canvas
+        };
+        for (int col = 0; col < columns; ++col)
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / columns));
+        for (int i = 0; i < audit.Ports.Count; ++i)
+        {
+            var port = audit.Ports[i];
+            bool good = port.Tcp == "reachable" && port.Tls == "verified";
+            Color accent = good ? Color.FromArgb(33, 121, 82) :
+                port.Tcp == "reachable" ? Color.FromArgb(150, 92, 23) :
+                Color.FromArgb(146, 55, 55);
+            string tlsName = port.Port == 465 ? "TLS (implicit)" : "STARTTLS";
+            string verified = good
+                ? TranslateMailFlow(l, "TLS проверен", "TLS verified", "TLS אומת")
+                : TranslateMailFlow(l, "Требует проверки", "Not ready", "לא אומת");
+            string authName = port.Auth switch
+            {
+                "plain" => "AUTH PLAIN",
+                "login" => "AUTH LOGIN",
+                "oauth_only" => "OAuth advertised",
+                "none" => "AUTH not advertised",
+                _ => "AUTH unverified"
+            };
+            var card = new Panel
+            {
+                Width = cardWidth, Height = height,
+                Padding = new Padding(9, 8, 9, 8),
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+                Margin = new Padding(2, 3, 9, 9)
+            };
+            card.Controls.Add(new Label
+            {
+                Dock = DockStyle.Top, Height = Math.Max(34, 31 * dpi / 96),
+                Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+                ForeColor = accent, Text = "TCP " + port.Port + " · " + tlsName
+            });
+            card.Controls.Add(new Label
+            {
+                Dock = DockStyle.Bottom,
+                Height = Math.Max(75, 65 * dpi / 96),
+                Font = new Font("Segoe UI", 10f),
+                ForeColor = UiTheme.Navy,
+                Text = verified + Environment.NewLine +
+                    "TCP: " + port.Tcp + "   TLS: " + port.Tls +
+                    Environment.NewLine + authName,
+                AccessibleName = "Google SMTP port " + port.Port +
+                    ", TCP " + port.Tcp + ", TLS " + port.Tls +
+                    ", authentication " + port.Auth
+            });
+            int row = i / columns;
+            if (row >= grid.RowCount)
+            {
+                grid.RowCount++;
+                grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            }
+            grid.Controls.Add(card, i % columns, row);
+        }
+        return grid;
     }
 
     private void ShowGoogleSmtpChecks(TableLayoutPanel page)
@@ -79,7 +155,18 @@ internal sealed partial class MainForm
         if (googleSmtpAudit is { } audit &&
             googleSmtpAuditIdentity == TryCurrentIdentity() &&
             audit.Profile == GoogleProbeProfile())
-            AddLine(page, MailFlowText(audit.Display(l), width));
+        {
+            AddLine(page, BuildGooglePortCards(audit));
+            AddLine(page, MailFlowText(TranslateMailFlow(l,
+                "Результат проверки учётных данных: ",
+                "Credential check: ", "בדיקת פרטי התחברות: ") +
+                audit.AuthResult + Environment.NewLine +
+                TranslateMailFlow(l,
+                    "Открытые TCP/TLS-порты не доказывают разрешение отправителя или доставку.",
+                    "Open TCP/TLS ports do not prove sender authorization or delivery.",
+                    "גישה ל-TCP/TLS אינה הוכחה לאישור משלוח."),
+                width, warning: audit.AuthResult is "rejected" or "rejected_or_policy"));
+        }
 
         AddLine(page, UiTheme.Text(TranslateMailFlow(l,
             "Необязательная разовая проверка учётных данных",
