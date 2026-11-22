@@ -17,10 +17,10 @@ class UpdaterPreview25Contracts(unittest.TestCase):
         self.assertIn("SignedPortableUpdater.LastUpdateStatus()", MAIN)
 
     def test_release_and_updater_version_are_consistent(self):
-        self.assertIn("<Version>0.1.1-rc.2</Version>", PROJECT)
-        self.assertIn('internal const string Version = "0.1.1-rc.2";', CHECK)
+        self.assertIn("<Version>0.1.1-rc.3</Version>", PROJECT)
+        self.assertIn('internal const string Version = "0.1.1-rc.3";', CHECK)
         shared = (ROOT / "src/LinuxMailRelay365/UpdateCheck.cs").read_text(encoding="utf-8")
-        self.assertIn('internal const string Version = "0.1.1-rc.2";', shared)
+        self.assertIn('internal const string Version = "0.1.1-rc.3";', shared)
         self.assertIn("tag='v0.1.0-preview.25'", WORKFLOW)
         self.assertIn("Test-LinuxMailRelay365PreviewUpgrade.ps1", WORKFLOW)
 
