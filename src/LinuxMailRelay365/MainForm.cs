@@ -1280,9 +1280,17 @@ internal sealed partial class MainForm : Form
             "Подключение к Linux по SSH",
             "Connect to Linux using SSH",
             "חיבור ל-Linux באמצעות SSH"), true));
-        AddConnectionPair(form,
-            T("Linux: DNS или IPv4", "Linux DNS or IPv4", "כתובת Linux"), host,
-            T("SSH-порт", "SSH port", "פורט SSH"), sshPort, 77);
+        if (pairFields)
+            AddConnectionPair(form,
+                T("Linux: DNS или IPv4", "Linux DNS or IPv4", "כתובת Linux"), host,
+                T("SSH-порт", "SSH port", "פורט SSH"), sshPort, 77);
+        else
+        {
+            AddConnectionField(form,
+                T("Linux: DNS или IPv4", "Linux DNS or IPv4", "כתובת Linux"), host);
+            AddConnectionField(form,
+                T("SSH-порт", "SSH port", "פורט SSH"), sshPort);
+        }
         if (pairFields)
             AddConnectionPair(form,
                 T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser,
