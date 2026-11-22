@@ -2057,6 +2057,10 @@ internal sealed partial class MainForm : Form
 
     private void RenderPage()
     {
+        // Password input must never persist across wizard steps or after
+        // switching to a non-Google route; only same-step tests may read it.
+        if (step is not (1 or 2 or 3) || !IsGoogleTarget)
+            googleAppPassword.Clear();
         if (IsDisposed) return;
         LocalizeSshAuthMethods();
         LocalizeAdvancedChoices();
