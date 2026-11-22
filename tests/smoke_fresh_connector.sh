@@ -61,11 +61,11 @@ if sudo bash "$installer" --apply \
   --accepted-domain example.org --fixed-sender alerts@example.org --public-ip 8.8.8.8; then
   echo 'SECURITY ERROR: unacknowledged tenant domain was installed' >&2; exit 1
 fi
-if sudo bash "$installer" --check-only \
+# 25 is an explicit choice; active primary MTA ownership prevents Apply.
+sudo bash "$installer" --check-only \
   --smtp-port 25 --mx-host example-org.mail.protection.outlook.com \
-  --accepted-domain example.org --fixed-sender alerts@example.org --public-ip 8.8.8.8; then
-  echo 'SECURITY ERROR: privileged port accepted as custom listener' >&2; exit 1
-fi
+  --accepted-domain example.org --fixed-sender alerts@example.org --public-ip 8.8.8.8 \
+  | grep -Fxq 'CONNECTOR_CUSTOM_PORT=25'
 if sudo bash "$installer" --apply --confirm-accepted-domain TENANT_DOMAIN_CHECKED \
   --smtp-port "$PORT" --mx-host example-org.mail.protection.outlook.com \
   --accepted-domain example.org --fixed-sender alerts@example.org --public-ip 8.8.8.8; then
