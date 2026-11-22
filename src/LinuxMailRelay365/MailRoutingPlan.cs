@@ -26,6 +26,8 @@ internal sealed class MailRoutingPlan
     // and no generic SMTP smarthost deployment is implied.
     public string CustomUpstreamHost { get; set; } = "";
     public int CustomUpstreamPort { get; set; } = 587;
+    // Google outbound listener is independent of Linux incoming SMTP/25.
+    public int GoogleOutboundPort { get; set; } = 587;
     public string SenderPolicy { get; set; } = "fixed-mailbox";
     // Operator intent only. Multi-mailbox XOAUTH2 is NOT applied until
     // authenticated sender ownership and Exchange rights are validated.
@@ -134,6 +136,10 @@ internal static class MailRoutingPlanStore
             !MailScenarioPlanner.Supported(state.MigrationScenario) ||
             !MailFlowIntent.SupportedTarget(state.Destination))
             throw new InvalidDataException("Unknown mail source, destination or migration scenario.");
+        if (state.GoogleOutboundPort is not (25 or 465 or 587) ||
+            (state.Destination == MailFlowIntent.TargetGmail &&
+             state.GoogleOutboundPort == 25))
+            throw new InvalidDataException("Unsupported Google outbound port.");
         if (state.CustomUpstreamPort is < 1 or > 65535 ||
             state.CustomUpstreamHost.Length > 253 ||
             (state.CustomUpstreamHost.Length > 0 &&
@@ -231,7 +237,8 @@ internal static class MailRoutingPlanStore
                 defaults.PublicInternetRequested || defaults.ShowAdvancedSmtpTools ||
                 defaults.MailSource != MailFlowIntent.Unknown ||
                 defaults.MigrationScenario != MailScenarioPlanner.Choose ||
-                defaults.Destination != MailFlowIntent.TargetM365) return false;
+                defaults.Destination != MailFlowIntent.TargetM365 ||
+                defaults.GoogleOutboundPort != 587) return false;
             Save(folder, b, new MailRoutingPlan { PublicInternetRequested = true,
                 PrivateSmtpServerName = "smtp-b.example.org", ShowAdvancedSmtpTools = true });
             if (!Load(folder, b).PublicInternetRequested ||
@@ -283,6 +290,11 @@ internal static class MailRoutingPlanStore
             try { Validate(new MailRoutingPlan { CustomUpstreamHost = "name;shutdown" }); return false; }
             catch (InvalidDataException) { }
             try { Validate(new MailRoutingPlan { CustomUpstreamPort = 0 }); return false; }
+            catch (InvalidDataException) { }
+            Validate(new MailRoutingPlan { Destination = MailFlowIntent.TargetGmail, GoogleOutboundPort = 465 });
+            Validate(new MailRoutingPlan { Destination = MailFlowIntent.TargetWorkspace, GoogleOutboundPort = 25 });
+            try { Validate(new MailRoutingPlan {
+                Destination = MailFlowIntent.TargetGmail, GoogleOutboundPort = 25 }); return false; }
             catch (InvalidDataException) { }
             Save(folder, b, new MailRoutingPlan { RecipientScope = "external-needed" });
             if (Load(folder, b).RecipientScope != "external-needed") return false;
