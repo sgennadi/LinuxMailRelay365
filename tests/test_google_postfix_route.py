@@ -121,6 +121,75 @@ class GooglePostfixRouteTests(unittest.TestCase):
         self.assertIn("GOOGLE_ROUTE_ROLLBACK=ok", output.getvalue())
         self.assertNotIn(request["secret"], output.getvalue())
 
+    def test_outbound_master_overrides_are_distinct_from_inbound_submission(self):
+        # SMTP clients (smtp/relay unix) can override main.cf independently
+        # of any inbound SMTP listener or submission service.
+        for line, expected in (
+                (b"", False),
+                (b"submission/inet/smtpd_tls_security_level = encrypt\n", False),
+                (b"smtp/inet/smtpd_sasl_auth_enable = yes\n", False),
+                (b"smtp/unix/smtp_tls_security_level = none\n", True),
+                (b"smtp/unix/smtp_sasl_auth_enable = no\n", True),
+                (b"relay/unix/smtp_tls_wrappermode = no\n", True),
+                (b"smtp/unix/relayhost = [other.example]:25\n", True),
+                (b"unexpected master.cf output\n", True)):
+            with self.subTest(line=line), mock.patch.object(
+                    mod, "run", return_value=CommandResult(stdout=line)) as invoke:
+                self.assertEqual(mod.outbound_master_overrides(), expected)
+                invoke.assert_called_once_with(["postconf", "-P"])
+        with mock.patch.object(mod, "run",
+                               return_value=CommandResult(returncode=1)):
+            self.assertTrue(mod.outbound_master_overrides())
+
+    def test_route_conflicts_block_tls_policy_and_fallback_routes(self):
+        base = {
+            "default_transport": "smtp",
+            "smtp_tls_secure_cert_match": "nexthop, dot-nexthop",
+        }
+        def conflicts(overrides):
+            values = dict(base, **overrides)
+            with mock.patch.object(
+                    mod, "postconf", side_effect=lambda name: values.get(name, "")), \
+                 mock.patch.object(
+                    mod, "run", return_value=CommandResult(stdout=b"")):
+                return mod.route_conflicts()
+        # The ordinary defaults MUST remain eligible; otherwise every
+        # legitimate Postfix host is accidentally blocked by a parser bug.
+        self.assertFalse(conflicts({}))
+        self.assertFalse(conflicts({"smtp_tls_secure_cert_match": "nexthop"}))
+        for key in ("transport_maps", "sender_dependent_relayhost_maps",
+                    "sender_dependent_default_transport_maps",
+                    "smtp_tls_policy_maps", "smtp_tls_per_site",
+                    "smtp_fallback_relay"):
+            with self.subTest(parameter=key):
+                self.assertTrue(conflicts({key: "hash:/etc/postfix/custom"}))
+        self.assertTrue(conflicts({"default_transport": "error"}))
+        self.assertTrue(conflicts({"smtp_tls_secure_cert_match": "hostname"}))
+        self.assertTrue(conflicts({"smtp_tls_secure_cert_match": ""}))
+
+    def test_unsafe_tls_policy_blocks_preview_and_apply_before_backup(self):
+        with mock.patch.object(mod, "postconf", side_effect=lambda name: {
+                    "default_transport": "smtp",
+                    "smtp_tls_secure_cert_match": "nexthop, dot-nexthop",
+                    "smtp_tls_policy_maps": "hash:/etc/postfix/downgrade",
+                    "smtp_sasl_auth_enable": "yes",
+                    "smtp_tls_security_level": "may",
+                }.get(name, "")), \
+             mock.patch.object(mod, "prerequisites", return_value="a" * 64), \
+             mock.patch.object(mod, "queue_state", return_value="empty"), \
+             mock.patch.object(mod, "scope_status", return_value="verified"), \
+             mock.patch.object(mod, "client_sasl_status", return_value="ready"), \
+             mock.patch.object(mod, "verified_backup") as backup:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                mod.preview(self.request())
+            self.assertIn("GOOGLE_ROUTE_APPLY_ALLOWED=no", output.getvalue())
+            self.assertIn("GOOGLE_ROUTE_CONFLICTING_MAPS=yes", output.getvalue())
+            with self.assertRaises(RuntimeError):
+                mod.apply(self.request(operation="apply", expected_sha="a" * 64,
+                                       user="mail@example.org", secret="test"))
+            backup.assert_not_called()
+
     def test_postfix_scope_refuses_secondary_instance(self):
         with mock.patch.object(mod, "postconf", side_effect=lambda key: {
             "config_directory": "/etc/postfix",
