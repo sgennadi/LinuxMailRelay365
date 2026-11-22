@@ -73,11 +73,54 @@ internal static class SshRemote
         return endpoint.ConfirmFirstUseHostKey?.Invoke(endpoint, actual) == true;
     }
 
+    // Windows may checkout embedded .sh resources with CRLF even when the
+    // repository sources are LF. Bash -s interprets stray CR as part of option
+    // names and keywords. Normalize script-only stdin; never modify arbitrary
+    // commands, binary payloads or credentials outside the shell-script path.
+    internal static string NormalizeBashStdin(string command, string input)
+    {
+        if (command is not ("bash -s" or "sudo -n bash -s" or
+                            "sudo -S -p '' bash -s"))
+            return input;
+        if (input.IndexOf('\0') >= 0)
+            throw new InvalidDataException("Bash input contains a NUL byte.");
+        string normalized = input.Replace("\r\n", "\n", StringComparison.Ordinal);
+        if (normalized.IndexOf('\r') >= 0 || normalized.IndexOf('\uFEFF') >= 0)
+            throw new InvalidDataException(
+                "Bash input contains an invalid carriage return or BOM.");
+        return normalized;
+    }
+
+    internal static bool BashStdinSelfTest()
+    {
+        const string script = "set -Eeuo pipefail\nexport LC_ALL=C\nif true; then\n  :\nelif false; then\n  :\nfi\n";
+        string windows = script.Replace("\n", "\r\n", StringComparison.Ordinal);
+        foreach (string command in new[] {
+            "bash -s", "sudo -n bash -s", "sudo -S -p '' bash -s" })
+        {
+            if (NormalizeBashStdin(command, windows) != script ||
+                NormalizeBashStdin(command, script) != script)
+                return false;
+            // sudo -S consumes precisely one initial password line.
+            if (NormalizeBashStdin(command, "secret\r\n" + windows) !=
+                "secret\n" + script) return false;
+            foreach (string malicious in new[] {
+                "set -e\rset -u\n", "x\0y", "\uFEFF" + script })
+            {
+                try { NormalizeBashStdin(command, malicious); return false; }
+                catch (InvalidDataException) { }
+            }
+        }
+        return NormalizeBashStdin("cat", windows) == windows;
+    }
+
     internal static async Task<RemoteResult> ExecuteAsync(
         SshEndpoint endpoint, string command, string? input = null,
         TimeSpan? timeout = null, CancellationToken cancellationToken = default)
     {
         endpoint.Validate();
+        if (input is not null)
+            input = NormalizeBashStdin(command, input);
         if (!string.IsNullOrEmpty(endpoint.Password))
             return await ExecutePasswordSshAsync(endpoint, command, input, timeout, cancellationToken);
         // Windows OpenSSH checks the host key against the user's known_hosts.
