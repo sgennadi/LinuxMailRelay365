@@ -833,6 +833,7 @@ internal static class EmbeddedAssets
             currentMta is not ("postfix" or "exim" or "sendmail" or "none" or "unknown"))
             throw new ArgumentException("Invalid selected SMTP port or discovered MTA.");
         return "set -Eeuo pipefail\numask 077\n" +
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}\nexport PATH\n" +
             "work=$(mktemp -d /tmp/lmr365-mail-host.XXXXXXXX)\n" +
             "trap 'rm -rf -- \"$work\"' EXIT\n" +
             "base64 -d > \"$work/inspect-mail-host.py\" <<'LMR365_MAIL_HOST'\n" +
@@ -854,6 +855,7 @@ internal static class EmbeddedAssets
         // No input options or network traffic. Existing Postfix files are only
         // queried for status; NO raw configuration is returned to the GUI.
         return "set -Eeuo pipefail\numask 077\n" +
+               "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}\nexport PATH\n" +
                "work=$(mktemp -d /tmp/lmr365-audit.XXXXXXXX)\n" +
                "trap 'rm -rf -- \"$work\"' EXIT\n" +
                "base64 -d > \"$work/audit-smtp.py\" <<'LMR365_SMTP_AUDIT'\n" +
