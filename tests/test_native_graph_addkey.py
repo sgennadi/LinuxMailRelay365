@@ -31,7 +31,7 @@ class NativeGraphAddKeyTests(unittest.TestCase):
             "graph_inventory_changed_since_preview",
             "applications/", "/addKey",
             "AllowAutoRedirect = false",
-            "existing_certificate", "ENTRA_CERT_EXISTING_KEYS_PRESERVED=yes",
+            "current_certificate_not_valid_in_entra", "ENTRA_CERT_EXISTING_KEYS_PRESERVED=yes",
             "graph_addkey_may_have_succeeded_verify_manually",
             "CHANGES_APPLIED=entra_addkey_only",
         ):
