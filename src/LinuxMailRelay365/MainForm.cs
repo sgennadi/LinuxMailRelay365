@@ -859,7 +859,7 @@ internal sealed partial class MainForm : Form
 
     private void FitCurrentPage()
     {
-        if (IsDisposed || step == 0 || !IsHandleCreated || busy) return;
+        if (IsDisposed || !IsHandleCreated || busy) return;
         if (pageHost.Controls.OfType<TableLayoutPanel>().FirstOrDefault() is not { } page)
             return;
         int width = Math.Max(270, Math.Min(
@@ -869,6 +869,27 @@ internal sealed partial class MainForm : Form
         {
             page.MaximumSize = new Size(width, 0);
             page.Width = width;
+        }
+        if (step == 0)
+        {
+            // Resize the one-column SSH card even when the pairing breakpoint
+            // is unchanged. Previously small window resizes kept a stale
+            // maximum card width and could clip the card on compact displays.
+            int cardWidth = Math.Max(260,
+                Math.Min(page.Width, pageHost.ClientSize.Width - 22) -
+                page.Padding.Horizontal - 8);
+            if (page.Controls.OfType<TableLayoutPanel>().FirstOrDefault() is { } cards)
+            {
+                cards.MaximumSize = new Size(cardWidth, 0);
+                cards.Width = cardWidth;
+                foreach (var card in cards.Controls.OfType<TableLayoutPanel>())
+                {
+                    card.MaximumSize = new Size(cardWidth, 0);
+                    foreach (Label label in card.Controls.OfType<Label>())
+                        label.MaximumSize = new Size(Math.Max(230, cardWidth - 64), 0);
+                }
+            }
+            return;
         }
         int textWidth = Math.Max(230, width - page.Padding.Horizontal - 18);
         foreach (Control child in page.Controls)
