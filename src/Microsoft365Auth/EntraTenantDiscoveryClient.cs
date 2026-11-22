@@ -96,7 +96,7 @@ public static class EntraTenantDiscoveryClient
                 catch (MsalUiRequiredException) { }
             }
             credential ??= await app.AcquireTokenWithDeviceCode([readScope], showDeviceCode)
-                .WithAuthority("https://login.microsoftonline.com/" + exactTenant.ToString("D"))
+                .WithTenantId(exactTenant.ToString("D"))
                 .ExecuteAsync(ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { throw; }
