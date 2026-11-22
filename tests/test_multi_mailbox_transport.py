@@ -285,6 +285,29 @@ class MultiMailboxTests(unittest.TestCase):
             with self.assertRaises(dispatch.Unverified):
                 dispatch.ingress_ready(ROWS, auditor)
 
+    def test_invalid_privileged_receipt_prevents_oauth_token_and_smtp(self):
+        # Exercise real ingress_ready (not the default mocked callback) at
+        # the deliver() boundary: malformed protected receipts MUST stop
+        # before identity loading, token request or outbound SMTP DATA.
+        bad_proofs = (
+            b'{"version":1,"version":2}',
+            b'{"version":NaN}',
+            b'{"version":false,"map_sha256":"bad"}',
+            b'[]',
+        )
+        for raw in bad_proofs:
+            with self.subTest(raw=raw), \
+                 mock.patch.object(auditor, "secure_read", return_value=raw), \
+                 mock.patch.object(dispatch.grp, "getgrnam",
+                                   return_value=SimpleNamespace(gr_gid=4242)), \
+                 self.assertRaises(dispatch.Unverified):
+                dispatch.deliver(
+                    "alice@example.org", "dest@example.net", "alice",
+                    "PLAIN", MAP_HASH, mail("alice@example.org"),
+                    auditor=auditor, ingress_checker=dispatch.ingress_ready,
+                    transport=self.transport, gid=4242)
+        self.assertEqual(self.transport.events, [])
+
     def test_direct_acceptance_requires_root_owned_runuser_parent(self):
         good = "Name:\trunuser\nUid:\t0\t0\t0\t0\n"
         with mock.patch.object(dispatch.os, "getppid", return_value=345), \
