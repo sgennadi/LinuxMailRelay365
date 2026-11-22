@@ -426,7 +426,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
-          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.0-rc.3'
+          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.1'
       - name: Capture actual Windows Wizard and early-route screens (CI-only)
         shell: pwsh
         timeout-minutes: 3
@@ -629,7 +629,7 @@ jobs:
             --notes "UNSIGNED TEST PREVIEW 25, NOT Stable/production approved. Adds guarded Multi-mailbox XOAUTH2 Stage, SHA256 Preview, offline Postfix apply/restore, per-SASL-login mailbox ownership, root-issued 120-second ingress proof and two-recipient operator-consented direct Microsoft 365 SMTP acceptance. Fixed test message bodies, root-owned per-run ledger, no automatic resend, and read-only last-attempt recovery. Existing EOP routes are protected by reciprocal owner locks. CI verifies published Preview 24 -> Preview 25 candidate replacement/rollback, Windows x64/ARM64 and isolated Linux tests. No real tenant/inbox delivery, physical TPM or SELinux Enforcing acceptance, 200%-DPI hardware QA, signed Stable, or production authorization is claimed."
 
   release-candidate-publish:
-    name: Publish unsigned 0.1.0 RC3 with updater repair (NOT Stable)
+    name: Publish unsigned 0.1.1 RC1 updater compatibility bridge (NOT Stable)
     if: github.event_name == 'push' && github.ref == 'refs/heads/release/v0.1.0-stable-candidate'
     needs:
       - linux-tests
@@ -652,9 +652,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          grep -Fxq '    <Version>0.1.0-rc.3</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
-          grep -Fq 'internal const string Version = "0.1.0-rc.3";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
-          grep -Fq 'internal const string Version = "0.1.0-rc.3";' src/LinuxMailRelay365/UpdateCheck.cs
+          grep -Fxq '    <Version>0.1.1-rc.1</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.1-rc.1";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fq 'internal const string Version = "0.1.1-rc.1";' src/LinuxMailRelay365/UpdateCheck.cs
           test "$GITHUB_REF" = 'refs/heads/release/v0.1.0-stable-candidate'
       - uses: actions/download-artifact@v6
         with:
@@ -692,7 +692,7 @@ jobs:
               with ZipFile(archive) as z:
                   assert z.namelist() == ["LinuxMailRelay365.exe"]
                   assert hashlib.sha256(z.read("LinuxMailRelay365.exe")).hexdigest() == digest(exe)
-          print("UNSIGNED_RC3_RELEASE_SHA256_AND_ZIP=PASS")
+          print("UNSIGNED_RC011RC1_RELEASE_SHA256_AND_ZIP=PASS")
           PY
       - name: Publish one GitHub prerelease without overwrite
         shell: bash
@@ -700,9 +700,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='v0.1.0-rc.3'
+          tag='v0.1.1-rc.1'
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::notice::RC3 already published. Never replace a released candidate."
+            echo "::notice::0.1.1-RC1 already published. Never replace a released candidate."
             exit 0
           fi
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
@@ -714,5 +714,5 @@ jobs:
             out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
             out/published/preview-artifact-digests.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "LinuxMailRelay365 v0.1.0 RC3 (UNSIGNED TEST ONLY)" --prerelease \
-            --notes "UNSIGNED RELEASE CANDIDATE 3. NOT STABLE AND NOT FOR PRODUCTION. Correctly stamps ProductVersion and embedded updater version 0.1.0-rc.3, adds an explicit guarded, non-elevated, operator-consented RC/Preview update path for FUTURE newer RCs, and improves safe failure diagnosis of Microsoft Entra tenant discovery. Published RC2 is stamped 0.1.0, so users of RC2 must install RC3 manually once; RC2 cannot be repaired retroactively. GitHub SHA256 is NOT publisher Authenticode; do not use unsigned update path for production. Rocky Bash CRLF fix from RC2 is retained. No real tenant, inbox delivery, physical TPM/HSM, GUI hardware 200%-DPI or production disaster recovery acceptance. Stable release intentionally blocked."
+            --title "LinuxMailRelay365 v0.1.1 RC1 (UNSIGNED TEST ONLY)" --prerelease \
+            --notes "UNSIGNED TEST RELEASE CANDIDATE 0.1.1 RC1. NOT STABLE AND NOT FOR PRODUCTION. Correctly stamps ProductVersion and embedded updater version 0.1.1-rc.1, adds an explicit guarded, non-elevated, operator-consented RC/Preview update path for FUTURE newer RCs, and improves safe failure diagnosis of Microsoft Entra tenant discovery. The previous 0.1.0 RC2 was stamped 0.1.0; 0.1.1-rc.1 is strictly newer so RC2's read-only update check will discover the release and offer manual download. Automatic replacement from unsigned RC2 is intentionally blocked, and users must install this bridge build manually once. GitHub SHA256 is NOT publisher Authenticode; do not use unsigned update path for production. Rocky Bash CRLF fix from RC2 is retained. No real tenant, inbox delivery, physical TPM/HSM, GUI hardware 200%-DPI or production disaster recovery acceptance. Stable release intentionally blocked."
