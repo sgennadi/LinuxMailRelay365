@@ -214,6 +214,9 @@ public static class EntraGraphProvisioner
             string usage = ReadLabel(entry, "usage", 32);
             string key = ReadLabel(entry, "key", 48000);
             string keyId = ReadLabel(entry, "keyId", 36);
+            if (!entry.TryGetProperty("displayName", out var legacyName) ||
+                legacyName.ValueKind != JsonValueKind.String)
+                throw new EntraDiscoveryException("existing_public_key_label_unverified");
             string name = ReadLabel(entry, "displayName", 128);
             string from = ReadLabel(entry, "startDateTime", 64);
             string until = ReadLabel(entry, "endDateTime", 64);
@@ -233,8 +236,13 @@ public static class EntraGraphProvisioner
                     throw new EntraDiscoveryException("invalid_existing_custom_key_identifier");
             }
             if (type != "AsymmetricX509Cert" || usage != "Verify" ||
-                !Guid.TryParse(keyId, out _) || key.Length < 500 ||
-                from.Length == 0 || until.Length == 0)
+                !Guid.TryParse(keyId, out Guid existingKeyId) || existingKeyId == Guid.Empty ||
+                key.Length < 500 ||
+                !DateTimeOffset.TryParse(from, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal, out var validFrom) ||
+                !DateTimeOffset.TryParse(until, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal, out var validUntil) ||
+                validUntil <= validFrom)
                 throw new EntraDiscoveryException("existing_public_key_bytes_missing");
             // Ensure existing keys are actual parseable X.509 public certificates
             // before a PATCH could ever replace this entire collection.
