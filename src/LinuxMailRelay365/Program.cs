@@ -81,6 +81,8 @@ internal static class Program
                 MainForm.UseWideDeliveryChoices(1500, 192)),
             ("Delivery route chooser guidance", DeliveryModeOverview.SelfTest),
             ("Recipient-aware read-only delivery recommendations", MailDeliveryAdvisor.SelfTest),
+            ("Readable mail discovery overview and safe guidance", MailDiscoveryBrief.SelfTest),
+            ("English-first UI preference persistence", UiLanguagePreference.SelfTest),
             ("Read-only MTA discovery recommendations", MailServerDiscoveryDecision.SelfTest),
             ("Read-only hostname/domain and MTA settings report", MailHostInspection.SelfTest),
             ("SSH mail-host inspection embedded resource", () =>
