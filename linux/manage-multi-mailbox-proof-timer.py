@@ -287,16 +287,20 @@ def enable(reviewed_sha):
     if approved != reviewed_sha or plan()[0] != reviewed_sha:
         raise Refused("approval_stale")
     parents(STATE_ROOT.parent)
-    STATE_ROOT.mkdir(mode=0o700)
-    staged = False
+    state = {"version": 1, "plan": approved, "map": info["map"],
+             "service": info["service"], "timer": info["timer"]}
+    state_bytes = (json.dumps(state, sort_keys=True,
+                   separators=(",", ":")) + "\n").encode("ascii")
+    expected = ((SERVICE, service, 0o644), (TIMER, timer, 0o644),
+                (STATE, state_bytes, 0o600))
+    created = []
+    state_dir_created = False
     try:
-        create_file(SERVICE, service, 0o644)
-        create_file(TIMER, timer, 0o644)
-        state = {"version": 1, "plan": approved, "map": info["map"],
-                 "service": info["service"], "timer": info["timer"]}
-        create_file(STATE, (json.dumps(state, sort_keys=True,
-                    separators=(",", ":")) + "\n").encode("ascii"), 0o600)
-        staged = True
+        STATE_ROOT.mkdir(mode=0o700)
+        state_dir_created = True
+        for path, data, mode in expected:
+            create_file(path, data, mode)
+            created.append((path, data, mode))
         systemctl("daemon-reload")
         # An initial successful audit is mandatory before timer activation.
         systemctl("start", SERVICE.name)
@@ -312,12 +316,28 @@ def enable(reviewed_sha):
             raise Refused("timer_not_active")
         return True
     except Exception:
-        if staged:
-            try:
-                disable()
-            except Exception:
-                print("MULTI_PROOF_TIMER_ROLLBACK=manual_review_required",
-                      file=sys.stderr)
+        # Never leave an activated timer behind after a failed installation.
+        # Cleanup is deliberately conservative: only exactly recorded,
+        # root-owned bytes are eligible for deletion. Partially created or
+        # changed files remain in place and force a manual-review refusal.
+        try:
+            systemctl("disable", "--now", TIMER.name, allow_inactive=True)
+            systemctl("stop", SERVICE.name, allow_inactive=True)
+            if systemctl("is-active", "--quiet", TIMER.name,
+                         allow_inactive=True) or \
+                    systemctl("is-active", "--quiet", SERVICE.name,
+                              allow_inactive=True):
+                raise Refused("timer_or_service_remains_active_after_failure")
+            for path, data, mode in reversed(created):
+                if read(path, len(data), (mode,)) != data:
+                    raise Refused("partial_timer_write_changed")
+                path.unlink()
+            if state_dir_created:
+                STATE_ROOT.rmdir()
+            systemctl("daemon-reload")
+        except Exception:
+            print("MULTI_PROOF_TIMER_ROLLBACK=manual_review_required",
+                  file=sys.stderr)
         raise
 
 
