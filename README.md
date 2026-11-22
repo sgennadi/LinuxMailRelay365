@@ -1,10 +1,11 @@
 # LinuxMailRelay365
 
-> **Unsigned RC5 test candidate:** `0.1.1-rc.5` adds read-only detection of existing inbound SMTP ports from Postfix `master.cf`, Exim `daemon_smtp_ports` and compiled Sendmail `sendmail.cf`. The wizard compares configured ports with observed listening sockets and the separately chosen relay port, warns about conflicts and never silently chooses 2525 for an invalid entry. RC4's native C# Microsoft Graph certificate addKey, security readiness, Linux-signed proof checks and explicit legacy PS1 fallback remain available. Exchange Online RBAC and Connector cmdlets remain in EXO-only PowerShell 7. This is NOT signed Stable, production authorization, or proof of live Microsoft 365 delivery.
+> **Unsigned RC6 test candidate:** `0.1.1-rc.6` retains RC5 read-only discovery of existing inbound SMTP ports from Postfix `master.cf`, Exim `daemon_smtp_ports` and compiled Sendmail `sendmail.cf`, plus safe comparisons with listening sockets and the selected independent relay port. RC6 adds a separate, explicitly confirmed SSH login-profile environment check (the normal SSH installer continues to use non-login commands), reliable system tool lookup without sourcing login profiles, and a DPI-friendly **Clear log** button that clears only the visible activity window. Existing Entra native C#, Microsoft Graph, Exchange Online PowerShell, key protection, updater rollback and signed Stable safeguards remain unchanged. **UNSIGNED TEST ONLY; not production approved.**
 
 
 Native Microsoft authentication design: [docs/NATIVE_CSHARP_MICROSOFT365_AUTH.md](docs/NATIVE_CSHARP_MICROSOFT365_AUTH.md).
 SMTP configured-port inspection: [docs/SMTP_CONFIG_PORT_DISCOVERY.md](docs/SMTP_CONFIG_PORT_DISCOVERY.md).
+SSH login profile and Clear Log: [docs/SSH_PROFILE_AND_ACTIVITY_LOG.md](docs/SSH_PROFILE_AND_ACTIVITY_LOG.md).
 
 Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.25 — guarded Multi-mailbox XOAUTH2 offline configuration, Restore and approved SMTP acceptance; UNSIGNED TEST Preview, NOT Stable or production-accepted.**
 
