@@ -2445,10 +2445,13 @@ internal sealed partial class MainForm : Form
                         "Для Connector и Direct Send приложение Entra ID, OAuth-токен и почтовый ящик НЕ требуются. Перейдите Далее, укажите принятый домен и MX и проверьте полномочия Connector или ограничение внутренних получателей. Публичный IP либо TLS-сертификат проверяется отдельно.",
                         "Connector and Direct Send do NOT require an Entra application, OAuth token or licensed mailbox. Click Next to enter the tenant-accepted domain and MX. Review Connector authority or internal-only delivery. Public IP or TLS identity is checked separately.",
                         "ב-Connector ו-Direct Send אין צורך ביישום Entra או תיבת דואר. המשיכו להגדרת דומיין ו-MX.")));
-                    AddLine(page, UiTheme.Text(T(
-                        "На следующем экране задайте порт, MX, домен, отправителя и параметры сохранения текущего почтового сервера.",
-                        "Next configure inbound SMTP port, MX, accepted domain, sender and preservation of the existing mail server.",
-                        "בשלב הבא בחרו יציאה, MX, דומיין, שולח ושמירת שרת הדואר הקיים.")));
+                    AddLine(page, UiTheme.Text(selectedMailScenario == MailScenarioPlanner.ReplaceRelay
+                        ? T("Следующий шаг проверит замену исходящего маршрута основного Postfix. Входящий SMTP-порт не изменится; установка пока не предлагается.",
+                            "Next review an in-place outbound route change. The existing Linux SMTP port stays as-is; no installer is offered yet.",
+                            "שינוי ניתוב יוצא אינו משנה את יציאת SMTP הקיימת.")
+                        : T("На следующем экране задайте порт отдельного Relay, MX, домен и отправителя.",
+                            "Next configure the separate Relay port, MX, accepted domain and sender.",
+                            "הגדירו יציאת ממסר נפרד, MX ודומיין.")));
                     break;
                 }
                 discoverAllAccessibleTenants.Text = T(
