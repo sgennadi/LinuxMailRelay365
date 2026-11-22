@@ -53,7 +53,7 @@ internal static class MailScenarioPlanner
                     "Only this scenario needs a separate SMTP listening port.",
                     "רק מסלול זה דורש יציאת SMTP נפרדת.")),
             new(ReplaceRelay,
-                L(language, "Заменить Gmail → M365", "Replace outbound Gmail → M365", "החלף Gmail ל-M365"),
+                L(language, "Изменить исходящий Relay → M365", "Switch existing outbound relay → M365", "שנה ניתוב יוצא ל-M365"),
                 L(language, "Тот же Postfix и входящий SMTP; новый исходящий маршрут",
                     "Same Postfix and inbound SMTP; NEW outbound route", "אותו Postfix, ניתוב יוצא חדש"),
                 postfix && !unsafeRelay
@@ -75,7 +75,7 @@ internal static class MailScenarioPlanner
 
     internal static Topology Flow(
         string code, string? configuredExistingRelay, string? existingLocalPorts,
-        string? separateInboundPort, string? upstreamMode, int language)
+        string? separateInboundPort, string? upstreamMode, int language, string mailSource = "unknown")
     {
         if (!Supported(code)) code = Choose;
         string existing = string.IsNullOrWhiteSpace(configuredExistingRelay)
@@ -91,14 +91,18 @@ internal static class MailScenarioPlanner
             "direct-send" => "Microsoft 365 MX · TCP 25",
             _ => "Microsoft 365 XOAUTH2 · TCP 587"
         };
-        string incoming = L(language, "Локальные приложения", "Existing applications", "יישומים קיימים");
+        string incoming = MailFlowIntent.SourceLabel(mailSource, language);
+        if (mailSource == MailFlowIntent.Unknown)
+            incoming = L(language, "Локальные письма / SMTP-клиенты (проверьте источник)",
+                "Local submissions / SMTP clients (source not established)",
+                "שליחה מקומית / לקוחות SMTP (לא אומת)");
         string postfix = "Postfix · SMTP " + localPort;
         return code switch
         {
             Keep => new([incoming, postfix, existing],
                 L(language, "Без изменения Linux и M365", "No Linux or M365 changes", "ללא שינוי"), false),
             Isolated => new([
-                L(language, "Новые SMTP-клиенты", "New SMTP clients", "לקוחות SMTP חדשים"),
+                L(language, "Клиенты отдельного Relay", "Clients of isolated relay", "לקוחות ממסר נפרד"),
                 L(language, "Новый входящий TCP ", "New inbound TCP ", "TCP חדש ") +
                     (string.IsNullOrWhiteSpace(separateInboundPort) ? "?" : separateInboundPort),
                 L(language, "Отдельный Postfix + очередь", "Isolated Postfix + queue", "Postfix נפרד"),
