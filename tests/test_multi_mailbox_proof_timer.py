@@ -24,6 +24,24 @@ SPEC.loader.exec_module(timer)
 
 
 class OptionalProofTimerTests(unittest.TestCase):
+    def test_ci_compiles_timed_proof_entrypoints_before_runtime_execution(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        kvm = (ROOT / ".github/workflows/rocky-enforcing-vm.yml").read_text(
+            encoding="utf-8")
+        required = (
+            "linux/manage-multi-mailbox-proof-timer.py",
+            "linux/refresh-multi-mailbox-proof.py",
+            "linux/audit-oauth-ingress.py",
+            "linux/audit-oauth-sender-map.py",
+        )
+        for name in required:
+            self.assertIn(name, ci)
+            self.assertIn(name, kvm)
+        self.assertLess(ci.index("python3 -m py_compile linux/manage-multi-mailbox-proof-timer.py"),
+                        ci.index("python3 -m unittest discover -v -s tests"))
+        self.assertLess(kvm.index("Fail fast on experimental proof-timer source syntax"),
+                        kvm.index("Inspect kernel KVM and perform real KVM ioctl"))
+
     def test_pinned_oneshot_is_local_only_and_not_an_smtp_sender(self):
         sha = "a" * 64
         unit = timer.service_text(sha).decode("ascii")

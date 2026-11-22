@@ -34,6 +34,11 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - name: Fail fast on experimental proof-timer source syntax
+        shell: bash
+        run: |
+          python3 -m py_compile linux/manage-multi-mailbox-proof-timer.py linux/refresh-multi-mailbox-proof.py linux/audit-oauth-ingress.py linux/audit-oauth-sender-map.py
+          bash -n tests/rocky_vm_multi_proof_timer_enforcing.sh tests/rocky_vm_boot_enforcing.sh
       - name: Inspect kernel KVM and perform real KVM ioctl
         shell: bash
         run: bash tests/rocky_vm_kvm_probe.sh
