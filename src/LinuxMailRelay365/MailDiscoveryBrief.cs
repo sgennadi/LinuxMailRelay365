@@ -27,7 +27,7 @@ internal sealed record MailDiscoveryBrief(
         MailServerDiscoveryDecision decision,
         int recipientScope,
         string? proposedPort,
-        int language)
+        int language, string selectedScenario = MailScenarioPlanner.Choose)
     {
         int l = language;
         bool postfix = inventory?.Mta == "postfix";
@@ -76,9 +76,17 @@ internal sealed record MailDiscoveryBrief(
                 "An isolated relay was detected. Audit it before reinstalling.",
                 "זוהה ממסר נפרד. יש לבדוק אותו לפני התקנה.")
             : postfix
-                ? T(l, "Postfix уже работает — сохраните текущую почту.",
-                    "Postfix is already running — preserve the existing mail flow.",
-                    "Postfix כבר פועל — שמרו על תעבורת הדואר הקיימת.")
+                ? selectedScenario == MailScenarioPlanner.ReplaceRelay
+                    ? T(l, "Postfix уже работает — можно планировать смену исходящего маршрута без нового SMTP-порта.",
+                        "Postfix is running — an in-place upstream change needs no new inbound SMTP port.",
+                        "Postfix כבר פועל; ניתן לשנות ניתוב יוצא ללא יציאה חדשה.")
+                    : selectedScenario == MailScenarioPlanner.Rebuild
+                    ? T(l, "Полная замена конфигурации — отдельная рискованная операция.",
+                        "Full configuration rebuild is a separate high-risk operation.",
+                        "התקנה מחדש היא פעולה מסוכנת ונפרדת.")
+                    : T(l, "Postfix работает. Сначала выберите: оставить, добавить маршрут или заменить upstream.",
+                        "Postfix is running. Choose to keep, add a separate route or migrate the upstream.",
+                        "Postfix פועל. בחרו אם לשמור או לשנות את הניתוב.")
                 : inventory?.Mta is "exim" or "sendmail"
                     ? T(l, "Существующий MTA нельзя автоматически заменять.",
                         "Do not automatically replace the existing MTA.",
@@ -91,10 +99,22 @@ internal sealed record MailDiscoveryBrief(
             ? T(l, "Проверьте настройки, порт и очередь существующего отдельного Relay. Повторная установка не рекомендуется.",
                 "Inspect the existing isolated relay's port, queue and delivery before creating another instance.",
                 "בדקו את היציאה, התור והניתוב של הממסר הקיים.")
+            : postfix && selectedScenario == MailScenarioPlanner.ReplaceRelay
+                ? T(l, "План замены upstream: сохранить локальную подачу почты, текущий SMTP listener и очередь Postfix; проверить целевой relay, backup и откат.",
+                    "Upstream migration plan: preserve local mail submission, the active SMTP listener and Postfix queue; verify destination, backup and rollback.",
+                    "שנו רק ניתוב יוצא, תוך שמירת התור והאזנה המקומית.")
+            : postfix && selectedScenario == MailScenarioPlanner.Keep
+                ? T(l, "Текущий Postfix и его исходящий маршрут останутся без изменений.",
+                    "Current Postfix and its upstream route remain unchanged.",
+                    "Postfix והניתוב הקיים יישארו ללא שינוי.")
+            : postfix && selectedScenario == MailScenarioPlanner.Rebuild
+                ? T(l, "Полная переустановка возможна только после проверки всех локальных отправителей, архивирования, анализа очереди и подтверждения.",
+                    "Full rebuild requires an inventory of mail sources, a verified backup, queue review and explicit approval.",
+                    "התקנה מחדש דורשת גיבוי ובדיקת תור.")
             : postfix
-                ? T(l, "Рассмотрите отдельный Microsoft 365 Relay с собственной очередью и свободным портом. Существующий Postfix и его relayhost оставьте без изменений.",
-                    "Consider an independent Microsoft 365 relay with its own queue and an available port. Keep the primary Postfix and its relayhost unchanged.",
-                    "שקלו ממסר Microsoft 365 נפרד עם תור ויציאה עצמאיים, ללא שינוי Postfix הקיים.")
+                ? T(l, "Выберите, кто отправляет почту (локальные пользователи, службы или SMTP-клиенты), затем решите: сохранить, изменить upstream или добавить отдельный Relay.",
+                    "Choose the mail source (local users, services or SMTP clients), then keep, replace upstream or add an isolated relay.",
+                    "בחרו מקורות דואר ואז את סוג השינוי.")
                 : T(l, "Проверьте текущую почту и возможность отдельного Relay. Основную конфигурацию не изменяйте.",
                     "Inspect current mail delivery and the feasibility of an independent relay. Do not change the primary configuration.",
                     "בדקו ממסר נפרד, ללא שינוי התצורה הקיימת.");
@@ -130,11 +150,12 @@ internal sealed record MailDiscoveryBrief(
                 "The route choice does not prove delivery, M365 authorization or SMTP safety. No changes were made.",
                 "בחירת מסלול אינה מאשרת משלוח או הרשאות. לא בוצעו שינויים.")
         };
-        string? extra = gmail
+        string? extra = inventory?.Mta == "postfix" &&
+            !string.IsNullOrWhiteSpace(inventory.CurrentRelay)
             ? T(l,
-                "Ротация Primary OAuth не переводит текущий Gmail relay на Microsoft 365. Сначала настройте отдельную M365 identity.",
-                "Primary OAuth rotation does not migrate the existing Gmail relay to Microsoft 365. Configure a separate M365 identity first.",
-                "חידוש OAuth ראשי אינו מעביר ממסר Gmail ל-M365.")
+                "Ротация сертификата OAuth сама по себе не переводит существующий relay на другой сервис.",
+                "Rotating an OAuth certificate does not switch an existing upstream relay to another service.",
+                "חידוש אישור OAuth אינו משנה את הניתוב היוצא.")
             : null;
 
         return new MailDiscoveryBrief(headline, facts, steps + Environment.NewLine + audience,
