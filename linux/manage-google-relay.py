@@ -140,7 +140,7 @@ def route_conflicts():
     # Postfix's official default is "nexthop, dot-nexthop". Other matching
     # strategies may trust DNS or unrelated certificates, so block for review.
     matches = set(filter(None, re.split(
-        r"[\\s,:]+", postconf("smtp_tls_secure_cert_match").lower())))
+        r"[\s,:]+", postconf("smtp_tls_secure_cert_match").lower())))
     if not matches or not matches.issubset({"nexthop", "dot-nexthop"}):
         return True
     return outbound_master_overrides()
