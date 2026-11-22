@@ -89,7 +89,7 @@ public static class EntraGraphCertificateAddKeyClient
             // From this point onward, ANY failure is possibly post-mutation.
             try
             {
-                await RequestAsync(http, token, HttpMethod.Post,
+                using var addKeyResult = await RequestAsync(http, token, HttpMethod.Post,
                     "applications/" + objectId.ToString("D") + "/addKey", body, cancellation)
                     .ConfigureAwait(false);
                 var (verifiedObject, updated) = await GetApplicationAsync(
@@ -100,7 +100,12 @@ public static class EntraGraphCertificateAddKeyClient
                         x.Type == "AsymmetricX509Cert" && x.Usage == "Verify") != 1)
                     throw new EntraDiscoveryException("graph_addkey_postcheck_manual_review_required");
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException)
+            {
+                // Cancellation during POST or read-back cannot disprove a
+                // completed addKey. Surface possible partial success.
+                throw new EntraDiscoveryException("graph_addkey_may_have_succeeded_verify_manually");
+            }
             catch (EntraDiscoveryException) { throw new EntraDiscoveryException("graph_addkey_may_have_succeeded_verify_manually"); }
             catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException or
                                       InvalidOperationException or TaskCanceledException)
