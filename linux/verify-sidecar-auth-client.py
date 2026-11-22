@@ -46,7 +46,7 @@ def smtp_reply(reader):
 
 
 def validate(port, hostname, username, ca_file):
-    if not 1024 <= port <= 65535:
+    if not (port == 25 or 1024 <= port <= 65535):
         raise Refused("invalid_smtp_port")
     if not FQDN.fullmatch(hostname) or len(hostname) > 253:
         raise Refused("invalid_tls_server_dns_name")
