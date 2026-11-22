@@ -239,8 +239,8 @@ def apply(request):
     else:
         trust = pathlib.Path("/etc/ssl/certs/ca-certificates.crt")
     backup_id = verified_backup()
-    if fingerprint() != sha:
-        raise RuntimeError("Postfix modified while backup was running")
+    if fingerprint() != sha or route_conflicts() or queue_state() != "empty":
+        raise RuntimeError("Postfix or outgoing mail queue changed while backup was running")
     changed = False
     try:
         # The exact newly chosen destination, never a hard-coded 2525 listener.
@@ -264,6 +264,8 @@ def apply(request):
         update_postconf("smtp_tls_CAfile", str(trust))
         update_postconf("smtp_tls_security_level", "secure")
         update_postconf("smtp_tls_wrappermode", "yes" if port == 465 else "no")
+        # Postfix TLS secure requires a valid CA and peer name; this does not
+        # treat mere TCP connectivity or STARTTLS advertisement as enough.
         if run(["postfix", "check"]).returncode:
             raise RuntimeError("Postfix syntax validation failed")
         if run(["postfix", "reload"]).returncode:
