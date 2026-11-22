@@ -5896,14 +5896,18 @@ internal sealed partial class MainForm : Form
             WriteLine("Isolated Relay presence unverified (" + error.GetType().Name +
                       "); do not assume absence.");
         }
+        // Probe a proposed inbound port only for the explicitly selected
+        // independent sidecar. Switching an existing upstream uses its
+        // current local mail submission paths and needs NO new TCP listener.
         int? checkPort = null;
-        if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int candidatePort) &&
-            SmtpIngressPort.Supported(candidatePort))
-            checkPort = candidatePort;
-        else
-            WriteLine("Selected inbound port is invalid or empty. " +
-                "Checking configured MTA SMTP ports and live listening sockets without a wizard-port assumption. " +
-                "No implicit TCP 2525 fallback.");
+        if (selectedMailScenario == MailScenarioPlanner.Isolated)
+        {
+            if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int candidatePort) &&
+                SmtpIngressPort.Supported(candidatePort))
+                checkPort = candidatePort;
+            else
+                WriteLine("Isolated relay listener port is unverified. Existing MTA ports will still be inspected.");
+        }
         try
         {
             var detected = await SshRemote.ExecuteAsync(endpoint, "bash -s",
@@ -5915,7 +5919,7 @@ internal sealed partial class MainForm : Form
             WriteLine("Read-only Linux hostname and Postfix/Exim/Sendmail settings inspected. " +
                 "Configured inbound SMTP ports: " + inspectedHost.ConfiguredSmtpPortState +
                 "; source: " + inspectedHost.ConfiguredSmtpPortSource +
-                "; selected wizard port: " + (checkPort.HasValue ? checkPort.Value.ToString() : "unverified") +
+                "; proposed isolated port: " + (checkPort.HasValue ? checkPort.Value.ToString() : "not selected") +
                 ". Socket observations do not prove process ownership or firewall reachability.");
         }
         catch (Exception ex)
