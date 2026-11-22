@@ -46,11 +46,21 @@ internal sealed record RemoteResult(int ExitCode, string StdOut, string StdErr)
 
 internal static class SshRemote
 {
+    // Windows checkouts and generated scripts may contain CRLF; Bash reading
+    // them from stdin requires LF. Keep command arguments and credentials intact.
+    internal static string NormalizeScriptInput(string input) =>
+        input.Replace("\r\n", "\n").Replace('\r', '\n');
+
+    internal static bool ScriptLineEndingSelfTest() =>
+        NormalizeScriptInput("set -uo pipefail\r\nexport LC_ALL=C\r\n") ==
+        "set -uo pipefail\nexport LC_ALL=C\n";
+
     internal static async Task<RemoteResult> ExecuteAsync(
         SshEndpoint endpoint, string command, string? input = null,
         TimeSpan? timeout = null, CancellationToken cancellationToken = default)
     {
         endpoint.Validate();
+        if (input is not null) input = NormalizeScriptInput(input);
         if (!string.IsNullOrEmpty(endpoint.Password))
             return await ExecutePasswordSshAsync(endpoint, command, input, timeout, cancellationToken);
         // Windows OpenSSH checks the host key against the user's known_hosts.
@@ -147,8 +157,12 @@ internal static class SshRemote
 
     // Strictly read-only: never invoke sudo or install packages during a probe.
     internal static Task<RemoteResult> ProbeSecurityAsync(
-        SshEndpoint endpoint, string probeScript, CancellationToken token = default) =>
-        ExecuteAsync(endpoint, "bash -s", probeScript, TimeSpan.FromSeconds(65), token);
+        SshEndpoint endpoint, string probeScript, CancellationToken token = default,
+        bool loginProfile = false) =>
+        // Login startup scripts can perform arbitrary actions, so callers may
+        // select this mode only after warning and explicit operator approval.
+        ExecuteAsync(endpoint, loginProfile ? "bash -l -s" : "bash -s",
+            probeScript, TimeSpan.FromSeconds(65), token);
 
     internal static Task<RemoteResult> CheckAsync(
         SshEndpoint endpoint, CancellationToken token = default) =>

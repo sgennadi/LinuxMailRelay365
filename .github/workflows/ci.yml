@@ -15,6 +15,15 @@ jobs:
           bash -n linux/probe-linux.sh linux/install-postfix-m365-xoauth2.sh linux/mail-config-recovery.sh linux/install-preserve-postfix-sidecar.sh linux/network-firewall.sh
           python3 -m py_compile linux/audit-existing-smtp.py
           python3 -m unittest discover -v -s tests
+      - name: Read-only Linux profile probe smoke test
+        shell: bash
+        run: |
+          bash linux/probe-linux.sh > profile.txt
+          grep -F 'PROBE_VERSION=2' profile.txt
+          grep -q '^SYSTEM_HOSTNAME=' profile.txt
+          grep -q '^MTA=' profile.txt
+          grep -q '^SMTP_CONFIGURED_PORTS=' profile.txt
+          grep -q '^SMTP_LISTENING_PORTS=' profile.txt
   ubuntu-postfix-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 12
