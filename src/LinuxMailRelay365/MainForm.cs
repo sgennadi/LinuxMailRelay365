@@ -73,6 +73,7 @@ internal sealed class MainForm : Form
         Font = new Font("Consolas", 9)
     };
     private readonly Label status = UiTheme.Text("");
+    private readonly Button clearActivityButton = UiTheme.Action("Clear log", glyph: "trash");
     private bool showAdvancedSsh;
     private LinuxServerOverview? serverOverview;
     private string? serverOverviewIdentity;
@@ -217,10 +218,9 @@ internal sealed class MainForm : Form
             FlowDirection = FlowDirection.LeftToRight
         };
         journalToolbar.Controls.Add(navigation);
-        var clearLog = UiTheme.Action("Clear log", glyph: "trash");
-        clearLog.AutoSize = true;
-        clearLog.Click += (_, _) => { activity.Clear(); WriteLine("Activity view cleared (diagnostic records unchanged)."); };
-        journalToolbar.Controls.Add(clearLog);
+        clearActivityButton.AutoSize = true;
+        clearActivityButton.Click += (_, _) => activity.Clear();
+        journalToolbar.Controls.Add(clearActivityButton);
         bottom.Controls.Add(journalToolbar, 0, 0);
         bottom.Controls.Add(activity, 0, 1);
         bottom.Controls.Add(status, 0, 2);
@@ -283,7 +283,7 @@ internal sealed class MainForm : Form
     {
         var basics = new TableLayoutPanel
         {
-            ColumnCount = 2, RowCount = 2, AutoSize = true,
+            ColumnCount = 2, RowCount = 2, Width = 850, AutoSize = true,
             Dock = DockStyle.Top, Margin = new Padding(0, 6, 0, 8)
         };
         basics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 57));
@@ -350,6 +350,7 @@ internal sealed class MainForm : Form
         cell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         cell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         cell.Controls.Add(UiTheme.Text(caption), 0, 0);
+        input.Width = 260;
         input.Dock = DockStyle.Fill;
         input.Margin = new Padding(0, 2, 0, 4);
         cell.Controls.Add(input, 0, 1);
@@ -638,6 +639,7 @@ internal sealed class MainForm : Form
         pageHost.ResumeLayout();
 
         navigation.Controls.Clear();
+        clearActivityButton.Text = T("Очистить журнал", "Clear log", "נקה יומן");
         var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
         back.Enabled = step > 0 && !busy;
         back.Click += (_, _) => { step--; RenderPage(); };
