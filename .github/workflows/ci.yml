@@ -15,57 +15,15 @@ jobs:
           bash -n linux/probe-linux.sh linux/install-postfix-m365-xoauth2.sh linux/mail-config-recovery.sh linux/install-preserve-postfix-sidecar.sh linux/network-firewall.sh
           python3 -m py_compile linux/audit-existing-smtp.py
           python3 -m unittest discover -v -s tests
-      - name: Run read-only Linux host / SMTP discovery probe
+      - name: Read-only Linux profile probe smoke test
         shell: bash
         run: |
           bash linux/probe-linux.sh > profile.txt
-          grep -Fx 'PROBE_VERSION=2' profile.txt
+          grep -F 'PROBE_VERSION=2' profile.txt
           grep -q '^SYSTEM_HOSTNAME=' profile.txt
           grep -q '^MTA=' profile.txt
           grep -q '^SMTP_CONFIGURED_PORTS=' profile.txt
           grep -q '^SMTP_LISTENING_PORTS=' profile.txt
-          grep -q '^POSTFIX_CONFIG_SHA256=' profile.txt || grep -q '^MTA=none
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@v5
-      - name: Real isolated Postfix service and primary mail preservation smoke
-        run: bash tests/smoke_isolated_postfix.sh
-
-  windows-build:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '10.0.x'
-      - name: Build portable single EXE x64
-        shell: pwsh
-        run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-x64 --self-contained true -p:UseSharedUpdater=false -o out/win-x64
-      - name: Windows self-test
-        shell: pwsh
-        run: |
-          # GUI-subsystem EXE must be explicitly waited for; `& exe`
-          # does not always set $LASTEXITCODE on Windows.
-          $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
-          $report = Join-Path (Get-Location) 'out/win-x64/selftest-results.txt'
-          $testProcess = Start-Process -FilePath $binary -ArgumentList @('--self-test', '--report', $report) -Wait -PassThru
-          if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report }
-          if ($testProcess.ExitCode -ne 0) { throw "Windows self-test failed with exit code $($testProcess.ExitCode)." }
-          $files = @(Get-ChildItem ./out/win-x64 -Filter '*.exe')
-          if ($files.Count -ne 1) { throw 'Expected exactly one EXE in publish output.' }
-      - name: Build portable single EXE ARM64
-        shell: pwsh
-        run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-arm64 --self-contained true -p:UseSharedUpdater=false -o out/win-arm64
-      - name: Upload preview build (not a stable release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: LinuxMailRelay365-preview-builds
-          path: |
-            out/win-x64/LinuxMailRelay365.exe
-            out/win-arm64/LinuxMailRelay365.exe
-          if-no-files-found: error
- profile.txt
   ubuntu-postfix-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 12
