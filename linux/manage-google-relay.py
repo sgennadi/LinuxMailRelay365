@@ -110,6 +110,50 @@ def route_conflicts():
     return postconf("default_transport") not in ("", "smtp")
 
 
+def scope_status():
+    """Never change a secondary or relocated Postfix configuration by accident."""
+    directory = postconf("config_directory")
+    instances = postconf("multi_instance_enable").lower()
+    other_directories = postconf("multi_instance_directories")
+    return "verified" if (directory == "/etc/postfix" and
+                          instances == "no" and
+                          not other_directories) else "unverified"
+
+
+def client_sasl_status():
+    """Check whether THIS Postfix client can use Google PLAIN/LOGIN over TLS.
+
+    SMTP AUTH on a remote Google connection is not a substitute for checking
+    local Postfix client SASL implementation and installed client mechanisms.
+    Status is deliberately conservative and never prints plugin details.
+    """
+    configured = postconf("smtp_sasl_type").strip()
+    supported = run(["postconf", "-A"])
+    if supported.returncode != 0:
+        return "unverified"
+    available = supported.stdout.decode("utf-8", "replace").split()
+    if configured not in available:
+        return "missing"
+    # Cyrus SASL is the only supported credential-map route for this manager.
+    # Other Postfix implementations are not silently rewritten or replaced.
+    if configured != "cyrus":
+        return "unverified"
+    filter_value = postconf("smtp_sasl_mechanism_filter").upper()
+    if filter_value and not any(
+            mechanism in re.findall(r"[A-Z0-9_-]+", filter_value)
+            for mechanism in ("PLAIN", "LOGIN")):
+        return "missing"
+    viewer = shutil.which("saslpluginviewer")
+    if viewer is None:
+        return "unverified"
+    result = run([viewer, "-c"])
+    if result.returncode != 0:
+        return "unverified"
+    # Inspect fixed mechanism names only; do not expose paths or plugin output.
+    client_mechanisms = result.stdout.decode("utf-8", "replace").upper()
+    return "ready" if re.search(r"\b(?:PLAIN|LOGIN)\b", client_mechanisms) else "missing"
+
+
 def queue_state():
     result = run(["postqueue", "-j"])
     if result.returncode:
@@ -137,6 +181,8 @@ def preview(request):
     sha = prerequisites()
     conflict = route_conflicts()
     queue = queue_state()
+    scope = scope_status()
+    client_sasl = client_sasl_status() if request["profile"] == "gmail" else "not_required"
     enabled = postconf("smtp_sasl_auth_enable").lower()
     outbound_auth = "enabled" if enabled == "yes" else (
         "disabled" if enabled == "no" else "unverified")
@@ -146,7 +192,8 @@ def preview(request):
     tls_mode = postconf("smtp_tls_security_level").lower()
     if tls_mode not in ("none", "may", "encrypt", "dane", "dane-only", "fingerprint", "verify", "secure"):
         tls_mode = "unverified"
-    blocked = conflict or queue != "empty"
+    blocked = (conflict or queue != "empty" or scope != "verified" or
+               (request["profile"] == "gmail" and client_sasl != "ready"))
     print("GOOGLE_ROUTE_VERSION=1")
     print("GOOGLE_ROUTE_PROFILE=" + request["profile"])
     print("GOOGLE_ROUTE_PORT=" + str(request["port"]))
@@ -156,6 +203,8 @@ def preview(request):
     print("GOOGLE_ROUTE_OUTBOUND_SASL=" + outbound_auth)
     print("GOOGLE_ROUTE_PASSWORD_MAP=" + map_state)
     print("GOOGLE_ROUTE_TLS_LEVEL=" + tls_mode)
+    print("GOOGLE_ROUTE_POSTFIX_SCOPE=" + scope)
+    print("GOOGLE_ROUTE_CLIENT_SASL=" + client_sasl)
     print("GOOGLE_ROUTE_APPLY_ALLOWED=" + ("no" if blocked else "yes"))
     print("GOOGLE_ROUTE_INBOUND_CHANGED=no")
     print("GOOGLE_ROUTE_MAIL_SENT=no")
@@ -229,8 +278,10 @@ def apply(request):
     sha = prerequisites()
     if sha != request["expected_sha"]:
         raise RuntimeError("Postfix changed since the reviewed preview")
-    if route_conflicts() or queue_state() != "empty":
-        raise RuntimeError("Mail queue or sender-specific routing requires review")
+    if (route_conflicts() or queue_state() != "empty" or
+            scope_status() != "verified" or
+            (request["profile"] == "gmail" and client_sasl_status() != "ready")):
+        raise RuntimeError("Mail queue, Postfix instance or client SASL is not safe to migrate")
     profile = request["profile"]
     host = EXPECTED[profile][0]
     port = request["port"]
@@ -241,8 +292,10 @@ def apply(request):
     else:
         trust = pathlib.Path("/etc/ssl/certs/ca-certificates.crt")
     backup_id = verified_backup()
-    if fingerprint() != sha or route_conflicts() or queue_state() != "empty":
-        raise RuntimeError("Postfix or outgoing mail queue changed while backup was running")
+    if (fingerprint() != sha or route_conflicts() or queue_state() != "empty" or
+            scope_status() != "verified" or
+            (profile == "gmail" and client_sasl_status() != "ready")):
+        raise RuntimeError("Postfix, client SASL or outgoing mail changed during backup")
     changed = False
     try:
         # The exact newly chosen destination, never a hard-coded 2525 listener.
