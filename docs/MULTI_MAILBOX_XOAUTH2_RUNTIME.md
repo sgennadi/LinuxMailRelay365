@@ -329,6 +329,9 @@ closed until a separately approved fresh proof exists), run:
 
     sudo python3 /usr/local/libexec/linuxmailrelay365-multi-oauth/manage-multi-mailbox-proof-timer.py --disable-reviewed --confirm DISABLE_AND_REVOKE_MULTI_INGRESS_TIMER
 
+Timer disable/rollback now verifies inactive/disabled systemd unit properties
+separately after a nonzero quiet status, refusing missing, failed, masked or
+unknown units rather than treating every nonzero exit as a safe shutdown.
 Timer disable/rollback requires the unit to be both stopped and disabled;
 an inactive but still enabled timer blocks deletion and receipt revocation,
 because systemd may reactivate it after a reboot.

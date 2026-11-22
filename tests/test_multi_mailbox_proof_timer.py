@@ -75,6 +75,56 @@ class OptionalProofTimerTests(unittest.TestCase):
                 universal_newlines=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr[:2000])
 
+    def test_systemctl_does_not_mistake_failed_unknown_or_masked_for_inactive(self):
+        from subprocess import CompletedProcess
+        unit = timer.TIMER.name
+        tests = (
+            (("is-active", "--quiet", unit), "ActiveState", "inactive"),
+            (("is-enabled", "--quiet", unit), "UnitFileState", "disabled"),
+        )
+        with mock.patch.object(Path, "is_file", return_value=True):
+            for args, prop, allowed in tests:
+                with self.subTest(args=args):
+                    first = CompletedProcess(["systemctl"], 3, stdout="")
+                    checked = CompletedProcess(["systemctl", "show"], 0,
+                                               stdout=allowed + "\n")
+                    with mock.patch.object(timer.subprocess, "run",
+                                           side_effect=(first, checked)) as run:
+                        self.assertFalse(timer.systemctl(*args, allow_inactive=True))
+                        self.assertEqual(run.call_count, 2)
+                        self.assertIn("--property=" + prop, run.call_args.args[0])
+                    for unsafe in ("failed", "masked", "enabled", "not-found",
+                                   "activating", "", "inactive\nactive"):
+                        if unsafe == allowed:
+                            continue
+                        with self.subTest(unsafe=unsafe), \
+                             mock.patch.object(timer.subprocess, "run",
+                                 side_effect=(first, CompletedProcess(
+                                     ["systemctl", "show"], 0,
+                                     stdout=unsafe + "\n"))):
+                            with self.assertRaisesRegex(
+                                    timer.Refused, "unverifiable_inactive"):
+                                timer.systemctl(*args, allow_inactive=True)
+
+    def test_systemctl_refuses_unknown_quiet_status_and_failed_property_read(self):
+        from subprocess import CompletedProcess
+        with mock.patch.object(Path, "is_file", return_value=True):
+            with mock.patch.object(timer.subprocess, "run",
+                                   return_value=CompletedProcess(["systemctl"], 4,
+                                                                stdout="")):
+                with self.assertRaises(timer.Refused):
+                    timer.systemctl("is-active", "--quiet", "unrelated.service",
+                                    allow_inactive=True)
+            with mock.patch.object(timer.subprocess, "run",
+                                   side_effect=(
+                                     CompletedProcess(["systemctl"], 1, stdout=""),
+                                     CompletedProcess(["systemctl", "show"], 1,
+                                                      stdout="disabled\n"))):
+                with self.assertRaisesRegex(
+                        timer.Refused, "unverifiable_inactive"):
+                    timer.systemctl("is-enabled", "--quiet", timer.TIMER.name,
+                                    allow_inactive=True)
+
     def test_only_exact_lowercase_sha_can_be_embedded(self):
         for invalid in ("", "A" * 64, "a" * 63, "a" * 65,
                         "a" * 64 + "\nExecStart=/bin/sh", None, 123, []):

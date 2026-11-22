@@ -160,9 +160,33 @@ def systemctl(*args, allow_inactive=False):
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             stdin=subprocess.DEVNULL, timeout=40,
                             universal_newlines=True, check=False)
-    if len(result.stdout) > 4096 or (result.returncode and not allow_inactive):
+    if len(result.stdout) > 4096:
+        raise Refused("systemd_output_unbounded")
+    if result.returncode == 0:
+        return True
+    if not allow_inactive:
         raise Refused("systemd_command_refused")
-    return result.returncode == 0
+    # systemctl --quiet conflates "inactive/disabled" with daemon errors,
+    # missing unit definitions, masked/failed units and unexpected states.
+    # Fail closed unless a SECOND, explicit property query proves safety.
+    checks = {
+        ("is-active", "--quiet", TIMER.name): ("ActiveState", "inactive"),
+        ("is-active", "--quiet", SERVICE.name): ("ActiveState", "inactive"),
+        ("is-enabled", "--quiet", TIMER.name): ("UnitFileState", "disabled"),
+    }
+    expectation = checks.get(args)
+    if expectation is None:
+        raise Refused("unsupported_inactive_systemd_probe")
+    prop, required = expectation
+    state = subprocess.run(
+        [SYSTEMCTL, "show", "--property=" + prop, "--value", args[-1]],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, timeout=40,
+        universal_newlines=True, check=False)
+    if (state.returncode != 0 or len(state.stdout) > 64 or
+            state.stdout.strip() != required):
+        raise Refused("unverifiable_inactive_or_disabled_systemd_unit")
+    return False
 
 
 def attest():
