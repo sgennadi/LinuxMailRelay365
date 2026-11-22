@@ -322,7 +322,7 @@ internal sealed partial class MainForm
         {
             string caution = personal
                 ? "The Gmail App Password will be kept on LINUX in a root-only Postfix hash DB. It is recoverable by root; it is NOT written to Windows. "
-                : "Google Workspace must already authorize this Linux server's public IP and sender domain in Admin Console. No password will be stored. ";
+                : "Google Workspace must already authorize this Linux server's public IP and sender domain in Admin Console. The IP-authorized mode changes the primary Postfix OUTBOUND smtp_sasl_auth_enable to no; any existing credential map is kept in the protected snapshot but will no longer authenticate this upstream. No new password is stored. ";
             if (!ConfirmDestructive(
                 "LinuxMailRelay365 | Replace existing outbound Postfix relay",
                 "Change only OUTGOING relayhost to " + GoogleSmtpAudit.HostFor(profile) + ":" + port +
