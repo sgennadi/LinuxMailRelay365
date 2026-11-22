@@ -2552,6 +2552,22 @@ internal sealed partial class MainForm : Form
                     RenderPage();
                 };
                 AddLine(page, useStandard25);
+                if (inspectedHost is not null && inspectedHostIdentity == TryCurrentIdentity())
+                {
+                    string observed25 = inspectedHost.StandardPort25Observation();
+                    AddLine(page, UiTheme.Text(observed25 switch
+                    {
+                        "occupied" => T("Проверка Linux: TCP/25 уже слушается. Используйте 2525; installer не перехватит порт 25.",
+                            "Linux scan: TCP/25 is already listening. Use 2525; the installer will not take over port 25.",
+                            "TCP/25 כבר בשימוש. השתמשו ביציאה 2525."),
+                        "no_listener_observed" => T("Проверка Linux: слушатель TCP/25 не обнаружен. Это НЕ гарантирует доступность: installer также проверит MTA и автозапуск.",
+                            "Linux scan: no TCP/25 listener observed. This does NOT guarantee availability; installer also checks MTA services and reboot activation.",
+                            "לא זוהה מאזין TCP/25; עדיין נדרשת בדיקת שירותים."),
+                        _ => T("Состояние TCP/25 неизвестно. Сначала повторите read-only анализ Linux.",
+                            "TCP/25 status is unverified. Run the read-only Linux discovery before choosing port 25.",
+                            "מצב TCP/25 אינו מאומת.")
+                    }));
+                }
                 AddField(page, T("Локальный IPv4 для SMTP (пусто = только loopback)",
                                  "Local IPv4 SMTP listener (blank = loopback only)",
                                  "כתובת IPv4 מקומית לקבלת SMTP"), smtpListenIp);
@@ -7500,7 +7516,7 @@ internal sealed partial class MainForm : Form
             // zero SMTP listeners before the first isolated EOP installation.
             if (installed.Mta == "postfix" &&
                 liveAudit.Mta == "no_active_mta_verified" &&
-                mailTransport.SelectedIndex is 1 or 2)
+                mailTransport.SelectedIndex is 0 or 1 or 2)
             {
                 if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port))
                     throw new InvalidDataException("A custom SMTP port is required.");
@@ -7515,7 +7531,7 @@ internal sealed partial class MainForm : Form
                       StringComparison.Ordinal))
                 {
                     WriteLine("Inactive primary Postfix is verified against the one-time " +
-                        "root-owned clean-bootstrap marker; first isolated EOP setup permitted.");
+                        "root-owned clean-bootstrap marker; first isolated SMTP setup permitted.");
                     return;
                 }
             }
