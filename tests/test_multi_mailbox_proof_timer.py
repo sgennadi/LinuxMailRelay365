@@ -75,36 +75,59 @@ class OptionalProofTimerTests(unittest.TestCase):
                 universal_newlines=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr[:2000])
 
-    def test_systemctl_does_not_mistake_failed_unknown_or_masked_for_inactive(self):
+    def test_systemctl_requires_loaded_unchanged_expected_unit(self):
         from subprocess import CompletedProcess
-        unit = timer.TIMER.name
-        tests = (
-            (("is-active", "--quiet", unit), "ActiveState", "inactive"),
-            (("is-enabled", "--quiet", unit), "UnitFileState", "disabled"),
+        cases = (
+            (("is-active", "--quiet", timer.TIMER.name),
+             "ActiveState", "inactive", str(timer.TIMER)),
+            (("is-active", "--quiet", timer.SERVICE.name),
+             "ActiveState", "inactive", str(timer.SERVICE)),
+            (("is-enabled", "--quiet", timer.TIMER.name),
+             "UnitFileState", "disabled", str(timer.TIMER)),
         )
         with mock.patch.object(Path, "is_file", return_value=True):
-            for args, prop, allowed in tests:
+            for args, prop, good, fragment in cases:
                 with self.subTest(args=args):
-                    first = CompletedProcess(["systemctl"], 3, stdout="")
-                    checked = CompletedProcess(["systemctl", "show"], 0,
-                                               stdout=allowed + "\n")
+                    values = {prop: good, "LoadState": "loaded",
+                              "FragmentPath": fragment, "NeedDaemonReload": "no"}
+                    def respond(command, **kwargs):
+                        if command[1] != "show":
+                            return CompletedProcess(command, 3, stdout="")
+                        property_name = command[2].split("=", 1)[1]
+                        return CompletedProcess(command, 0,
+                                                stdout=values[property_name] + "\\n")
                     with mock.patch.object(timer.subprocess, "run",
-                                           side_effect=(first, checked)) as run:
+                                           side_effect=respond) as run:
                         self.assertFalse(timer.systemctl(*args, allow_inactive=True))
-                        self.assertEqual(run.call_count, 2)
-                        self.assertIn("--property=" + prop, run.call_args.args[0])
-                    for unsafe in ("failed", "masked", "enabled", "not-found",
-                                   "activating", "", "inactive\nactive"):
-                        if unsafe == allowed:
+                        self.assertEqual(run.call_count, 5)
+                    for bad in ("failed", "masked", "not-found", "activating",
+                                "active", "", good + "\\nactive"):
+                        if bad == good:
                             continue
-                        with self.subTest(unsafe=unsafe), \
-                             mock.patch.object(timer.subprocess, "run",
-                                 side_effect=(first, CompletedProcess(
-                                     ["systemctl", "show"], 0,
-                                     stdout=unsafe + "\n"))):
-                            with self.assertRaisesRegex(
-                                    timer.Refused, "unverifiable_inactive"):
-                                timer.systemctl(*args, allow_inactive=True)
+                        with self.subTest(property=prop, bad=bad):
+                            values[prop] = bad
+                            with mock.patch.object(timer.subprocess, "run",
+                                                   side_effect=respond):
+                                with self.assertRaisesRegex(
+                                        timer.Refused, "unverifiable_inactive"):
+                                    timer.systemctl(*args, allow_inactive=True)
+                            values[prop] = good
+                    for property_name, bad in (
+                            ("LoadState", "not-found"),
+                            ("LoadState", "masked"),
+                            ("FragmentPath", "/run/systemd/transient/foreign.service"),
+                            ("FragmentPath", ""),
+                            ("NeedDaemonReload", "yes"),
+                            ("NeedDaemonReload", "")):
+                        with self.subTest(property=property_name, bad=bad):
+                            saved = values[property_name]
+                            values[property_name] = bad
+                            with mock.patch.object(timer.subprocess, "run",
+                                                   side_effect=respond):
+                                with self.assertRaisesRegex(
+                                        timer.Refused, "unverifiable_inactive"):
+                                    timer.systemctl(*args, allow_inactive=True)
+                            values[property_name] = saved
 
     def test_systemctl_refuses_unknown_quiet_status_and_failed_property_read(self):
         from subprocess import CompletedProcess
@@ -115,11 +138,12 @@ class OptionalProofTimerTests(unittest.TestCase):
                 with self.assertRaises(timer.Refused):
                     timer.systemctl("is-active", "--quiet", "unrelated.service",
                                     allow_inactive=True)
+            def bad_property(command, **kwargs):
+                if command[1] != "show":
+                    return CompletedProcess(command, 1, stdout="")
+                return CompletedProcess(command, 1, stdout="disabled\\n")
             with mock.patch.object(timer.subprocess, "run",
-                                   side_effect=(
-                                     CompletedProcess(["systemctl"], 1, stdout=""),
-                                     CompletedProcess(["systemctl", "show"], 1,
-                                                      stdout="disabled\n"))):
+                                   side_effect=bad_property):
                 with self.assertRaisesRegex(
                         timer.Refused, "unverifiable_inactive"):
                     timer.systemctl("is-enabled", "--quiet", timer.TIMER.name,
@@ -480,6 +504,19 @@ class OptionalProofTimerTests(unittest.TestCase):
         with mock.patch.object(timer, "installed",
                                return_value={"map": "a" * 64}), \
              mock.patch.object(timer, "systemctl", side_effect=status), \
+             mock.patch.object(timer, "revoke") as revoke:
+            with self.assertRaisesRegex(timer.Refused, "still_active_or_enabled"):
+                timer.disable()
+            revoke.assert_not_called()
+
+    def test_disable_refuses_running_worker_without_revoking_receipt(self):
+        def status(*args, **kwargs):
+            if args[0] == "is-active" and args[-1] == timer.SERVICE.name:
+                return True
+            return False if args[0] in ("is-active", "is-enabled") else True
+        with mock.patch.object(timer, "installed",
+                               return_value={"map": "a" * 64}), \\
+             mock.patch.object(timer, "systemctl", side_effect=status), \\
              mock.patch.object(timer, "revoke") as revoke:
             with self.assertRaisesRegex(timer.Refused, "still_active_or_enabled"):
                 timer.disable()
