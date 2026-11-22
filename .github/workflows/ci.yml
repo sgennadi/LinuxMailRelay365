@@ -290,6 +290,13 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 linux/platform-compat.py --smtp-port 2526 | tee /tmp/lmr365-platform.log
+          # Offline Google SMTP tests on RHEL 8/9/10 Python; no Google login
+          # and no modification of a real Postfix or Internet connection.
+          python3 -m py_compile linux/check-google-smtp.py linux/manage-google-relay.py
+          python3 linux/check-google-smtp.py --self-test
+          python3 linux/manage-google-relay.py --self-test
+          python3 -m unittest discover -v -s tests -p test_google_smtp_probe.py
+          python3 -m unittest discover -v -s tests -p test_google_postfix_route.py
           python3 -m unittest discover -v -s tests -p test_tpm_dependencies.py
           python3 -m py_compile linux/verify-hardware-oauth.py
           python3 -m unittest discover -v -s tests -p test_verify_hardware_oauth.py
