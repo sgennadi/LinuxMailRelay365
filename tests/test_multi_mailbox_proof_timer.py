@@ -234,7 +234,7 @@ class OptionalProofTimerTests(unittest.TestCase):
                     raise timer.Refused("injected_timer_write_failure")
                 path.write_bytes(data)
             def systemctl(*args, **kwargs):
-                return False if args and args[0] == "is-active" else True
+                return False if args and args[0] in ("is-active", "is-enabled") else True
             with mock.patch.object(timer, "SERVICE", service), \
                  mock.patch.object(timer, "TIMER", timerpath), \
                  mock.patch.object(timer, "STATE_ROOT", state_dir), \
@@ -266,7 +266,7 @@ class OptionalProofTimerTests(unittest.TestCase):
             def systemctl(*args, **kwargs):
                 if args[0] == "start":
                     raise timer.Refused("simulated_first_audit_failure")
-                return False if args[0] == "is-active" else True
+                return False if args[0] in ("is-active", "is-enabled") else True
             with mock.patch.object(timer, "SERVICE", service), \
                  mock.patch.object(timer, "TIMER", timerpath), \
                  mock.patch.object(timer, "STATE_ROOT", private), \
@@ -298,7 +298,7 @@ class OptionalProofTimerTests(unittest.TestCase):
                     raise timer.Refused("injected_failure")
                 path.write_bytes(b"changed_after_create")
             def systemctl(*args, **kwargs):
-                return False if args and args[0] == "is-active" else True
+                return False if args and args[0] in ("is-active", "is-enabled") else True
             with mock.patch.object(timer, "SERVICE", service), \
                  mock.patch.object(timer, "TIMER", timerpath), \
                  mock.patch.object(timer, "STATE_ROOT", state_dir), \
@@ -317,6 +317,21 @@ class OptionalProofTimerTests(unittest.TestCase):
                 self.assertTrue(service.exists())
                 self.assertIn("manual_review_required", report.getvalue())
 
+    def test_disable_rejects_enabled_timer_even_if_inactive(self):
+        def status(*args, **kwargs):
+            if args[0] == "is-active":
+                return False
+            if args[0] == "is-enabled":
+                return True
+            return True
+        with mock.patch.object(timer, "installed",
+                               return_value={"map": "a" * 64}), \
+             mock.patch.object(timer, "systemctl", side_effect=status), \
+             mock.patch.object(timer, "revoke") as revoke:
+            with self.assertRaisesRegex(timer.Refused, "still_active_or_enabled"):
+                timer.disable()
+            revoke.assert_not_called()
+
     def test_disable_first_stops_timer_then_revokes_proof_and_removes_known_files(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -328,7 +343,7 @@ class OptionalProofTimerTests(unittest.TestCase):
             for path in (service, timerpath, state):
                 path.write_bytes(b"owned-record")
             def systemctl(*args, **kwargs):
-                return False if args and args[0] == "is-active" else True
+                return False if args and args[0] in ("is-active", "is-enabled") else True
             with mock.patch.object(timer, "SERVICE", service), \
                  mock.patch.object(timer, "TIMER", timerpath), \
                  mock.patch.object(timer, "STATE", state), \

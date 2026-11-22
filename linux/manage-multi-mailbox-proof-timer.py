@@ -287,8 +287,9 @@ def disable():
     state = installed()
     systemctl("disable", "--now", TIMER.name)
     systemctl("stop", SERVICE.name)
-    if systemctl("is-active", "--quiet", TIMER.name, allow_inactive=True):
-        raise Refused("timer_still_active")
+    if (systemctl("is-active", "--quiet", TIMER.name, allow_inactive=True) or
+            systemctl("is-enabled", "--quiet", TIMER.name, allow_inactive=True)):
+        raise Refused("timer_still_active_or_enabled")
     revoke(state["map"])
     for path in (TIMER, SERVICE):
         read(path, 4096, (0o644,))
@@ -346,11 +347,13 @@ def enable(reviewed_sha):
         try:
             systemctl("disable", "--now", TIMER.name, allow_inactive=True)
             systemctl("stop", SERVICE.name, allow_inactive=True)
-            if systemctl("is-active", "--quiet", TIMER.name,
-                         allow_inactive=True) or \
+            if (systemctl("is-active", "--quiet", TIMER.name,
+                          allow_inactive=True) or
                     systemctl("is-active", "--quiet", SERVICE.name,
-                              allow_inactive=True):
-                raise Refused("timer_or_service_remains_active_after_failure")
+                              allow_inactive=True) or
+                    systemctl("is-enabled", "--quiet", TIMER.name,
+                              allow_inactive=True)):
+                raise Refused("timer_remains_active_or_enabled_after_failure")
             if refresh_attempted:
                 # A failed activation must never leave its newly issued
                 # authorization receipt usable for another 120 seconds.
