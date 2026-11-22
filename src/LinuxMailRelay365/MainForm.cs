@@ -3439,7 +3439,7 @@ internal sealed partial class MainForm : Form
     // security state, or clear the independent privacy-safe operation journal.
     private void ClearActivityWindow()
     {
-        if (InvokeRequired) { BeginInvoke(ClearActivityWindow); return; }
+        if (InvokeRequired) { BeginInvoke(() => ClearActivityWindow()); return; }
         ClearVisibleActivityText(activity);
         clearActivityButton.Enabled = false;
     }
