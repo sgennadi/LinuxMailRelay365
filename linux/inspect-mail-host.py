@@ -223,7 +223,7 @@ def postfix_ports(runner=call):
         fields = row.split()
         if len(fields) < 2:
             return "dynamic_or_unverified"
-        if fields[1] not in ("inet", "unix", "fifo", "pass"):
+        if fields[1] not in ("inet", "unix", "fifo", "pass", "unix-dgram"):
             return "dynamic_or_unverified"
         if fields[1] != "inet":
             continue
