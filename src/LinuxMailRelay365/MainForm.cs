@@ -7729,7 +7729,7 @@ internal sealed partial class MainForm : Form
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var description = UiTheme.Text(unsignedPreview
             ? T("Тестовая неподписанная версия: SHA-256 GitHub, архитектура, версия и self-test, резервная копия и откат.",
-                "Unsigned TEST Preview: verify GitHub SHA-256, architecture, version and self-test, then back up and roll back on failure.",
+                "Unsigned TEST Preview/RC: verify GitHub SHA-256, architecture, version and self-test, then back up and roll back on failure.",
                 "גרסת ניסיון לא חתומה: אימות SHA-256, ארכיטקטורה, גרסה ובדיקת תקינות.")
             : T("Скачивание. Проверяем SHA-256, Authenticode, сертификат издателя и self-test. Неподписанный EXE не будет запущен.",
                 "Downloading. Checking SHA-256, Authenticode, publisher certificate and self-test. Unsigned EXEs will not execute.",
@@ -7839,8 +7839,8 @@ internal sealed partial class MainForm : Form
         if (url is null)
         {
             WriteLine(T(
-                "Подходящих релизов нет. Неподписанные Preview EXE нельзя устанавливать автоматически.",
-                "No eligible published release. Unsigned CI preview EXEs cannot be installed automatically.",
+                "Подходящих релизов нет. Для тестовых Preview/RC требуется новая версия и явное согласие; неподписанные Stable запрещены.",
+                "No eligible published release. Only strictly newer published versions are eligible; unsigned Stable is never installed.",
                 "אין גרסה שפורסמה. קובצי CI לא חתומים אינם מותקנים אוטומטית."));
             return;
         }
@@ -7849,14 +7849,14 @@ internal sealed partial class MainForm : Form
         if (offer is null || !string.Equals(offer.PageUrl, url, StringComparison.Ordinal))
             throw new InvalidDataException("Release metadata changed; repeat the update check.");
 
-        // Only a non-elevated unsigned Preview can install another test Preview.
+        // Only a non-elevated unsigned Preview/RC can install another test prerelease.
         // Stable and already-signed installations never use this weaker path.
         if (withPreview && SignedPortableUpdater.IsPreviewRelease(offer) &&
             SignedPortableUpdater.CanInstallPreview(out _))
         {
             var previewAction = MessageBox.Show(this, T(
-                "ВНИМАНИЕ: это НЕПОДПИСАННЫЙ тестовый Preview, НЕ Stable. GitHub SHA-256 проверяет скачанный файл, но НЕ является цифровой подписью издателя. Только тестовый ПК. Сохраните важную работу. После согласия EXE заменится с .bak и откатом при сбое.\n\nДа — установить, Нет — открыть релиз, Отмена — ничего.",
-                "WARNING: this is an UNSIGNED TEST Preview, NOT Stable. GitHub SHA-256 checks downloaded bytes but is NOT a trusted publisher signature. Test PCs only; save important work. With consent the EXE is replaced with .bak and rollback on failure.\n\nYes: install, No: open release, Cancel: do nothing.",
+                "ВНИМАНИЕ: это НЕПОДПИСАННЫЙ тестовый Preview/RC, НЕ Stable. GitHub SHA-256 проверяет скачанный файл, но НЕ является цифровой подписью издателя. Только тестовый ПК. Сохраните важную работу. После согласия EXE заменится с .bak и откатом при сбое.\n\nДа — установить, Нет — открыть релиз, Отмена — ничего.",
+                "WARNING: this is an UNSIGNED TEST Preview/RC, NOT Stable. GitHub SHA-256 checks downloaded bytes but is NOT a trusted publisher signature. Test PCs only; save important work. With consent the EXE is replaced with .bak and rollback on failure.\n\nYes: install, No: open release, Cancel: do nothing.",
                 "אזהרה: גרסת ניסיון לא חתומה, לא Stable. SHA-256 אינו תחליף לחתימת מפרסם. לבדיקה בלבד."),
                 Text, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning,
                 MessageBoxDefaultButton.Button3);
@@ -7866,16 +7866,16 @@ internal sealed partial class MainForm : Form
                 return;
             }
             if (previewAction != DialogResult.Yes) return;
-            WriteLine("Installing approved UNSIGNED TEST Preview; validating release SHA-256, architecture and self-test.");
+            WriteLine("Installing approved UNSIGNED TEST Preview/RC; validating release SHA-256, architecture and self-test.");
             await StageUpdateWithProgressAsync(offer, "", unsignedPreview: true);
-            WriteLine("Preview update verified; closing EXE for backup and replacement.");
+            WriteLine("Preview/RC update staged; closing EXE for backup and replacement.");
             updateShuttingDown = true;
             Close();
             return;
         }
         if (withPreview && SignedPortableUpdater.IsPreviewRelease(offer) &&
             !SignedPortableUpdater.CanInstallPreview(out var previewReason))
-            WriteLine("Unsigned Preview update unavailable: " + previewReason);
+            WriteLine("Unsigned Preview/RC update unavailable: " + previewReason);
 
         if (!SignedPortableUpdater.CanInstall(out string publisher, out string reason))
         {
