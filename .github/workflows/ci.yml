@@ -426,7 +426,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
-          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.6'
+          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.7'
       - name: Capture actual Windows Wizard and early-route screens (CI-only)
         shell: pwsh
         timeout-minutes: 3
@@ -629,7 +629,7 @@ jobs:
             --notes "UNSIGNED TEST PREVIEW 25, NOT Stable/production approved. Adds guarded Multi-mailbox XOAUTH2 Stage, SHA256 Preview, offline Postfix apply/restore, per-SASL-login mailbox ownership, root-issued 120-second ingress proof and two-recipient operator-consented direct Microsoft 365 SMTP acceptance. Fixed test message bodies, root-owned per-run ledger, no automatic resend, and read-only last-attempt recovery. Existing EOP routes are protected by reciprocal owner locks. CI verifies published Preview 24 -> Preview 25 candidate replacement/rollback, Windows x64/ARM64 and isolated Linux tests. No real tenant/inbox delivery, physical TPM or SELinux Enforcing acceptance, 200%-DPI hardware QA, signed Stable, or production authorization is claimed."
 
   release-candidate-publish:
-    name: Publish unsigned 0.1.1 RC6 SSH login-profile and clear-log UI (NOT Stable)
+    name: Publish unsigned 0.1.1 RC7 full-width SSH main window (NOT Stable)
     if: github.event_name == 'push' && github.ref == 'refs/heads/release/v0.1.0-stable-candidate'
     needs:
       - linux-tests
@@ -652,9 +652,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          grep -Fxq '    <Version>0.1.1-rc.6</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
-          grep -Fq 'internal const string Version = "0.1.1-rc.6";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
-          grep -Fq 'internal const string Version = "0.1.1-rc.6";' src/LinuxMailRelay365/UpdateCheck.cs
+          grep -Fxq '    <Version>0.1.1-rc.7</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.1-rc.7";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fq 'internal const string Version = "0.1.1-rc.7";' src/LinuxMailRelay365/UpdateCheck.cs
           test "$GITHUB_REF" = 'refs/heads/release/v0.1.0-stable-candidate'
       - uses: actions/download-artifact@v6
         with:
@@ -692,7 +692,7 @@ jobs:
               with ZipFile(archive) as z:
                   assert z.namelist() == ["LinuxMailRelay365.exe"]
                   assert hashlib.sha256(z.read("LinuxMailRelay365.exe")).hexdigest() == digest(exe)
-          print("UNSIGNED_RC6_RELEASE_SHA256_AND_ZIP=PASS")
+          print("UNSIGNED_RC7_RELEASE_SHA256_AND_ZIP=PASS")
           PY
       - name: Publish one GitHub prerelease without overwrite
         shell: bash
@@ -700,9 +700,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='v0.1.1-rc.6'
+          tag='v0.1.1-rc.7'
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::notice::0.1.1-RC6 already published. Never replace a released candidate."
+            echo "::notice::0.1.1-RC7 already published. Never replace a released candidate."
             exit 0
           fi
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
@@ -714,5 +714,5 @@ jobs:
             out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
             out/published/preview-artifact-digests.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "LinuxMailRelay365 v0.1.1 RC6 (UNSIGNED TEST ONLY)" --prerelease \
-            --notes "UNSIGNED TEST RELEASE CANDIDATE 0.1.1 RC6. NOT STABLE OR PRODUCTION-APPROVED. Adds native C# Microsoft Graph addKey for staged public OAuth certificate renewal on Linux PEM/TPM/HSM. Requires explicit Preview, exact tenant/app verification, signed current-key RSA JWT proof (RS256/x5t/iss/aud/exp), exact plan SHA256, and separate typed Apply consent; previously registered key credentials are verified after append. Existing Graph provisioning, MSAL Device Code/MFA and read-only Entra inventory remain native C#. Also migrates the optional Entra security capability check (Conditional Access policy read, sign-in log read and SKU metadata read) into native C# GET requests with delegated Policy.Read.All, AuditLog.Read.All and Organization.Read.All. Old Graph security PS1 remains a separately selected manual fallback. The old Microsoft.Graph.Authentication PS1 certificate script remains available via an explicit manual fallback checkbox, never chosen automatically. Exchange Online PowerShell 7 remains for scoped SMTP.SendAsApp RBAC, mailbox CAS and Connectors. No Linux private key, Graph token or proof is stored by native flow. Failures after Graph addKey may require manual Entra inspection before retry. Real live tenant addKey, production TPM/HSM, Exchange delivery, 200%-DPI hardware GUI and SELinux Enforcing acceptance are NOT verified.  RC5 introduced read-only audit of existing Linux inbound SMTP ports from Postfix master.cf/postconf -M, Exim daemon_smtp_ports and compiled Sendmail sendmail.cf without changing the primary MTA. The wizard separately shows configured ports, live listening sockets and the operator-selected sidecar port; it flags potential collisions, includes custom ports such as 2526 and never silently substitutes 2525 for missing or invalid input. Read-only fallback can inspect configured ports after an incomplete general MTA probe, but does not authorize installation or Force Replace. CI uses Windows x64/ARM64 builds and Linux offline tests; real delivery and live RHEL SELinux acceptance remain pending. RC6 adds an operator-confirmed optional SSH login-shell environment check without applying profile settings to installer commands; it reports tool availability only and never logs raw login-profile output or PATH. Core SSH and MTA read-only diagnostics prepend standard system search directories. A DPI-friendly Clear log control clears only visible activity, retaining diagnostic history and current configuration. Previously published RC5 remains unchanged. Signed Stable is NOT published."
+            --title "LinuxMailRelay365 v0.1.1 RC7 (UNSIGNED TEST ONLY)" --prerelease \
+            --notes "UNSIGNED TEST RELEASE CANDIDATE 0.1.1 RC7. NOT STABLE OR PRODUCTION-APPROVED. Adds native C# Microsoft Graph addKey for staged public OAuth certificate renewal on Linux PEM/TPM/HSM. Requires explicit Preview, exact tenant/app verification, signed current-key RSA JWT proof (RS256/x5t/iss/aud/exp), exact plan SHA256, and separate typed Apply consent; previously registered key credentials are verified after append. Existing Graph provisioning, MSAL Device Code/MFA and read-only Entra inventory remain native C#. Also migrates the optional Entra security capability check (Conditional Access policy read, sign-in log read and SKU metadata read) into native C# GET requests with delegated Policy.Read.All, AuditLog.Read.All and Organization.Read.All. Old Graph security PS1 remains a separately selected manual fallback. The old Microsoft.Graph.Authentication PS1 certificate script remains available via an explicit manual fallback checkbox, never chosen automatically. Exchange Online PowerShell 7 remains for scoped SMTP.SendAsApp RBAC, mailbox CAS and Connectors. No Linux private key, Graph token or proof is stored by native flow. Failures after Graph addKey may require manual Entra inspection before retry. Real live tenant addKey, production TPM/HSM, Exchange delivery, 200%-DPI hardware GUI and SELinux Enforcing acceptance are NOT verified.  RC5 introduced read-only audit of existing Linux inbound SMTP ports from Postfix master.cf/postconf -M, Exim daemon_smtp_ports and compiled Sendmail sendmail.cf without changing the primary MTA. The wizard separately shows configured ports, live listening sockets and the operator-selected sidecar port; it flags potential collisions, includes custom ports such as 2526 and never silently substitutes 2525 for missing or invalid input. Read-only fallback can inspect configured ports after an incomplete general MTA probe, but does not authorize installation or Force Replace. CI uses Windows x64/ARM64 builds and Linux offline tests; real delivery and live RHEL SELinux acceptance remain pending. RC6 adds an operator-confirmed optional SSH login-shell environment check without applying profile settings to installer commands; it reports tool availability only and never logs raw login-profile output or PATH. Core SSH and MTA read-only diagnostics prepend standard system search directories. A DPI-friendly Clear log control clears only visible activity, retaining diagnostic history and current configuration. Previously published RC5 remains unchanged. RC7 redesigns the first WinForms screen with a full-width SSH credentials card; host, port and authentication fields stack on compact and high-DPI displays. Verbose guidance and the optional, confirmed SSH login-profile check are behind an expandable Help section. A clearly labelled Check for updates toolbar opens separate Stable and explicitly selected test Preview/RC checks, preserves the original signed/preview update security gates, archives, rollback, and log access. Previously published RC6 remains immutable. CI validates 33 real Windows screenshots, including expanded help and compact form. Signed Stable is NOT published."
