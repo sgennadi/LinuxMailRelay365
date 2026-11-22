@@ -25,6 +25,8 @@ class NativeEntraProvisioning(unittest.TestCase):
             "rsa_public_certificate_required",
             "GetAppAsync(http, token, exactApp",
             "SameKeySet(existing, latest)",
+            'JsonPropertyName("customKeyIdentifier")',
+            "existing_certificate_metadata_changed_review_entra",
             "app_credentials_changed_review_again",
             "keyCredentials = combined",
             "VerifyKeySetAsync(http, token, clientId",
