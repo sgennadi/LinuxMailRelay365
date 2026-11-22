@@ -244,7 +244,14 @@ internal static class Program
                        !signing.Contains("--inventory-only", StringComparison.Ordinal);
             }),
             ("Mail routing safety", MailRoutingPlanStore.SelfTest),
-            ("Bash LF-over-SSH contract and sudo input safety", SshRemote.BashStdinSelfTest),
+            ("Bash LF-over-SSH contract and sudo input safety", () =>
+                SshRemote.BashStdinSelfTest() &&
+                !EmbeddedAssets.SecurityProbe.Contains('\r') &&
+                !EmbeddedAssets.SecurityProbe.Contains('\0') &&
+                EmbeddedAssets.SecurityProbe.Contains("set -uo pipefail",
+                    StringComparison.Ordinal) &&
+                EmbeddedAssets.SecurityProbe.Contains("elif ((",
+                    StringComparison.Ordinal)),
             ("Foreign primary MTA config backup is only backup/list/verify", () =>
             {
                 foreach (string mta in new[] { "exim", "sendmail" })
