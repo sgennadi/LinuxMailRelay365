@@ -112,9 +112,12 @@ def route_conflicts():
 
 def scope_status():
     """Never change a secondary or relocated Postfix configuration by accident."""
-    directory = postconf("config_directory")
-    instances = postconf("multi_instance_enable").lower()
-    other_directories = postconf("multi_instance_directories")
+    try:
+        directory = postconf("config_directory")
+        instances = postconf("multi_instance_enable").lower()
+        other_directories = postconf("multi_instance_directories")
+    except (RuntimeError, OSError, TimeoutError):
+        return "unverified"
     return "verified" if (directory == "/etc/postfix" and
                           instances == "no" and
                           not other_directories) else "unverified"
@@ -127,8 +130,11 @@ def client_sasl_status():
     local Postfix client SASL implementation and installed client mechanisms.
     Status is deliberately conservative and never prints plugin details.
     """
-    configured = postconf("smtp_sasl_type").strip()
-    supported = run(["postconf", "-A"])
+    try:
+        configured = postconf("smtp_sasl_type").strip()
+        supported = run(["postconf", "-A"])
+    except (RuntimeError, OSError, TimeoutError):
+        return "unverified"
     if supported.returncode != 0:
         return "unverified"
     available = supported.stdout.decode("utf-8", "replace").split()
