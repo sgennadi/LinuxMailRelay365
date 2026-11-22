@@ -272,11 +272,11 @@ def locked(callback):
 
 def installed():
     state = record(read(STATE, 1024, (0o600,)))
-    if set(state) != {"version", "plan", "map", "service", "timer"} or \
+    if (set(state) != {"version", "plan", "map", "service", "timer"} or
             type(state["version"]) is not int or
-            state["version"] != 1 or not all(
-                isinstance(state[k], str) and SHA.fullmatch(state[k])
-                for k in ("plan", "map", "service", "timer")):
+            state["version"] != 1 or
+            not all(isinstance(state[k], str) and SHA.fullmatch(state[k])
+                    for k in ("plan", "map", "service", "timer"))):
         raise Refused("invalid_installed_timer")
     expected = {SERVICE: service_text(state["map"]), TIMER: timer_text()}
     if state["service"] != digest(expected[SERVICE]) or \
