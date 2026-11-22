@@ -826,7 +826,7 @@ internal static class EmbeddedAssets
 
     // Passing null inspects effective MTA configuration independently of the
     // selected wizard port; it does not silently substitute TCP 2525.
-    internal static string BuildMailHostInspectionBundle(int? selectedPort = 2525,
+    internal static string BuildMailHostInspectionBundle(int? selectedPort = null,
         string currentMta = "unknown")
     {
         if ((selectedPort.HasValue && !SmtpIngressPort.Supported(selectedPort.Value)) ||
@@ -843,11 +843,10 @@ internal static class EmbeddedAssets
             "printf '%s\\n' \"$mail_host_report\"\n" +
             "mail_host_ports=$(printf '%s\\n' \"$mail_host_report\" | sed -n 's/^MAIL_HOST_SMTP_CONFIG_PORTS=//p')\n" +
             "test -n \"$mail_host_ports\" || mail_host_ports=unverified\n" +
-            (selectedPort.HasValue
-                ? "python3 \"$work/audit-mail-bindings.py\" --smtp-port " +
-                  selectedPort.Value + " --mta " + currentMta +
-                  " --configured-ports \"$mail_host_ports\"\n"
-                : "");
+            "python3 \"$work/audit-mail-bindings.py\" " +
+            (selectedPort.HasValue ? "--smtp-port " + selectedPort.Value + " " : "") +
+            "--mta " + currentMta +
+            " --configured-ports \"$mail_host_ports\"\n";
     }
 
     internal static string BuildExistingSmtpAuditBundle()
