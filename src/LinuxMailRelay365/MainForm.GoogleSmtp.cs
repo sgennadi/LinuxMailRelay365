@@ -168,6 +168,8 @@ internal sealed partial class MainForm
                 width, warning: audit.AuthResult is "rejected" or "rejected_or_policy"));
         }
 
+        if (!workspace)
+        {
         AddLine(page, UiTheme.Text(TranslateMailFlow(l,
             "Необязательная разовая проверка учётных данных",
             "Optional one-time SMTP credential test",
@@ -190,6 +192,14 @@ internal sealed partial class MainForm
             "Check SMTP AUTH via TLS 587/465 (send no mail)",
             "בדיקת SMTP AUTH ללא שליחת דואר"),
             CheckGoogleCredentialsAsync, false, "shield", "google-auth");
+
+        }
+        else
+            AddLine(page, MailFlowText(TranslateMailFlow(l,
+                "Выбран режим Google Workspace с авторизацией по публичному IP. SMTP App Password здесь не применяется. Проверьте разрешённый IP, домен отправителя и TLS в Google Admin.",
+                "Google Workspace IP-authorized relay is selected. App Password login is not used by this route. Check the approved public IP, sender domain and TLS in Google Admin.",
+                "החיבור מבוסס IP מאושר; סיסמת אפליקציה אינה בשימוש."),
+                width, warning: true));
 
         if (selectedMailScenario == MailScenarioPlanner.ReplaceRelay &&
             inspectedMail?.Mta == "postfix" && inspectedHost?.MtaState == "active" &&
@@ -217,12 +227,23 @@ internal sealed partial class MainForm
                     "Outbound SASL: " + planned.OutboundSasl +
                     "  ·  credential map: " + planned.PasswordMap +
                     "  ·  TLS: " + planned.TlsLevel +
+                    Environment.NewLine +
+                    "Postfix scope: " + planned.PostfixScope +
+                    "  ·  SMTP client SASL: " + planned.ClientSasl +
                     Environment.NewLine + TranslateMailFlow(l,
                         "Наличие password map НЕ доказывает действительность пароля.",
                         "A configured password map does NOT prove that its credentials work.",
                         "קובץ אישורים מוגדר אינו הוכחה לתקינות הסיסמה."),
                     width, warning: !planned.ApplyAllowed));
             }
+            if (googleRoutePreview is { ClientSasl: "unverified" or "missing" } unknownClient &&
+                googleRoutePreviewContext == CurrentGoogleRouteContext(unknownClient.Fingerprint) &&
+                selectedMailTarget == MailFlowIntent.TargetGmail)
+                AddLine(page, MailFlowText(TranslateMailFlow(l,
+                    "Gmail Relay пока нельзя применять: Postfix SMTP client SASL PLAIN/LOGIN не подтверждён. На RHEL-подобных системах проверьте cyrus-sasl-plain и saslpluginviewer; на Debian/Ubuntu — соответствующие libsasl2 modules. Пакеты не устанавливались автоматически.",
+                    "Gmail Apply is blocked: Postfix client SASL PLAIN/LOGIN is not verified. On RHEL-like systems check cyrus-sasl-plain and saslpluginviewer; on Debian/Ubuntu check libsasl2 modules. No packages were installed automatically.",
+                    "אין אפשרות להחיל לפני אימות מנגנון SMTP SASL."),
+                    width, warning: true));
             AddAction(page, TranslateMailFlow(l,
                 "Проверить смену relayhost (без изменений)",
                 "Preview Google relayhost migration (read-only)",
