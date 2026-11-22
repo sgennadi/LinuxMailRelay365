@@ -219,7 +219,8 @@ class EopRouteContracts(unittest.TestCase):
             with self.subTest(ip=bad):
                 with self.assertRaises(eop.Refused):
                     eop.validate(opts(mode="connector", public_ip=bad))
-        for port in (25, 587, 1023, 65536):
+        eop.validate(opts(port=25))
+        for port in (587, 1023, 65536):
             with self.subTest(port=port):
                 with self.assertRaisesRegex(eop.Refused, "invalid_custom_port"):
                     eop.validate(opts(port=port))
@@ -318,7 +319,7 @@ class EopRouteContracts(unittest.TestCase):
                     eop.require_empty_sidecar_queue()
 
     def test_cli_invalid_port_and_no_credentials_or_mail_submission(self):
-        for port in ("25", "587", "1023", "65536", "0"):
+        for port in ("587", "1023", "65536", "0"):
             proc = subprocess.run(
                 [sys.executable, str(SCRIPT), "--check-only", "--smtp-port", port,
                  "--mode", "direct-send",
