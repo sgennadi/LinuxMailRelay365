@@ -67,8 +67,10 @@ def config(data):
 
 
 def run(args, *, input=None):
-    return subprocess.run(args, input=input, capture_output=True,
-                          check=False, timeout=75)
+    # stdout/stderr PIPE instead of capture_output keeps Python 3.6
+    # compatibility on RHEL/Rocky/Alma 8, without leaking SMTP credentials.
+    return subprocess.run(args, input=input, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, check=False, timeout=75)
 
 
 def postconf(key):
