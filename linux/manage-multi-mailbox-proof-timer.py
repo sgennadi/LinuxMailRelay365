@@ -195,9 +195,18 @@ def attest():
     try:
         spec.loader.exec_module(module)
         proof = module.inspect(pinned)
+    except Exception:
+        # Nested auditors have independent Refused/Unverified exception
+        # classes. Never echo their message, traceback, path or credentials
+        # back to the SSH client/Windows Wizard.
+        raise Refused("installed_ingress_audit_refused") from None
     finally:
         sys.dont_write_bytecode = bytecode_before
-    if proof.get("map_sha256") != pinned or proof.get("expires_at", 0) <= int(time.time()):
+    if (not isinstance(proof, dict) or
+            proof.get("map_sha256") != pinned or
+            type(proof.get("expires_at")) is not int or
+            proof["expires_at"] <= int(time.time()) or
+            proof.get("ingress") != "root_static_audit_consistent_not_live_delivery"):
         raise Refused("ingress_policy_not_current")
     return pinned, digest(raw)
 

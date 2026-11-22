@@ -133,7 +133,8 @@ class OptionalProofTimerTests(unittest.TestCase):
             root = Path(td)
             code = ("import time\n"
                     "def inspect(sha):\n"
-                    "    return {'map_sha256': sha, 'expires_at': int(time.time()) + 120}\n"
+                    "    return {'map_sha256': sha, 'expires_at': int(time.time()) + 120,\n"
+                    "            'ingress': 'root_static_audit_consistent_not_live_delivery'}\n"
                     ).encode("ascii")
             filename = root / "refresh-multi-mailbox-proof.py"
             filename.write_bytes(code)
@@ -162,6 +163,19 @@ class OptionalProofTimerTests(unittest.TestCase):
                 value, active_hash = timer.attest()
                 self.assertEqual(value, sha)
                 self.assertEqual(len(active_hash), 64)
+                self.assertFalse((root / "__pycache__").exists())
+                changed = (
+                    "def inspect(sha):\n"
+                    "    raise RuntimeError('SECRET_INTERNAL_FILE_PATH_NEVER_LEAK')\n"
+                ).encode("ascii")
+                filename.write_bytes(changed)
+                marker["source"]["refresh-multi-mailbox-proof.py"] = timer.digest(changed)
+                code = changed
+                with self.assertRaisesRegex(
+                        timer.Refused, "installed_ingress_audit_refused") as caught:
+                    timer.attest()
+                self.assertNotIn("SECRET_INTERNAL_FILE_PATH_NEVER_LEAK",
+                                 str(caught.exception))
                 self.assertFalse((root / "__pycache__").exists())
 
     def test_status_without_timer_reports_not_installed(self):
