@@ -51,6 +51,16 @@ def verify_guest():
             timeout=15, check=False)
         if (status.returncode == 0) != expected_active:
             refuse("SERVICE_STATE_" + service.replace(".", "_"))
+    process = subprocess.run(
+        ["pgrep", "-x", "sendmail"], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, timeout=12, check=False)
+    if process.returncode != 1:
+        refuse("ORPHAN_SENDMAIL_PROCESS_OR_UNVERIFIED_PROCESS_STATE")
+    listeners = subprocess.run(
+        ["ss", "-H", "-ltn"], stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, universal_newlines=True,
+        timeout=12, check=True)
+    require_only_primary_postfix_listener(listeners.stdout)
     queue = subprocess.run(
         ["postqueue", "-j"], capture_output=True, check=True, timeout=15)
     if queue.stdout.strip():
@@ -60,6 +70,33 @@ def verify_guest():
                 p.is_file() and p.name.startswith(("qf", "df", "tf", "xf"))
                 for p in location.iterdir()):
             refuse("SENDMAIL_QUEUE_NOT_EMPTY")
+
+
+
+def require_only_primary_postfix_listener(output):
+    """KVM fixture contract: exactly one loopback IPv4 SMTP listener on 25.
+
+    The primary Postfix VM fixture sets inet_protocols=ipv4. Never treat an
+    orphan Sendmail listener, STARTTLS/submission sidecar, or wildcard bind
+    as a healthy state after recovery reboot.
+    """
+    smtp_ports = frozenset((25, 465, 587, 2525, 2526))
+    listeners = []
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 5 or fields[0] != "LISTEN":
+            refuse("UNPARSEABLE_TCP_LISTENER")
+        address, sep, port = fields[3].rpartition(":")
+        if not sep or not port.isdigit():
+            refuse("INVALID_TCP_LISTENER_ADDRESS")
+        number = int(port)
+        if number in smtp_ports:
+            if address != "127.0.0.1" or number != 25:
+                refuse("UNEXPECTED_SMTP_LISTENER_AFTER_RECOVERY")
+            listeners.append((address, number))
+    if listeners != [("127.0.0.1", 25)]:
+        refuse("MISSING_OR_DUPLICATE_PRIMARY_POSTFIX_LISTENER")
+    return "loopback_ipv4_25_only"
 
 
 def snapshot_id_from_root_file(module):
@@ -204,6 +241,8 @@ def run():
         "PACKAGE_SELINUX_SHA256": package_labels_sha,
         "SNAPSHOT_MATCH": "identical",
         "POSTFIX": "active",
+        "SMTP_LISTENER": "loopback_ipv4_25_only",
+        "SENDMAIL_PROCESS": "absent",
         "SENDMAIL": "stopped",
         "QUEUE": "empty",
         "SELINUX": "enforcing",
