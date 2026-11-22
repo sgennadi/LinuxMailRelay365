@@ -234,6 +234,38 @@ class GooglePostfixRouteTests(unittest.TestCase):
              mock.patch.object(mod.shutil, "which", return_value=None):
             self.assertEqual(mod.client_sasl_status(), "unverified")
 
+    def test_google_sasl_filter_honors_exclusions_and_dynamic_tables(self):
+        def mocked_run(args, **kwargs):
+            if args == ["postconf", "-A"]:
+                return CommandResult(stdout=b"cyrus\n")
+            if args == ["/usr/bin/saslpluginviewer", "-c"]:
+                return CommandResult(stdout=b"Mechanisms: PLAIN LOGIN\n")
+            raise AssertionError("Unexpected command: " + repr(args))
+
+        cases = (
+            ("", "ready"),
+            ("plain, login", "ready"),
+            ("!login, static:rest", "ready"),
+            ("!plain, static:all", "ready"),
+            ("!plain, !login, static:all", "missing"),
+            ("plain, !plain", "missing"),
+            ("!plain, !login", "missing"),
+            ("XOAUTH2", "missing"),
+            ("hash:/etc/postfix/sasl_filter", "unverified"),
+            ("/etc/postfix/client_mechs", "unverified"),
+        )
+        with mock.patch.object(mod, "run", side_effect=mocked_run), \
+             mock.patch.object(mod.shutil, "which",
+                               return_value="/usr/bin/saslpluginviewer"):
+            for filter_value, expected in cases:
+                with self.subTest(filter_value=filter_value):
+                    with mock.patch.object(mod, "postconf",
+                            side_effect=lambda name: {
+                                "smtp_sasl_type": "cyrus",
+                                "smtp_sasl_mechanism_filter": filter_value
+                            }[name]):
+                        self.assertEqual(mod.client_sasl_status(), expected)
+
     def test_gmail_apply_blocked_if_local_client_sasl_missing(self):
         request = self.request(operation="apply", expected_sha="a" * 64,
                                user="mail@example.org", secret="test")
