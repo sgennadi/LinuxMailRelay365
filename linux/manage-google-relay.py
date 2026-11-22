@@ -154,6 +154,42 @@ def client_sasl_status():
     return "ready" if re.search(r"\b(?:PLAIN|LOGIN)\b", client_mechanisms) else "missing"
 
 
+# Values which must survive an outbound-only upstream migration unchanged.
+# SMTP AUTH here is the *inbound* server flag, distinct from smtp_sasl_*.
+INBOUND_SETTINGS = (
+    "inet_interfaces", "inet_protocols", "mydestination", "myorigin",
+    "mynetworks", "smtpd_sasl_auth_enable", "smtpd_relay_restrictions",
+    "smtpd_recipient_restrictions", "local_transport", "mailbox_transport",
+    "virtual_transport", "virtual_alias_maps", "virtual_mailbox_maps",
+    "alias_maps", "alias_database",
+)
+
+
+def inbound_snapshot():
+    """Capture local delivery and inbound policy without printing values."""
+    if not MASTER.is_file() or MASTER.is_symlink():
+        raise RuntimeError("Postfix master.cf changed or is not a regular file")
+    contents = MASTER.read_bytes()
+    if len(contents) > 2 * 1024 * 1024:
+        raise RuntimeError("Postfix master.cf exceeds expected size")
+    return (hashlib.sha256(contents).digest(),
+            tuple(postconf(key) for key in INBOUND_SETTINGS))
+
+
+def require_gmail_password_map(port):
+    """Read only the existence of a lookup result; NEVER emit its contents."""
+    if not MAP.is_file() or MAP.is_symlink():
+        raise RuntimeError("Postfix Google credential database missing")
+    meta = MAP.stat()
+    if (meta.st_uid != 0 or not stat.S_ISREG(meta.st_mode) or
+            (meta.st_mode & 0o077) != 0):
+        raise RuntimeError("Postfix Google credential DB must be root-only")
+    lookup = run(["postmap", "-q", "[smtp.gmail.com]:" + str(port),
+                  "hash:/etc/postfix/lmr365-google-sasl"])
+    if lookup.returncode != 0 or not lookup.stdout.strip():
+        raise RuntimeError("Postfix Gmail SASL map lookup failed")
+
+
 def queue_state():
     result = run(["postqueue", "-j"])
     if result.returncode:
@@ -291,6 +327,7 @@ def apply(request):
             raise RuntimeError("No trusted CA certificate bundle")
     else:
         trust = pathlib.Path("/etc/ssl/certs/ca-certificates.crt")
+    before_inbound = inbound_snapshot()
     backup_id = verified_backup()
     if (fingerprint() != sha or route_conflicts() or queue_state() != "empty" or
             scope_status() != "verified" or
@@ -309,6 +346,7 @@ def apply(request):
             update_postconf("smtp_sasl_auth_enable", "yes")
             update_postconf("smtp_sasl_security_options", "noanonymous")
             update_postconf("smtp_sasl_tls_security_options", "noanonymous")
+            require_gmail_password_map(port)
         else:
             # Workspace profile intentionally uses the IP-authorized relay
             # path. It does not invent a Google credential, tenant allowlist
@@ -328,6 +366,14 @@ def apply(request):
         if postconf("relayhost") != "[" + host + "]:" + str(port) or (
             run(["systemctl", "is-active", "--quiet", "postfix"]).returncode):
             raise RuntimeError("Google relay activation not verified")
+        if (postconf("smtp_tls_security_level") != "secure" or
+                postconf("smtp_tls_wrappermode") !=
+                    ("yes" if port == 465 else "no") or
+                postconf("smtp_sasl_auth_enable") !=
+                    ("yes" if profile == "gmail" else "no")):
+            raise RuntimeError("Activated outgoing SMTP policy mismatch")
+        if inbound_snapshot() != before_inbound:
+            raise RuntimeError("Unexpected local or inbound Postfix configuration drift")
         print("GOOGLE_ROUTE_VERSION=1")
         print("GOOGLE_ROUTE_PROFILE=" + profile)
         print("GOOGLE_ROUTE_PORT=" + str(port))
