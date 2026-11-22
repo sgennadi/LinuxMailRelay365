@@ -1226,69 +1226,64 @@ internal sealed partial class MainForm : Form
 
     private void RenderConnectionStep(TableLayoutPanel page)
     {
+        // RC7: one full-width credentials card. Never compress SSH credentials
+        // into 63% of the window or render several paragraphs in a narrow
+        // column. All secondary guidance is accessible in a collapsible panel.
         connectionWideLayout = UseWideConnectionLayout(pageHost.ClientSize.Width, DeviceDpi);
-        // Even a single-column card can fit two short input fields at 760px,
-        // avoiding unnecessary vertical scrolling to the primary action.
-        bool pairFields = (long)pageHost.ClientSize.Width * 96 >=
-            690L * Math.Max(DeviceDpi, 96);
+        bool pairFields = connectionWideLayout;
         page.MaximumSize = Size.Empty;
         page.Dock = DockStyle.Top;
-        page.Padding = new Padding(18, 4, 8, 12);
-        int availableWidth = Math.Max(300, pageHost.ClientSize.Width - 38);
+        page.Padding = new Padding(12, 4, 12, 12);
+        int availableWidth = Math.Max(285, pageHost.ClientSize.Width - 34);
         var cards = new TableLayoutPanel
         {
-            Dock = DockStyle.Top, AutoSize = true,
+            Dock = DockStyle.Top,
+            AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            ColumnCount = connectionWideLayout ? 2 : 1,
-            RowCount = connectionWideLayout ? 1 : 2,
+            ColumnCount = 1, RowCount = 0,
             BackColor = UiTheme.Canvas,
-            Margin = new Padding(0),
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
             Width = availableWidth,
             MaximumSize = new Size(availableWidth, 0)
         };
-        if (connectionWideLayout)
-        {
-            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 63));
-            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 37));
-        }
-        else
-            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var form = ConnectionCard(Color.White);
-        var details = ConnectionCard(Color.FromArgb(238, 243, 248));
-        form.MaximumSize = new Size(connectionWideLayout
-            ? Math.Max(340, availableWidth * 63 / 100 - 12) : availableWidth, 0);
-        details.MaximumSize = new Size(connectionWideLayout
-            ? Math.Max(260, availableWidth * 37 / 100 - 12) : availableWidth, 0);
-        cards.Controls.Add(form, 0, 0);
-        cards.Controls.Add(details, connectionWideLayout ? 1 : 0,
-            connectionWideLayout ? 0 : 1);
+        form.Margin = new Padding(0, 0, 0, 8);
+        form.MaximumSize = new Size(availableWidth, 0);
+        AddLine(cards, form);
 
-        var heading = UiTheme.Text(T("Данные сервера", "Server connection", "פרטי השרת"), true);
-        AddLine(form, heading);
+        AddLine(form, UiTheme.Text(T(
+            "Подключение к Linux по SSH",
+            "Connect to Linux using SSH",
+            "חיבור ל-Linux באמצעות SSH"), true));
         AddConnectionPair(form,
             T("Linux: DNS или IPv4", "Linux DNS or IPv4", "כתובת Linux"), host,
-            T("SSH-порт", "SSH port", "פורט SSH"), sshPort, 73);
+            T("SSH-порт", "SSH port", "פורט SSH"), sshPort, 77);
         if (pairFields)
             AddConnectionPair(form,
                 T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser,
-                T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode, 43);
+                T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode, 42);
         else
         {
-            AddConnectionField(form, T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser);
-            AddConnectionField(form, T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode);
+            AddConnectionField(form,
+                T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser);
+            AddConnectionField(form,
+                T("Способ входа", "Authentication method", "שיטת אימות"), sshAuthMode);
         }
+
         if (sshAuthMode.SelectedIndex == 1)
         {
             if (pairFields)
                 AddConnectionPair(form,
                     T("SSH-пароль", "SSH password", "סיסמת SSH"), sshPassword,
-                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 54);
+                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 56);
             else
             {
-                AddConnectionField(form, T("SSH-пароль (не сохраняется)",
-                    "SSH password (not saved)", "סיסמת SSH"), sshPassword);
-                AddConnectionField(form, T("Пароль sudo (если нужен)",
-                    "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
+                AddConnectionField(form,
+                    T("SSH-пароль (не сохраняется)", "SSH password (not saved)", "סיסמת SSH"), sshPassword);
+                AddConnectionField(form,
+                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
             }
             specifyHostKeyManually.Text = T(
                 "Указать SSH host key SHA256 вручную (необязательно)",
@@ -1298,8 +1293,9 @@ internal sealed partial class MainForm : Form
             if (specifyHostKeyManually.Checked)
             {
                 sshFingerprint.PlaceholderText = "SHA256:...";
-                AddConnectionField(form, T("Подтверждённый SSH SHA256", "Verified SSH SHA256",
-                    "טביעת SHA256 מאומתת"), sshFingerprint);
+                AddConnectionField(form,
+                    T("Подтверждённый SSH SHA256", "Verified SSH SHA256",
+                      "טביעת SHA256 מאומתת"), sshFingerprint);
             }
         }
         else
@@ -1307,44 +1303,73 @@ internal sealed partial class MainForm : Form
             if (pairFields)
                 AddConnectionPair(form,
                     T("SSH-ключ / ssh-agent", "SSH key / ssh-agent", "מפתח SSH"), sshKey,
-                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 60);
+                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword, 62);
             else
             {
-                AddConnectionField(form, T("SSH-ключ / ssh-agent", "SSH key / ssh-agent", "מפתח SSH"), sshKey);
-                AddConnectionField(form, T("Пароль sudo (если нужен)",
-                    "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
+                AddConnectionField(form,
+                    T("SSH-ключ / ssh-agent", "SSH key / ssh-agent", "מפתח SSH"), sshKey);
+                AddConnectionField(form,
+                    T("Пароль sudo (если нужен)", "Sudo password (if needed)", "סיסמת sudo"), sudoPassword);
             }
         }
-        // The primary SSH action is anchored in the footer so it remains
-        // visible at 100–200% DPI and does not require scrolling the card.
+
         AddLine(form, UiTheme.Text(T(
-            "После заполнения полей нажмите «Проверить подключение» внизу окна.",
-            "After entering the details, select Check connection in the fixed footer.",
-            "לאחר הזנת הפרטים לחצו בדיקת חיבור בתחתית החלון.")));
-        AddLine(details, UiTheme.Text(T("Как это работает", "What happens next", "כיצד זה עובד"), true));
-        AddConnectionHelp(details, sshAuthMode.SelectedIndex == 1
-            ? T("1. Введи SSH-пароль. SHA256 вводить необязательно.\n\n2. При первом соединении программа покажет отпечаток сервера. Подтверди его перед входом.\n\n3. После проверки откроется следующий шаг.",
-                "1. Enter your SSH password. SHA256 is optional.\n\n2. On first contact, verify and approve the server key before login.\n\n3. A successful check opens the next step.",
-                "יש להזין סיסמת SSH; טביעת SHA256 אופציונלית ודורשת אישור בחיבור ראשון.")
-            : T("1. Используется установленный Windows OpenSSH.\n\n2. SSH host key должен быть подтверждён в known_hosts.\n\n3. Успешная проверка откроет следующий шаг.",
-                "1. Uses Windows OpenSSH key or agent.\n\n2. The host key must already be trusted in known_hosts.\n\n3. A successful check opens the next step.",
-                "נעשה שימוש ב-Windows OpenSSH וב-known_hosts."),
-            connectionWideLayout ? (int)(pageHost.Width * .34) - 56 : pageHost.Width - 100);
-        AddLine(details, UiTheme.Text(T("Важно", "Security note", "הערת אבטחה"), true));
-        AddConnectionHelp(details,
-            T("При первом подключении сравни SHA256 с ключом на консоли Linux, если есть такая возможность. Пароли в настройках не сохраняются. Кнопка «Далее» пропускает проверку, но не подтверждает подключение.",
-              "When possible, compare the SHA256 with the Linux console. Passwords are not saved. The Next button skips this check; it does not verify connectivity.",
-              "רצוי להשוות את טביעת המפתח במסוף השרת. סיסמאות אינן נשמרות."),
-            connectionWideLayout ? (int)(pageHost.Width * .34) - 56 : pageHost.Width - 100);
-        AddLine(details, UiTheme.Text(T(
-            "Обычные SSH-команды запускаются НЕ как login shell: /etc/profile и ~/.bash_profile не читаются автоматически. Для основных проверок используется системный PATH; режим установки не меняется.",
-            "Normal SSH commands are NON-login shells: /etc/profile and ~/.bash_profile are not sourced automatically. Core checks use a system PATH; setup behavior is unchanged.",
-            "פקודות SSH רגילות אינן login shell. קובצי profile אינם נטענים אוטומטית. נתיב כלי המערכת נבדק בנפרד.")));
-        AddAction(details, T(
-            "Проверить login-profile и доступность утилит (по запросу)",
-            "Inspect login profile and tool availability (opt-in)",
-            "בדוק סביבת login ופקודות (לפי בקשה)"),
-            InspectSshLoginProfileAsync, false, "check", "ssh-login-profile");
+            "Подключение проверяется кнопкой внизу окна. Пароли не сохраняются.",
+            "Use the fixed button below to verify SSH. Passwords are never saved.",
+            "בדיקת החיבור נעשית בכפתור בתחתית החלון. סיסמאות אינן נשמרות.")));
+
+        // Keep advanced SSH functionality, but make the main form breathable.
+        // It remains reachable without a separate tab, scroll trap or popup.
+        var helpToggle = UiTheme.Action(sshHelpExpanded
+            ? T("Скрыть справку и дополнительные SSH-проверки ▲",
+                "Hide help and advanced SSH checks ▲", "הסתר עזרה ובדיקות SSH ▲")
+            : T("Справка и дополнительные SSH-проверки ▼",
+                "Help and advanced SSH checks ▼", "עזרה ובדיקות SSH נוספות ▼"),
+            glyph: "check");
+        helpToggle.Margin = new Padding(2, 4, 0, 9);
+        helpToggle.Enabled = !busy;
+        helpToggle.AccessibleDescription =
+            "Expand or collapse SSH guidance and optional login-profile diagnostics.";
+        helpToggle.Click += (_, _) =>
+        {
+            int previousScroll = -pageHost.AutoScrollPosition.Y;
+            sshHelpExpanded = !sshHelpExpanded;
+            RenderPage();
+            pageHost.AutoScrollPosition = new Point(0, previousScroll);
+        };
+        AddLine(cards, helpToggle);
+
+        if (sshHelpExpanded)
+        {
+            var details = ConnectionCard(Color.FromArgb(238, 243, 248));
+            details.MaximumSize = new Size(availableWidth, 0);
+            AddLine(details, UiTheme.Text(T(
+                "Как работает SSH-подключение", "How SSH connection works",
+                "כיצד פועל חיבור SSH"), true));
+            AddConnectionHelp(details, sshAuthMode.SelectedIndex == 1
+                ? T("1. Введите SSH-пароль. Поле SHA256 необязательно. При первом подключении проверьте отпечаток сервера и подтвердите доверие. Затем мастер проверит Linux и почтовую конфигурацию в режиме чтения.",
+                    "1. Enter the SSH password. SHA256 entry is optional. Verify and approve the server fingerprint on first contact. The wizard then performs read-only Linux and mail configuration checks.",
+                    "יש להזין סיסמת SSH ולאשר את טביעת מפתח השרת. בדיקות Linux והדואר הן לקריאה בלבד.")
+                : T("Windows OpenSSH использует выбранный ключ или ssh-agent. Host key должен быть подтверждён в known_hosts. После проверки мастер определит почтовый сервер без изменений.",
+                    "Windows OpenSSH uses the chosen key or ssh-agent. Trust the host key in known_hosts. The wizard then discovers the mail server without modifying it.",
+                    "החיבור משתמש במפתח SSH או ssh-agent ונדרש אישור מפתח ב-known_hosts."),
+                availableWidth - 64);
+            AddLine(details, UiTheme.Text(T(
+                "Login-profile — дополнительная проверка, не часть установки",
+                "Login profile — optional diagnostic, not part of setup",
+                "פרופיל login — בדיקה אופציונלית בלבד"), true));
+            AddConnectionHelp(details, T(
+                "Обычные SSH-команды работают без загрузки /etc/profile и ~/.bash_profile. Проверка login shell по запросу может выполнять команды из этих файлов; она требует отдельного подтверждения.",
+                "Normal SSH commands do not load /etc/profile or ~/.bash_profile. Optional login-shell checking can execute startup commands and requires separate approval.",
+                "פקודות SSH רגילות אינן טוענות קובצי profile. בדיקת login נפרדת דורשת אישור."),
+                availableWidth - 64);
+            AddAction(details, T(
+                "Проверить login-profile и доступность утилит…",
+                "Inspect login profile and available tools…",
+                "בדוק סביבת login ופקודות…"),
+                InspectSshLoginProfileAsync, false, "check", "ssh-login-profile");
+            AddLine(cards, details);
+        }
         AddLine(page, cards);
     }
 
