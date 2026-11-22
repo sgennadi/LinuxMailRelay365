@@ -63,6 +63,144 @@ class PostRebootReadOnlyGuardTests(unittest.TestCase):
                 reboot.snapshot_id_from_root_file(module)
 
 
+
+class PackageSELinuxFingerprintTests(unittest.TestCase):
+    """Synthetic fixture: SELinux xattrs are mocked, not modified on the host."""
+
+    def fixture(self, td):
+        root = Path(td)
+        mail = root / "etc" / "mail"
+        mail.mkdir(parents=True)
+        conf = mail / "sendmail.cf"
+        conf.write_bytes(b"# test-only config\n")
+        tools_dir = mail / "smrsh"
+        tools_dir.mkdir()
+        link = tools_dir / "procmail"
+        link.symlink_to("/usr/bin/procmail")
+        def owner(st):
+            return {"uid": st.st_uid, "gid": st.st_gid}
+        def file_entry(path):
+            st = path.lstat()
+            return dict(owner(st), size=st.st_size, sha256="0" * 64,
+                        mode=stat.S_IMODE(st.st_mode))
+        def dir_entry(path):
+            st = path.lstat()
+            return dict(owner(st), kind="directory",
+                        mode=stat.S_IMODE(st.st_mode))
+        st = link.lstat()
+        manifest = {
+            "version": 2, "mta": "sendmail",
+            "files": {"etc/mail/sendmail.cf": file_entry(conf)},
+            "objects": {
+                "etc/mail": dir_entry(mail),
+                "etc/mail/smrsh": dir_entry(tools_dir),
+                "etc/mail/smrsh/procmail": dict(
+                    owner(st), kind="symlink", target=os.readlink(link)),
+            },
+        }
+        return root, manifest, link
+
+    @staticmethod
+    def fake_label(path, name, follow_symlinks=True):
+        if name != "security.selinux" or follow_symlinks:
+            raise AssertionError("SELinux probe must use lgetxattr")
+        return b"system_u:object_r:etc_t:s0\x00"
+
+    def test_full_v2_label_fingerprint_stable_and_no_symlink_follow(self):
+        with tempfile.TemporaryDirectory() as td:
+            root, manifest, _ = self.fixture(td)
+            with mock.patch.object(reboot.os, "getxattr",
+                                   side_effect=self.fake_label) as getter:
+                count, first = reboot.fingerprint_package_selinux(manifest, root)
+                self.assertEqual((count, len(first)), (4, 64))
+                self.assertEqual(
+                    (count, first), reboot.fingerprint_package_selinux(manifest, root))
+                self.assertEqual(getter.call_count, 8)
+                self.assertTrue(all(
+                    call.kwargs == {"follow_symlinks": False}
+                    for call in getter.call_args_list))
+
+    def test_v2_label_drift_changes_fingerprint(self):
+        with tempfile.TemporaryDirectory() as td:
+            root, manifest, link = self.fixture(td)
+            with mock.patch.object(reboot.os, "getxattr",
+                                   side_effect=self.fake_label):
+                baseline = reboot.fingerprint_package_selinux(manifest, root)
+            def different_label(path, name, follow_symlinks=True):
+                self.fake_label(path, name, follow_symlinks)
+                return (b"system_u:object_r:mail_spool_t:s0\x00"
+                        if Path(path) == link else
+                        b"system_u:object_r:etc_t:s0\x00")
+            with mock.patch.object(reboot.os, "getxattr",
+                                   side_effect=different_label):
+                changed = reboot.fingerprint_package_selinux(manifest, root)
+            self.assertEqual(changed[0], baseline[0])
+            self.assertNotEqual(changed[1], baseline[1])
+
+    def test_unreadable_and_empty_labels_fail_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root, manifest, link = self.fixture(td)
+            for bad in (b"", OSError("missing")):
+                def failing_label(path, name, follow_symlinks=True):
+                    self.fake_label(path, name, follow_symlinks)
+                    if Path(path) == link:
+                        if isinstance(bad, Exception):
+                            raise bad
+                        return bad
+                    return b"system_u:object_r:etc_t:s0\x00"
+                with self.subTest(label=repr(bad)):
+                    with mock.patch.object(reboot.os, "getxattr",
+                                           side_effect=failing_label):
+                        with self.assertRaisesRegex(
+                                RuntimeError,
+                                "PACKAGE_LABEL_(EMPTY_OR_OVERSIZED|UNREADABLE)"):
+                            reboot.fingerprint_package_selinux(manifest, root)
+
+    def test_changed_package_symlink_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            root, manifest, link = self.fixture(td)
+            link.unlink()
+            link.symlink_to("/other/target")
+            with mock.patch.object(reboot.os, "getxattr",
+                                   side_effect=self.fake_label):
+                with self.assertRaisesRegex(
+                        RuntimeError, "PACKAGE_LABEL_LINK_CHANGED"):
+                    reboot.fingerprint_package_selinux(manifest, root)
+
+    def test_bad_manifest_or_traversal_refused_without_xattrs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root, manifest, _ = self.fixture(td)
+            malformed = [
+                dict(manifest, version=1),
+                dict(manifest, objects={"etc/mail": []}),
+                dict(manifest, objects={}),
+                dict(manifest, files={
+                    "../etc/mail/sendmail.cf": next(iter(manifest["files"].values()))}),
+            ]
+            with mock.patch.object(reboot.os, "getxattr",
+                                   side_effect=AssertionError("unexpected xattr read")):
+                for candidate in malformed:
+                    with self.subTest(candidate=candidate):
+                        with self.assertRaisesRegex(
+                                RuntimeError,
+                                "INVALID_PACKAGE_LABEL_(MANIFEST|OBJECT_SET|PATH)"):
+                            reboot.fingerprint_package_selinux(candidate, root)
+
+    def test_symlinked_etc_parent_is_rejected_before_read(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as outside:
+            root, manifest, _ = self.fixture(td)
+            etc = root / "etc"
+            # Construct a fully valid-looking snapshot under a different tree.
+            target = Path(outside) / "etc"
+            etc.rename(target)
+            etc.symlink_to(target, target_is_directory=True)
+            with mock.patch.object(reboot.os, "getxattr",
+                                   side_effect=AssertionError("unsafe xattr read")):
+                with self.assertRaisesRegex(
+                        RuntimeError, "PACKAGE_LABEL_PARENT_NOT_DIRECTORY"):
+                    reboot.fingerprint_package_selinux(manifest, root)
+
+
 class DisposableRecoveryGuardTests(unittest.TestCase):
     def test_rocky_release_with_quoted_values(self):
         cases = (
