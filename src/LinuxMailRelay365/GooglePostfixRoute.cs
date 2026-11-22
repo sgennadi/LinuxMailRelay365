@@ -10,7 +10,7 @@ namespace LinuxMailRelay365;
 internal sealed record GoogleRoutePreview(
     string Profile, int Port, string Fingerprint, bool HasConflictingMaps,
     string Queue, bool ApplyAllowed, string OutboundSasl,
-    string PasswordMap, string TlsLevel);
+    string PasswordMap, string TlsLevel, string PostfixScope, string ClientSasl);
 
 internal sealed record GoogleRouteApplyResult(string Profile, int Port,
     string BackupId, bool StoredRootOnlyCredential)
@@ -72,7 +72,7 @@ internal static class GooglePostfixRoute
             Value(values, "INBOUND_CHANGED") != "no" ||
             Value(values, "MAIL_SENT") != "no" ||
             Value(values, "CONFIG_CHANGED") != "no" ||
-            values.Count != 13)
+            values.Count != 15)
             throw new InvalidDataException("Invalid read-only Google upstream preview.");
         string sha = Value(values, "PREVIEW_SHA256");
         string queue = Value(values, "QUEUE");
@@ -81,19 +81,29 @@ internal static class GooglePostfixRoute
         string outboundSasl = Value(values, "OUTBOUND_SASL");
         string passwordMap = Value(values, "PASSWORD_MAP");
         string tlsLevel = Value(values, "TLS_LEVEL");
+        string postfixScope = Value(values, "POSTFIX_SCOPE");
+        string clientSasl = Value(values, "CLIENT_SASL");
         if (outboundSasl is not ("enabled" or "disabled" or "unverified") ||
             passwordMap is not ("configured" or "not_configured") ||
             tlsLevel is not ("none" or "may" or "encrypt" or "dane" or "dane-only"
                 or "fingerprint" or "verify" or "secure" or "unverified"))
             throw new InvalidDataException("Unsafe Postfix outbound SASL/TLS status.");
+        if (postfixScope is not ("verified" or "unverified") ||
+            clientSasl is not ("ready" or "missing" or "unverified" or "not_required") ||
+            (profile == "gmail" && clientSasl == "not_required") ||
+            (profile == "workspace" && clientSasl != "not_required"))
+            throw new InvalidDataException("Invalid Postfix instance or client SASL status.");
         if (!Regex.IsMatch(sha, @"\A[a-f0-9]{64}\z") ||
             queue is not ("empty" or "nonempty" or "unverified") ||
             conflict is not ("yes" or "no") ||
             allowed is not ("yes" or "no") ||
-            (allowed == "yes" && (queue != "empty" || conflict != "no")))
+            (allowed == "yes" && (queue != "empty" || conflict != "no" ||
+                postfixScope != "verified" ||
+                (profile == "gmail" && clientSasl != "ready"))))
             throw new InvalidDataException("Unsafe or inconsistent Google relay preview.");
         return new(profile, port, sha, conflict == "yes", queue,
-            allowed == "yes", outboundSasl, passwordMap, tlsLevel);
+            allowed == "yes", outboundSasl, passwordMap, tlsLevel,
+            postfixScope, clientSasl);
     }
 
     internal static string BuildScript(string managerSource, string recoverySource,
@@ -154,15 +164,22 @@ internal static class GooglePostfixRoute
             "GOOGLE_ROUTE_OUTBOUND_SASL=enabled\n" +
             "GOOGLE_ROUTE_PASSWORD_MAP=configured\n" +
             "GOOGLE_ROUTE_TLS_LEVEL=encrypt\n" +
+            "GOOGLE_ROUTE_POSTFIX_SCOPE=verified\n" +
+            "GOOGLE_ROUTE_CLIENT_SASL=ready\n" +
             "GOOGLE_ROUTE_APPLY_ALLOWED=yes\n" +
             "GOOGLE_ROUTE_INBOUND_CHANGED=no\nGOOGLE_ROUTE_MAIL_SENT=no\n" +
             "GOOGLE_ROUTE_CONFIG_CHANGED=no\n";
         var result = ParsePreview(preview, "gmail", 587);
         if (!result.ApplyAllowed || result.HasConflictingMaps ||
+            result.PostfixScope != "verified" || result.ClientSasl != "ready" ||
             result.Fingerprint.Length != 64) return false;
         try { ParsePreview(preview.Replace("QUEUE=empty", "QUEUE=nonempty"), "gmail", 587); return false; }
         catch (InvalidDataException) { }
         try { ParsePreview(preview.Replace("INBOUND_CHANGED=no", "INBOUND_CHANGED=yes"), "gmail", 587); return false; }
+        catch (InvalidDataException) { }
+        try { ParsePreview(preview.Replace("CLIENT_SASL=ready", "CLIENT_SASL=missing"), "gmail", 587); return false; }
+        catch (InvalidDataException) { }
+        try { ParsePreview(preview.Replace("POSTFIX_SCOPE=verified", "POSTFIX_SCOPE=unverified"), "gmail", 587); return false; }
         catch (InvalidDataException) { }
         try { BuildScript("", "", "gmail", 587, "apply"); return false; }
         catch (ArgumentException) { }
