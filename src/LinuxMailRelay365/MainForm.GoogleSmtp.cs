@@ -16,6 +16,8 @@ internal sealed partial class MainForm
     private readonly TextBox googleOutboundPort = Field("587");
     private GoogleSmtpAudit? googleSmtpAudit;
     private string? googleSmtpAuditIdentity;
+    private GoogleRoutePreview? googleRoutePreview;
+    private string? googleRoutePreviewContext;
 
     private bool IsGoogleTarget => selectedMailTarget is
         MailFlowIntent.TargetGmail or MailFlowIntent.TargetWorkspace;
@@ -102,11 +104,207 @@ internal sealed partial class MainForm
             "בדיקת SMTP AUTH ללא שליחת דואר"),
             CheckGoogleCredentialsAsync, false, "shield", "google-auth");
 
+        if (selectedMailScenario == MailScenarioPlanner.ReplaceRelay &&
+            inspectedMail?.Mta == "postfix" && inspectedHost?.MtaState == "active" &&
+            existingSmtpAudit?.SuspectedUnsafeRelay != true)
+        {
+            AddLine(page, UiTheme.Text(TranslateMailFlow(l,
+                "Настройка Google как исходящего relayhost существующего Postfix",
+                "Configure Google as the existing Postfix outbound relayhost",
+                "הגדרת Google כממסר יוצא של Postfix"), true));
+            AddLine(page, MailFlowText(TranslateMailFlow(l,
+                "Изменяется только исходящий маршрут. Входящий localhost:25, локальные пользователи, мастер-конфигурация и очередь сохраняются. Запуск требует точного предварительного SHA-256, пустой очереди, root backup и подтверждения.",
+                "Only the outbound upstream changes. Existing local SMTP, local senders and incoming configuration are preserved. Apply requires exact SHA-256 preflight, an empty queue, verified root-only backup and explicit approval.",
+                "יש לשמור על קבלת SMTP המקומית ולוודא גיבוי לפני שינוי ניתוב יוצא."),
+                width, warning: true));
+            if (googleRoutePreview is not null &&
+                googleRoutePreviewContext == CurrentGoogleRouteContext(googleRoutePreview.Fingerprint))
+            {
+                var planned = googleRoutePreview;
+                AddLine(page, MailFlowText(TranslateMailFlow(l,
+                    "Предварительная проверка: ", "Preflight: ", "בדיקה: ") +
+                    "queue=" + planned.Queue + "  ·  " +
+                    "sender/transport maps=" + (planned.HasConflictingMaps ? "detected" : "not detected") +
+                    "  ·  apply=" + (planned.ApplyAllowed ? "eligible for review" : "blocked"),
+                    width, warning: !planned.ApplyAllowed));
+            }
+            AddAction(page, TranslateMailFlow(l,
+                "Проверить смену relayhost (без изменений)",
+                "Preview Google relayhost migration (read-only)",
+                "בדיקת שינוי relayhost ללא שינוי"),
+                PreviewGoogleRouteAsync, false, "check", "google-route-preview");
+            if (googleRoutePreview is { ApplyAllowed: true } plannedRoute &&
+                googleRoutePreviewContext == CurrentGoogleRouteContext(plannedRoute.Fingerprint))
+            {
+                AddAction(page, TranslateMailFlow(l,
+                    "Применить Google relayhost с проверенным backup и rollback...",
+                    "Apply Google relayhost with verified backup and rollback...",
+                    "החל ניתוב Google עם גיבוי ושחזור..."),
+                    ApplyGoogleRouteAsync, false, "shield", "google-route-apply");
+            }
+        }
+
         if (workspace)
             AddLine(page, MailFlowText(TranslateMailFlow(l,
                 "Важно: проверка App Password не подтверждает политику SMTP Relay Google Workspace, доверенный IP или адреса отправителей. Их необходимо отдельно проверить в Google Admin.",
                 "Important: an App Password check does not verify Workspace SMTP relay settings, authorized public IPs or allowed senders. Inspect these in Google Admin separately.",
                 "יש לבדוק בנפרד את הגדרות Google Admin ואת כתובת ה-IP."), width, warning: true));
+    }
+
+
+    private string CurrentGoogleRouteContext(string sha) =>
+        (TryCurrentIdentity() ?? "") + "|" + selectedMailScenario +
+        "|" + selectedMailTarget + "|" + googleOutboundPort.Text.Trim() +
+        "|" + (inspectedMail?.ConfigSha256 ?? "") + "|" + sha;
+
+    private void RequireGoogleRoutePreconditions()
+    {
+        if (!HasMailDiscovery() || !IsGoogleTarget ||
+            selectedMailScenario != MailScenarioPlanner.ReplaceRelay ||
+            inspectedMail?.Mta != "postfix" || inspectedHost?.MtaState != "active" ||
+            existingSmtpAudit?.SuspectedUnsafeRelay == true)
+            throw new InvalidOperationException(
+                "A healthy, currently inspected Postfix with a selected upstream migration is required.");
+        if (googleSmtpAudit is null || googleSmtpAuditIdentity != TryCurrentIdentity() ||
+            googleSmtpAudit.Profile != GoogleProbeProfile())
+            throw new InvalidOperationException(
+                "First test Google DNS, TCP and TLS from this Linux host.");
+        int selected = SelectedGoogleOutboundPort();
+        var port = googleSmtpAudit.Ports.FirstOrDefault(x => x.Port == selected);
+        if (port is null || port.Tcp != "reachable" || port.Tls != "verified")
+            throw new InvalidOperationException(
+                "Selected outgoing Google port did not pass TLS certificate verification.");
+    }
+
+    private async Task PreviewGoogleRouteAsync()
+    {
+        RequireGoogleRoutePreconditions();
+        string profile = GoogleProbeProfile();
+        int port = SelectedGoogleOutboundPort();
+        var endpoint = Endpoint();
+        string id = TryCurrentIdentity() ??
+            throw new InvalidOperationException("SSH identity not confirmed.");
+        googleRoutePreview = null;
+        googleRoutePreviewContext = null;
+        string script = GooglePostfixRoute.BuildScript(
+            EmbeddedAssets.GooglePostfixRoute, EmbeddedAssets.Recovery, profile, port, "preview");
+        var remote = await SshRemote.RunRootScriptAsync(endpoint, script, TimeSpan.FromMinutes(2));
+        // Never log arbitrary root-tool stderr, including unexpected tracebacks.
+        if (remote.ExitCode != 0)
+            throw new InvalidOperationException(
+                "Postfix route preflight could not inspect the current configuration.");
+        var plan = GooglePostfixRoute.ParsePreview(remote.StdOut, profile, port);
+        if (TryCurrentIdentity() != id || GoogleProbeProfile() != profile ||
+            SelectedGoogleOutboundPort() != port)
+            throw new InvalidOperationException("Selected Linux or Google route changed during preflight.");
+        googleRoutePreview = plan;
+        googleRoutePreviewContext = CurrentGoogleRouteContext(plan.Fingerprint);
+        WriteLine("Read-only Google Postfix relayhost preview: queue=" + plan.Queue +
+            "; sender-specific maps=" + (plan.HasConflictingMaps ? "present" : "absent") +
+            "; guarded apply=" + (plan.ApplyAllowed ? "eligible" : "blocked") + ".");
+        RenderPage();
+    }
+
+    private async Task ApplyGoogleRouteAsync()
+    {
+        RequireGoogleRoutePreconditions();
+        var plan = googleRoutePreview;
+        if (plan is null || !plan.ApplyAllowed ||
+            googleRoutePreviewContext != CurrentGoogleRouteContext(plan.Fingerprint))
+            throw new InvalidOperationException("Run a fresh, matching Google relayhost preview first.");
+        var endpoint = Endpoint();
+        string profile = GoogleProbeProfile();
+        int port = SelectedGoogleOutboundPort();
+        string identity = TryCurrentIdentity() ??
+            throw new InvalidOperationException("SSH identity not confirmed.");
+        bool personal = profile == "gmail";
+        string mailboxValue = googleMailbox.Text.Trim();
+        string secret = googleAppPassword.Text;
+        googleAppPassword.Clear();
+        try
+        {
+            string caution = personal
+                ? "The Gmail App Password will be kept on LINUX in a root-only Postfix hash DB. It is recoverable by root; it is NOT written to Windows. "
+                : "Google Workspace must already authorize this Linux server's public IP and sender domain in Admin Console. No password will be stored. ";
+            if (!ConfirmDestructive(
+                "LinuxMailRelay365 | Replace existing outbound Postfix relay",
+                "Change only OUTGOING relayhost to " + GoogleSmtpAudit.HostFor(profile) + ":" + port +
+                ". Incoming SMTP listeners and local mail submission remain unchanged. " +
+                caution +
+                "An exact preflight and EMPTY queue are required. " +
+                "A verified backup is created on Linux automatically, with attempted automatic rollback on failure. " +
+                "A Postfix reload may briefly interrupt delivery. " +
+                "For Gmail, one TLS-verified SMTP AUTH attempt is performed before configuration.",
+                "CHANGE_GOOGLE_OUTBOUND_RELAY"))
+                return;
+            RequireGoogleRoutePreconditions();
+            if (googleRoutePreviewContext != CurrentGoogleRouteContext(plan.Fingerprint) ||
+                TryCurrentIdentity() != identity || GoogleProbeProfile() != profile ||
+                SelectedGoogleOutboundPort() != port)
+                throw new InvalidOperationException("Linux or Google route changed after review.");
+
+            if (personal)
+            {
+                // This tests the SAME one-use value to be installed on Linux.
+                // It makes one AUTH attempt only; no MAIL FROM/RCPT/DATA.
+                string probeCode = GoogleSmtpAudit.BuildScript(
+                    EmbeddedAssets.GoogleSmtpProbe, profile, mailboxValue, secret, port);
+                var auth = await SshRemote.ExecuteAsync(endpoint, "bash -s", probeCode,
+                    TimeSpan.FromSeconds(95));
+                if (auth.ExitCode != 0)
+                    throw new InvalidOperationException("Gmail SMTP AUTH preflight incomplete; no route was changed.");
+                var live = GoogleSmtpAudit.Parse(auth.StdOut, profile);
+                var chosen = live.Ports.FirstOrDefault(x => x.Port == port);
+                if (chosen?.Tls != "verified" || live.AuthResult != "accepted")
+                    throw new InvalidOperationException(
+                        "Gmail App Password or account policy not accepted by Google over verified TLS. No route changed.");
+            }
+
+            // Confirm exact SHA again immediately before applying; the Python
+            // manager independently rechecks it before its first mutation.
+            string previewScript = GooglePostfixRoute.BuildScript(
+                EmbeddedAssets.GooglePostfixRoute, EmbeddedAssets.Recovery, profile, port, "preview");
+            var fresh = await SshRemote.RunRootScriptAsync(endpoint, previewScript, TimeSpan.FromMinutes(2));
+            if (fresh.ExitCode != 0)
+                throw new InvalidOperationException("Fresh Postfix preview failed. No changes made.");
+            var checkedPlan = GooglePostfixRoute.ParsePreview(fresh.StdOut, profile, port);
+            if (!checkedPlan.ApplyAllowed || checkedPlan.Fingerprint != plan.Fingerprint)
+                throw new InvalidOperationException(
+                    "Mail queue, Postfix routing maps or configuration changed since approval. Nothing applied.");
+
+            string applyScript = GooglePostfixRoute.BuildScript(
+                EmbeddedAssets.GooglePostfixRoute, EmbeddedAssets.Recovery,
+                profile, port, "apply", plan.Fingerprint,
+                personal ? mailboxValue : null, personal ? secret : null);
+            googleRoutePreview = null;
+            googleRoutePreviewContext = null;
+            var response = await SshRemote.RunRootScriptAsync(endpoint,
+                applyScript, TimeSpan.FromMinutes(6));
+            if (response.ExitCode != 0)
+            {
+                if (response.StdOut.Contains("GOOGLE_ROUTE_ROLLBACK=failed", StringComparison.Ordinal))
+                    throw new InvalidOperationException(
+                        "CRITICAL: Google relay apply failed and automatic Postfix rollback ALSO failed. " +
+                        "Inspect the root-only Linux backups and restore manually before sending mail.");
+                throw new InvalidOperationException(
+                    "Google relay migration was refused or failed. Check verified Linux snapshots and existing Postfix route; no email test was sent.");
+            }
+            var installed = GoogleRouteApplyResult.Parse(response.StdOut, profile, port);
+            if (TryCurrentIdentity() != identity)
+                throw new InvalidOperationException("SSH identity changed after route application.");
+            WriteLine("Google outbound relayhost applied: " + GoogleSmtpAudit.HostFor(profile) +
+                ":" + installed.Port + "; verified backup: " + installed.BackupId +
+                "; inbound SMTP unchanged. " +
+                (installed.StoredRootOnlyCredential ? "Gmail credential stored only in protected Linux Postfix DB." :
+                "Workspace IP-based route uses no stored SMTP password."));
+            await InspectMailRoutingAsync();
+            RenderPage();
+        }
+        finally
+        {
+            googleAppPassword.Clear();
+            secret = "";
+        }
     }
 
     private async Task InspectGoogleSmtpPortsAsync()
