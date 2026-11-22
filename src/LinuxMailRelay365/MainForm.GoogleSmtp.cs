@@ -245,7 +245,7 @@ internal sealed partial class MainForm
                 AddLine(page, MailFlowText(TranslateMailFlow(l,
                     "Предварительная проверка: ", "Preflight: ", "בדיקה: ") +
                     "queue=" + planned.Queue + "  ·  " +
-                    "routing/TLS overrides=" + (planned.HasConflictingMaps ? "detected" : "not detected") +
+                    "routing/TLS/credential overrides=" + (planned.HasConflictingMaps ? "detected" : "not detected") +
                     "  ·  apply=" + (planned.ApplyAllowed ? "eligible for review" : "blocked") +
                     Environment.NewLine +
                     "Outbound SASL: " + planned.OutboundSasl +
@@ -263,8 +263,8 @@ internal sealed partial class MainForm
             if (googleRoutePreview is { HasConflictingMaps: true } conflictPlan &&
                 googleRoutePreviewContext == CurrentGoogleRouteContext(conflictPlan.Fingerprint))
                 AddLine(page, MailFlowText(TranslateMailFlow(l,
-                    "Найдены нестандартные маршруты исходящей почты или индивидуальные политики TLS (в том числе master.cf). Автоматическая замена заблокирована. Существующие настройки сохранены; требуется ручная проверка.",
-                    "Existing outbound routing or TLS policy overrides were detected (possibly in master.cf). Automatic replacement is blocked. All existing settings remain unchanged; review the route manually.",
+                    "Обнаружены нестандартные маршруты, политики TLS или существующие SMTP-учётные данные (включая master.cf). Автоматическая замена заблокирована, настройки сохранены. Требуется ручная проверка.",
+                    "Existing outbound routing, TLS or SMTP credential overrides were detected (possibly in master.cf). Automatic replacement is blocked. All existing settings remain unchanged; review the route manually.",
                     "זוהו כללי ניתוב או TLS מותאמים אישית; שינוי אוטומטי חסום."),
                     width, warning: true));
             if (googleRoutePreview is { ClientSasl: "unverified" or "missing" } unknownClient &&
@@ -347,7 +347,7 @@ internal sealed partial class MainForm
         googleRoutePreview = plan;
         googleRoutePreviewContext = CurrentGoogleRouteContext(plan.Fingerprint);
         WriteLine("Read-only Google Postfix relayhost preview: queue=" + plan.Queue +
-            "; routing/TLS overrides=" + (plan.HasConflictingMaps ? "present" : "absent") +
+            "; routing/TLS/credential overrides=" + (plan.HasConflictingMaps ? "present" : "absent") +
             "; outbound SASL=" + plan.OutboundSasl +
             "; credential map=" + plan.PasswordMap +
             "; guarded apply=" + (plan.ApplyAllowed ? "eligible" : "blocked") + ".");
