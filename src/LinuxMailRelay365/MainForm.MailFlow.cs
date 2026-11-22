@@ -366,9 +366,36 @@ internal sealed partial class MainForm
             "Microsoft 365 — что реально подтверждено?",
             "Microsoft 365 — what has actually been verified?",
             "Microsoft 365 — מה אומת בפועל?"), true));
+        if (lastReadOnlyCloudInventory is { } cloud &&
+            lastReadOnlyCloudLinuxIdentity == TryCurrentIdentity() &&
+            Guid.TryParse(tenant.Text.Trim(), out var selectedTenant) &&
+            cloud.Tenant == selectedTenant)
+        {
+            int enabledConnectors = cloud.Connectors.Count(x => x.Enabled);
+            int validCertificates = cloud.Certificates.Count(x =>
+                x.ValidFrom <= DateTimeOffset.UtcNow && x.ValidUntil > DateTimeOffset.UtcNow);
+            AddLine(page, MailFlowText(TranslateMailFlow(l,
+                "Аудит tenant завершён (только чтение): ",
+                "Tenant inventory read (no changes): ",
+                "בדיקת tenant הושלמה: ") +
+                "Entra app: " + cloud.ApplicationStatus +
+                " · cert(s): " + validCertificates +
+                " · enabled Connector(s): " + enabledConnectors +
+                Environment.NewLine + TranslateMailFlow(l,
+                    "Обнаруженные объекты — это ещё не доказательство SMTP.SendAsApp, SMTP AUTH, совпадения исходящего IP или доставки.",
+                    "Detected objects do not prove SMTP.SendAsApp, SMTP AUTH policy, egress IP matching or message delivery.",
+                    "עצמים שנמצאו אינם הוכחה להרשאות או למסירת דואר."),
+                width));
+        }
+        else
+            AddLine(page, MailFlowText(TranslateMailFlow(l,
+                "Проверка Microsoft 365 в этом tenant ещё не выполнена.",
+                "No read-only inventory has been completed for this tenant.",
+                "טרם בוצעה בדיקה של tenant זה."), width));
+
         AddLine(page, MailFlowText(TranslateMailFlow(l,
-            "XOAUTH2: нужно проверить разрешения приложения и mailbox, SMTP AUTH и TCP 587. Connector: проверить действующий Inbound Connector и IP/TLS, TCP 25. Direct Send: проверить accepted domain, MX и исходящий TCP 25; только внутренние получатели. Ни один режим не считается доступным по одному обнаружению Postfix.",
-            "XOAUTH2: verify app/mailbox rights, SMTP AUTH and outbound 587. Connector: verify enabled inbound connector, public IP/TLS identity and outbound 25. Direct Send: check accepted domain, MX and outbound 25; internal recipients only. Linux discovery alone proves none of these routes ready.",
+            "XOAUTH2: проверить разрешения приложения и mailbox, SMTP AUTH и TCP 587. Connector: проверить действующий Inbound Connector и IP/TLS, TCP 25. Direct Send: проверить accepted domain, MX и исходящий TCP 25; только внутренние получатели. Ни один режим не считается доступным по одному обнаружению объектов.",
+            "XOAUTH2: verify app/mailbox grants, SMTP AUTH and outbound 587. Connector: verify enabled inbound connector, public IP/TLS identity and outbound 25. Direct Send: check accepted domain, MX and outbound 25; internal recipients only. Inventory alone cannot prove route readiness.",
             "יש לאמת הרשאות XOAUTH2, Connector או Direct Send בנפרד מבדיקת Linux."),
             width, warning: true));
         AddAction(page, TranslateMailFlow(l,
