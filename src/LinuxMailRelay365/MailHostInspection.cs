@@ -127,6 +127,14 @@ internal sealed class MailHostInspection
             .OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .Take(count).Select(pair => pair.Value);
 
+    // Prefix MAIL_HOST_SOCKET_ also matches status/owner metadata. Include
+    // all 01..24 numbered sockets without accidentally displaying those flags.
+    private IEnumerable<string> ReadSocketRows() =>
+        values.Where(pair => System.Text.RegularExpressions.Regex.IsMatch(pair.Key,
+            @"\AMAIL_HOST_SOCKET_[0-9]{2}\z", RegexOptions.CultureInvariant))
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Take(24).Select(pair => pair.Value);
+
     // A suggested listener must be attached to an administratively UP and
     // operationally UP interface and be RFC1918 IPv4. This is UI intent only,
     // not authorization to open a network port or trust an SMTP client.
@@ -192,7 +200,7 @@ internal sealed class MailHostInspection
                 "Network interfaces not inspected.", "ממשקי הרשת לא נבדקו.");
         string interfaces = string.Join("; ", ReadRows("MAIL_HOST_IFACE_", 12));
         string addresses = string.Join("; ", ReadRows("MAIL_HOST_ADDR_", 14));
-        string sockets = string.Join("; ", ReadRows("MAIL_HOST_SOCKET_0", 12));
+        string sockets = string.Join("; ", ReadSocketRows());
         string status = Get("MAIL_HOST_NET_BIND_RESULT");
         string unknown = Tr(language, "не подтверждено", "unverified", "לא אומת");
         string noSocket = Get("MAIL_HOST_SOCKET_STATE") == "ok"
@@ -340,6 +348,12 @@ internal sealed class MailHostInspection
             "MAIL_HOST_SOCKET_STATE=ok\nMAIL_HOST_SOCKET_TRUNCATED=no\n")
                 .StandardPort25Observation() != "no_listener_observed" ||
             withNetwork.StandardPort25Observation() != "unverified") return false;
+        var tenSockets = Parse(valid + network +
+            "MAIL_HOST_SOCKET_10=127.0.0.1:2526\n" +
+            "MAIL_HOST_SOCKET_OWNER=unverified\n");
+        if (!tenSockets.Summary(1).Contains("127.0.0.1:2526", StringComparison.Ordinal) ||
+            tenSockets.Summary(1).Contains("unverified; unverified", StringComparison.Ordinal))
+            return false;
         if (!withNetwork.Summary(1).Contains("eth0,up,up", StringComparison.Ordinal) ||
             !withNetwork.Summary(1).Contains("127.0.0.1:25", StringComparison.Ordinal) ||
             withNetwork.ActivePrivateIPv4s().Count != 1 ||
