@@ -824,10 +824,12 @@ internal static class EmbeddedAssets
                "python3 \"$work/prepare.py\" --smtp-port " + port + " " + action + "\n";
     }
 
-    internal static string BuildMailHostInspectionBundle(int selectedPort = 2525,
+    // Passing null inspects effective MTA configuration independently of the
+    // selected wizard port; it does not silently substitute TCP 2525.
+    internal static string BuildMailHostInspectionBundle(int? selectedPort = 2525,
         string currentMta = "unknown")
     {
-        if (!SmtpIngressPort.Supported(selectedPort) ||
+        if ((selectedPort.HasValue && !SmtpIngressPort.Supported(selectedPort.Value)) ||
             currentMta is not ("postfix" or "exim" or "sendmail" or "none" or "unknown"))
             throw new ArgumentException("Invalid selected SMTP port or discovered MTA.");
         return "set -Eeuo pipefail\numask 077\n" +
@@ -841,8 +843,11 @@ internal static class EmbeddedAssets
             "printf '%s\\n' \"$mail_host_report\"\n" +
             "mail_host_ports=$(printf '%s\\n' \"$mail_host_report\" | sed -n 's/^MAIL_HOST_SMTP_CONFIG_PORTS=//p')\n" +
             "test -n \"$mail_host_ports\" || mail_host_ports=unverified\n" +
-            "python3 \"$work/audit-mail-bindings.py\" --smtp-port " + selectedPort +
-            " --mta " + currentMta + " --configured-ports \"$mail_host_ports\"\n";
+            (selectedPort.HasValue
+                ? "python3 \"$work/audit-mail-bindings.py\" --smtp-port " +
+                  selectedPort.Value + " --mta " + currentMta +
+                  " --configured-ports \"$mail_host_ports\"\n"
+                : "");
     }
 
     internal static string BuildExistingSmtpAuditBundle()
