@@ -5511,34 +5511,34 @@ internal sealed partial class MainForm : Form
             WriteLine("Isolated Relay presence unverified (" + error.GetType().Name +
                       "); do not assume absence.");
         }
-        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int checkPort) ||
-            !SmtpIngressPort.Supported(checkPort))
-        {
-            WriteLine("Hostname/MTA bind inspection not run: selected inbound SMTP port is invalid. " +
-                "Choose TCP 25 or 1024-65535 and repeat discovery. " +
-                "No silent fallback to TCP 2525.");
-        }
+        int? checkPort = null;
+        if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int candidatePort) &&
+            SmtpIngressPort.Supported(candidatePort))
+            checkPort = candidatePort;
         else
+            WriteLine("Selected inbound port is invalid or empty. " +
+                "Checking configured MTA SMTP ports and live listening sockets without a wizard-port assumption. " +
+                "No implicit TCP 2525 fallback.");
+        try
         {
-            try
-            {
-                var detected = await SshRemote.ExecuteAsync(endpoint, "bash -s",
-                    EmbeddedAssets.BuildMailHostInspectionBundle(checkPort, inventory.Mta),
-                    timeout: TimeSpan.FromSeconds(90));
-                detected.EnsureSuccess();
-                inspectedHost = MailHostInspection.Parse(detected.StdOut);
-                inspectedHostIdentity = SecurityOptionsStore.Identity(endpoint);
-                WriteLine("Read-only Linux hostname and Postfix/Exim/Sendmail settings inspected " +
-                    "for selected inbound TCP/" + checkPort + ". " +
-                    "Use the wizard buttons to fill fields explicitly; M365 domain ownership is unverified.");
-            }
-            catch (Exception ex)
-            {
-                inspectedHost = null;
-                inspectedHostIdentity = null;
-                WriteLine("Linux hostname/MTA settings could not be read (" +
-                    ex.GetType().Name + "); no fields were filled automatically.");
-            }
+            var detected = await SshRemote.ExecuteAsync(endpoint, "bash -s",
+                EmbeddedAssets.BuildMailHostInspectionBundle(checkPort, inventory.Mta),
+                timeout: TimeSpan.FromSeconds(90));
+            detected.EnsureSuccess();
+            inspectedHost = MailHostInspection.Parse(detected.StdOut);
+            inspectedHostIdentity = SecurityOptionsStore.Identity(endpoint);
+            WriteLine("Read-only Linux hostname and Postfix/Exim/Sendmail settings inspected. " +
+                "Configured inbound SMTP ports: " + inspectedHost.ConfiguredSmtpPortState +
+                "; source: " + inspectedHost.ConfiguredSmtpPortSource +
+                "; selected wizard port: " + (checkPort.HasValue ? checkPort.Value.ToString() : "unverified") +
+                ". Socket observations do not prove process ownership or firewall reachability.");
+        }
+        catch (Exception ex)
+        {
+            inspectedHost = null;
+            inspectedHostIdentity = null;
+            WriteLine("Linux hostname/MTA settings could not be read (" +
+                ex.GetType().Name + "); no fields were filled automatically.");
         }
         discoveredMailIdentity = SecurityOptionsStore.Identity(endpoint);
         var recommendation = MailServerDiscoveryDecision.Assess(
