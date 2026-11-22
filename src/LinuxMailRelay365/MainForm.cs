@@ -1132,12 +1132,19 @@ internal sealed partial class MainForm : Form
                 "Multiple authorized mailboxes — offline experiment only"
             }
         };
-        var recipientNames = lang switch
-        {
-            0 => new[] { "Пока не знаю", "Только внутренние M365", "Включая внешних получателей" },
-            2 => new[] { "עדיין לא ידוע", "נמעני M365 פנימיים בלבד", "כולל נמענים חיצוניים" },
-            _ => new[] { "Not sure yet", "Internal M365 recipients only", "Include external recipients" }
-        };
+        var recipientNames = selectedMailTarget == MailFlowIntent.TargetM365
+            ? lang switch
+            {
+                0 => new[] { "Пока не знаю", "Только внутренние M365", "Включая внешних получателей" },
+                2 => new[] { "עדיין לא ידוע", "נמעני M365 פנימיים בלבד", "כולל נמענים חיצוניים" },
+                _ => new[] { "Not sure yet", "Internal M365 recipients only", "Include external recipients" }
+            }
+            : lang switch
+            {
+                0 => new[] { "Пока не знаю", "Только адресаты моей организации", "Включая внешних получателей" },
+                2 => new[] { "עדיין לא ידוע", "נמעני הארגון בלבד", "כולל נמענים חיצוניים" },
+                _ => new[] { "Not sure yet", "My organization's recipients only", "Include external recipients" }
+            };
         bool wasLoading = routingLoading;
         routingLoading = true;
         try
@@ -2026,6 +2033,28 @@ internal sealed partial class MainForm : Form
 
     private void ShowRecipientAdvice(TableLayoutPanel page)
     {
+        if (selectedMailTarget != MailFlowIntent.TargetM365)
+        {
+            AddLine(page, UiTheme.Text(T("Кому отправлять почту?",
+                "Who should receive the mail?", "למי יישלח הדואר?"), true));
+            AddLine(page, recipientScope);
+            AddLine(page, MailFlowText(selectedMailTarget switch
+            {
+                MailFlowIntent.TargetGmail => T(
+                    "Gmail: возможность отправки зависит от разрешённого аккаунта, его адресов и политики Google; проверка TCP не доказывает доставку.",
+                    "Gmail: delivery depends on the approved account, sender addresses and Google policy; TCP alone proves nothing.",
+                    "Gmail דורש חשבון ושולח מאושרים."),
+                MailFlowIntent.TargetWorkspace => T(
+                    "Google Workspace Relay: отправители, домены и внешние адресаты зависят от правил Google Admin и разрешённого исходящего IP.",
+                    "Workspace relay: allowed senders, domains and external recipients depend on Google Admin policy and egress IP approval.",
+                    "כללי Google Admin מגדירים שולחים ונמענים מורשים."),
+                _ => T(
+                    "Произвольный SMTP-сервер: адреса отправителей и получателей зависят от правил выбранного провайдера.",
+                    "Custom SMTP: allowed senders and recipients depend on the selected provider's policies.",
+                    "הנמענים והשולחים תלויים במדיניות ספק SMTP.")
+            }, Math.Max(300, pageHost.ClientSize.Width - 90)));
+            return;
+        }
         bool sameHost = discoveredMailIdentity is not null &&
             discoveredMailIdentity == TryCurrentIdentity();
         var discovery = MailServerDiscoveryDecision.Assess(
