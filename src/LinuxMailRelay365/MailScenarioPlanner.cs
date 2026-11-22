@@ -75,7 +75,8 @@ internal static class MailScenarioPlanner
 
     internal static Topology Flow(
         string code, string? configuredExistingRelay, string? existingLocalPorts,
-        string? separateInboundPort, string? upstreamMode, int language, string mailSource = "unknown")
+        string? separateInboundPort, string? upstreamMode, int language,
+        string mailSource = "unknown", string? customTarget = null)
     {
         if (!Supported(code)) code = Choose;
         string existing = string.IsNullOrWhiteSpace(configuredExistingRelay)
@@ -89,6 +90,10 @@ internal static class MailScenarioPlanner
         {
             "connector" => "Microsoft 365 EOP · TCP 25",
             "direct-send" => "Microsoft 365 MX · TCP 25",
+            "custom" => string.IsNullOrWhiteSpace(customTarget)
+                ? L(language, "Другой SMTP relay (не проверен)",
+                    "Custom SMTP relay (unverified)", "ממסר SMTP אחר (לא אומת)")
+                : "SMTP relay " + customTarget + " (unverified)",
             _ => "Microsoft 365 XOAUTH2 · TCP 587"
         };
         string incoming = MailFlowIntent.SourceLabel(mailSource, language);
