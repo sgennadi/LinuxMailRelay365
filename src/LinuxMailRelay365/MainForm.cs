@@ -73,6 +73,10 @@ internal sealed class MainForm : Form
         Font = new Font("Consolas", 9)
     };
     private readonly Label status = UiTheme.Text("");
+    private readonly Button clearActivityButton = UiTheme.Action("Clear log", glyph: "trash");
+    private bool showAdvancedSsh;
+    private LinuxServerOverview? serverOverview;
+    private string? serverOverviewIdentity;
     private readonly string dataDirectory = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LinuxMailRelay365");
     private int step;
@@ -100,12 +104,12 @@ internal sealed class MainForm : Form
         }
         BackColor = UiTheme.Canvas;
         ForeColor = UiTheme.Navy;
-        MinimumSize = new Size(720, 630);
+        MinimumSize = new Size(850, 640);
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
 
         var work = Screen.FromPoint(Cursor.Position).WorkingArea;
-        Size = new Size(Math.Min(1050, work.Width - 25), Math.Min(850, work.Height - 25));
+        Size = new Size(Math.Min(1220, work.Width - 25), Math.Min(940, work.Height - 25));
 
         Directory.CreateDirectory(dataDirectory);
         sshPassword.UseSystemPasswordChar = true;
@@ -206,9 +210,18 @@ internal sealed class MainForm : Form
 
         var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(18, 2, 18, 12) };
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        bottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 145));
+        bottom.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
         bottom.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        bottom.Controls.Add(navigation, 0, 0);
+        var journalToolbar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true, WrapContents = true,
+            FlowDirection = FlowDirection.LeftToRight
+        };
+        journalToolbar.Controls.Add(navigation);
+        clearActivityButton.AutoSize = true;
+        clearActivityButton.Click += (_, _) => activity.Clear();
+        journalToolbar.Controls.Add(clearActivityButton);
+        bottom.Controls.Add(journalToolbar, 0, 0);
         bottom.Controls.Add(activity, 0, 1);
         bottom.Controls.Add(status, 0, 2);
 
@@ -266,6 +279,98 @@ internal sealed class MainForm : Form
         return button;
     }
 
+    private void RenderSshPage(TableLayoutPanel page)
+    {
+        var basics = new TableLayoutPanel
+        {
+            ColumnCount = 2, RowCount = 2, Width = 850, AutoSize = true,
+            Dock = DockStyle.Top, Margin = new Padding(0, 6, 0, 8)
+        };
+        basics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 57));
+        basics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 43));
+        AddSshGridField(basics, 0, 0,
+            T("Linux: имя DNS или IPv4", "Linux host (DNS or IPv4)", "כתובת שרת Linux"), host);
+        AddSshGridField(basics, 1, 0, T("SSH-порт", "SSH port", "פורט SSH"), sshPort);
+        AddSshGridField(basics, 0, 1, T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser);
+        AddSshGridField(basics, 1, 1, T("SSH-аутентификация", "SSH authentication", "שיטת SSH"), sshAuthMode);
+        AddLine(page, basics);
+
+        if (sshAuthMode.SelectedIndex == 1)
+        {
+            AddField(page, T("Пароль SSH (не сохраняется)", "SSH password (not saved)", "סיסמת SSH"), sshPassword);
+            AddField(page, T("Проверенный отпечаток SSH SHA256", "Trusted SSH host key SHA256", "טביעת SSH SHA256"), sshFingerprint);
+        }
+        var advanced = UiTheme.Action(showAdvancedSsh
+            ? T("Скрыть расширенные настройки", "Hide advanced SSH options", "הסתר אפשרויות מתקדמות")
+            : T("Дополнительные настройки SSH", "Advanced SSH options", "אפשרויות SSH מתקדמות"), glyph: "gear");
+        advanced.Click += (_, _) => { showAdvancedSsh = !showAdvancedSsh; RenderPage(); };
+        AddLine(page, advanced);
+        if (showAdvancedSsh)
+        {
+            if (sshAuthMode.SelectedIndex == 0)
+                AddField(page, T("Путь к SSH-ключу (пусто = ssh-agent)", "SSH key path (blank = ssh-agent)", "נתיב למפתח SSH"), sshKey);
+            AddField(page, T("Пароль sudo (не сохраняется)", "sudo password (not saved)", "סיסמת sudo"), sudoPassword);
+            AddLine(page, UiTheme.Text(T(
+                "Проверка host key обязательна: known_hosts для режима ключа, подтверждённый SHA256 для пароля.",
+                "Host-key verification: known_hosts with keys, trusted SHA256 fingerprint with password.",
+                "אימות מפתח השרת נדרש.")));
+        }
+        AddAction(page, T("Подключить и определить конфигурацию",
+            "Connect and inspect Linux server", "התחבר ובדוק את שרת Linux"),
+            CheckSshAsync, true, "ssh", "ssh");
+        if (serverOverview is not null && serverOverviewIdentity == TryCurrentIdentity())
+        {
+            AddLine(page, UiTheme.Text(T("Профиль Linux-сервера (только чтение)",
+                "Linux server profile (read-only)", "פרופיל שרת Linux (קריאה בלבד)"), true));
+            var overview = new TextBox
+            {
+                Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
+                BackColor = Color.White, BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Consolas", 9), Height = 150, Width = 830,
+                Text = serverOverview.Display(language.SelectedIndex)
+            };
+            AddLine(page, overview);
+            AddAction(page, T("Обновить профиль", "Refresh server profile", "רענן פרופיל"),
+                RefreshServerProfileAsync, false, "refresh", "ssh");
+        }
+        else
+            AddLine(page, UiTheme.Text(T(
+                "После подключения здесь появятся hostname, домен, MTA, inet_interfaces и обнаруженные SMTP-порты. Значения считываются без изменения Linux.",
+                "Connect to read hostname, domain, MTA, inet_interfaces and SMTP ports. The server is not modified.",
+                "התחבר כדי לקרוא את הגדרות השרת ללא שינוי.")));
+    }
+
+    private static void AddSshGridField(TableLayoutPanel grid, int column, int row, string caption, Control input)
+    {
+        var cell = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 2,
+            Margin = new Padding(0, 0, 12, 8)
+        };
+        cell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        cell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        cell.Controls.Add(UiTheme.Text(caption), 0, 0);
+        input.Width = 260;
+        input.Dock = DockStyle.Fill;
+        input.Margin = new Padding(0, 2, 0, 4);
+        cell.Controls.Add(input, 0, 1);
+        grid.Controls.Add(cell, column, row);
+    }
+
+    private async Task RefreshServerProfileAsync()
+    {
+        var endpoint = Endpoint();
+        var result = await SshRemote.ProbeSecurityAsync(endpoint, EmbeddedAssets.SecurityProbe);
+        result.EnsureSuccess();
+        var overview = LinuxServerOverview.Parse(result.StdOut);
+        inspectedMail = MailRoutingInventory.Parse(result.StdOut);
+        inspectedServerIdentity = SecurityOptionsStore.Identity(endpoint);
+        serverOverview = overview;
+        serverOverviewIdentity = inspectedServerIdentity;
+        WriteLine("Linux server profile: " + overview.Display(1));
+        RenderPage();
+    }
+
     private void RenderPage()
     {
         if (IsDisposed) return;
@@ -305,29 +410,7 @@ internal sealed class MainForm : Form
         switch (step)
         {
             case 0:
-                AddField(page, T("Linux: DNS-имя или IPv4", "Linux host (DNS or IPv4)", "כתובת שרת Linux"), host);
-                AddField(page, T("SSH-порт", "SSH port", "פורט SSH"), sshPort);
-                AddField(page, T("SSH-пользователь", "SSH username", "משתמש SSH"), sshUser);
-                AddLine(page, UiTheme.Text(T("Способ входа по SSH", "SSH authentication", "שיטת SSH")));
-                AddLine(page, sshAuthMode);
-                if (sshAuthMode.SelectedIndex == 1)
-                {
-                    AddField(page, T("Пароль SSH (не сохраняется)", "SSH password (not saved)", "סיסמת SSH"), sshPassword);
-                    AddField(page, T("Проверенный SSH host key SHA256 (обязательно, вне SSH-соединения)",
-                                     "Verified SSH host key SHA256 (required, obtain out-of-band)",
-                                     "טביעת SHA256 מאומתת של השרת"), sshFingerprint);
-                }
-                else
-                {
-                    AddField(page, T("Путь к SSH-ключу (или ssh-agent)", "SSH key path (or ssh-agent)", "מפתח SSH"), sshKey);
-                }
-                AddField(page, T("Пароль sudo (необязательно, не сохраняется)",
-                                 "sudo password (optional, not saved)", "סיסמת sudo"), sudoPassword);
-                AddAction(page, T("Проверить SSH и sudo", "Check SSH and sudo", "בדיקת SSH ו-sudo"), CheckSshAsync, true, "ssh", "ssh");
-                AddLine(page, UiTheme.Text(T(
-                    "SSH host key проверяется обязательно: ключевой режим — через known_hosts, парольный — по подтверждённому SHA256. Пароли не сохраняются на диск и не передаются в аргументах процесса.",
-                    "Host-key verification is mandatory: known_hosts for key mode, verified SHA256 for password mode. Passwords are never persisted or placed in command arguments.",
-                    "אימות מפתח השרת חובה. סיסמאות אינן נשמרות.")));
+                RenderSshPage(page);
                 break;
             case 1:
                 EnsureSecurityLoaded();
@@ -400,6 +483,19 @@ internal sealed class MainForm : Form
                 AddField(page, T("Подтверждённый домен (необязательно для XOAUTH2)",
                                  "Verified accepted domain (not needed for XOAUTH2)",
                                  "דומיין מאומת (לא נדרש ל-XOAUTH2)"), acceptedDomain);
+                if (serverOverview is not null && serverOverviewIdentity == TryCurrentIdentity() &&
+                    !string.IsNullOrWhiteSpace(serverOverview.Domain))
+                {
+                    var linuxDomain = serverOverview.Domain;
+                    AddAction(page, T("Использовать обнаруженный домен Linux: ",
+                        "Copy detected Linux domain into field: ", "השתמש בדומיין Linux: ") + linuxDomain,
+                        () =>
+                        {
+                            acceptedDomain.Text = linuxDomain;
+                            SaveRoutingChoices();
+                            return Task.CompletedTask;
+                        }, false, "copy", "routing");
+                }
                 AddField(page, T("Порт отдельного SMTP (Preserve Existing Mail; по умолчанию 2525)",
                                  "Isolated SMTP port (Preserve Existing Mail; default 2525)",
                                  "פורט SMTP נפרד (ברירת מחדל 2525)"), isolatedSmtpPort);
@@ -556,6 +652,7 @@ internal sealed class MainForm : Form
         pageHost.ResumeLayout();
 
         navigation.Controls.Clear();
+        clearActivityButton.Text = T("Очистить журнал", "Clear log", "נקה יומן");
         var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
         back.Enabled = step > 0 && !busy;
         back.Click += (_, _) => { step--; RenderPage(); };
@@ -1006,7 +1103,7 @@ internal sealed class MainForm : Form
             monitoringRequest.Checked = securityOptions.RequestEntraSignInMonitoring;
             securityServerIdentity = identity;
             linuxSecurity = null;
-            cloudSecuritySummary = "Microsoft 365: не проверено. Проверка выполняется только по запросу.";
+            cloudSecuritySummary = "";
         }
         finally { securityLoading = false; }
     }
@@ -1028,7 +1125,7 @@ internal sealed class MainForm : Form
         var result = await SshRemote.ProbeSecurityAsync(Endpoint(), EmbeddedAssets.SecurityProbe);
         result.EnsureSuccess();
         linuxSecurity = LinuxSecurityInventory.Parse(result.StdOut);
-        WriteLine(linuxSecurity.SummaryRu());
+        WriteLine(linuxSecurity.Summary(language.SelectedIndex));
         WriteLine("Presence of TPM/HSM is NOT proof that the key is nonexportable or supported by OAuth transport.");
         RenderPage();
     }
@@ -1171,6 +1268,16 @@ internal sealed class MainForm : Form
         var result = await SshRemote.CheckAsync(Endpoint());
         result.EnsureSuccess();
         WriteLine(result.StdOut);
+        WriteLine("Reading Linux hostname, MTA and SMTP listeners (read-only)...");
+        try { await RefreshServerProfileAsync(); }
+        catch (Exception ex)
+        {
+            serverOverview = null;
+            serverOverviewIdentity = null;
+            inspectedMail = null;
+            inspectedServerIdentity = null;
+            WriteLine("WARNING: SSH connected, but server profile could not be read: " + ex.Message);
+        }
     }
 
     private async Task PrepareAsync()

@@ -12,10 +12,38 @@ val OS_ID "${ID:-unknown}"
 val OS_LIKE "${ID_LIKE:-}"
 val OS_VERSION "${VERSION_ID:-unknown}"
 val ARCH "$(uname -m)"
+# A connection profile is collected from system tools; shell startup files are
+# deliberately not sourced by the read-only, noninteractive SSH probe.
+val SYSTEM_HOSTNAME "$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n)"
+val SYSTEM_FQDN "$(hostname -f 2>/dev/null || true)"
+val SYSTEM_DOMAIN "$(hostname -d 2>/dev/null || true)"
+MTA_STATUS=unknown
+SMTP_CONFIGURED_PORTS=
 if has postconf; then
   val MTA postfix
   val POSTFIX_RELAY "$(postconf -h relayhost 2>/dev/null || true)"
   val POSTFIX_TRANSPORT "$(postconf -h default_transport 2>/dev/null || true)"
+  val POSTFIX_MYHOSTNAME "$(postconf -h myhostname 2>/dev/null || true)"
+  val POSTFIX_MYDOMAIN "$(postconf -h mydomain 2>/dev/null || true)"
+  val POSTFIX_INET_INTERFACES "$(postconf -h inet_interfaces 2>/dev/null || true)"
+  val POSTFIX_INET_PROTOCOLS "$(postconf -h inet_protocols 2>/dev/null || true)"
+  # Active master.cf inet services, NOT a hard-coded default port.
+  # smtp=25, submission=587, submissions/smtps=465; numeric custom
+  # services keep their exact configured port.
+  SMTP_CONFIGURED_PORTS="$(postconf -M 2>/dev/null | awk '
+    {
+      split($1, assignment, "=")
+      split(assignment[1], service, "/")
+      if (service[2] != "inet") next
+      name = service[1]
+      if (name == "smtp") name = 25
+      else if (name == "submission") name = 587
+      else if (name == "submissions" || name == "smtps") name = 465
+      if (name ~ /^[0-9]+$/ && name + 0 > 0 && name + 0 <= 65535)
+        print name + 0
+    }
+  ' | sort -nu | paste -sd, -)"
+  if has systemctl; then MTA_STATUS="$(systemctl is-active postfix 2>/dev/null || true)"; fi
   # Return only a digest of the two main configuration files, never their
   # contents. Any unreadable file blocks Force Replace in the wizard.
   if has sha256sum && [ -r /etc/postfix/main.cf ] && [ -r /etc/postfix/master.cf ]; then
@@ -36,11 +64,36 @@ elif [ -e /etc/postfix ]; then
   val MTA unknown
 elif [ -f /etc/mail/sendmail.cf ] || { has rpm && rpm -q sendmail >/dev/null 2>&1; }; then
   val MTA sendmail
+  if has systemctl; then MTA_STATUS="$(systemctl is-active sendmail 2>/dev/null || true)"; fi
 elif has exim || has exim4; then
   val MTA exim
+  if has systemctl; then MTA_STATUS="$(systemctl is-active exim4 2>/dev/null || true)"; fi
+  if [ "$MTA_STATUS" != active ] && has systemctl; then
+    MTA_STATUS="$(systemctl is-active exim 2>/dev/null || true)"
+  fi
 else
   val MTA none
 fi
+val MTA_SERVICE_STATUS "$MTA_STATUS"
+val SMTP_CONFIGURED_PORTS "$SMTP_CONFIGURED_PORTS"
+# ss reads the kernel TCP listener table without privilege. A matching TCP
+# port is only a *candidate* listener, not proof of SMTP or Internet reachability.
+SMTP_LISTENING_PORTS=
+if has ss; then
+  SMTP_LISTENING_PORTS="$(ss -H -ltn 2>/dev/null | awk -v configured="$SMTP_CONFIGURED_PORTS" '
+    BEGIN {
+      split(configured, ports, ",")
+      for (i in ports) if (ports[i] ~ /^[0-9]+$/) wanted[ports[i]] = 1
+      wanted[25] = 1; wanted[465] = 1; wanted[587] = 1; wanted[2525] = 1
+    }
+    {
+      n = split($4, address, ":")
+      p = address[n]
+      if (p ~ /^[0-9]+$/ && wanted[p] && p + 0 > 0 && p + 0 <= 65535) print p + 0
+    }
+  ' | sort -nu | paste -sd, -)"
+fi
+val SMTP_LISTENING_PORTS "$SMTP_LISTENING_PORTS"
 if has apt-get; then val PACKAGE_MANAGER apt
 elif has dnf; then val PACKAGE_MANAGER dnf
 elif has yum; then val PACKAGE_MANAGER yum
