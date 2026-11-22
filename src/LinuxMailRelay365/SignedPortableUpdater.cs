@@ -1022,9 +1022,17 @@ internal static class SignedPortableUpdater
         using var previewFixture = JsonDocument.Parse(Fixture(asset, hash, true));
         var fixtureOffer = SelectRelease(previewFixture.RootElement, true,
             "0.1.0-preview.25", asset);
+        bool installedStable = CompareVersions(UpdateCheck.Version, "0.1.0") >= 0;
+        // Confirm a verified historical Preview offer is NEVER eligible as an
+        // unsigned Preview upgrade for an already installed numeric Stable.
+        bool previewSafety = installedStable
+            ? (fixtureOffer is not null && !IsPreviewRelease(fixtureOffer) &&
+               SelectRelease(previewFixture.RootElement, true,
+                   UpdateCheck.Version, asset) is null)
+            : (fixtureOffer is not null && IsPreviewRelease(fixtureOffer));
         return ApplyFromHelper(Array.Empty<string>()) == 2 &&
                ApplyFromHelper(Array.Empty<string>(), unsignedPreview: true) == 2 &&
-               fixtureOffer is not null && IsPreviewRelease(fixtureOffer) &&
+               previewSafety &&
                !IsPreviewRelease(new SignedUpdateOffer("0.1.1", "v0.1.1",
                    "https://github.com/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1",
                    new Uri("https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.1/" + asset),
