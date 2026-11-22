@@ -57,7 +57,8 @@ internal static class Program
             ("Tenant discovery", TenantDiscovery.SelfTest),
             ("Diagnostic privacy", DiagnosticJournal.SelfTest),
             ("UI language preference", UiLanguagePreference.SelfTest),
-            ("Read-only server profile", LinuxServerOverview.SelfTest)
+            ("Read-only server profile", LinuxServerOverview.SelfTest),
+            ("SSH LF script normalization", SshRemote.ScriptLineEndingSelfTest)
         };
 #if !USE_UNIVERSAL_UPDATER
         checks.Add(("Release ordering", ReleaseVersion.SelfTest));
