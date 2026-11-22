@@ -246,7 +246,7 @@ def main(argv=None):
                         default="unknown")
     parser.add_argument("--self-test", action="store_true")
     opts = parser.parse_args(argv)
-    if not 1024 <= opts.smtp_port <= 65535:
+    if not (opts.smtp_port == 25 or 1024 <= opts.smtp_port <= 65535):
         parser.error("custom port must be 1024..65535")
     if opts.self_test:
         ip_data = ip_interfaces(json.dumps([
