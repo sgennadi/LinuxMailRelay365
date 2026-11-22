@@ -57,6 +57,34 @@ by `Get-ConnectionInformation` before any Exchange mutation.
 This is a candidate pending real administrator consent, Entra API and
 Exchange RBAC acceptance, including app reuse with multiple public keys.
 
+## RC4 candidate: native Graph addKey for Linux OAuth certificate renewal
+
+The staged Linux OAuth certificate registration workflow now defaults to the
+`EntraGraphCertificateAddKeyClient` in the reusable .NET 10 library.
+Both Preview and Apply use in-process MSAL Device Code UI rather than spawning
+PowerShell 7. The old `Manage-LinuxMailRelay365EntraCertificate.ps1` remains
+packaged and is available only if the administrator explicitly checks
+**Use legacy Graph PowerShell 7 instead of C#** in the security wizard.
+
+The read-only Preview verifies exact tenant and application Client ID, all
+existing public key metadata, current certificate validity, absent candidate
+thumbprint and an SHA-256 plan bound to the Linux active/staged identity hashes.
+Before Apply the app authenticates for `Application.ReadWrite.All` *before*
+asking Linux to sign the short-lived proof. The proof stays in process memory;
+C# validates RS256, x5t, exact application object ID issuer, Graph audience,
+10-minute validity and RSA PKCS#1 signature from the *current* Linux public
+certificate. Only Graph `/applications/{id}/addKey` is invoked: **no PATCH,
+removeKey, deletion, key export or permission change**. Post-apply a full
+metadata re-read confirms every previous certificate remains and the candidate
+was appended exactly once. Any failure after the POST is treated as a possible
+partial success requiring manual inspection, never automatic retry or rollback.
+
+Important: this is still an **offline-tested candidate**, not proof of live
+Entra Graph addKey compatibility in a production tenant. Hardware TPM/HSM and
+software PEM cutover, SMTP AUTH and actual mail delivery require separate live
+acceptance. MSAL tokens are volatile and no private Linux PEM or TPM handles
+leave the server.
+
 ## What still needs Exchange Online PowerShell
 
 - Exchange Online scoped `Application SMTP.SendAsApp` RBAC, recipient
