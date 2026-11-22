@@ -68,7 +68,7 @@ class GooglePostfixRouteTests(unittest.TestCase):
                 return SimpleNamespace(st_uid=0, st_mode=original.st_mode)
             with mock.patch.object(mod, "MAIN", main), \
                  mock.patch.object(mod, "MASTER", master), \
-                 mock.patch.object(pathlib.Path, "stat", side_effect=root_stat):
+                 mock.patch.object(pathlib.Path, "stat", autospec=True, side_effect=root_stat):
                 before = mod.fingerprint()
                 main.write_text("relayhost=[new.example]:465\n")
                 after = mod.fingerprint()
