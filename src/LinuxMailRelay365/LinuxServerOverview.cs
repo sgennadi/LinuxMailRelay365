@@ -12,7 +12,7 @@ internal sealed record LinuxServerOverview(
         "SYSTEM_HOSTNAME", "SYSTEM_FQDN", "SYSTEM_DOMAIN", "MTA",
         "MTA_SERVICE_STATUS", "SMTP_CONFIGURED_PORTS", "SMTP_LISTENING_PORTS",
         "POSTFIX_MYHOSTNAME", "POSTFIX_MYDOMAIN", "POSTFIX_INET_INTERFACES",
-        "POSTFIX_INET_PROTOCOLS"
+        "POSTFIX_INET_PROTOCOLS", "PROBE_VERSION"
     ];
 
     internal static LinuxServerOverview Parse(string output)
@@ -29,15 +29,31 @@ internal sealed record LinuxServerOverview(
             if (value.Length > 255 || value.Any(char.IsControl)) continue;
             values[key] = value;
         }
-        if (!values.ContainsKey("MTA"))
-            throw new InvalidDataException("Linux server profile is incomplete.");
+        if (values.GetValueOrDefault("PROBE_VERSION") != "2" ||
+            !values.ContainsKey("MTA"))
+            throw new InvalidDataException("Linux server profile is incomplete or has an unsupported probe version.");
         string Get(string key) => values.GetValueOrDefault(key, "");
         return new LinuxServerOverview(
             Get("SYSTEM_HOSTNAME"), Get("SYSTEM_FQDN"), Get("SYSTEM_DOMAIN"),
-            Get("MTA"), Get("MTA_SERVICE_STATUS"), Get("SMTP_CONFIGURED_PORTS"),
-            Get("SMTP_LISTENING_PORTS"), Get("POSTFIX_MYHOSTNAME"),
+            Get("MTA"), Get("MTA_SERVICE_STATUS"), NormalizePorts(Get("SMTP_CONFIGURED_PORTS")),
+            NormalizePorts(Get("SMTP_LISTENING_PORTS")), Get("POSTFIX_MYHOSTNAME"),
             Get("POSTFIX_MYDOMAIN"), Get("POSTFIX_INET_INTERFACES"),
             Get("POSTFIX_INET_PROTOCOLS"));
+    }
+
+    // Only display actual numeric ports returned by Linux. Never assume 2525
+    // or port 25 is configured or available.
+    private static string NormalizePorts(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        var ports = new SortedSet<int>();
+        foreach (var part in value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!int.TryParse(part, out int port) || port is < 1 or > 65535)
+                throw new InvalidDataException("Linux reported an invalid TCP port.");
+            ports.Add(port);
+        }
+        return string.Join(",", ports);
     }
 
     internal string Display(int language) => language switch
@@ -72,13 +88,19 @@ internal sealed record LinuxServerOverview(
         var value = Parse(
             "PROBE_VERSION=2\nSYSTEM_HOSTNAME=mail\nSYSTEM_FQDN=mail.example.org\n" +
             "SYSTEM_DOMAIN=example.org\nMTA=postfix\nMTA_SERVICE_STATUS=active\n" +
-            "SMTP_CONFIGURED_PORTS=25,587\nSMTP_LISTENING_PORTS=25\n" +
+            "SMTP_CONFIGURED_PORTS=587,25,25,2526\nSMTP_LISTENING_PORTS=25,2526\n" +
             "POSTFIX_MYHOSTNAME=mail.example.org\nPOSTFIX_MYDOMAIN=example.org\n" +
             "POSTFIX_INET_INTERFACES=all\nPOSTFIX_INET_PROTOCOLS=ipv4\n");
-        return value.Fqdn == "mail.example.org" &&
-               value.ConfiguredSmtpPorts == "25,587" &&
-               value.ListeningSmtpPorts == "25" &&
-               value.Display(1).Contains("inet_interfaces: all", StringComparison.Ordinal) &&
-               value.Display(0).Contains("Узел:", StringComparison.Ordinal);
+        if (value.Fqdn != "mail.example.org" ||
+            value.ConfiguredSmtpPorts != "25,587,2526" ||
+            value.ListeningSmtpPorts != "25,2526" ||
+            !value.Display(1).Contains("inet_interfaces: all", StringComparison.Ordinal) ||
+            !value.Display(0).Contains("Узел:", StringComparison.Ordinal))
+            return false;
+        try { Parse("PROBE_VERSION=3\nMTA=postfix\n"); return false; }
+        catch (InvalidDataException) { }
+        try { Parse("PROBE_VERSION=2\nMTA=postfix\nSMTP_CONFIGURED_PORTS=70000\n"); return false; }
+        catch (InvalidDataException) { }
+        return true;
     }
 }
