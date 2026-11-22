@@ -35,7 +35,7 @@ public static class EntraGraphProvisioner
         string publicDer = Convert.ToBase64String(cert.RawData);
         var newKey = new PublicKeyEntry(null, "AsymmetricX509Cert", "Verify",
             certificateLabel, publicDer, cert.NotBefore.ToUniversalTime().ToString("o"),
-            cert.NotAfter.ToUniversalTime().ToString("o"));
+            cert.NotAfter.ToUniversalTime().ToString("o"), null);
 
         string token = await EntraTenantDiscoveryClient.AcquireGraphWriteTokenAsync(
             tenantId, publicSignInClientId, showDeviceCode, ct).ConfigureAwait(false);
@@ -217,6 +217,21 @@ public static class EntraGraphProvisioner
             string name = ReadLabel(entry, "displayName", 128);
             string from = ReadLabel(entry, "startDateTime", 64);
             string until = ReadLabel(entry, "endDateTime", 64);
+            string? custom = null;
+            if (entry.TryGetProperty("customKeyIdentifier", out var identifier))
+            {
+                if (identifier.ValueKind == JsonValueKind.String)
+                {
+                    custom = ReadLabel(entry, "customKeyIdentifier", 256);
+                    try { _ = Convert.FromBase64String(custom); }
+                    catch (FormatException)
+                    {
+                        throw new EntraDiscoveryException("invalid_existing_custom_key_identifier");
+                    }
+                }
+                else if (identifier.ValueKind != JsonValueKind.Null)
+                    throw new EntraDiscoveryException("invalid_existing_custom_key_identifier");
+            }
             if (type != "AsymmetricX509Cert" || usage != "Verify" ||
                 !Guid.TryParse(keyId, out _) || key.Length < 500 ||
                 from.Length == 0 || until.Length == 0)
@@ -238,7 +253,7 @@ public static class EntraGraphProvisioner
             {
                 throw new EntraDiscoveryException("invalid_existing_public_key");
             }
-            all.Add(new PublicKeyEntry(keyId, type, usage, name, key, from, until));
+            all.Add(new PublicKeyEntry(keyId, type, usage, name, key, from, until, custom));
         }
         if (all.Select(k => k.KeyId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != all.Count)
             throw new EntraDiscoveryException("duplicate_graph_key_identifiers");
@@ -248,9 +263,12 @@ public static class EntraGraphProvisioner
     private static string KeySha(PublicKeyEntry key) =>
         Convert.ToHexString(SHA256.HashData(Convert.FromBase64String(key.Key)));
 
+    // Compare every credential attribute, not merely the public-key digest.
+    // This detects concurrent changes to validity, labels or custom IDs
+    // before a replacement-style Graph PATCH.
     private static bool SameKeySet(IEnumerable<PublicKeyEntry> first, IEnumerable<PublicKeyEntry> second) =>
-        first.Select(k => k.KeyId + ":" + KeySha(k)).Order(StringComparer.Ordinal)
-            .SequenceEqual(second.Select(k => k.KeyId + ":" + KeySha(k)).Order(StringComparer.Ordinal));
+        first.Select(k => JsonSerializer.Serialize(k)).Order(StringComparer.Ordinal)
+            .SequenceEqual(second.Select(k => JsonSerializer.Serialize(k)).Order(StringComparer.Ordinal));
 
     private static async Task VerifyKeySetAsync(
         HttpClient http, string token, Guid appId, IReadOnlyList<PublicKeyEntry> expected,
@@ -262,6 +280,14 @@ public static class EntraGraphProvisioner
             !actual.Select(KeySha).Order(StringComparer.Ordinal)
                    .SequenceEqual(expected.Select(KeySha).Order(StringComparer.Ordinal)))
             throw new EntraDiscoveryException("certificate_postcheck_failed_review_entra");
+        // Old keys must retain exact metadata including custom identifier.
+        foreach (var preserved in expected.Where(k => k.KeyId is not null))
+        {
+            var matching = actual.Where(k =>
+                string.Equals(k.KeyId, preserved.KeyId, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (matching.Length != 1 || !SameKeySet([preserved], matching))
+                throw new EntraDiscoveryException("existing_certificate_metadata_changed_review_entra");
+        }
     }
 
     private static async Task<JsonDocument?> RequestAsync(
@@ -353,7 +379,9 @@ public static class EntraGraphProvisioner
         [property: System.Text.Json.Serialization.JsonPropertyName("startDateTime")]
         string StartDateTime,
         [property: System.Text.Json.Serialization.JsonPropertyName("endDateTime")]
-        string EndDateTime);
+        string EndDateTime,
+        [property: System.Text.Json.Serialization.JsonPropertyName("customKeyIdentifier")]
+        string? CustomKeyIdentifier);
 
     public static bool SelfTest() =>
         IsSafeLabel("Linux Mail Relay 365", 90) &&
@@ -361,9 +389,9 @@ public static class EntraGraphProvisioner
         !IsSafeLabel("app\nsecret", 90) &&
         !SameKeySet(
             [new PublicKeyEntry("1", "AsymmetricX509Cert", "Verify", "A",
-                Convert.ToBase64String([1,2,3]), "2026", "2027")],
+                Convert.ToBase64String([1,2,3]), "2026", "2027", "AA==")],
             [new PublicKeyEntry("1", "AsymmetricX509Cert", "Verify", "A",
-                Convert.ToBase64String([4,5,6]), "2026", "2027")]);
+                Convert.ToBase64String([4,5,6]), "2026", "2027", "AA==")]);
 }
 
 public sealed record EntraProvisionResult(
