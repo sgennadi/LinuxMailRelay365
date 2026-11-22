@@ -529,6 +529,16 @@ internal sealed partial class MainForm : Form
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
+        alternateUpstreamHost.Leave += (_, _) =>
+        {
+            SaveRoutingChoices();
+            if (!busy && step is 1 or 2 or 3) RenderPage();
+        };
+        alternateUpstreamPort.Leave += (_, _) =>
+        {
+            SaveRoutingChoices();
+            if (!busy && step is 1 or 2 or 3) RenderPage();
+        };
         foreignSidecarHostname.Leave += (_, _) => UpdatePreserveFlowPreview();
         foreach (var field in new[] { postfixBasicsHostname, postfixBasicsDomain })
         {
@@ -2405,10 +2415,16 @@ internal sealed partial class MainForm : Form
                 if (selectedMailScenario == MailScenarioPlanner.Keep)
                 {
                     AddLine(page, UiTheme.Text(T(
-                        "Вы выбрали сохранение текущей почты. Microsoft 365 не требуется на этом этапе.",
+                        "Вы выбрали сохранение текущей почты. Microsoft 365 не требуется на этом этапе.
                         "You chose to keep existing mail unchanged. Microsoft 365 configuration is not required for this plan.",
                         "בחרתם להשאיר את הדואר הקיים ללא שינוי.")));
                     break;
+                }
+                if (selectedMailTarget == MailFlowIntent.TargetCustom)
+                {
+                    AddUnverifiedM365Capabilities(page);
+                    AddLine(page, BuildLiveMailFlowDiagram());
+                    break; // Custom upstream has no reviewed installer yet.
                 }
                 AddUnverifiedM365Capabilities(page);
                 AddLine(page, UiTheme.Text(T(
@@ -2495,10 +2511,21 @@ internal sealed partial class MainForm : Form
                 if (selectedMailScenario == MailScenarioPlanner.Keep)
                 {
                     AddLine(page, MailFlowText(T(
-                        "Сохранить существующую почту: никакая установка или смена SMTP-маршрута не требуется.",
+                        "Сохранить существующую почту: никакая установка или смена SMTP-маршрута не требуется.
                         "Keep current mail: no installation or SMTP route changes are required.",
                         "ללא שינוי בתצורת הדואר הקיימת."),
                         Math.Max(300, pageHost.ClientSize.Width - 90)));
+                    break;
+                }
+                if (selectedMailTarget == MailFlowIntent.TargetCustom)
+                {
+                    AddLine(page, BuildLiveMailFlowDiagram());
+                    AddUnverifiedM365Capabilities(page);
+                    AddLine(page, MailFlowText(T(
+                        "Перевод на произвольный SMTP-сервер пока сохраняется только как план. Применение без проверки TLS, AUTH и резервной копии не предлагается.",
+                        "Custom SMTP migration is planning-only until TLS, AUTH and rollback can be verified. No apply action is offered.",
+                        "מעבר לממסר SMTP אחר הוא תכנון בלבד."),
+                        Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
                     break;
                 }
                 if (selectedMailScenario == MailScenarioPlanner.ReplaceRelay)
@@ -3861,6 +3888,9 @@ internal sealed partial class MainForm : Form
             routingPlan = MailRoutingPlanStore.Load(dataDirectory, identity);
             selectedMailSource = routingPlan.MailSource;
             selectedMailScenario = routingPlan.MigrationScenario;
+            selectedMailTarget = routingPlan.Destination;
+            alternateUpstreamHost.Text = routingPlan.CustomUpstreamHost;
+            alternateUpstreamPort.Text = routingPlan.CustomUpstreamPort.ToString();
             mailTransport.SelectedIndex = routingPlan.Transport switch
              {
                  "connector" => 1, "direct-send" => 2, _ => 0
@@ -3933,6 +3963,10 @@ internal sealed partial class MainForm : Form
         if (routingLoading || routingIdentity is null) return;
         routingPlan.MailSource = selectedMailSource;
         routingPlan.MigrationScenario = selectedMailScenario;
+        routingPlan.Destination = selectedMailTarget;
+        routingPlan.CustomUpstreamHost = alternateUpstreamHost.Text.Trim();
+        if (int.TryParse(alternateUpstreamPort.Text.Trim(), out int upstreamPort))
+            routingPlan.CustomUpstreamPort = upstreamPort;
         routingPlan.Transport = mailTransport.SelectedIndex switch
         {
             1 => "connector", 2 => "direct-send", _ => "oauth2"
