@@ -82,6 +82,13 @@ internal static class Program
             ("Delivery route chooser guidance", DeliveryModeOverview.SelfTest),
             ("Recipient-aware read-only delivery recommendations", MailDeliveryAdvisor.SelfTest),
             ("Readable mail discovery overview and safe guidance", MailDiscoveryBrief.SelfTest),
+            ("Mail intent and evidence-gated scenario ranking", MailFlowIntent.SelfTest),
+            ("Local submission read-only evidence", MailSubmissionEvidence.SelfTest),
+            ("Embedded local submission probe is read-only", () =>
+                EmbeddedAssets.MailSubmissionInspector.Contains("MAIL_ORIGIN_VERSION=1",
+                    StringComparison.Ordinal) &&
+                !EmbeddedAssets.MailSubmissionInspector.Contains("postconf -e",
+                    StringComparison.Ordinal)),
             ("English-first UI preference persistence", UiLanguagePreference.SelfTest),
             ("Read-only MTA discovery recommendations", MailServerDiscoveryDecision.SelfTest),
             ("Read-only hostname/domain and MTA settings report", MailHostInspection.SelfTest),
