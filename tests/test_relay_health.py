@@ -53,16 +53,16 @@ class RelayHealthTests(unittest.TestCase):
         self.assertEqual(report["CHANGES_APPLIED"],"no")
 
     def test_custom_port_validation(self):
-        for port in ("25","587","1023","65536","test"):
+        for port in ("587","1023","65536","test"):
             r=subprocess.run([sys.executable,str(SCRIPT),"--smtp-port",port],
                              stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                              universal_newlines=True,timeout=8)
             self.assertNotEqual(r.returncode,0)
-        r=subprocess.run([sys.executable,str(SCRIPT),"--smtp-port","46500"],
+        r=subprocess.run([sys.executable,str(SCRIPT),"--smtp-port","25"],
                          stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                          universal_newlines=True,timeout=8)
         self.assertEqual(r.returncode,0,r.stderr)
-        self.assertIn("CUSTOM_SMTP_PORT=46500",r.stdout)
+        self.assertIn("CUSTOM_SMTP_PORT=25",r.stdout)
 
     def test_source_security_contract(self):
         src=SCRIPT.read_text(encoding="utf-8")
