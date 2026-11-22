@@ -1306,6 +1306,30 @@ internal sealed partial class MainForm : Form
             discoveredMailIdentity = null;
             WriteLine("Automatic MTA discovery incomplete; manual review required before any installation. " +
                 "Read-only probe failed (" + error.GetType().Name + ").");
+            // A failed general MTA probe must not prevent independent, read-only
+            // effective SMTP port inspection. This DOES NOT unlock Apply.
+            try
+            {
+                var fallback = await SshRemote.ExecuteAsync(Endpoint(), "bash -s",
+                    EmbeddedAssets.BuildMailHostInspectionBundle(null, "unknown"),
+                    timeout: TimeSpan.FromSeconds(90));
+                fallback.EnsureSuccess();
+                inspectedHost = MailHostInspection.Parse(fallback.StdOut);
+                inspectedHostIdentity = TryCurrentIdentity();
+                discoveredMailIdentity = inspectedHostIdentity;
+                WriteLine("Independent read-only MTA port discovery: " +
+                    inspectedHost.ConfiguredSmtpPortState + " (" +
+                    inspectedHost.ConfiguredSmtpPortSource + "). " +
+                    "Main MTA safety inventory remains UNVERIFIED; installation is not authorized.");
+            }
+            catch (Exception discoveryError)
+            {
+                inspectedHost = null;
+                inspectedHostIdentity = null;
+                discoveredMailIdentity = null;
+                WriteLine("Independent SMTP port inspection also failed (" +
+                    discoveryError.GetType().Name + "). Port status UNVERIFIED.");
+            }
         }
         step = 1;
     }
