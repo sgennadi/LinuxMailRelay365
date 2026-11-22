@@ -14,6 +14,39 @@ internal static class TenantDiscovery
 {
     internal const string Schema = "linux-mail-relay-tenant-discovery/v1";
 
+    // Accept only a fixed diagnostic code. Never surface raw Azure exceptions,
+    // usernames, tokens, or arbitrary strings from the child PowerShell process.
+    internal static string FailureCode(string json)
+    {
+        if (json.Length > 256_000) return "invalid_result";
+        try
+        {
+            using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 12 });
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("schema", out var schema) ||
+                schema.ValueKind != JsonValueKind.String ||
+                schema.GetString() != Schema ||
+                !root.TryGetProperty("status", out var status) ||
+                status.ValueKind != JsonValueKind.String ||
+                status.GetString() != "error" ||
+                !root.TryGetProperty("errorCode", out var error) ||
+                error.ValueKind != JsonValueKind.String)
+                return "invalid_result";
+            return error.GetString() switch
+            {
+                "az_module_install_failed" => "az_module_install_failed",
+                "az_module_import_failed" => "az_module_import_failed",
+                "device_sign_in_failed" => "device_sign_in_failed",
+                "tenant_enumeration_failed" => "tenant_enumeration_failed",
+                "result_write_failed" => "result_write_failed",
+                "discovery_failed" => "discovery_failed",
+                _ => "invalid_result"
+            };
+        }
+        catch (JsonException) { return "invalid_result"; }
+    }
+
     internal static IReadOnlyList<TenantOption> Parse(string json)
     {
         if (json.Length > 256_000) throw new InvalidDataException("Tenant discovery result too large.");
