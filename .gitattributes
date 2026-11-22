@@ -1,0 +1,7 @@
+# Linux scripts and text resources consumed over SSH must remain LF-only.
+# SshRemote also canonicalizes stdin for Bash -s at runtime.
+*.sh text eol=lf
+*.py text eol=lf
+*.ipxe text eol=lf
+*.service text eol=lf
+*.timer text eol=lf

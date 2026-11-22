@@ -11,7 +11,12 @@ internal static class EmbeddedAssets
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(name)
             ?? throw new FileNotFoundException("Embedded installer resource is missing: " + name);
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-        return reader.ReadToEnd();
+        // Embedded .sh assets may carry CRLF after a Windows checkout.
+        // Restore canonical LF before shipping them over SSH or base64.
+        string text = reader.ReadToEnd().Replace("\r\n", "\n", StringComparison.Ordinal);
+        if (text.IndexOf('\r') >= 0 || text.IndexOf('\0') >= 0)
+            throw new InvalidDataException("Embedded script has invalid line endings.");
+        return text;
     }
 
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
