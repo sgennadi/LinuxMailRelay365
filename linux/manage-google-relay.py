@@ -98,16 +98,52 @@ def fingerprint():
     return digest.hexdigest()
 
 
+def outbound_master_overrides():
+    """Flag outgoing smtp/relay service overrides that may defeat this route.
+
+    Postfix postconf -P returns effective master.cf -o assignments in the form
+    service/type/parameter=value. Unlike text scanning, it handles multi-line
+    master.cf services. No values are exposed to the Windows GUI.
+    """
+    result = run(["postconf", "-P"])
+    if result.returncode or len(result.stdout) > 131072:
+        return True
+    for line in result.stdout.decode("utf-8", "replace").splitlines():
+        if not line.strip():
+            continue
+        key, separator, _ = line.partition("=")
+        parts = key.strip().lower().split("/")
+        if not separator or len(parts) != 3:
+            return True
+        service, protocol, parameter = parts
+        if service in ("smtp", "relay") and protocol == "unix":
+            if (parameter.startswith("smtp_tls_") or
+                    parameter.startswith("smtp_sasl_") or
+                    parameter in ("relayhost", "smtp_use_tls", "smtp_enforce_tls")):
+                return True
+    return False
+
+
 def route_conflicts():
-    # An existing transport map or per-sender relay can bypass relayhost.
-    # Do not claim to migrate all outgoing mail when these are present.
+    # TLS policy maps can override smtp_tls_security_level=secure. Both custom
+    # routes and per-destination TLS downgrades must be reviewed rather than
+    # silently discarded or overwritten.
     for name in (
         "transport_maps", "sender_dependent_relayhost_maps",
-        "sender_dependent_default_transport_maps"
+        "sender_dependent_default_transport_maps",
+        "smtp_tls_policy_maps", "smtp_tls_per_site", "smtp_fallback_relay"
     ):
         if postconf(name):
             return True
-    return postconf("default_transport") not in ("", "smtp")
+    if postconf("default_transport") not in ("", "smtp"):
+        return True
+    # Postfix's official default is "nexthop, dot-nexthop". Other matching
+    # strategies may trust DNS or unrelated certificates, so block for review.
+    matches = set(filter(None, re.split(
+        r"[\\s,:]+", postconf("smtp_tls_secure_cert_match").lower())))
+    if not matches or not matches.issubset({"nexthop", "dot-nexthop"}):
+        return True
+    return outbound_master_overrides()
 
 
 def scope_status():
