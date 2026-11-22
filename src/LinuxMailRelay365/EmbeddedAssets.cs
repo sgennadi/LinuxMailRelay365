@@ -476,6 +476,26 @@ internal static class EmbeddedAssets
                arguments + "\n";
     }
 
+    internal static string BuildMultiMailboxProofTimerBundle(string action, string? approvedSha = null)
+    {
+        string parameters = action switch
+        {
+            "plan" when approvedSha is null => "--plan",
+            "status" when approvedSha is null => "--status",
+            "enable" when approvedSha is not null &&
+                Regex.IsMatch(approvedSha, @"\A[a-f0-9]{64}\z",
+                    RegexOptions.CultureInvariant) =>
+                "--enable-reviewed --approve-sha256 " + approvedSha +
+                " --confirm ENABLE_REVIEWED_MULTI_INGRESS_TIMER",
+            "disable" when approvedSha is null =>
+                "--disable-reviewed --confirm DISABLE_AND_REVOKE_MULTI_INGRESS_TIMER",
+            _ => throw new ArgumentException("Invalid timer action or reviewed SHA-256.")
+        };
+        return "set -Eeuo pipefail\numask 077\n" +
+               "python3 /usr/local/libexec/linuxmailrelay365-multi-oauth/manage-multi-mailbox-proof-timer.py " +
+               parameters + "\n";
+    }
+
     internal static string BuildMultiMailboxProofRefreshBundle(string senderMapSha)
     {
         if (!Regex.IsMatch(senderMapSha, @"\A[a-f0-9]{64}\z",

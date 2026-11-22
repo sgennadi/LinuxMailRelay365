@@ -2962,8 +2962,30 @@ internal sealed partial class MainForm : Form
                         "multi-mailbox-ingress-proof");
                     AddLine(page, UiTheme.Text(T(
                         "Для реальной отправки нужна ручная проверка Microsoft 365. Это подтверждение истекает через 120 секунд. Автообновление пока НЕ настроено; включение SMTP НЕ выполняется.",
-                        "For real delivery, Microsoft 365 must be tested separately. Proof expires after 120 seconds. Auto-renewal is NOT installed and SMTP is NOT started.",
+                        "For real delivery, Microsoft 365 must be tested separately. Proof expires after 120 seconds. Auto-renewal is NOT installed by default and SMTP is NOT started.",
                         "האישור פג לאחר 120 שניות. אין חידוש אוטומטי או הפעלת SMTP.")));
+                    AddAction(page, T(
+                        "9. Проверить план таймера (без изменений)",
+                        "9. Preview optional proof timer (read-only)",
+                        "9. בדיקת תוכנית התזמון"),
+                        PreviewMultiMailboxProofTimerAsync, false, "check", "multi-proof-preview");
+                    AddAction(page, T(
+                        "10. Включить проверенный таймер (эксперимент)...",
+                        "10. Enable reviewed proof timer (EXPERIMENTAL)...",
+                        "10. הפעלת תזמון ניסיוני"),
+                        EnableMultiMailboxProofTimerAsync, false, "shield", "multi-proof-enable");
+                    AddAction(page, T(
+                        "11. Проверить статус таймера",
+                        "11. Inspect proof timer status",
+                        "11. בדיקת מצב התזמון"),
+                        InspectMultiMailboxProofTimerAsync, false, "check", "multi-proof-status");
+                    AddAction(page, T(
+                        "12. Остановить таймер и отозвать подтверждение...",
+                        "12. Disable timer and revoke ingress proof...",
+                        "12. עצירת התזמון וביטול האישור"),
+                        DisableMultiMailboxProofTimerAsync, false, "rotate-ccw", "multi-proof-disable");
+                    if (!string.IsNullOrEmpty(multiProofTimerSummary))
+                        AddLine(page, UiTheme.Text(multiProofTimerSummary));
                 }
                 else
                 {

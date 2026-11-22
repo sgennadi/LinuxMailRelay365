@@ -108,6 +108,23 @@ class MultiMailboxWizardRuntimeTests(unittest.TestCase):
         self.assertIn("LinuxMailRelay365.linux.multi-mailbox-ingress-proof.py", PROJECT)
         self.assertNotIn("systemctl start", RUNTIME_GUI)
 
+    def test_optional_proof_timer_has_sha_preview_and_separate_revocation(self):
+        for name in (
+            "PreviewMultiMailboxProofTimerAsync, false",
+            "EnableMultiMailboxProofTimerAsync, false",
+            "InspectMultiMailboxProofTimerAsync, false",
+            "DisableMultiMailboxProofTimerAsync, false"):
+            self.assertIn(name, GUI)
+        self.assertIn("BuildMultiMailboxProofTimerBundle(", ASSETS)
+        self.assertIn("ENABLE_REVIEWED_MULTI_INGRESS_TIMER", ASSETS)
+        self.assertIn("DISABLE_AND_REVOKE_MULTI_INGRESS_TIMER", ASSETS)
+        self.assertIn("ENABLE MULTI PROOF TIMER", RUNTIME_GUI)
+        self.assertIn("DISABLE MULTI PROOF TIMER", RUNTIME_GUI)
+        self.assertIn("reviewedMultiProofTimerContext != context", RUNTIME_GUI)
+        self.assertIn("reviewedMultiProofTimerSha = null;", RUNTIME_GUI)
+        self.assertIn("MULTI_PROOF_TIMER_M365_DELIVERY_VERIFIED", RUNTIME_GUI)
+        self.assertNotIn("systemctl start", RUNTIME_GUI)
+
     def test_offline_restore_is_explicitly_reviewed_and_not_auto_started(self):
         self.assertIn("PreviewMultiMailboxRestoreAsync, false", GUI)
         self.assertIn("RestoreMultiMailboxRouteOfflineAsync, false", GUI)

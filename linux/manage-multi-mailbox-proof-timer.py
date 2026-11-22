@@ -375,10 +375,15 @@ def main(argv=None):
         else:
             if a.approve_sha256 or a.confirm:
                 raise Refused("no_approval_in_status")
-            installed()
-            active = systemctl("is-active", "--quiet", TIMER.name,
-                               allow_inactive=True)
-            print("MULTI_PROOF_TIMER=" + ("active" if active else "inactive"))
+            present = any(p.exists() or p.is_symlink()
+                          for p in (SERVICE, TIMER, STATE, STATE_ROOT))
+            if not present:
+                print("MULTI_PROOF_TIMER=not_installed")
+            else:
+                installed()
+                active = systemctl("is-active", "--quiet", TIMER.name,
+                                   allow_inactive=True)
+                print("MULTI_PROOF_TIMER=" + ("active" if active else "inactive"))
         print("MULTI_PROOF_TIMER_MESSAGES_SENT=no")
         print("MULTI_PROOF_TIMER_PRIMARY_MTA_CHANGED=no")
         print("MULTI_PROOF_TIMER_M365_DELIVERY_VERIFIED=no")

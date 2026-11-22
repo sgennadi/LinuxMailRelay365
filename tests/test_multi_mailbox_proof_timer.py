@@ -110,6 +110,22 @@ class OptionalProofTimerTests(unittest.TestCase):
             with self.assertRaises(timer.Refused):
                 timer.read(source, 32, (0o600,))
 
+    def test_status_without_timer_reports_not_installed(self):
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(timer.os, "geteuid", return_value=0):
+            root = Path(td)
+            patches = [mock.patch.object(timer, "SERVICE", root / "service"),
+                       mock.patch.object(timer, "TIMER", root / "timer"),
+                       mock.patch.object(timer, "STATE", root / "state.json"),
+                       mock.patch.object(timer, "STATE_ROOT", root / "private")]
+            with contextlib.ExitStack() as stack:
+                for patch in patches:
+                    stack.enter_context(patch)
+                report = io.StringIO()
+                with contextlib.redirect_stdout(report):
+                    self.assertEqual(timer.main(["--status"]), 0)
+                self.assertIn("MULTI_PROOF_TIMER=not_installed", report.getvalue())
+
     def test_installed_state_and_exact_unit_bytes_must_agree(self):
         data = {"version": 1, "plan": "a" * 64, "map": "b" * 64,
                 "service": timer.digest(timer.service_text("b" * 64)),

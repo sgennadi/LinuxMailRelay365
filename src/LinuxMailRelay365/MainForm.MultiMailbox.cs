@@ -14,6 +14,9 @@ internal sealed partial class MainForm
     private string? reviewedMultiMailboxRestoreBackupId;
     private string? reviewedMultiMailboxRestoreContext;
     private string multiMailboxRestoreSummary = "";
+    private string? reviewedMultiProofTimerSha;
+    private string? reviewedMultiProofTimerContext;
+    private string multiProofTimerSummary = "";
 
     private readonly TextBox multiTestSender = Field("");
     private readonly TextBox multiTestInternal = Field("");
@@ -204,6 +207,9 @@ internal sealed partial class MainForm
         reviewedMultiMailboxRestoreBackupId = null;
         reviewedMultiMailboxRestoreContext = null;
         multiMailboxRestoreSummary = "";
+        reviewedMultiProofTimerSha = null;
+        reviewedMultiProofTimerContext = null;
+        multiProofTimerSummary = "";
         ResetMultiMailboxTestReview();
     }
 
@@ -417,6 +423,119 @@ internal sealed partial class MainForm
         RenderPage();
     }
 
+
+    private async Task PreviewMultiMailboxProofTimerAsync()
+    {
+        string context = CurrentMultiMailboxContext();
+        reviewedMultiProofTimerSha = null;
+        reviewedMultiProofTimerContext = null;
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildMultiMailboxProofTimerBundle("plan"),
+            TimeSpan.FromMinutes(2));
+        result.EnsureSuccess();
+        string sha = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_TIMER_PLAN_SHA256", @"\A[a-f0-9]{64}\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_TIMER", @"\Areview_only\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_TIMER_M365_DELIVERY_VERIFIED", @"\Ano\z");
+        if (context != CurrentMultiMailboxContext())
+            throw new InvalidOperationException("SSH host or sender map changed during timer Preview.");
+        reviewedMultiProofTimerSha = sha;
+        reviewedMultiProofTimerContext = context;
+        multiProofTimerSummary = T(
+            "План таймера проверен (SHA " + sha[..16] + "…). Ничего не включено.",
+            "Timer plan reviewed (SHA " + sha[..16] + "…). Nothing enabled.",
+            "תוכנית התזמון נבדקה ללא הפעלה.");
+        WriteLine("Optional SMTP ingress-proof timer Preview: no service changes.");
+        RenderPage();
+    }
+
+    private async Task EnableMultiMailboxProofTimerAsync()
+    {
+        string context = CurrentMultiMailboxContext();
+        if (reviewedMultiProofTimerSha is null ||
+            reviewedMultiProofTimerContext != context)
+            throw new InvalidOperationException("Run a fresh timer Preview for this exact host and route.");
+        string sha = reviewedMultiProofTimerSha;
+        if (!ConfirmDestructive("LinuxMailRelay365 | Enable experimental proof timer",
+            T("Только для контролируемого тестирования: таймер обновляет 120-секундное " +
+                "подтверждение безопасности каждые 60 секунд. SMTP и Microsoft 365 НЕ активируются.",
+              "EXPERIMENTAL: enable a local 60-second systemd timer for static ingress " +
+                "proof renewal. It does NOT start the MTA or prove M365 delivery.",
+              "הפעלה ניסיונית של תזמון מקומי בלבד. אין הפעלת דואר או אישור מסירה."),
+            "ENABLE MULTI PROOF TIMER")) return;
+        reviewedMultiProofTimerSha = null;
+        reviewedMultiProofTimerContext = null;
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildMultiMailboxProofTimerBundle("enable", sha),
+            TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_TIMER", @"\Aenabled_static_audit_only\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_TIMER_MESSAGES_SENT", @"\Ano\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_TIMER_M365_DELIVERY_VERIFIED", @"\Ano\z");
+        if (context != CurrentMultiMailboxContext())
+            throw new InvalidOperationException("SSH host or route changed during timer activation.");
+        multiProofTimerSummary = T(
+            "Таймер включён; доставка Microsoft 365 НЕ подтверждена.",
+            "Experimental timer enabled. M365 delivery NOT verified.",
+            "התזמון הופעל. מסירת דואר לא אומתה.");
+        WriteLine("Experimental multi-mailbox ingress-proof renewal enabled with reviewed SHA.");
+        RenderPage();
+    }
+
+    private async Task InspectMultiMailboxProofTimerAsync()
+    {
+        string context = CurrentMultiMailboxContext();
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildMultiMailboxProofTimerBundle("status"),
+            TimeSpan.FromSeconds(90));
+        result.EnsureSuccess();
+        string state = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_TIMER", @"\A(?:not_installed|active|inactive)\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_TIMER_M365_DELIVERY_VERIFIED", @"\Ano\z");
+        if (context != CurrentMultiMailboxContext())
+            throw new InvalidOperationException("Host or route changed during timer inspection.");
+        multiProofTimerSummary = T(
+            "Таймер: " + state + ". Это НЕ подтверждение доставки.",
+            "Timer: " + state + ". NOT a delivery acceptance result.",
+            "מצב התזמון: " + state + ". אין אישור מסירה.");
+        RenderPage();
+    }
+
+    private async Task DisableMultiMailboxProofTimerAsync()
+    {
+        string context = CurrentMultiMailboxContext();
+        if (!ConfirmDestructive("LinuxMailRelay365 | Disable experimental proof timer",
+            T("Таймер будет остановлен и подтверждение отозвано. " +
+                "Multi-mailbox может прекратить доставку до нового разрешения.",
+              "Stop the timer and REVOKE the local proof. Multi-mailbox delivery " +
+                "may fail closed until re-authorized; no messages will be sent.",
+              "עצירת התזמון וביטול האישור המקומי. תיתכן עצירת שליחה."),
+            "DISABLE MULTI PROOF TIMER")) return;
+        reviewedMultiProofTimerSha = null;
+        reviewedMultiProofTimerContext = null;
+        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+            EmbeddedAssets.BuildMultiMailboxProofTimerBundle("disable"),
+            TimeSpan.FromMinutes(3));
+        result.EnsureSuccess();
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_TIMER", @"\Adisabled_and_receipt_revoked\z");
+        _ = ValidatedMultiMailboxReportValue(result.StdOut,
+            "MULTI_PROOF_TIMER_MESSAGES_SENT", @"\Ano\z");
+        if (context != CurrentMultiMailboxContext())
+            throw new InvalidOperationException("Host or route changed after timer shutdown.");
+        multiProofTimerSummary = T(
+            "Таймер остановлен и подтверждение отозвано.",
+            "Timer disabled and local proof revoked.",
+            "התזמון נעצר והאישור בוטל.");
+        WriteLine("Experimental ingress-proof timer disabled; mail services untouched.");
+        RenderPage();
+    }
 
     private async Task PreviewMultiMailboxRestoreAsync()
     {
