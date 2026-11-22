@@ -193,7 +193,7 @@ def main():
     p.add_argument("--min-free-mib",type=int,default=1024)
     p.add_argument("--warn-cert-days",type=int,default=21)
     args=p.parse_args()
-    if not 1024<=args.smtp_port<=65535:
+    if not (args.smtp_port == 25 or 1024<=args.smtp_port<=65535):
         p.error("custom SMTP port 1024-65535")
     if not 1<=args.max_deferred<=100000 or not 1<=args.max_age_min<=100000 or \
             not 64<=args.min_free_mib<=1000000 or not 1<=args.warn_cert_days<=365:

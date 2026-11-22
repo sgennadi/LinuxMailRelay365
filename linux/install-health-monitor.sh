@@ -25,7 +25,7 @@ done
 python3 - "$PORT" <<'PY'
 import re,sys
 port=sys.argv[1]
-if not re.fullmatch(r'[0-9]{4,5}',port) or not 1024<=int(port)<=65535:
+if not re.fullmatch(r'(25|[1-9][0-9]{3,4})',port) or not (int(port)==25 or 1024<=int(port)<=65535):
     raise SystemExit('HEALTH_TIMER_ERROR=invalid_custom_port')
 PY
 if [ "$MODE" = install ] && [ "$CONFIRM" != ENABLE_PRIVATE_SMTP_MONITOR ]; then

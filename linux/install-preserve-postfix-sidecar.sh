@@ -39,7 +39,7 @@ python3 - "$TENANT" "$CLIENT" "$MAILBOX" "$LISTEN_IP" "$SMTP_PORT" "${TRUSTED_NE
 import ipaddress, re, sys, uuid
 try:
     tenant, client, mailbox, listen, port, *cidrs = sys.argv[1:]
-    if not re.fullmatch(r'[1-9][0-9]{3,4}', port) or not (1024 <= int(port) <= 65535):
+    if not re.fullmatch(r'(25|[1-9][0-9]{3,4})', port) or not (int(port) == 25 or 1024 <= int(port) <= 65535):
         raise ValueError('Isolated SMTP port must be from 1024 to 65535')
     for val in (tenant, client):
         if val and str(uuid.UUID(val)) != val.lower():
@@ -125,9 +125,29 @@ if [ -n "$LISTEN_IP" ]; then
     echo 'Listener IP is not assigned locally.' >&2; exit 1;
   }
 fi
-if ss -H -ltn "( sport = :$SMTP_PORT )" | grep -q .; then
-  echo "Port $SMTP_PORT already in use. No service changed." >&2
-  exit 1
+# Fail closed on unreadable kernel socket state. A privileged TCP/25
+# listener must never hijack primary mail flow, including after reboot.
+if ! observed_sockets="$(ss -H -ltn "( sport = :$SMTP_PORT )")"; then
+  echo 'SIDECAR_ERROR=smtp_socket_scan_failed' >&2; exit 1
+fi
+if [ -n "$observed_sockets" ]; then
+  echo 'SIDECAR_ERROR=port_already_bound' >&2; exit 1
+fi
+if [ "$SMTP_PORT" = 25 ]; then
+  for primary_unit in postfix.service exim.service exim4.service sendmail.service; do
+    load_state="$(systemctl show --property=LoadState --value "$primary_unit" 2>/dev/null || true)"
+    case "$load_state" in
+      not-found) continue ;;
+      loaded|masked) ;;
+      *) echo 'SIDECAR_ERROR=primary_mta_unit_unverified_on_port25' >&2; exit 1 ;;
+    esac
+    active_state="$(systemctl is-active "$primary_unit" 2>/dev/null || true)"
+    enabled_state="$(systemctl is-enabled "$primary_unit" 2>/dev/null || true)"
+    case "$active_state/$enabled_state" in
+      inactive/disabled|inactive/masked) ;;
+      *) echo 'SIDECAR_ERROR=primary_mta_may_claim_port25' >&2; exit 1 ;;
+    esac
+  done
 fi
 BEFORE="$(sha256sum /etc/postfix/main.cf /etc/postfix/master.cf | sha256sum | awk '{print $1}')"
 created=0

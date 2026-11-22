@@ -216,7 +216,7 @@ def main():
     p.add_argument("--expected-state-sha256", default="")
     p.add_argument("--confirm", default="")
     args = p.parse_args()
-    if not 1024 <= args.smtp_port <= 65535:
+    if not (args.smtp_port == 25 or 1024 <= args.smtp_port <= 65535):
         p.error("Custom port must be 1024-65535")
     if args.operation != "status" and not USERNAME.fullmatch(args.username):
         p.error("Invalid SMTP username")

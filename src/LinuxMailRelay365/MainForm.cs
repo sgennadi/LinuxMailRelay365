@@ -2532,9 +2532,42 @@ internal sealed partial class MainForm : Form
                         "Separate SMTP must use a DNS name DISTINCT from the active Sendmail/Exim host. Suggested relay.<domain> is only a draft: verify DNS/TLS. The original service and queue remain untouched.",
                         "לממסר נדרש שם DNS שונה מהשרת הראשי. יש לאמת DNS ו-TLS.")));
                 }
-                AddField(page, T("Порт отдельного SMTP (Preserve Existing Mail; по умолчанию 2525)",
-                                 "Isolated SMTP port (Preserve Existing Mail; default 2525)",
-                                 "פורט SMTP נפרד (ברירת מחדל 2525)"), isolatedSmtpPort);
+                AddField(page, T("Входящий SMTP-порт Linux (25 или 1024–65535; по умолчанию 2525)",
+                                 "Linux inbound SMTP port (25 or 1024–65535; default 2525)",
+                                 "יציאת SMTP נכנסת (25 או 1024–65535; ברירת מחדל 2525)"), isolatedSmtpPort);
+                AddLine(page, UiTheme.Text(T(
+                    "25 — стандартный SMTP, но его нельзя занимать у основного MTA. Выберите 25 только после проверки служб и слушателей; 2525 — запасной порт. 587 на стороне Microsoft 365 — отдельное ИСХОДЯЩЕЕ соединение. Порты 465/587 как входящие требуют отдельной настройки TLS/AUTH и пока не предлагаются.",
+                    "25 is standard SMTP but must not replace the primary MTA listener. Select 25 only after service/socket checks; 2525 is an alternative. Microsoft 365:587 is a separate OUTBOUND port. Inbound 465/587 need a separately proven TLS/AUTH configuration and are not offered here.",
+                    "25 היא יציאת SMTP סטנדרטית; נדרשת בדיקת שירותים ושקעים. 2525 היא חלופה. 587 ל-M365 היא יציאה יוצאת.")));
+                var useStandard25 = UiTheme.Action(T(
+                    "Использовать стандартный SMTP 25 (только план)",
+                    "Choose standard SMTP 25 (plan only)",
+                    "בחירת SMTP 25 (תכנון בלבד)"), false, "check");
+                useStandard25.Enabled = !busy;
+                useStandard25.Click += (_, _) =>
+                {
+                    isolatedSmtpPort.Text = "25";
+                    SaveRoutingChoices();
+                    WriteLine("Inbound SMTP/25 selected as a plan only. Before Apply, Linux must prove port 25 free and all primary mail services disabled or absent. No service or firewall changed.");
+                    RenderPage();
+                };
+                AddLine(page, useStandard25);
+                if (inspectedHost is not null && inspectedHostIdentity == TryCurrentIdentity())
+                {
+                    string observed25 = inspectedHost.StandardPort25Observation();
+                    AddLine(page, UiTheme.Text(observed25 switch
+                    {
+                        "occupied" => T("Проверка Linux: TCP/25 уже слушается. Используйте 2525; installer не перехватит порт 25.",
+                            "Linux scan: TCP/25 is already listening. Use 2525; the installer will not take over port 25.",
+                            "TCP/25 כבר בשימוש. השתמשו ביציאה 2525."),
+                        "no_listener_observed" => T("Проверка Linux: слушатель TCP/25 не обнаружен. Это НЕ гарантирует доступность: installer также проверит MTA и автозапуск.",
+                            "Linux scan: no TCP/25 listener observed. This does NOT guarantee availability; installer also checks MTA services and reboot activation.",
+                            "לא זוהה מאזין TCP/25; עדיין נדרשת בדיקת שירותים."),
+                        _ => T("Состояние TCP/25 неизвестно. Сначала повторите read-only анализ Linux.",
+                            "TCP/25 status is unverified. Run the read-only Linux discovery before choosing port 25.",
+                            "מצב TCP/25 אינו מאומת.")
+                    }));
+                }
                 AddField(page, T("Локальный IPv4 для SMTP (пусто = только loopback)",
                                  "Local IPv4 SMTP listener (blank = loopback only)",
                                  "כתובת IPv4 מקומית לקבלת SMTP"), smtpListenIp);
@@ -3631,7 +3664,7 @@ internal sealed partial class MainForm : Form
     private string[] NetworkFirewallArguments(string action, bool includePublic)
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int smtpPort))
-            throw new InvalidDataException("Isolated SMTP port must be a number from 1024 to 65535.");
+            throw new InvalidDataException("Isolated SMTP port must be a number 25 or 1024 to 65535.");
         routingPlan.SidecarPort = smtpPort;
         routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
         routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
@@ -3655,8 +3688,8 @@ internal sealed partial class MainForm : Form
     private string[] PrivateAuthTlsArguments(bool apply)
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort)
-            || selectedPort is < 1024 or > 65535)
-            throw new InvalidDataException("Custom isolated SMTP port must be 1024-65535.");
+            || !SmtpIngressPort.Supported(selectedPort))
+            throw new InvalidDataException("Custom isolated SMTP port must be 25 or 1024-65535.");
         var settings = new[]
         {
             "--smtp-port", selectedPort.ToString(),
@@ -3828,8 +3861,8 @@ internal sealed partial class MainForm : Form
     private async Task AuditInstalledPrivateSmtpAsync()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) ||
-            selectedPort is < 1024 or > 65535)
-            throw new InvalidDataException("Choose a custom isolated SMTP port from 1024 to 65535.");
+            !SmtpIngressPort.Supported(selectedPort))
+            throw new InvalidDataException("Choose a custom isolated SMTP port 25 or 1024 to 65535.");
         var endpoint = Endpoint();
         int checkPort = selectedPort;
         if (await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None))
@@ -3863,8 +3896,8 @@ internal sealed partial class MainForm : Form
 
     private (int Port, string Operation, string Username, string HashPath) GetSmtpAccountChange()
     {
-        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || port is < 1024 or > 65535)
-            throw new InvalidDataException("Choose a custom SMTP port from 1024 to 65535.");
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || !SmtpIngressPort.Supported(port))
+            throw new InvalidDataException("Choose a custom SMTP port 25 or 1024 to 65535.");
         string operation = smtpAccountOperation.SelectedIndex switch
         {
             0 => "add",
@@ -4553,8 +4586,8 @@ internal sealed partial class MainForm : Form
         EnsureRoutingLoaded();
         if (mailTransport.SelectedIndex is not (1 or 2))
             throw new InvalidOperationException("Clean Postfix package preparation is for Connector or Direct Send.");
-        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || port is < 1024 or > 65535)
-            throw new ArgumentException("Choose a private SMTP port 1024..65535.");
+        if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) || !SmtpIngressPort.Supported(port))
+            throw new ArgumentException("Choose a private SMTP port 25 or 1024..65535.");
         var endpoint = Endpoint();
         if (inspectedMail?.Mta != "none" ||
             inspectedServerIdentity != SecurityOptionsStore.Identity(endpoint) ||
@@ -4826,8 +4859,8 @@ internal sealed partial class MainForm : Form
         if (publicInternetRequested.Checked)
             throw new InvalidOperationException("Public SMTP inbound requires a separate authenticated TLS workflow; outbound EOP setup never opens public SMTP.");
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
-            port is < 1024 or > 65535)
-            throw new InvalidDataException("Select an inbound custom SMTP port 1024–65535.");
+            !SmtpIngressPort.Supported(port))
+            throw new InvalidDataException("Select an inbound custom SMTP port 25 or 1024–65535.");
         return (port, mailTransport.SelectedIndex == 1 ? "connector" : "direct-send",
             outboundMxHost.Text.Trim(), outboundFixedSender.Text.Trim(),
             acceptedDomain.Text.Trim(), outboundPublicIp.Text.Trim(),
@@ -4992,7 +5025,7 @@ internal sealed partial class MainForm : Form
     private async Task RestoreEopRouteAsync()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selected) ||
-            selected is < 1024 or > 65535)
+            !SmtpIngressPort.Supported(selected))
             throw new InvalidDataException("Choose the installed private SMTP port.");
         var (endpoint, port) = await EopInstalledEndpointAsync(selected);
         var status = await SshRemote.RunRootScriptAsync(endpoint,
@@ -5043,8 +5076,8 @@ internal sealed partial class MainForm : Form
         if (mailTransport.SelectedIndex is not (1 or 2))
             throw new InvalidOperationException("Select Connector or Direct Send first.");
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int customPort) ||
-            customPort is < 1024 or > 65535)
-            throw new InvalidDataException("Choose private Linux SMTP port 1024-65535.");
+            !SmtpIngressPort.Supported(customPort))
+            throw new InvalidDataException("Choose private Linux SMTP port 25 or 1024-65535.");
         var report = await SshRemote.RunRootScriptAsync(Endpoint(),
             EmbeddedAssets.BuildOutboundModePreflightBundle(
                 mailTransport.SelectedIndex == 1 ? "connector" : "direct-send",
@@ -5060,8 +5093,8 @@ internal sealed partial class MainForm : Form
     private async Task InspectRelayHealthAsync()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) ||
-            selectedPort is < 1024 or > 65535)
-            throw new InvalidDataException("Custom SMTP port must be 1024-65535.");
+            !SmtpIngressPort.Supported(selectedPort))
+            throw new InvalidDataException("Custom SMTP port must be 25 or 1024-65535.");
         var endpoint = Endpoint();
         int installedPort = await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None)
             ? await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None)
@@ -5082,8 +5115,8 @@ internal sealed partial class MainForm : Form
     private async Task InspectRhelSelinuxAsync()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort) ||
-            selectedPort is < 1024 or > 65535)
-            throw new InvalidDataException("Custom SMTP port must be 1024-65535.");
+            !SmtpIngressPort.Supported(selectedPort))
+            throw new InvalidDataException("Custom SMTP port must be 25 or 1024-65535.");
         var endpoint = Endpoint();
         int actualPort = await SshRemote.HasIsolatedSidecarAsync(endpoint, CancellationToken.None)
             ? await SshRemote.GetIsolatedSidecarPortAsync(endpoint, CancellationToken.None)
@@ -5127,8 +5160,8 @@ internal sealed partial class MainForm : Form
     private int RhelCustomPort()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
-            port is < 1024 or > 65535)
-            throw new InvalidDataException("Choose a custom SMTP port 1024-65535.");
+            !SmtpIngressPort.Supported(port))
+            throw new InvalidDataException("Choose a custom SMTP port 25 or 1024-65535.");
         return port;
     }
 
@@ -5207,8 +5240,8 @@ internal sealed partial class MainForm : Form
     private async Task InspectPlatformAsync()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
-            port is < 1024 or > 65535)
-            throw new InvalidDataException("Custom SMTP port must be 1024-65535.");
+            !SmtpIngressPort.Supported(port))
+            throw new InvalidDataException("Custom SMTP port must be 25 or 1024-65535.");
         WriteLine("Read-only platform preflight for the selected TCP port " + port +
                   ": RHEL/Oracle/Rocky/Alma/CentOS Stream, Ubuntu/Debian, Dovecot, Postfix and SELinux.");
         var report = await SshRemote.ExecuteAsync(Endpoint(), "bash -s",
@@ -5226,8 +5259,8 @@ internal sealed partial class MainForm : Form
     private (int Port, string Listener, string Dns) PublicSmtpOptions()
     {
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port) ||
-            port is < 1024 or > 65535)
-            throw new InvalidDataException("Choose the installed SMTP port 1024-65535.");
+            !SmtpIngressPort.Supported(port))
+            throw new InvalidDataException("Choose the installed SMTP port 25 or 1024-65535.");
         string listen = smtpListenIp.Text.Trim();
         string dns = privateAuthDns.Text.Trim();
         if (string.IsNullOrEmpty(listen) || string.IsNullOrEmpty(dns))
@@ -5425,7 +5458,7 @@ internal sealed partial class MainForm : Form
             var detected = await SshRemote.ExecuteAsync(endpoint, "bash -s",
                 EmbeddedAssets.BuildMailHostInspectionBundle(
                     int.TryParse(isolatedSmtpPort.Text.Trim(), out int checkPort) &&
-                        checkPort is >= 1024 and <= 65535 ? checkPort : 2525,
+                        SmtpIngressPort.Supported(checkPort) ? checkPort : 2525,
                     inventory.Mta), timeout: TimeSpan.FromSeconds(90));
             detected.EnsureSuccess();
             inspectedHost = MailHostInspection.Parse(detected.StdOut);
@@ -7170,7 +7203,14 @@ internal sealed partial class MainForm : Form
         using var process = Process.Start(psi) ?? throw new IOException("PowerShell 7 could not be started.");
         await process.WaitForExitAsync();
         if (process.ExitCode != 0 || !File.Exists(resultPath))
-            throw new IOException("Tenant discovery failed. No settings were modified; manual Tenant ID remains available.");
+        {
+            string failure = File.Exists(resultPath)
+                ? TenantDiscovery.FailureCode(await File.ReadAllTextAsync(resultPath))
+                : "result_missing";
+            throw new IOException("Tenant discovery failed (" + failure +
+                "). No settings were modified; manual Tenant ID remains available. " +
+                "Review the PowerShell sign-in window or retry.");
+        }
         var choices = TenantDiscovery.Parse(await File.ReadAllTextAsync(resultPath));
         discoveredTenants = choices;
         tenantSelectionLoading = true;
@@ -7476,7 +7516,7 @@ internal sealed partial class MainForm : Form
             // zero SMTP listeners before the first isolated EOP installation.
             if (installed.Mta == "postfix" &&
                 liveAudit.Mta == "no_active_mta_verified" &&
-                mailTransport.SelectedIndex is 1 or 2)
+                mailTransport.SelectedIndex is 0 or 1 or 2)
             {
                 if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int port))
                     throw new InvalidDataException("A custom SMTP port is required.");
@@ -7491,7 +7531,7 @@ internal sealed partial class MainForm : Form
                       StringComparison.Ordinal))
                 {
                     WriteLine("Inactive primary Postfix is verified against the one-time " +
-                        "root-owned clean-bootstrap marker; first isolated EOP setup permitted.");
+                        "root-owned clean-bootstrap marker; first isolated SMTP setup permitted.");
                     return;
                 }
             }
@@ -7512,7 +7552,7 @@ internal sealed partial class MainForm : Form
         routingPlan.ListenIpv4 = smtpListenIp.Text.Trim();
         routingPlan.TrustedCidrs = smtpTrustedCidrs.Text.Trim();
         if (!int.TryParse(isolatedSmtpPort.Text.Trim(), out int selectedPort))
-            throw new InvalidDataException("Enter an isolated SMTP port from 1024 to 65535.");
+            throw new InvalidDataException("Enter an isolated SMTP port 25 or 1024 to 65535.");
         routingPlan.SidecarPort = selectedPort;
         MailRoutingPlanStore.Validate(routingPlan);
         if (publicInternetRequested.Checked)
@@ -7544,8 +7584,8 @@ internal sealed partial class MainForm : Form
             // restart its service, or write to its existing mail queue.
             var sidecarState = await ReadyStateAsync();
             var confirmation = MessageBox.Show(this, T(
-                "Установить отдельный экземпляр Postfix на TCP " + routingPlan.SidecarPort + "? Существующий Postfix (порт 25) и его очередь останутся без изменений. Сетевой SMTP допускается только из доверенных подсетей.",
-                "Install isolated Postfix on TCP " + routingPlan.SidecarPort + "? Existing port 25, mail routing and queue stay untouched. Remote clients require trusted subnets.",
+                "Установить отдельный экземпляр Postfix на TCP " + routingPlan.SidecarPort + "? Существующий Postfix и его очередь останутся без изменений. Для TCP 25 сервер обязан подтвердить, что основной MTA не активен и не включён при загрузке. Сетевой SMTP только из доверенных подсетей.",
+                "Install isolated Postfix on TCP " + routingPlan.SidecarPort + "? Existing primary mail routing and queue stay untouched. TCP 25 requires all primary MTA services disabled/inactive and no existing listener. Remote clients require trusted subnets.",
                 "להתקין מופע Postfix נפרד בפורט " + routingPlan.SidecarPort + "?"),
                 Text, MessageBoxButtons.YesNo, MessageBoxIcon.Information);
             if (confirmation != DialogResult.Yes) return;
@@ -7722,7 +7762,7 @@ internal sealed partial class MainForm : Form
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var description = UiTheme.Text(unsignedPreview
             ? T("Тестовая неподписанная версия: SHA-256 GitHub, архитектура, версия и self-test, резервная копия и откат.",
-                "Unsigned TEST Preview: verify GitHub SHA-256, architecture, version and self-test, then back up and roll back on failure.",
+                "Unsigned TEST Preview/RC: verify GitHub SHA-256, architecture, version and self-test, then back up and roll back on failure.",
                 "גרסת ניסיון לא חתומה: אימות SHA-256, ארכיטקטורה, גרסה ובדיקת תקינות.")
             : T("Скачивание. Проверяем SHA-256, Authenticode, сертификат издателя и self-test. Неподписанный EXE не будет запущен.",
                 "Downloading. Checking SHA-256, Authenticode, publisher certificate and self-test. Unsigned EXEs will not execute.",
@@ -7832,8 +7872,8 @@ internal sealed partial class MainForm : Form
         if (url is null)
         {
             WriteLine(T(
-                "Подходящих релизов нет. Неподписанные Preview EXE нельзя устанавливать автоматически.",
-                "No eligible published release. Unsigned CI preview EXEs cannot be installed automatically.",
+                "Подходящих релизов нет. Для тестовых Preview/RC требуется новая версия и явное согласие; неподписанные Stable запрещены.",
+                "No eligible published release. Only strictly newer published versions are eligible; unsigned Stable is never installed.",
                 "אין גרסה שפורסמה. קובצי CI לא חתומים אינם מותקנים אוטומטית."));
             return;
         }
@@ -7842,14 +7882,14 @@ internal sealed partial class MainForm : Form
         if (offer is null || !string.Equals(offer.PageUrl, url, StringComparison.Ordinal))
             throw new InvalidDataException("Release metadata changed; repeat the update check.");
 
-        // Only a non-elevated unsigned Preview can install another test Preview.
+        // Only a non-elevated unsigned Preview/RC can install another test prerelease.
         // Stable and already-signed installations never use this weaker path.
         if (withPreview && SignedPortableUpdater.IsPreviewRelease(offer) &&
             SignedPortableUpdater.CanInstallPreview(out _))
         {
             var previewAction = MessageBox.Show(this, T(
-                "ВНИМАНИЕ: это НЕПОДПИСАННЫЙ тестовый Preview, НЕ Stable. GitHub SHA-256 проверяет скачанный файл, но НЕ является цифровой подписью издателя. Только тестовый ПК. Сохраните важную работу. После согласия EXE заменится с .bak и откатом при сбое.\n\nДа — установить, Нет — открыть релиз, Отмена — ничего.",
-                "WARNING: this is an UNSIGNED TEST Preview, NOT Stable. GitHub SHA-256 checks downloaded bytes but is NOT a trusted publisher signature. Test PCs only; save important work. With consent the EXE is replaced with .bak and rollback on failure.\n\nYes: install, No: open release, Cancel: do nothing.",
+                "ВНИМАНИЕ: это НЕПОДПИСАННЫЙ тестовый Preview/RC, НЕ Stable. GitHub SHA-256 проверяет скачанный файл, но НЕ является цифровой подписью издателя. Только тестовый ПК. Сохраните важную работу. После согласия EXE заменится с .bak и откатом при сбое.\n\nДа — установить, Нет — открыть релиз, Отмена — ничего.",
+                "WARNING: this is an UNSIGNED TEST Preview/RC, NOT Stable. GitHub SHA-256 checks downloaded bytes but is NOT a trusted publisher signature. Test PCs only; save important work. With consent the EXE is replaced with .bak and rollback on failure.\n\nYes: install, No: open release, Cancel: do nothing.",
                 "אזהרה: גרסת ניסיון לא חתומה, לא Stable. SHA-256 אינו תחליף לחתימת מפרסם. לבדיקה בלבד."),
                 Text, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning,
                 MessageBoxDefaultButton.Button3);
@@ -7859,16 +7899,16 @@ internal sealed partial class MainForm : Form
                 return;
             }
             if (previewAction != DialogResult.Yes) return;
-            WriteLine("Installing approved UNSIGNED TEST Preview; validating release SHA-256, architecture and self-test.");
+            WriteLine("Installing approved UNSIGNED TEST Preview/RC; validating release SHA-256, architecture and self-test.");
             await StageUpdateWithProgressAsync(offer, "", unsignedPreview: true);
-            WriteLine("Preview update verified; closing EXE for backup and replacement.");
+            WriteLine("Preview/RC update staged; closing EXE for backup and replacement.");
             updateShuttingDown = true;
             Close();
             return;
         }
         if (withPreview && SignedPortableUpdater.IsPreviewRelease(offer) &&
             !SignedPortableUpdater.CanInstallPreview(out var previewReason))
-            WriteLine("Unsigned Preview update unavailable: " + previewReason);
+            WriteLine("Unsigned Preview/RC update unavailable: " + previewReason);
 
         if (!SignedPortableUpdater.CanInstall(out string publisher, out string reason))
         {

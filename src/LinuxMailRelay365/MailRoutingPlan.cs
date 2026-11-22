@@ -45,6 +45,14 @@ internal sealed class MailRoutingPlan
     public bool ShowAdvancedSmtpTools { get; set; } = false;
 }
 
+// Only SMTP/25 is admitted below the unprivileged-port boundary.
+// Never implicitly offer 465 (implicit TLS) or 587 (submission) without an
+// appropriate, independently verified TLS/AUTH listener implementation.
+internal static class SmtpIngressPort
+{
+    internal static bool Supported(int port) => port == 25 || port is >= 1024 and <= 65535;
+}
+
 internal sealed record MailRoutingInventory(string Mta, string CurrentRelay, string CurrentTransport, string ConfigSha256)
 {
     internal static MailRoutingInventory Parse(string text)
@@ -109,8 +117,8 @@ internal static class MailRoutingPlanStore
             (state.PostfixBasicsDomain.Length > 0 &&
                 !Regex.IsMatch(state.PostfixBasicsDomain, fqdn, RegexOptions.CultureInvariant)))
             throw new InvalidDataException("Invalid planned primary Postfix hostname/domain/interface.");
-        if (state.SidecarPort is < 1024 or > 65535)
-            throw new InvalidDataException("Isolated SMTP port must be between 1024 and 65535.");
+        if (!SmtpIngressPort.Supported(state.SidecarPort))
+            throw new InvalidDataException("Inbound SMTP port must be 25 or between 1024 and 65535.");
         if (state.RecipientScope is not ("unknown" or "internal-only" or "external-needed"))
             throw new InvalidDataException("Invalid recipient scope.");
         if (state.Transport is not ("oauth2" or "connector" or "direct-send") ||
@@ -236,7 +244,8 @@ internal static class MailRoutingPlanStore
             Save(folder, b, new MailRoutingPlan { RecipientScope = "external-needed" });
             if (Load(folder, b).RecipientScope != "external-needed") return false;
             Validate(new MailRoutingPlan { SidecarPort = 2526 });
-            try { Validate(new MailRoutingPlan { SidecarPort = 25 }); return false; }
+            Validate(new MailRoutingPlan { SidecarPort = 25 });
+            try { Validate(new MailRoutingPlan { SidecarPort = 587 }); return false; }
             catch (InvalidDataException) { }
             Save(folder, a, new MailRoutingPlan
                 { Transport = "connector", SenderPolicy = "preserve-domain",

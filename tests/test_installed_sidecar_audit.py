@@ -19,7 +19,7 @@ spec.loader.exec_module(audit)
 
 class InstalledSidecarAuditUnitTests(unittest.TestCase):
     def test_reject_invalid_custom_port_early(self):
-        for port in ("0", "25", "587", "1023", "65536", "not-a-port"):
+        for port in ("0", "587", "1023", "65536", "not-a-port"):
             with self.subTest(port=port):
                 p = subprocess.run([sys.executable, str(SCRIPT), "--smtp-port", port],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,

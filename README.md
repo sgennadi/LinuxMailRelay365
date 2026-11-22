@@ -1,5 +1,8 @@
 # LinuxMailRelay365
 
+> **Development branch (not yet released):** candidate `0.1.1-rc.1` adds an explicit guarded incoming SMTP/25 option and fixes update discovery from the published `0.1.0` RC2 build. Remains an unsigned test Release Candidate until all CI and acceptance gates pass. RC2 requires a one-time manual transition; there is no bypass of the unsigned Stable gate.
+
+
 Linux Mail Relay for Microsoft 365 — Windows 10/11/Server GUI wizard, Linux Postfix outbound transport and scoped Exchange Online application identity. **Preview 0.1.0-preview.25 — guarded Multi-mailbox XOAUTH2 offline configuration, Restore and approved SMTP acceptance; UNSIGNED TEST Preview, NOT Stable or production-accepted.**
 
 ## Development after published Preview 25 (Draft PR; not yet an update)

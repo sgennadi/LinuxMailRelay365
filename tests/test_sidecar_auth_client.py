@@ -22,7 +22,8 @@ class SMTPAuthClientTests(unittest.TestCase):
     def test_validation_rejects_unsafe_inputs(self):
         auth.validate(46500, "relay.example.org", "smtp-app01", "")
         auth.validate(1024, "relay.example.org", "smtp-app01", "/tmp/ca.pem")
-        for port in (0, 25, 587, 1023, 65536):
+        auth.validate(25, "relay.example.org", "smtp-app01", "")
+        for port in (0, 587, 1023, 65536):
             with self.subTest(port=port), self.assertRaises(auth.Refused):
                 auth.validate(port, "relay.example.org", "smtp-app01", "")
         for name in ("", "evil", "bad;name", "foo..bar", "-bad.example.org"):
@@ -67,7 +68,7 @@ class SMTPAuthClientTests(unittest.TestCase):
         self.assertIn("SMTP_AUTH_CLIENT_RESULT=self_test_passed", test.stdout)
 
     def test_input_fail_closed_without_password_or_network(self):
-        p = subprocess.run([sys.executable, str(SCRIPT), "--smtp-port", "25",
+        p = subprocess.run([sys.executable, str(SCRIPT), "--smtp-port", "587",
                             "--server-name", "relay.example.org",
                             "--login", "smtp-app01"],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,

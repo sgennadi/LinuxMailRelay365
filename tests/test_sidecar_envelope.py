@@ -113,7 +113,7 @@ class SidecarEnvelopeTests(unittest.TestCase):
                 with self.assertRaises(E.Refused):
                     E.validate(46500, "relay.example.org", "smtp-app01", "",
                                sender, recipient)
-        for port in (0, 25, 587, 1023, 65536):
+        for port in (0, 587, 1023, 65536):
             with self.assertRaises(E.Refused):
                 E.validate(port, "relay.example.org", "smtp-app01", "",
                            "a@example.org", "b@example.org")

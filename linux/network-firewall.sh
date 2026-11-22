@@ -36,7 +36,7 @@ python3 - "$SMTP_PORT" "$LISTEN_IP" "${TRUSTED_NETWORKS[@]}" <<'PY'
 import ipaddress, re, sys
 try:
     port, listener, *cidrs = sys.argv[1:]
-    if not re.fullmatch(r'[1-9][0-9]{3,4}', port) or not (1024 <= int(port) <= 65535):
+    if not re.fullmatch(r'(25|[1-9][0-9]{3,4})', port) or not (int(port) == 25 or 1024 <= int(port) <= 65535):
         raise ValueError('SMTP port must be from 1024 to 65535')
     private = [ipaddress.IPv4Network(s) for s in
                ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')]

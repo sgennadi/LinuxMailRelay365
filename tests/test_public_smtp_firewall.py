@@ -33,9 +33,14 @@ class FirewallAndPublicSmtpTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn('PUBLIC_SMTP_APPLY_BLOCKED=', result.stderr)
 
+    def test_standard_25_is_explicit_only_and_no_firewall_apply(self):
+        result = self.invoke('--validate-only', '--smtp-port', '25')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('FIREWALL_CHANGES=no', result.stdout)
+
     def test_rejects_invalid_networks_and_ports(self):
         for args in (
-            ('--smtp-port', '25'),
+            ('--smtp-port', '587'),
             ('--smtp-port', '0'),
             ('--smtp-port', '65536'),
             ('--smtp-port', 'abc'),

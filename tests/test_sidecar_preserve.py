@@ -24,8 +24,9 @@ class IsolatedSidecarTests(unittest.TestCase):
 
     def test_custom_port_and_boundaries(self):
         self.assertEqual(self.run_check('--smtp-port','2526').returncode,0)
+        self.assertEqual(self.run_check('--smtp-port','25').returncode,0)
         self.assertEqual(self.run_check('--smtp-port','65535').returncode,0)
-        for port in ('25','0','65536','abc','-1'):
+        for port in ('587','465','0','65536','abc','-1'):
             with self.subTest(port=port):
                 self.assertNotEqual(self.run_check('--smtp-port',port).returncode,0)
 

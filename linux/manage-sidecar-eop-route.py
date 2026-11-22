@@ -85,7 +85,7 @@ def owned_dir(path, private=False):
 
 
 def validate(args):
-    if not 1024 <= args.smtp_port <= 65535:
+    if not (args.smtp_port == 25 or 1024 <= args.smtp_port <= 65535):
         raise Refused("invalid_custom_port")
     if args.sender_policy not in ("fixed-mailbox", "preserve-domain", "masquerade"):
         raise Refused("invalid_sender_policy")

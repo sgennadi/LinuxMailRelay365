@@ -9,7 +9,7 @@ class Preview4Contracts(unittest.TestCase):
         proj = (ROOT/'src/LinuxMailRelay365/LinuxMailRelay365.csproj').read_text()
         app = (ROOT/'src/LinuxMailRelay365/MainForm.cs').read_text()
         fallback = (ROOT/'src/LinuxMailRelay365/UpdateCheck.Fallback.cs').read_text()
-        version = re.search(r'<Version>(\d+\.\d+\.\d+(?:-preview\.\d+)?)</Version>', proj)
+        version = re.search(r'<Version>(\d+\.\d+\.\d+(?:-(?:preview|rc)\.\d+)?)</Version>', proj)
         assert version is not None
         current = version.group(1)
         shared = (ROOT/'src/LinuxMailRelay365/UpdateCheck.cs').read_text()

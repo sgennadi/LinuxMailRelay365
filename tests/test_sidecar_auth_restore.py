@@ -23,14 +23,14 @@ class SidecarAuthTlsRestoreTests(unittest.TestCase):
         self.assertEqual(self.run_restore("--self-test").returncode, 0)
 
     def test_invalid_custom_ports_rejected_before_root_or_files(self):
-        for p in ("25", "587", "0", "1023", "65536", "bad", "", "0;id"):
+        for p in ("587", "0", "1023", "65536", "bad", "", "0;id"):
             with self.subTest(port=p):
                 r = self.run_restore("--check-only", "--smtp-port", p)
                 self.assertNotEqual(r.returncode, 0)
                 self.assertIn("AUTH_TLS_RESTORE_ERROR=invalid_custom_smtp_port", r.stderr)
 
     def test_valid_custom_ports_are_not_hardcoded_2525(self):
-        for p in ("1024", "2525", "2529", "46500", "65535"):
+        for p in ("25", "1024", "2525", "2529", "46500", "65535"):
             with self.subTest(port=p):
                 r = self.run_restore("--check-only", "--smtp-port", p)
                 self.assertNotIn("invalid_custom_smtp_port", r.stderr)

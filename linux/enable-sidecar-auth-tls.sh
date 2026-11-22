@@ -35,7 +35,7 @@ command -v python3 >/dev/null || { echo 'AUTH_TLS_ERROR=python3_missing' >&2; ex
 python3 - "$PORT" "$NAME" "$CERT" "$KEY" "$HASHFILE" <<'PY'
 import re, sys
 port, name, *paths = sys.argv[1:]
-if not re.fullmatch(r'[1-9][0-9]{3,4}', port) or not 1024 <= int(port) <= 65535:
+if not re.fullmatch(r'(25|[1-9][0-9]{3,4})', port) or not (int(port) == 25 or 1024 <= int(port) <= 65535):
     raise SystemExit('AUTH_TLS_ERROR=invalid_custom_smtp_port')
 if not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+', name):
     raise SystemExit('AUTH_TLS_ERROR=invalid_server_dns_name')

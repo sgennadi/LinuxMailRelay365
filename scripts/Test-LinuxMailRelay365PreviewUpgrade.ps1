@@ -8,8 +8,8 @@ No production files, registry, tenant, SMTP or Linux service is modified.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$CandidateExe,
-    [ValidatePattern('^0\.1\.0(?:-preview\.\d+)?$')]
-    [string]$ExpectedCandidateVersion = '0.1.0-preview.25'
+    [ValidatePattern('^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:preview|rc)\.(?:0|[1-9][0-9]*))?$')]
+    [string]$ExpectedCandidateVersion = '0.1.1-rc.1'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'

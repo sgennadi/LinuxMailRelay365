@@ -53,7 +53,7 @@ class FreshConnectorContracts(unittest.TestCase):
                 self.assertIn("CONNECTOR_TENANT_CONNECTOR_VERIFIED=no", result.stdout)
 
     def test_invalid_ports_and_unknown_tenant_identity_fail_closed(self):
-        for port in ("25", "587", "1023", "65536", "0", "x"):
+        for port in ("587", "1023", "65536", "0", "x"):
             with self.subTest(port=port):
                 result = self.run_cmd("--check-only", *self.base(port))
                 self.assertNotEqual(result.returncode, 0)

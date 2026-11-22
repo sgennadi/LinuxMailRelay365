@@ -21,14 +21,14 @@ class SidecarTlsRotationTests(unittest.TestCase):
         self.assertEqual(self.run_cmd("--self-test").returncode,0)
 
     def test_arbitrary_port_and_canonical_paths(self):
-        for port in ("1024","2525","2529","46500","65535"):
+        for port in ("25","1024","2525","2529","46500","65535"):
             with self.subTest(port=port):
                 r=self.run_cmd("--check-only","--smtp-port",port,
                       "--server-name","smtp.example.org","--tls-cert","/tmp/newcert.pem",
                       "--tls-key","/tmp/newkey.pem")
                 self.assertNotIn("invalid_custom_port",r.stderr)
                 self.assertNotIn("TLS_ROTATE_APPLIED=yes",r.stdout)
-        for bad in ("25","587","1023","65536","n/a"):
+        for bad in ("587","1023","65536","n/a"):
             with self.subTest(bad=bad):
                 r=self.run_cmd("--check-only","--smtp-port",bad,
                       "--server-name","smtp.example.org","--tls-cert","/tmp/newcert.pem",

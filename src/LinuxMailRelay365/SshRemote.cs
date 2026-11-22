@@ -283,7 +283,7 @@ internal static class SshRemote
             SidecarConfig + "/smtp-port; else printf MISSING; fi",
             null, TimeSpan.FromSeconds(30), token);
         result.EnsureSuccess();
-        if (!int.TryParse(result.StdOut.Trim(), out int port) || port is < 1024 or > 65535)
+        if (!int.TryParse(result.StdOut.Trim(), out int port) || !SmtpIngressPort.Supported(port))
             throw new InvalidDataException("Cannot determine the installed isolated SMTP port.");
         return port;
     }
@@ -329,7 +329,7 @@ internal static class SshRemote
     internal static Task<RemoteResult> SendIsolatedSidecarTestAsync(
         SshEndpoint endpoint, string mailbox, string recipient, int port, CancellationToken token)
     {
-        if (!IsEmail(mailbox) || !IsEmail(recipient) || port is < 1024 or > 65535)
+        if (!IsEmail(mailbox) || !IsEmail(recipient) || !SmtpIngressPort.Supported(port))
             throw new ArgumentException("Invalid SMTP test sender, recipient or port.");
         // Only localhost receives the message. No connection to existing Postfix
         // port 25 or invocation of the system sendmail compatibility binary.

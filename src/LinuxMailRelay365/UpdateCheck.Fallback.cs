@@ -12,7 +12,7 @@ namespace LinuxMailRelay365;
 // UniversalUpdater module is present, the full shared verifier is compiled instead.
 internal static class UpdateCheck
 {
-    internal const string Version = "0.1.0";
+    internal const string Version = "0.1.1-rc.1";
     private const int MaximumMetadataBytes = 2 * 1024 * 1024;
     private const string Repository = "sgennadi/LinuxMailRelay365";
 
@@ -50,7 +50,7 @@ internal static class UpdateCheck
         var (bestUrl, bestVersion) = SelectRelease(doc.RootElement, expectedAsset, includePreview);
         return bestUrl is null
             ? (null, "No eligible newer published GitHub Release was found. " +
-                "Unsigned CI preview artifacts are manual builds, not signed auto-updates.")
+                "Matching releases must be strictly newer than the installed SemVer version.")
             : (bestUrl, "Version " + bestVersion +
                 " is available. Installation requires operator consent and an Authenticode-signed app/update with matching Windows-trusted publisher.");
     }
@@ -132,7 +132,7 @@ internal static class UpdateCheck
         const string sha = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         // A numeric Stable 0.1.0 must NOT downgrade to any 0.1.0 Preview.
         // A future 0.1.1 Preview is newer, but is visible only when Preview is opted in.
-        const string newerPreview = "0.1.1-preview.1";
+        const string newerPreview = "0.1.2-preview.1";
         if (Select(Catalog("0.1.0-preview.26", true, sha, name), true).Item1 is not null ||
             Select(Catalog(newerPreview, true, sha, name), false).Item1 is not null ||
             Select(Catalog(newerPreview, true, sha, name), true).Item2 != newerPreview ||
