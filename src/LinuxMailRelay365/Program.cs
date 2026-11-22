@@ -481,7 +481,7 @@ internal static class Program
             {
                 try
                 {
-                    if (form.CaptureWizardScreens(args[1]) != 30)
+                    if (form.CaptureWizardScreens(args[1]) != 33)
                         result = 1;
                 }
                 catch (Exception)
