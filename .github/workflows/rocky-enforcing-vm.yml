@@ -11,6 +11,8 @@ on:
       - tests/rocky_vm_*.sh
       - tests/rocky_vm_*.py
       - linux/foreign-mta-config-backup.py
+      - tests/assert_sendmail_v2_export.py
+      - tests/rehearse_sendmail_v2_metadata.py
       - linux/manage-rhel-selinux-sidecar-context.py
       - linux/manage-rhel-selinux-port.py
   workflow_dispatch:

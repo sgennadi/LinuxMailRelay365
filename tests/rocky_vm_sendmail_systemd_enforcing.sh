@@ -225,6 +225,36 @@ backup_id="$(printf '%s\n' "$backup_report" | sed -n 's/^FOREIGN_BACKUP_ID=//p')
 [[ "$backup_id" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ ]] || {
   echo "LMR365_SENDMAIL_VM_BACKUP_ID_INVALID"; exit 1;
 }
+# Full Snapshot v2 rehearsal, confined to a disposable, root-only tree.
+# This MUST NOT write to /etc/mail, activate services or replay messages.
+# The original v2 archive is verified again before and after reconstruction.
+export_report="$(sudo python3 /usr/local/libexec/lmr365-kvm-sendmail-recovery/foreign-mta-config-backup.py \
+  --mta sendmail --export-offline "$backup_id" \
+  --confirm EXTRACT_VERIFIED_FOREIGN_MTA_SNAPSHOT)"
+printf '%s\n' "$export_report" | grep -Fxq "FOREIGN_BACKUP_STATUS=exported_offline_only"
+printf '%s\n' "$export_report" | grep -Fxq "FOREIGN_BACKUP_FORMAT=v2_package_metadata"
+printf '%s\n' "$export_report" | grep -Fxq "FOREIGN_BACKUP_OFFLINE_LINKS_MATERIALIZED=no"
+export_dir="$(printf '%s\n' "$export_report" | sed -n 's/^FOREIGN_BACKUP_OFFLINE_DIRECTORY=//p')"
+[[ "$export_dir" =~ ^/var/backups/linuxmailrelay365-foreign-mta/sendmail/\.offline-recovery-[A-Za-z0-9_-]{8,20}$ ]] || {
+  echo "LMR365_SENDMAIL_VM_EXPORT_PATH_UNVERIFIED"; exit 1;
+}
+rehearsal_root=/usr/local/libexec/lmr365-kvm-sendmail-recovery/rehearsal/tests
+sudo env GITHUB_ACTIONS=true python3 "$rehearsal_root/assert_sendmail_v2_export.py" \
+  "$export_dir" "$backup_id" > "$work/sendmail-v2-export"
+grep -Fxq "SENDMAIL_V2_EXPORT_ARCHIVE=verified" "$work/sendmail-v2-export"
+grep -Fxq "SENDMAIL_V2_EXPORT_ALL_PATHS_PRIVATE=yes" "$work/sendmail-v2-export"
+sudo env GITHUB_ACTIONS=true python3 "$rehearsal_root/rehearse_sendmail_v2_metadata.py" \
+  "$export_dir" "$backup_id" > "$work/sendmail-v2-rehearsal"
+grep -Fxq "SENDMAIL_V2_REHEARSAL_DATA_HASHES=verified" "$work/sendmail-v2-rehearsal"
+grep -Fxq "SENDMAIL_V2_REHEARSAL_OWNER_MODE=verified" "$work/sendmail-v2-rehearsal"
+grep -Eq '^SENDMAIL_V2_REHEARSAL_PACKAGE_LINKS=verified_[0-9]+$' "$work/sendmail-v2-rehearsal"
+grep -Fxq "SENDMAIL_V2_REHEARSAL_TEMP_CLEANUP=verified" "$work/sendmail-v2-rehearsal"
+sudo python3 /usr/local/libexec/lmr365-kvm-sendmail-recovery/foreign-mta-config-backup.py \
+  --mta sendmail --preview-recovery "$backup_id" | \
+  grep -Fxq "FOREIGN_BACKUP_CURRENT_CONFIG_MATCH=identical"
+echo "LMR365_SENDMAIL_VM_FULL_TREE_REHEARSAL=verified_private_scratch_only"
+echo "LMR365_SENDMAIL_VM_FULL_TREE_LIVE_RESTORE_ENABLED=no"
+
 sudo env GITHUB_ACTIONS=true python3 \
   /usr/local/libexec/lmr365-kvm-sendmail-recovery/rocky_vm_sendmail_stopped_config_restore.py \
   "$backup_id"

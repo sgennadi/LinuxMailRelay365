@@ -229,16 +229,18 @@ scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
     tests/rocky_vm_sendmail_systemd_enforcing.sh \
     ci@127.0.0.1:/home/ci/lmr365-sendmail-systemd-enforcing.sh
-# Recovery fixture is CI-only; install both Python scripts as root-owned in
-# an isolated guest path, with no production installer integration.
+# Recovery fixtures are CI-only; root-owned, isolated under /usr/local/libexec.
+# The v2 full-tree exercise writes ONLY into a private /var/backups scratch tree.
 scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
     linux/foreign-mta-config-backup.py \
     tests/rocky_vm_sendmail_stopped_config_restore.py \
     tests/rocky_vm_sendmail_post_reboot_check.py \
+    tests/assert_sendmail_v2_export.py \
+    tests/rehearse_sendmail_v2_metadata.py \
     ci@127.0.0.1:/home/ci/
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
-    'sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-sendmail-recovery && sudo install -o root -g root -m 0755 /home/ci/foreign-mta-config-backup.py /home/ci/rocky_vm_sendmail_stopped_config_restore.py /home/ci/rocky_vm_sendmail_post_reboot_check.py /usr/local/libexec/lmr365-kvm-sendmail-recovery/'
+    'sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-sendmail-recovery /usr/local/libexec/lmr365-kvm-sendmail-recovery/rehearsal/linux /usr/local/libexec/lmr365-kvm-sendmail-recovery/rehearsal/tests && sudo install -o root -g root -m 0755 /home/ci/foreign-mta-config-backup.py /home/ci/rocky_vm_sendmail_stopped_config_restore.py /home/ci/rocky_vm_sendmail_post_reboot_check.py /usr/local/libexec/lmr365-kvm-sendmail-recovery/ && sudo install -o root -g root -m 0755 /home/ci/foreign-mta-config-backup.py /usr/local/libexec/lmr365-kvm-sendmail-recovery/rehearsal/linux/foreign-mta-config-backup.py && sudo install -o root -g root -m 0755 /home/ci/assert_sendmail_v2_export.py /home/ci/rehearse_sendmail_v2_metadata.py /usr/local/libexec/lmr365-kvm-sendmail-recovery/rehearsal/tests/'
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'env GITHUB_ACTIONS=true bash /home/ci/lmr365-sendmail-systemd-enforcing.sh'
 echo "LMR365_GUEST_SENDMAIL_SYSTEMD_ENFORCING=verified"
