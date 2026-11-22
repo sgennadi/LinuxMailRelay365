@@ -14,7 +14,7 @@
     <!-- Obsolete X.509 constructor regressions are build errors. -->
     <WarningsAsErrors>$(WarningsAsErrors);SYSLIB0057</WarningsAsErrors>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <Version>0.1.0</Version>
+    <Version>0.1.0-rc.3</Version>
     <!-- Standalone builds work in a public repository. Reuse the user's private
          UniversalUpdater module when it has been restored locally. -->
     <UseSharedUpdater Condition="'$(UseSharedUpdater)' == '' and Exists('../../modules/UniversalUpdater/src/UniversalUpdater.Core/UniversalUpdater.Core.csproj')">true</UseSharedUpdater>
