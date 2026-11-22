@@ -1594,9 +1594,12 @@ internal sealed partial class MainForm : Form
             };
             AddLine(panel, label);
         }
+        string origin = MailFlowIntent.SourceLabel(selectedMailSource, language.SelectedIndex);
+        string ingress = selectedMailScenario == MailScenarioPlanner.Isolated
+            ? T("новый SMTP:", "new SMTP:", "SMTP חדש:") + isolatedSmtpPort.Text.Trim()
+            : T("существующий Linux MTA", "existing Linux MTA", "שרת Linux קיים");
         Detail(T("Схема", "Flow", "זרימה"),
-            T("Программы", "Applications", "יישומים") + " → Linux SMTP:" +
-            isolatedSmtpPort.Text.Trim() + " → " + guide.Target);
+            origin + " → " + ingress + " → " + guide.Target);
         Detail(T("Получатели", "Recipients", "נמענים"), guide.Audience);
         Detail(T("Авторизация", "Authentication", "אימות"), guide.Authorization);
         Detail(T("Отправитель", "Sender", "שולח"), guide.Sender);
@@ -1625,7 +1628,9 @@ internal sealed partial class MainForm : Form
             ? inspectedHost : null;
         var decision = MailServerDiscoveryDecision.Assess(inventory, audit, isolated);
         var brief = MailDiscoveryBrief.Build(inventory, audit, hostInspection, isolated,
-            decision, recipientScope.SelectedIndex, isolatedSmtpPort.Text.Trim(),
+            decision, recipientScope.SelectedIndex,
+            selectedMailScenario == MailScenarioPlanner.Isolated
+                ? isolatedSmtpPort.Text.Trim() : null,
             language.SelectedIndex);
 
         int contentWidth = Math.Max(300, Math.Min(940, pageHost.ClientSize.Width - 76));
@@ -2092,9 +2097,11 @@ internal sealed partial class MainForm : Form
                 break;
             case 1:
                 EnsureSecurityLoaded();
+                EnsureRoutingLoaded();
                 LocalizeDeliveryChoices();
                 ShowMailDiscovery(page, true);
                 ShowRecipientAdvice(page);
+                ShowMailFlowPlanner(page);
                 AddLine(page, UiTheme.Text(T(
                     "Все опции выключены. Выбор сохраняется как ПЛАН — он не меняет Entra, Postfix, сертификат или Linux. Для включения потребуются отдельные подтверждённые действия.",
                     "All options are off. Your selection is saved as a PLAN only: it does not modify Entra, Postfix, certificates or Linux. Activation requires separate approved steps.",
@@ -2384,6 +2391,26 @@ internal sealed partial class MainForm : Form
                 LocalizeDeliveryChoices();
                 ShowMailDiscovery(page, false);
                 ShowRecipientAdvice(page);
+                ShowMailFlowPlanner(page);
+                if (!HasMailDiscovery() || selectedMailSource == MailFlowIntent.Unknown ||
+                    selectedMailScenario == MailScenarioPlanner.Choose)
+                {
+                    AddLine(page, MailFlowText(T(
+                        "Сначала завершите проверку Linux и выберите источник почты и сценарий. Настройка Microsoft 365 пока не предлагается.",
+                        "Complete Linux discovery, then choose the mail source and topology. M365 configuration remains hidden until then.",
+                        "יש לבדוק תחילה את Linux ולבחור מסלול דואר."),
+                        Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
+                    break;
+                }
+                if (selectedMailScenario == MailScenarioPlanner.Keep)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "Вы выбрали сохранение текущей почты. Microsoft 365 не требуется на этом этапе.",
+                        "You chose to keep existing mail unchanged. Microsoft 365 configuration is not required for this plan.",
+                        "בחרתם להשאיר את הדואר הקיים ללא שינוי.")));
+                    break;
+                }
+                AddUnverifiedM365Capabilities(page);
                 AddLine(page, UiTheme.Text(T(
                     "Выберите, КАК Linux будет отправлять почту через Microsoft 365",
                     "First select HOW Linux will deliver mail through Microsoft 365",
@@ -2455,6 +2482,52 @@ internal sealed partial class MainForm : Form
                 EnsureRoutingLoaded();
                 LocalizeDeliveryChoices();
                 ShowMailDiscovery(page, false);
+                if (!HasMailDiscovery() || selectedMailSource == MailFlowIntent.Unknown ||
+                    selectedMailScenario == MailScenarioPlanner.Choose)
+                {
+                    AddLine(page, MailFlowText(T(
+                        "Сначала выполните проверку Linux и выберите тип почты и дальнейший сценарий на предыдущем шаге.",
+                        "First inspect Linux and choose the mail source and migration scenario on the previous step.",
+                        "בדקו תחילה את Linux ובחרו מסלול."),
+                        Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
+                    break;
+                }
+                if (selectedMailScenario == MailScenarioPlanner.Keep)
+                {
+                    AddLine(page, MailFlowText(T(
+                        "Сохранить существующую почту: никакая установка или смена SMTP-маршрута не требуется.",
+                        "Keep current mail: no installation or SMTP route changes are required.",
+                        "ללא שינוי בתצורת הדואר הקיימת."),
+                        Math.Max(300, pageHost.ClientSize.Width - 90)));
+                    break;
+                }
+                if (selectedMailScenario == MailScenarioPlanner.ReplaceRelay)
+                {
+                    AddLine(page, UiTheme.Text(T(
+                        "Перенаправление существующего Postfix: порт не меняется",
+                        "Existing Postfix upstream migration: no new inbound port",
+                        "שינוי ממסר יוצא ללא יציאה חדשה"), true));
+                    AddLine(page, BuildLiveMailFlowDiagram());
+                    AddUnverifiedM365Capabilities(page);
+                    AddLine(page, MailFlowText(T(
+                        "Нужно проверить права и исходящий транспорт, сохранить текущий main.cf/master.cf и очередь, подготовить откат, затем отдельно подтвердить замену upstream. Выбранный план сам не меняет Postfix. Операция автоматической миграции upstream пока не реализована — не используйте Force Replace вместо неё.",
+                        "Verify destination rights and SMTP transport, back up main.cf/master.cf and inspect the queue, then review rollback. This selection does not change Postfix. Automated in-place upstream migration is not implemented yet; do not use Force Replace as a substitute.",
+                        "דרושים גיבוי ובדיקת ניתוב. שינוי אוטומטי של upstream טרם מומש."),
+                        Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
+                    AddAction(page, T("Повторно проверить текущую конфигурацию (read-only)",
+                        "Reinspect current Postfix configuration (read-only)",
+                        "בדיקת Postfix מחדש"), InspectMailRoutingAsync, false, "check", "mail-flow-reinspect");
+                    AddAction(page, T("Создать проверенную резервную копию Postfix",
+                        "Create verified primary Postfix backup",
+                        "גיבוי מאומת של Postfix"), BackupNowAsync, false, "shield", "mail-flow-backup");
+                    break;
+                }
+                if (selectedMailScenario == MailScenarioPlanner.Rebuild)
+                    AddLine(page, MailFlowText(T(
+                        "Вы выбрали полную замену конфигурации. ВНИМАНИЕ: это не простая смена relayhost. Действия ниже доступны только с проверкой, архивом и явным подтверждением.",
+                        "You selected a full configuration rebuild, NOT a simple relayhost change. Existing guarded installer actions below require verified backups and explicit confirmation.",
+                        "נבחרה התקנה מחדש מלאה הדורשת בדיקות וגיבוי."),
+                        Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
                 AddLine(page, UiTheme.Text(T("Отправка через Microsoft 365", "Microsoft 365 delivery method", "שיטת שליחה דרך Microsoft 365")));
                 AddLine(page, mailTransport);
                 ShowPostfixBasicsSection(page);
@@ -3786,6 +3859,8 @@ internal sealed partial class MainForm : Form
         try
         {
             routingPlan = MailRoutingPlanStore.Load(dataDirectory, identity);
+            selectedMailSource = routingPlan.MailSource;
+            selectedMailScenario = routingPlan.MigrationScenario;
             mailTransport.SelectedIndex = routingPlan.Transport switch
              {
                  "connector" => 1, "direct-send" => 2, _ => 0
@@ -3840,6 +3915,8 @@ internal sealed partial class MainForm : Form
             discoveredMailIdentity = null;
             inspectedHost = null;
             inspectedHostIdentity = null;
+            mailSubmissionEvidence = null;
+            mailSubmissionIdentity = null;
             previewedCleanBootstrapSha = null;
             previewedCleanBootstrapIdentity = null;
             cleanBootstrapSummary = "";
@@ -3854,6 +3931,8 @@ internal sealed partial class MainForm : Form
     private void SaveRoutingChoices()
     {
         if (routingLoading || routingIdentity is null) return;
+        routingPlan.MailSource = selectedMailSource;
+        routingPlan.MigrationScenario = selectedMailScenario;
         routingPlan.Transport = mailTransport.SelectedIndex switch
         {
             1 => "connector", 2 => "direct-send", _ => "oauth2"
@@ -5710,6 +5789,8 @@ internal sealed partial class MainForm : Form
         discoveredMailIdentity = null;
         inspectedHost = null;
         inspectedHostIdentity = null;
+        mailSubmissionEvidence = null;
+        mailSubmissionIdentity = null;
         var report = await SshRemote.ProbeSecurityAsync(
             endpoint, EmbeddedAssets.SecurityProbe, CancellationToken.None);
         report.EnsureSuccess();
@@ -5774,6 +5855,22 @@ internal sealed partial class MainForm : Form
             inspectedHostIdentity = null;
             WriteLine("Linux hostname/MTA settings could not be read (" +
                 ex.GetType().Name + "); no fields were filled automatically.");
+        }
+        try
+        {
+            var originReport = await SshRemote.ExecuteAsync(endpoint, "bash -s",
+                EmbeddedAssets.MailSubmissionInspector, timeout: TimeSpan.FromSeconds(40));
+            originReport.EnsureSuccess();
+            mailSubmissionEvidence = MailSubmissionEvidence.Parse(originReport.StdOut);
+            mailSubmissionIdentity = SecurityOptionsStore.Identity(endpoint);
+            WriteLine("Read-only Linux mail submission mechanisms checked; this does not identify mail producers.");
+        }
+        catch (Exception error)
+        {
+            mailSubmissionEvidence = null;
+            mailSubmissionIdentity = null;
+            WriteLine("Local submission mechanism discovery unavailable (" +
+                error.GetType().Name + "); actual mail sources remain unverified.");
         }
         discoveredMailIdentity = SecurityOptionsStore.Identity(endpoint);
         var recommendation = MailServerDiscoveryDecision.Assess(
