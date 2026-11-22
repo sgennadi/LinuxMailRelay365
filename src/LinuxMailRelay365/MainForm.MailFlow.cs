@@ -7,6 +7,9 @@ internal sealed partial class MainForm
 {
     private string selectedMailSource = MailFlowIntent.Unknown;
     private string selectedMailScenario = MailScenarioPlanner.Choose;
+    private string selectedMailTarget = MailFlowIntent.TargetM365;
+    private readonly TextBox alternateUpstreamHost = Field("");
+    private readonly TextBox alternateUpstreamPort = Field("587");
     private MailSubmissionEvidence? mailSubmissionEvidence;
     private string? mailSubmissionIdentity;
 
@@ -117,10 +120,13 @@ internal sealed partial class MainForm
             configuredPorts = "";
         string? isolatedPort = selectedMailScenario == MailScenarioPlanner.Isolated
             ? isolatedSmtpPort.Text.Trim() : null;
+        string mode = selectedMailTarget == MailFlowIntent.TargetCustom ? "custom" :
+            mailTransport.SelectedIndex switch { 1 => "connector", 2 => "direct-send", _ => "oauth2" };
+        string? customEndpoint = string.IsNullOrWhiteSpace(alternateUpstreamHost.Text)
+            ? null : alternateUpstreamHost.Text.Trim() + ":" + alternateUpstreamPort.Text.Trim();
         var topology = MailScenarioPlanner.Flow(selectedMailScenario,
-            inspectedMail?.CurrentRelay, configuredPorts, isolatedPort,
-            mailTransport.SelectedIndex switch { 1 => "connector", 2 => "direct-send", _ => "oauth2" },
-            language.SelectedIndex, mailSource);
+            inspectedMail?.CurrentRelay, configuredPorts, isolatedPort, mode,
+            language.SelectedIndex, mailSource, customEndpoint);
 
         int maxWidth = Math.Max(320, pageHost.ClientSize.Width - 90);
         int scale = Math.Clamp((int)Math.Round(DeviceDpi / 96.0 * 100), 100, 250);
@@ -239,6 +245,55 @@ internal sealed partial class MainForm
         }
 
         AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
+            "Куда должна уходить почта?",
+            "Where should outbound mail go?",
+            "לאן לשלוח דואר יוצא?"), true));
+        var targetChoices = new[]
+        {
+            (Code: MailFlowIntent.TargetM365,
+             Title: "Microsoft 365",
+             Description: TranslateMailFlow(languageIndex,
+                 "XOAUTH2, SMTP Connector или Direct Send — после проверки tenant.",
+                 "XOAUTH2, SMTP Connector or Direct Send — after tenant verification.",
+                 "XOAUTH2, Connector או Direct Send לאחר אימות."),
+             Status: TranslateMailFlow(languageIndex,
+                 "Требуется проверка M365", "Requires M365 verification", "נדרשת בדיקת M365"),
+             Preferred: false, Enabled: true),
+            (Code: MailFlowIntent.TargetCustom,
+             Title: TranslateMailFlow(languageIndex,
+                 "Другой SMTP-сервер", "Another SMTP server / smarthost", "שרת SMTP אחר"),
+             Description: TranslateMailFlow(languageIndex,
+                 "Укажите исходящий сервер и порт. Пока это план; пароль SMTP не сохраняется.",
+                 "Specify an outbound server and port. Planning only; SMTP passwords are not stored.",
+                 "בחרו שרת ויציאה. תכנון בלבד."),
+             Status: TranslateMailFlow(languageIndex,
+                 "Нет автоматической установки", "No automatic deployment", "ללא התקנה אוטומטית"),
+             Preferred: false, Enabled: true)
+        };
+        AddLine(page, BuildMailFlowCards(targetChoices, selectedMailTarget, code =>
+        {
+            selectedMailTarget = code;
+            selectedMailScenario = MailScenarioPlanner.Choose;
+            SaveRoutingChoices();
+            RenderPage();
+        }));
+        if (selectedMailTarget == MailFlowIntent.TargetCustom)
+        {
+            AddField(page, TranslateMailFlow(languageIndex,
+                "Исходящий SMTP-сервер (FQDN / IPv4)",
+                "Outbound SMTP server (FQDN / IPv4)", "שרת SMTP יוצא"),
+                alternateUpstreamHost);
+            AddField(page, TranslateMailFlow(languageIndex,
+                "Исходящий TCP-порт (это НЕ входящий порт Linux)",
+                "Outbound TCP port (NOT a Linux inbound port)", "יציאה יוצאת TCP"),
+                alternateUpstreamPort);
+            AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+                "Универсальный SMTP smarthost пока только в плане: перед включением нужны TLS, способ аутентификации, проверка DNS/доступности и backup. Существующий Postfix не меняется.",
+                "Custom SMTP smarthost is a planning option only: verify TLS, authentication, DNS/connectivity and backups before activation. Existing Postfix stays untouched.",
+                "היעד הוא תכנון בלבד, עד לאימות TLS ואבטחה."),
+                width, warning: true));
+        }
+        AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
             "Как поступить с текущей конфигурацией?",
             "What should happen to the current mail configuration?",
             "מה לעשות עם תצורת הדואר הקיימת?"), true));
@@ -247,7 +302,8 @@ internal sealed partial class MainForm
             1 => "internal-only", 2 => "external-needed", _ => "unknown"
         };
         var suggestions = MailFlowIntent.Suggestions(inventory, audit, host,
-            discoveredIsolatedRelay, selectedMailSource, recipients, languageIndex);
+            discoveredIsolatedRelay, selectedMailSource, recipients, languageIndex,
+            selectedMailTarget);
         var choices = suggestions.Select(x => (
             x.Code, x.Name, x.Detail, x.Status, x.Preferred, x.Enabled)).ToArray();
         AddLine(page, BuildMailFlowCards(choices, selectedMailScenario, code =>
@@ -293,6 +349,15 @@ internal sealed partial class MainForm
 
     private void AddUnverifiedM365Capabilities(TableLayoutPanel page)
     {
+        if (selectedMailTarget == MailFlowIntent.TargetCustom)
+        {
+            AddLine(page, MailFlowText(TranslateMailFlow(language.SelectedIndex,
+                "Другой SMTP upstream пока не подтверждён: потребуется проверить DNS, подключение, TLS, AUTH и разрешения провайдера перед настройкой.",
+                "Custom upstream is not verified: inspect DNS, connectivity, TLS, AUTH and provider permissions before configuration.",
+                "ממסר SMTP אחר טרם אומת; יש לבדוק TLS והרשאות."),
+                Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
+            return;
+        }
         if (!HasMailDiscovery() || selectedMailScenario is MailScenarioPlanner.Choose or MailScenarioPlanner.Keep)
             return;
         int l = language.SelectedIndex;
