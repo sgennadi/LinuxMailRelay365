@@ -483,6 +483,19 @@ internal sealed class MainForm : Form
                 AddField(page, T("Подтверждённый домен (необязательно для XOAUTH2)",
                                  "Verified accepted domain (not needed for XOAUTH2)",
                                  "דומיין מאומת (לא נדרש ל-XOAUTH2)"), acceptedDomain);
+                if (serverOverview is not null && serverOverviewIdentity == TryCurrentIdentity() &&
+                    !string.IsNullOrWhiteSpace(serverOverview.Domain))
+                {
+                    var linuxDomain = serverOverview.Domain;
+                    AddAction(page, T("Использовать обнаруженный домен Linux: ",
+                        "Copy detected Linux domain into field: ", "השתמש בדומיין Linux: ") + linuxDomain,
+                        () =>
+                        {
+                            acceptedDomain.Text = linuxDomain;
+                            SaveRoutingChoices();
+                            return Task.CompletedTask;
+                        }, false, "copy", "routing");
+                }
                 AddField(page, T("Порт отдельного SMTP (Preserve Existing Mail; по умолчанию 2525)",
                                  "Isolated SMTP port (Preserve Existing Mail; default 2525)",
                                  "פורט SMTP נפרד (ברירת מחדל 2525)"), isolatedSmtpPort);
@@ -1261,6 +1274,8 @@ internal sealed class MainForm : Form
         {
             serverOverview = null;
             serverOverviewIdentity = null;
+            inspectedMail = null;
+            inspectedServerIdentity = null;
             WriteLine("WARNING: SSH connected, but server profile could not be read: " + ex.Message);
         }
     }
