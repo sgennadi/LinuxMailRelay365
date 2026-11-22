@@ -7,6 +7,8 @@ import importlib.util
 import io
 import json
 import os
+import time
+from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import unittest
@@ -109,6 +111,42 @@ class OptionalProofTimerTests(unittest.TestCase):
             os.link(str(source), str(parent / "hardlink"))
             with self.assertRaises(timer.Refused):
                 timer.read(source, 32, (0o600,))
+
+    def test_preview_does_not_generate_bytecode_cache_in_installed_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            code = ("import time\n"
+                    "def inspect(sha):\n"
+                    "    return {'map_sha256': sha, 'expires_at': int(time.time()) + 120}\n"
+                    ).encode("ascii")
+            filename = root / "refresh-multi-mailbox-proof.py"
+            filename.write_bytes(code)
+            sender = b"example map"
+            config = b"example config"
+            sha = timer.digest(sender)
+            marker = {"runtime_map_sha256": sha,
+                      "active": {"main.cf": timer.digest(config),
+                                 "master.cf": timer.digest(config)},
+                      "source": {"refresh-multi-mailbox-proof.py": timer.digest(code)}}
+            def read(path, maximum, modes, gid=None):
+                if path == timer.ACTIVE:
+                    return json.dumps(marker).encode("ascii")
+                if path == timer.MAP:
+                    return sender
+                if path in (timer.CONF / "main.cf", timer.CONF / "master.cf"):
+                    return config
+                if path == root / "refresh-multi-mailbox-proof.py":
+                    return code
+                raise AssertionError("unexpected local file read")
+            with mock.patch.object(timer, "ROOT", root), \
+                 mock.patch.object(timer.os, "geteuid", return_value=0), \
+                 mock.patch.object(timer.grp, "getgrnam",
+                                   return_value=SimpleNamespace(gr_gid=1234)), \
+                 mock.patch.object(timer, "read", side_effect=read):
+                value, active_hash = timer.attest()
+                self.assertEqual(value, sha)
+                self.assertEqual(len(active_hash), 64)
+                self.assertFalse((root / "__pycache__").exists())
 
     def test_status_without_timer_reports_not_installed(self):
         with tempfile.TemporaryDirectory() as td, \

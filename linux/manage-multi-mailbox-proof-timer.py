@@ -186,8 +186,16 @@ def attest():
     if spec is None or spec.loader is None:
         raise Refused("audit_module_missing")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    proof = module.inspect(pinned)
+    # The read-only Preview must not create Python __pycache__ in the
+    # installed runtime directory. Importing our dynamically loaded auditor
+    # (and its nested guards) otherwise writes bytecode when run as root.
+    bytecode_before = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+        proof = module.inspect(pinned)
+    finally:
+        sys.dont_write_bytecode = bytecode_before
     if proof.get("map_sha256") != pinned or proof.get("expires_at", 0) <= int(time.time()):
         raise Refused("ingress_policy_not_current")
     return pinned, digest(raw)
