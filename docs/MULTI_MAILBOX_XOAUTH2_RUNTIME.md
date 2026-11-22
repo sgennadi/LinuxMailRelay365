@@ -329,12 +329,16 @@ closed until a separately approved fresh proof exists), run:
 
     sudo python3 /usr/local/libexec/linuxmailrelay365-multi-oauth/manage-multi-mailbox-proof-timer.py --disable-reviewed --confirm DISABLE_AND_REVOKE_MULTI_INGRESS_TIMER
 
-Timer disable/rollback now verifies inactive/disabled systemd unit properties
-separately after a nonzero quiet status, refusing missing, failed, masked or
-unknown units rather than treating every nonzero exit as a safe shutdown.
-Timer disable/rollback requires the unit to be both stopped and disabled;
-an inactive but still enabled timer blocks deletion and receipt revocation,
-because systemd may reactivate it after a reboot.
+Timer disable/rollback now verifies the inactive/disabled systemd unit
+properties separately after a nonzero quiet status. It refuses missing,
+failed, masked, unexpected or externally replaced units: LoadState must be
+loaded, FragmentPath must match our exact unit file, and NeedDaemonReload
+must be no. It never treats a generic systemctl error as safe shutdown.
+Timer disable also requires the oneshot audit service itself to be inactive,
+not only the timer, before removing units or revoking the local proof. An
+inactive but still enabled timer blocks deletion and revocation, because it
+may restart after a reboot. A failed proof timer shutdown leaves state for
+manual review rather than claiming safe removal.
 
 If initial activation fails after a refresh attempt, the manager also attempts
 to revoke that newly issued local receipt before removing verified unit files.
