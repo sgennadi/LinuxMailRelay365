@@ -385,6 +385,28 @@ internal sealed partial class MainForm
                 SelectedGoogleOutboundPort() != port)
                 throw new InvalidOperationException("Linux or Google route changed after review.");
 
+            if (!personal)
+            {
+                // Workspace IP relay has no mailbox secret to verify. Re-test
+                // the selected egress TCP/TLS port immediately before Apply;
+                // Google Admin authorization is still a separate approval.
+                string probeCode = GoogleSmtpAudit.BuildScript(
+                    EmbeddedAssets.GoogleSmtpProbe, profile);
+                var network = await SshRemote.ExecuteAsync(endpoint, "bash -s",
+                    probeCode, TimeSpan.FromSeconds(90));
+                if (network.ExitCode != 0)
+                    throw new InvalidOperationException(
+                        "Google Workspace network preflight failed. No Linux changes made.");
+                var networkState = GoogleSmtpAudit.Parse(network.StdOut, profile);
+                var selected = networkState.Ports.FirstOrDefault(x => x.Port == port);
+                if (selected?.Tcp != "reachable" || selected.Tls != "verified")
+                    throw new InvalidOperationException(
+                        "Google Workspace SMTP TLS readiness changed. No Linux configuration was changed.");
+                if (TryCurrentIdentity() != identity)
+                    throw new InvalidOperationException(
+                        "Linux SSH identity changed during Workspace preflight.");
+            }
+
             if (personal)
             {
                 // This tests the SAME one-use value to be installed on Linux.
