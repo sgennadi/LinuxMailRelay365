@@ -126,7 +126,7 @@ class PlatformWizardContractTests(unittest.TestCase):
         self.assertIn("python3 \\", embed)
         self.assertIn("InspectPlatformAsync", wizard)
         self.assertIn("EmbeddedAssets.BuildPlatformCompatBundle(port)", wizard)
-        self.assertIn("1024 or > 65535", wizard)
+        self.assertIn("SmtpIngressPort.Supported", wizard)
         self.assertNotIn("semanage port -a", wizard)
         self.assertNotIn("ufw allow", wizard)
 
