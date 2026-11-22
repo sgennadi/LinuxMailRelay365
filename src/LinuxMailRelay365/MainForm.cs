@@ -7507,10 +7507,22 @@ internal sealed partial class MainForm : Form
 
         WriteLine("Microsoft Graph provisioning: native C# MSAL Device Code + MFA. " +
             "No Microsoft.Graph PowerShell module, client secret or mailbox password.");
-        var graph = await WithNativeMicrosoftSignInAsync((show, ct) =>
-            EntraGraphProvisioner.ProvisionAsync(
-                selected.Tenant, bootstrapClient, requestedApp, displayName,
-                certificateLabel, pem, show, ct), mayModifyEntra: true);
+        EntraProvisionResult graph;
+        try
+        {
+            graph = await WithNativeMicrosoftSignInAsync((show, ct) =>
+                EntraGraphProvisioner.ProvisionAsync(
+                    selected.Tenant, bootstrapClient, requestedApp, displayName,
+                    certificateLabel, pem, show, ct), mayModifyEntra: true);
+        }
+        catch
+        {
+            WriteLine("CAUTION: C# Graph provisioning did not complete. " +
+                "Entra App Registration/certificate MAY ALREADY HAVE CHANGED; " +
+                "review Tenant " + selected.Tenant + " and the selected app before retrying. " +
+                "Exchange Online RBAC has NOT been started.");
+            throw;
+        }
         // Recheck exact UI and certificate origin after user has completed MFA.
         if (CloudInputs() != selected ||
             !string.Equals(rawExisting, existingAppId.Text.Trim(), StringComparison.Ordinal) ||
