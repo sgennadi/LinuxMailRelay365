@@ -56,7 +56,8 @@ internal static class Program
             }),
             ("Tenant discovery", TenantDiscovery.SelfTest),
             ("Diagnostic privacy", DiagnosticJournal.SelfTest),
-            ("UI language preference", UiLanguagePreference.SelfTest)
+            ("UI language preference", UiLanguagePreference.SelfTest),
+            ("Read-only server profile", LinuxServerOverview.SelfTest)
         };
 #if !USE_UNIVERSAL_UPDATER
         checks.Add(("Release ordering", ReleaseVersion.SelfTest));
