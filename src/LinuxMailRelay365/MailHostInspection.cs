@@ -114,7 +114,7 @@ internal sealed class MailHostInspection
             !OneOf(values, "MAIL_HOST_SENDMAIL_RELAY_POLICY",
                 "access_maps_and_relay_checks_unverified") ||
             (values.TryGetValue("MAIL_HOST_EXIM_SMTP_PORTS", out var eximPorts) &&
-             eximPorts != "unverified" &&
+             eximPorts is not ("unverified" or "dynamic_or_unverified") &&
              (!Regex.IsMatch(eximPorts, @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z",
                  RegexOptions.CultureInvariant) ||
               eximPorts.Split(',').Any(p => !int.TryParse(p, out int n) || n > 65535))))
@@ -370,6 +370,14 @@ internal sealed class MailHostInspection
             "MAIL_HOST_EXIM_AUTH_DECLARATION=auth_hosts_declared_backend_unverified\n";
         if (!Parse(exim).Summary(1).Contains("daemon_smtp_ports=25,587,2525",
                 StringComparison.Ordinal)) return false;
+        var dynamicExim = Parse(exim.Replace(
+            "MAIL_HOST_EXIM_SMTP_PORTS=25,587,2525",
+            "MAIL_HOST_EXIM_SMTP_PORTS=dynamic_or_unverified")
+            + "MAIL_HOST_SMTP_CONFIG_SOURCE=exim_daemon_smtp_ports\n" +
+              "MAIL_HOST_SMTP_CONFIG_PORTS=dynamic_or_unverified\n");
+        if (dynamicExim.ConfiguredSmtpPorts().Count != 0 ||
+            !dynamicExim.Summary(1).Contains("unverified", StringComparison.Ordinal))
+            return false;
         string configPorts = valid + "MAIL_HOST_SMTP_CONFIG_SOURCE=postfix_master_cf\n" +
             "MAIL_HOST_SMTP_CONFIG_PORTS=25,2525\n";
         var configured = Parse(configPorts);
