@@ -281,3 +281,47 @@ record still cannot show Exchange transport or inbox delivery. Check both
 test inboxes and Microsoft 365 Exchange message trace independently before
 treating an interrupted or partial attempt as finished; start a **new reviewed
 test with a new run ID** only after deciding deliberately whether to retry.
+
+## Optional root-reviewed renewal of 120-second ingress proof (experimental)
+
+The source staging bundle also includes `manage-multi-mailbox-proof-timer.py`.
+**Staging or applying the multi-mailbox route does not enable this timer.**
+The timer is an opt-in systemd facility for a separately configured and
+working isolated SMTP AUTH/From-Guard ingress. On each run the existing
+root-only static audit may publish a new 120-second receipt, but this
+does not prove a real SMTP client, Exchange Online permissions, or inbox
+delivery. It never starts the MTA or sends mail.
+
+After separately starting and testing SMTP AUTH + STARTTLS, as root inspect
+the exact sender map and installed route:
+
+    sudo python3 /usr/local/libexec/linuxmailrelay365-multi-oauth/manage-multi-mailbox-proof-timer.py --plan
+
+The plan is read-only and returns `MULTI_PROOF_TIMER_PLAN_SHA256`. Only if
+the values are correct and the SMTP system is actively supervised can
+the operator explicitly enable renewal:
+
+    sudo python3 /usr/local/libexec/linuxmailrelay365-multi-oauth/manage-multi-mailbox-proof-timer.py --enable-reviewed --approve-sha256 REVIEWED_SHA256 --confirm ENABLE_REVIEWED_MULTI_INGRESS_TIMER
+
+The manager installs one root-only systemd oneshot unit and a 60-second
+timer. The service uses a pinned sender-map SHA and a restricted filesystem
+sandbox, and its entrypoint never uses a stored OAuth token, SMTP password,
+or network SMTP connection. An audit failure does **not** make a stale
+receipt valid: the transport refuses an expired proof after 120 seconds.
+Service activation also refuses changed runtime map or changed source/config
+SHA. Check status with `--status`.
+
+To disable renewal and revoke the current local proof (messages then fail
+closed until a separately approved fresh proof exists), run:
+
+    sudo python3 /usr/local/libexec/linuxmailrelay365-multi-oauth/manage-multi-mailbox-proof-timer.py --disable-reviewed --confirm DISABLE_AND_REVOKE_MULTI_INGRESS_TIMER
+
+If any unit, ownership or state has unexpected content, the manager stops
+and requires manual review instead of replacing or deleting it. Do not
+modify these systemd units by hand while enabled. This workflow is not
+auto-activated by the Windows Wizard and has **not** yet passed a real
+systemd/timer acceptance test on a host with the full multi-mailbox stack.
+
+Any production release still requires real client-to-Postfix SMTP AUTH,
+the per-mailbox token/SMTP submission acceptance, Exchange message trace,
+DPI/GUI checks and managed credential/signing validation.

@@ -340,6 +340,7 @@ internal static class EmbeddedAssets
     internal static string MultiMailboxPostfixInstaller => Text("LinuxMailRelay365.linux.multi-mailbox-postfix.py");
     internal static string MultiMailboxTransport => Text("LinuxMailRelay365.linux.multi-mailbox-transport.py");
     internal static string MultiMailboxIngressProof => Text("LinuxMailRelay365.linux.multi-mailbox-ingress-proof.py");
+    internal static string MultiMailboxProofTimer => Text("LinuxMailRelay365.linux.multi-mailbox-proof-timer.py");
     internal static string MultiMailboxRestore => Text("LinuxMailRelay365.linux.multi-mailbox-restore.py");
     internal static string MultiMailboxAcceptance => Text("LinuxMailRelay365.linux.multi-mailbox-acceptance.py");
 
@@ -353,6 +354,7 @@ internal static class EmbeddedAssets
             ("restore-multi-mailbox-postfix.py", MultiMailboxRestore),
             ("m365-multi-mailbox-transport.py", MultiMailboxTransport),
             ("refresh-multi-mailbox-proof.py", MultiMailboxIngressProof),
+            ("manage-multi-mailbox-proof-timer.py", MultiMailboxProofTimer),
             ("manage-multi-mailbox-acceptance.py", MultiMailboxAcceptance),
             ("audit-oauth-sender-map.py", OAuthSenderMapAudit),
             ("audit-oauth-ingress.py", OAuthIngressAudit),
