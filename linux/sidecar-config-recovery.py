@@ -488,7 +488,7 @@ def ensure_restorable(snapshot_id, expected):
     installed = read_source(CONF + "/sidecar-postfix/smtp-port",
                             next(x for x in entries if x["path"] ==
                                  CONF + "/sidecar-postfix/smtp-port"))
-    if not port.isdigit() or not 1024 <= int(port) <= 65535 or \
+    if not port.isdigit() or not (int(port) == 25 or 1024 <= int(port) <= 65535) or \
             installed.decode("ascii").strip() != port:
         raise Refused("sidecar_custom_port_mismatch")
     return manifest
@@ -544,7 +544,7 @@ def check_offline_readiness():
     if meta.st_size > 6:
         raise Refused("invalid_installed_smtp_port")
     port = port_path.read_text(encoding="ascii").strip()
-    if not port.isdigit() or not 1024 <= int(port) <= 65535:
+    if not port.isdigit() or not (int(port) == 25 or 1024 <= int(port) <= 65535):
         raise Refused("invalid_installed_smtp_port")
     # systemd may be stopped while Postfix was manually started with -c.
     # A bound TCP listener is an independent hard-stop before changing config.
@@ -737,7 +737,7 @@ def verify_restored_postfix():
     if info.st_size > 6:
         raise Refused("invalid_restored_custom_smtp_port")
     port = port_path.read_text(encoding="ascii").strip()
-    if not port.isdigit() or not 1024 <= int(port) <= 65535:
+    if not port.isdigit() or not (int(port) == 25 or 1024 <= int(port) <= 65535):
         raise Refused("invalid_restored_custom_smtp_port")
     main = command(["postconf", "-c", config, "-n"])
     if not main or "queue_directory" not in main:
