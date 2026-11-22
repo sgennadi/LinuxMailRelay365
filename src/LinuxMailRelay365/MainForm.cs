@@ -138,6 +138,7 @@ internal sealed partial class MainForm : Form
     private string? reviewedTpmPlanContext;
     private string tpmPlanSummary = "";
     private string hardwareOAuthSummary = "";
+    private readonly CheckBox useLegacyEntraCertPowerShell = new() { AutoSize = true };
     private EntraCertificateReview? reviewedEntraPublicCertificates;
     private string? reviewedEntraCertPlanSha;
     private string? reviewedEntraCertContext;
@@ -1945,6 +1946,12 @@ internal sealed partial class MainForm : Form
                                       "4. בדיקת רישום אישור ציבורי ב-Entra"),
                         () => PreviewEntraCertificateForTargetAsync("primary-rotation"),
                         false, "check", "primary-rotation-entra-preview");
+                    useLegacyEntraCertPowerShell.Text = T(
+                        "Использовать прежний Graph PowerShell 7 вместо C# (ручной резервный способ)",
+                        "Use legacy Graph PowerShell 7 instead of C# (manual fallback)",
+                        "PowerShell ישן (חלופה ידנית)");
+                    useLegacyEntraCertPowerShell.Enabled = !busy;
+                    AddLine(page, useLegacyEntraCertPowerShell);
                     if (reviewedEntraCertTarget == "primary-rotation" &&
                         reviewedEntraCertPlanSha is not null)
                         AddAction(page, T("5. Подтвердить добавление PUBLIC сертификата в Entra...",
@@ -2053,6 +2060,12 @@ internal sealed partial class MainForm : Form
                         "Активация TPM/HSM — только для заранее подготовленного hardware-staged.json. Требует успешной подписи и получения токена Entra до переключения; выполняет резервное копирование и откат при ошибке.",
                         "TPM/HSM cutover requires an existing hardware-staged.json, successful offline signature and Entra token BEFORE activation, with backup and automatic rollback on failure.",
                         "הפעלה דורשת זהות חומרה מוכנה, חתימה תקינה, אימות Entra וגיבוי עם שחזור במקרה כשל.")));
+                    useLegacyEntraCertPowerShell.Text = T(
+                        "Использовать прежний Graph PowerShell 7 вместо C# (ручной резервный способ)",
+                        "Use legacy Graph PowerShell 7 instead of C# (manual fallback)",
+                        "השתמש ב-PowerShell הישן במקום C# (חלופה ידנית)");
+                    useLegacyEntraCertPowerShell.Enabled = !busy;
+                    AddLine(page, useLegacyEntraCertPowerShell);
                     AddLine(page, UiTheme.Text(T(
                         "Entra OAuth certificate: новый PUBLIC X.509 добавляется через Microsoft Graph addKey, без удаления существующих ключей. Preview требует Application.Read.All, Apply — Application.ReadWrite.All + подтверждение и подпись действующим Linux-ключом. Сначала подготовьте hardware-staged.json.",
                         "Register the NEW PUBLIC X.509 certificate via Microsoft Graph addKey only. Existing credentials stay untouched. Preview needs Application.Read.All; Apply needs Application.ReadWrite.All and fresh proof from the EXISTING Linux key. Stage the hardware identity first.",
@@ -6203,6 +6216,35 @@ internal sealed partial class MainForm : Form
             (action == "Apply" && (reviewedSha is null || ephemeralProof is null)) ||
             (action == "Preview" && (reviewedSha is not null || ephemeralProof is not null)))
             throw new ArgumentException("Unsupported Entra certificate action or approval.");
+        if (!useLegacyEntraCertPowerShell.Checked)
+        {
+            var evidence = new Microsoft365Auth.EntraCertificateEvidence(
+                source.TenantId, source.ClientId, source.ActiveSha, source.StagedSha,
+                source.ActiveCertificateSha, source.CandidateCertificateSha,
+                source.ActiveDerBase64, source.CandidateDerBase64);
+            var requestedPublicClient = entraSignInClientId.Text.Trim();
+            var requestedTenant = tenant.Text.Trim();
+            var requestedApp = existingAppId.Text.Trim();
+            Guid publicClient = ApprovedGraphPublicClientId();
+            WriteLine(action == "Preview"
+                ? "Native C# Microsoft Graph: read-only exact App Registration and public keys."
+                : "Native C# Graph addKey: approved exact app, reviewed SHA, and current Linux key proof.");
+            string output = await WithNativeMicrosoftSignInAsync(
+                (show, ct) => action == "Preview"
+                    ? Microsoft365Auth.EntraGraphCertificateAddKeyClient.PreviewAsync(
+                        evidence, publicClient, show, ct)
+                    : Microsoft365Auth.EntraGraphCertificateAddKeyClient.AddAsync(
+                        evidence, publicClient, reviewedSha!, ephemeralProof!, show, ct),
+                mayModifyEntra: action == "Apply");
+            if (!string.Equals(requestedPublicClient, entraSignInClientId.Text.Trim(), StringComparison.Ordinal) ||
+                !string.Equals(requestedTenant, tenant.Text.Trim(), StringComparison.Ordinal) ||
+                !string.Equals(requestedApp, existingAppId.Text.Trim(), StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "Microsoft Entra tenant/app/public sign-in selection changed during the operation. " +
+                    "If addKey was invoked, inspect the exact application before retrying.");
+            return output;
+        }
+        WriteLine("Legacy Microsoft.Graph PowerShell 7 selected explicitly. Separate sign-in may be required.");
         Directory.CreateDirectory(dataDirectory);
         var script = Path.Combine(dataDirectory, "Manage-LinuxMailRelay365EntraCertificate.ps1");
         var input = Path.Combine(dataDirectory, "entra-public-input-" + Guid.NewGuid().ToString("N") + ".json");
@@ -6311,6 +6353,18 @@ internal sealed partial class MainForm : Form
               "MICROSOFT ENTRA CHANGE: add ONLY the new public certificate to the exact existing app. Existing keys and permissions are not replaced. Requires delegated Application.ReadWrite.All, an ephemeral proof signed by the current Linux key and an unchanged SHA256 plan. No private key is sent. Continue?",
               "שינוי ב-Entra: רק אישור ציבורי חדש מתווסף; מפתחות קיימים נשמרים. לא מועבר מפתח פרטי."),
             "ADD_REVIEWED_ENTRA_OAUTH_CERT")) return;
+        if (!useLegacyEntraCertPowerShell.Checked)
+        {
+            // Acquire delegated Graph write consent before generating the 10-minute
+            // Linux-signed proof JWT. Reuse MSAL's process-only in-memory cache.
+            Guid publicClient = ApprovedGraphPublicClientId();
+            await WithNativeMicrosoftSignInAsync(async (show, ct) =>
+            {
+                await Microsoft365Auth.EntraGraphCertificateAddKeyClient.PrepareWriteSignInAsync(
+                    source.TenantId, publicClient, show, ct);
+                return true;
+            });
+        }
         var proofRun = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildEntraPublicCertificateBundle(target,
                 reviewedEntraCertObjectId, source.ActiveSha, source.StagedSha,
