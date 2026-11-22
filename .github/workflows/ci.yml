@@ -452,6 +452,30 @@ jobs:
       - name: Build portable single EXE ARM64
         shell: pwsh
         run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-arm64 --self-contained true -p:UseSharedUpdater=false -o out/win-arm64
+      - name: Reject unsigned 0.1.0 candidate at the real Stable signature gate
+        shell: pwsh
+        run: |
+          $x64 = (Resolve-Path './out/win-x64/LinuxMailRelay365.exe').Path
+          $arm64 = (Resolve-Path './out/win-arm64/LinuxMailRelay365.exe').Path
+          $manifest = Join-Path $env:RUNNER_TEMP 'LMR365-UNSIGNED-STABLE-REFUSAL.json'
+          if (Test-Path -LiteralPath $manifest) { throw 'Unexpected existing signature manifest.' }
+          foreach ($exe in @($x64, $arm64)) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $exe
+            if ($signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) {
+              throw 'Unexpected signed Windows CI binary: require separate publisher review.'
+            }
+          }
+          $refused = $false
+          try {
+            ./scripts/Test-LinuxMailRelay365SignedRelease.ps1 -X64Exe $x64 `
+              -Arm64Exe $arm64 -PublisherThumbprint ('0' * 40) -ManifestPath $manifest | Out-Null
+          }
+          catch { $refused = $true }
+          if (-not $refused -or (Test-Path -LiteralPath $manifest)) {
+            throw 'CRITICAL: unsigned binaries passed the Stable release signature gate.'
+          }
+          Write-Output 'STABLE_UNSIGNED_RELEASE_GATE=refused_expected'
+
       - name: Build unsigned release-candidate ZIPs and verify PE architectures
         shell: pwsh
         run: |
