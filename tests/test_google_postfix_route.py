@@ -80,6 +80,8 @@ class GooglePostfixRouteTests(unittest.TestCase):
         with mock.patch.object(mod, "prerequisites", return_value="a" * 64), \
              mock.patch.object(mod, "route_conflicts", return_value=True), \
              mock.patch.object(mod, "queue_state", return_value="nonempty"), \
+             mock.patch.object(mod, "scope_status", return_value="verified"), \
+             mock.patch.object(mod, "client_sasl_status", return_value="ready"), \
              mock.patch.object(mod, "postconf", side_effect=lambda name: {
                  "smtp_sasl_auth_enable": "yes",
                  "smtp_sasl_password_maps": "hash:/etc/postfix/sasl_passwd",
@@ -102,6 +104,8 @@ class GooglePostfixRouteTests(unittest.TestCase):
         with mock.patch.object(mod, "prerequisites", return_value="a" * 64), \
              mock.patch.object(mod, "route_conflicts", return_value=False), \
              mock.patch.object(mod, "queue_state", return_value="empty"), \
+             mock.patch.object(mod, "scope_status", return_value="verified"), \
+             mock.patch.object(mod, "client_sasl_status", return_value="ready"), \
              mock.patch.object(mod, "fingerprint", return_value="a" * 64), \
              mock.patch.object(mod.pathlib.Path, "is_file", return_value=True), \
              mock.patch.object(mod, "verified_backup", return_value="20261122T010101Z-abcdef123456"), \
@@ -115,6 +119,63 @@ class GooglePostfixRouteTests(unittest.TestCase):
         self.assertEqual(backup_called, ["20261122T010101Z-abcdef123456"])
         self.assertIn("GOOGLE_ROUTE_ROLLBACK=ok", output.getvalue())
         self.assertNotIn(request["secret"], output.getvalue())
+
+    def test_postfix_scope_refuses_secondary_instance(self):
+        with mock.patch.object(mod, "postconf", side_effect=lambda key: {
+            "config_directory": "/etc/postfix",
+            "multi_instance_enable": "no",
+            "multi_instance_directories": "",
+        }[key]):
+            self.assertEqual(mod.scope_status(), "verified")
+        with mock.patch.object(mod, "postconf", side_effect=lambda key: {
+            "config_directory": "/etc/postfix/secondary",
+            "multi_instance_enable": "yes",
+            "multi_instance_directories": "/etc/postfix/secondary",
+        }[key]):
+            self.assertEqual(mod.scope_status(), "unverified")
+
+    def test_cyrus_client_sasl_checks_and_policy(self):
+        def postconf(key):
+            return {
+                "smtp_sasl_type": "cyrus",
+                "smtp_sasl_mechanism_filter": "",
+            }[key]
+
+        def mocked_run(args, **kwargs):
+            if args == ["postconf", "-A"]:
+                return CommandResult(stdout=b"cyrus\n")
+            if args == ["/usr/bin/saslpluginviewer", "-c"]:
+                return CommandResult(stdout=b"Mechanisms: PLAIN LOGIN\n")
+            raise AssertionError("Unexpected command: " + repr(args))
+
+        with mock.patch.object(mod, "postconf", side_effect=postconf), \
+             mock.patch.object(mod, "run", side_effect=mocked_run), \
+             mock.patch.object(mod.shutil, "which", return_value="/usr/bin/saslpluginviewer"):
+            self.assertEqual(mod.client_sasl_status(), "ready")
+        with mock.patch.object(mod, "postconf", side_effect=lambda key: {
+            "smtp_sasl_type": "cyrus",
+            "smtp_sasl_mechanism_filter": "XOAUTH2",
+        }[key]), \
+             mock.patch.object(mod, "run", side_effect=mocked_run), \
+             mock.patch.object(mod.shutil, "which", return_value="/usr/bin/saslpluginviewer"):
+            self.assertEqual(mod.client_sasl_status(), "missing")
+        with mock.patch.object(mod, "postconf", side_effect=postconf), \
+             mock.patch.object(mod, "run", side_effect=mocked_run), \
+             mock.patch.object(mod.shutil, "which", return_value=None):
+            self.assertEqual(mod.client_sasl_status(), "unverified")
+
+    def test_gmail_apply_blocked_if_local_client_sasl_missing(self):
+        request = self.request(operation="apply", expected_sha="a" * 64,
+                               user="mail@example.org", secret="test")
+        with mock.patch.object(mod, "prerequisites", return_value="a" * 64), \
+             mock.patch.object(mod, "route_conflicts", return_value=False), \
+             mock.patch.object(mod, "queue_state", return_value="empty"), \
+             mock.patch.object(mod, "scope_status", return_value="verified"), \
+             mock.patch.object(mod, "client_sasl_status", return_value="missing"), \
+             mock.patch.object(mod, "verified_backup") as backup:
+            with self.assertRaises(RuntimeError):
+                mod.apply(request)
+            backup.assert_not_called()
 
     def test_reject_stale_sha_before_any_backup(self):
         request = self.request(
