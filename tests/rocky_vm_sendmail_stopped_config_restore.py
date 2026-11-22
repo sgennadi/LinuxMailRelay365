@@ -22,6 +22,7 @@ import tempfile
 
 CI_MARKER = Path("/run/lmr365-disposable-sendmail-vm")
 CONFIG = Path("/etc/mail/sendmail.cf")
+SUBMIT_CONFIG = Path("/etc/mail/submit.cf")
 BACKUP_MODULE = Path(__file__).with_name("foreign-mta-config-backup.py")
 RESTORE_MARKER = b"\n# LinuxMail365Relay disposable KVM recovery test only\n"
 
@@ -101,14 +102,20 @@ def file_state(backup):
     return state, data
 
 
-def atomic_write(payload, expected_current, meta, old_context):
+def atomic_write(payload, expected_current, meta, old_context, destination=CONFIG):
     # This is a direct write ONLY in an attested, disposable VM. No library
     # product command uses this function, and it is not a general restore.
     if (not isinstance(payload, bytes) or len(payload) > 16 * 1024 * 1024 or
             not isinstance(expected_current, bytes) or
             len(expected_current) > 16 * 1024 * 1024):
         refuse("BAD_RESTORATION_BYTES")
-    fd, name = tempfile.mkstemp(prefix=".lmr365-kvm-restore-", dir="/etc/mail")
+    if (not isinstance(destination, Path) or
+            destination not in (CONFIG, SUBMIT_CONFIG)):
+        refuse("RESTORE_TARGET_NOT_ALLOWLISTED")
+    # Attest the disposable, root-owned, same-boot CI VM at the write boundary.
+    verify_disposable()
+    fd, name = tempfile.mkstemp(prefix=".lmr365-kvm-restore-",
+                                 dir=str(destination.parent))
     try:
         with os.fdopen(fd, "wb") as writer:
             writer.write(payload)
@@ -121,16 +128,17 @@ def atomic_write(payload, expected_current, meta, old_context):
         # Renaming a temporary file into sendmail.cf retains its own SELinux
         # label. Ensure it has exactly the previous target label.
         os.setxattr(name, "security.selinux", old_context, follow_symlinks=False)
-        current, current_bytes = file_state_without_backup(CONFIG)
+        current, current_bytes = file_state_without_backup(destination)
         if (current_bytes != expected_current or
                 current.st_uid != meta.st_uid or
                 current.st_gid != meta.st_gid or
                 stat.S_IMODE(current.st_mode) != stat.S_IMODE(meta.st_mode) or
-                os.getxattr(CONFIG, "security.selinux") != old_context):
+                os.getxattr(str(destination), "security.selinux",
+                            follow_symlinks=False) != old_context):
             refuse("SOURCE_CHANGED_BEFORE_ATOMIC_REPLACE")
-        os.replace(name, str(CONFIG))
+        os.replace(name, str(destination))
         name = None
-        directory_fd = os.open("/etc/mail", os.O_RDONLY | os.O_DIRECTORY |
+        directory_fd = os.open(str(destination.parent), os.O_RDONLY | os.O_DIRECTORY |
                                getattr(os, "O_NOFOLLOW", 0))
         try:
             os.fsync(directory_fd)

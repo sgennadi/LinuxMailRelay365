@@ -258,6 +258,17 @@ echo "LMR365_SENDMAIL_VM_FULL_TREE_LIVE_RESTORE_ENABLED=no"
 sudo env GITHUB_ACTIONS=true python3 \
   /usr/local/libexec/lmr365-kvm-sendmail-recovery/rocky_vm_sendmail_stopped_config_restore.py \
   "$backup_id"
+# After the original single-file proof, test a deliberate interruption
+# between restoring two package-managed configs, then a successful two-file
+# recovery. All writes remain CI-only and gated on the disposable VM.
+sudo env GITHUB_ACTIONS=true python3 \
+  /usr/local/libexec/lmr365-kvm-sendmail-recovery/rocky_vm_sendmail_stopped_dual_config_restore.py \
+  "$backup_id" > "$work/sendmail-dual-restore"
+grep -Fxq "LMR365_SENDMAIL_VM_DUAL_FAULT_INJECTION=known_state_rollback_passed" "$work/sendmail-dual-restore"
+grep -Fxq "LMR365_SENDMAIL_VM_DUAL_CONFIG_RESTORE=verified_two_files" "$work/sendmail-dual-restore"
+grep -Fxq "LMR365_SENDMAIL_VM_DUAL_CONFIG_SELINUX=unchanged" "$work/sendmail-dual-restore"
+grep -Fxq "LMR365_SENDMAIL_VM_DUAL_CONFIG_PRIMARY_MTA_RESTORE_ENABLED=no" "$work/sendmail-dual-restore"
+echo "LMR365_SENDMAIL_VM_DUAL_OFFLINE_CONFIG_RECOVERY=verified_disposable_only"
 sudo systemctl start sendmail.service
 smoke
 echo "LMR365_SENDMAIL_VM_RESTORED_SERVICE_START=passed"
