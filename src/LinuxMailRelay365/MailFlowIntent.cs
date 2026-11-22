@@ -9,6 +9,10 @@ internal static class MailFlowIntent
     internal const string Jobs = "jobs-services";
     internal const string Smtp = "smtp-clients";
     internal const string Mixed = "mixed";
+    internal const string TargetM365 = "m365";
+    internal const string TargetCustom = "custom-smtp";
+    internal static bool SupportedTarget(string? target) =>
+        target is TargetM365 or TargetCustom;
 
     internal static bool Supported(string? source) =>
         source is Unknown or Local or Jobs or Smtp or Mixed;
@@ -37,9 +41,11 @@ internal static class MailFlowIntent
     internal static IReadOnlyList<MailOption> Suggestions(
         MailRoutingInventory inventory, ExistingSmtpAudit audit,
         MailHostInspection host, bool? existingIsolated,
-        string source, string recipients, int language)
+        string source, string recipients, int language,
+        string destination = TargetM365)
     {
         if (!Supported(source)) throw new ArgumentOutOfRangeException(nameof(source));
+        if (!SupportedTarget(destination)) throw new ArgumentOutOfRangeException(nameof(destination));
         bool postfix = inventory.Mta == "postfix" && audit.Mta == "postfix";
         bool unsafeRelay = audit.SuspectedUnsafeRelay;
         bool local = source is Local or Jobs;
@@ -50,6 +56,8 @@ internal static class MailFlowIntent
             "Candidate · M365 rights not verified", "מועמד · זכויות M365 לא אומתו");
         string safe = T(language, "Без изменений", "No changes", "ללא שינוי");
 
+        string destinationName = destination == TargetM365
+            ? "Microsoft 365" : T(language, "другой SMTP Relay", "another SMTP relay", "ממסר SMTP אחר");
         var options = new List<MailOption>();
         options.Add(new(MailScenarioPlanner.Keep,
             T(language, "Оставить существующий почтовый маршрут",
@@ -61,9 +69,8 @@ internal static class MailFlowIntent
             RequiresSeparatePort: false));
 
         options.Add(new(MailScenarioPlanner.ReplaceRelay,
-            T(language, "Перенаправить существующую почту в Microsoft 365",
-                "Redirect existing mail to Microsoft 365",
-                "העבר דואר קיים ל-Microsoft 365"),
+            T(language, "Заменить исходящий маршрут → ", "Replace outbound route → ", "החלף ניתוב יוצא → ") +
+                destinationName,
             postfix ? T(language,
                 "Оставить локальных отправителей, Postfix и входящий SMTP. Заменить только исходящий upstream после проверки M365 и backup.",
                 "Keep local senders, Postfix and inbound SMTP. Change only the outbound upstream after M365 checks and backup.",
@@ -78,9 +85,8 @@ internal static class MailFlowIntent
             RequiresSeparatePort: false));
 
         options.Add(new(MailScenarioPlanner.Isolated,
-            T(language, "Добавить отдельный Microsoft 365 Relay",
-                "Add a separate Microsoft 365 relay",
-                "הוסף ממסר Microsoft 365 נפרד"),
+            T(language, "Добавить отдельный шлюз → ", "Add independent gateway → ", "הוסף ממסר נפרד → ") +
+                destinationName,
             existingIsolated == true
                 ? T(language, "Отдельная конфигурация уже обнаружена: сначала проверьте её порт и очередь.",
                     "An isolated relay was already detected. Inspect its port and queue before installing another.",
