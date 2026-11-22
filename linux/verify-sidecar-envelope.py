@@ -32,7 +32,7 @@ class Refused(Exception):
 
 
 def validate(port, hostname, username, ca_file, sender, recipient):
-    if not 1024 <= port <= 65535:
+    if not (port == 25 or 1024 <= port <= 65535):
         raise Refused("invalid_smtp_port")
     if len(hostname) > 253 or not FQDN.fullmatch(hostname):
         raise Refused("invalid_tls_dns_name")
