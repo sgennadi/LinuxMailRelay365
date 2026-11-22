@@ -1631,7 +1631,7 @@ internal sealed partial class MainForm : Form
             decision, recipientScope.SelectedIndex,
             selectedMailScenario == MailScenarioPlanner.Isolated
                 ? isolatedSmtpPort.Text.Trim() : null,
-            language.SelectedIndex);
+            language.SelectedIndex, selectedMailScenario);
 
         int contentWidth = Math.Max(300, Math.Min(940, pageHost.ClientSize.Width - 76));
         AddLine(page, UiTheme.Text(T("Обнаруженная почта — кратко",
