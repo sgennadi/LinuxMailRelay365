@@ -629,7 +629,7 @@ jobs:
             --notes "UNSIGNED TEST PREVIEW 25, NOT Stable/production approved. Adds guarded Multi-mailbox XOAUTH2 Stage, SHA256 Preview, offline Postfix apply/restore, per-SASL-login mailbox ownership, root-issued 120-second ingress proof and two-recipient operator-consented direct Microsoft 365 SMTP acceptance. Fixed test message bodies, root-owned per-run ledger, no automatic resend, and read-only last-attempt recovery. Existing EOP routes are protected by reciprocal owner locks. CI verifies published Preview 24 -> Preview 25 candidate replacement/rollback, Windows x64/ARM64 and isolated Linux tests. No real tenant/inbox delivery, physical TPM or SELinux Enforcing acceptance, 200%-DPI hardware QA, signed Stable, or production authorization is claimed."
 
   release-candidate-publish:
-    name: Publish unsigned 0.1.0 RC1 for testing (NOT Stable)
+    name: Publish unsigned 0.1.0 RC2 with Rocky Bash CRLF fix (NOT Stable)
     if: github.event_name == 'push' && github.ref == 'refs/heads/release/v0.1.0-stable-candidate'
     needs:
       - linux-tests
@@ -692,7 +692,7 @@ jobs:
               with ZipFile(archive) as z:
                   assert z.namelist() == ["LinuxMailRelay365.exe"]
                   assert hashlib.sha256(z.read("LinuxMailRelay365.exe")).hexdigest() == digest(exe)
-          print("UNSIGNED_RC1_RELEASE_SHA256_AND_ZIP=PASS")
+          print("UNSIGNED_RC2_RELEASE_SHA256_AND_ZIP=PASS")
           PY
       - name: Publish one GitHub prerelease without overwrite
         shell: bash
@@ -700,9 +700,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='v0.1.0-rc.1'
+          tag='v0.1.0-rc.2'
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::notice::RC1 already published. Never replace a released candidate."
+            echo "::notice::RC2 already published. Never replace a released candidate."
             exit 0
           fi
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
@@ -714,5 +714,5 @@ jobs:
             out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
             out/published/preview-artifact-digests.txt \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "LinuxMailRelay365 v0.1.0 RC1 (UNSIGNED TEST ONLY)" --prerelease \
-            --notes "UNSIGNED RELEASE CANDIDATE 1, NOT STABLE AND NOT FOR PRODUCTION. Binary product version is 0.1.0 for verification, but signing and actual end-to-end acceptance are outstanding. CI verifies Windows x64/ARM64, Ubuntu Postfix, RHEL-family parser/SELinux compatibility and synthetic recovery; those tests do NOT verify an authorized Microsoft 365 tenant, external inbox delivery, physical TPM/HSM provenance or interactive GUI 200%-DPI acceptance. No live Sendmail Restore is authorized. Stable v0.1.0 is deliberately NOT created. Both ZIPs and a SHA-256 manifest are included for controlled testing."
+            --title "LinuxMailRelay365 v0.1.0 RC2 (UNSIGNED TEST ONLY)" --prerelease \
+            --notes "UNSIGNED RELEASE CANDIDATE 2, NOT STABLE AND NOT FOR PRODUCTION. Repairs Windows SSH delivery of embedded Linux Bash scripts to Rocky 9.3: canonical LF line endings for bash -s and sudo bash -s, SSH.NET/OpenSSH, plus LF-only embedded resources and CRLF regression self-tests. RC1 is unchanged. Product version is 0.1.0 for candidate verification. No real tenant, inbox delivery, physical TPM/HSM, GUI hardware 200%-DPI, or complete production disaster recovery was verified; stable v0.1.0 is deliberately NOT created. Use only in controlled test environments."
