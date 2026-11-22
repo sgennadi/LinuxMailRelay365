@@ -119,7 +119,7 @@ internal sealed record MailDiscoveryBrief(
                     "Inspect current mail delivery and the feasibility of an independent relay. Do not change the primary configuration.",
                     "בדקו ממסר נפרד, ללא שינוי התצורה הקיימת.");
 
-        string audience = recipientScope switch
+        string audience = selectedScenario == MailScenarioPlanner.Keep ? "" : recipientScope switch
         {
             1 => T(l,
                 "Только внутренние получатели M365: возможен Direct Send (исходящий TCP 25). XOAUTH2 — альтернатива при одобренном почтовом ящике.",
@@ -158,7 +158,8 @@ internal sealed record MailDiscoveryBrief(
                 "חידוש אישור OAuth אינו משנה את הניתוב היוצא.")
             : null;
 
-        return new MailDiscoveryBrief(headline, facts, steps + Environment.NewLine + audience,
+        return new MailDiscoveryBrief(headline, facts,
+            steps + (audience.Length > 0 ? Environment.NewLine + audience : ""),
             warning, extra);
     }
 
