@@ -12,6 +12,18 @@ internal sealed class MailHostInspection
     internal string ShortHostname => Get("MAIL_HOST_SHORT");
     internal string Mta => Get("MAIL_HOST_MTA");
     internal string MtaState => Get("MAIL_HOST_MTA_STATE");
+    internal string ConfiguredSmtpPortState => Get("MAIL_HOST_SMTP_CONFIG_PORTS");
+    internal string ConfiguredSmtpPortSource => Get("MAIL_HOST_SMTP_CONFIG_SOURCE");
+
+    internal IReadOnlyList<int> ConfiguredSmtpPorts()
+    {
+        if (ConfiguredSmtpPortSource is not
+            ("postfix_master_cf" or "exim_daemon_smtp_ports" or "sendmail_cf") ||
+            !System.Text.RegularExpressions.Regex.IsMatch(ConfiguredSmtpPortState,
+                @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z"))
+            return Array.Empty<int>();
+        return ConfiguredSmtpPortState.Split(',').Select(int.Parse).ToArray();
+    }
     internal bool HasFqdn => Fqdn != "unavailable";
     internal bool HasDomain => Domain != "unavailable";
     internal string Get(string name) => values.TryGetValue(name, out var result) ? result : "unavailable";
@@ -42,6 +54,22 @@ internal sealed class MailHostInspection
             values["MAIL_HOST_TRUST"] != "os_report_unverified" ||
             values["MAIL_HOST_MTA"] is not ("postfix" or "exim" or "sendmail" or "none" or "unknown"))
             throw new InvalidDataException("Untrusted hostname report.");
+        // Configuration ports are NOT an assertion of live socket ownership.
+        // Optional for older read-only fixture schemas; never trusted if absent.
+        string source = values.TryGetValue("MAIL_HOST_SMTP_CONFIG_SOURCE", out var declaredSource)
+            ? declaredSource : "unverified";
+        string ports = values.TryGetValue("MAIL_HOST_SMTP_CONFIG_PORTS", out var declaredPorts)
+            ? declaredPorts : "unverified";
+        bool possibleSource = source is ("postfix_master_cf" or "exim_daemon_smtp_ports" or
+            "sendmail_cf" or "unverified");
+        bool possibleState = ports is ("unverified" or "dynamic_or_unverified" or
+            "none_configured") || Regex.IsMatch(ports,
+            @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z", RegexOptions.CultureInvariant);
+        if (!possibleSource || !possibleState ||
+            (source == "unverified" && ports != "unverified") ||
+            (ports is not ("unverified" or "dynamic_or_unverified" or "none_configured") &&
+             ports.Split(',').Any(x => !int.TryParse(x, out int n) || n > 65535)))
+            throw new InvalidDataException("Untrusted configured SMTP port inventory.");
         const string dns = @"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+";
         foreach (string key in new[] { "MAIL_HOST_FQDN", "MAIL_HOST_DOMAIN" })
         {
@@ -259,9 +287,20 @@ internal sealed class MailHostInspection
                 "; access maps, relay restrictions, SMTP TLS handshake and AUTH require review.",
             _ => "MTA settings not verified."
         };
+        string configPorts = ConfiguredSmtpPortState;
+        string configLabel = language == 0 ? "Настроенные входящие TCP/SMTP порты" :
+            language == 2 ? "יציאות TCP/SMTP נכנסות מוגדרות" : "Configured inbound TCP/SMTP ports";
+        string state = configPorts is "unavailable" or "unverified" or "dynamic_or_unverified"
+            ? (language == 0 ? "не подтверждены" : language == 2 ? "לא אומתו" : "unverified")
+            : configPorts == "none_configured"
+                ? (language == 0 ? "нет активных объявлений" : language == 2 ? "לא הוגדרו" : "none declared")
+                : configPorts;
         return prefix + ": FQDN=" + Fqdn + "; domain=" + Domain +
             "; MTA=" + Mta + " (" + MtaState + ")." +
-            Environment.NewLine + config + Environment.NewLine + NetworkSummary(language) +
+            Environment.NewLine + config +
+            Environment.NewLine + configLabel + ": " + state +
+            " [source=" + ConfiguredSmtpPortSource + "; configured, not necessarily listening]" +
+            Environment.NewLine + NetworkSummary(language) +
             Environment.NewLine + reminder;
     }
 
@@ -313,6 +352,14 @@ internal sealed class MailHostInspection
             "MAIL_HOST_EXIM_AUTH_DECLARATION=auth_hosts_declared_backend_unverified\n";
         if (!Parse(exim).Summary(1).Contains("daemon_smtp_ports=25,587,2525",
                 StringComparison.Ordinal)) return false;
+        string configPorts = valid + "MAIL_HOST_SMTP_CONFIG_SOURCE=postfix_master_cf\n" +
+            "MAIL_HOST_SMTP_CONFIG_PORTS=25,2525\n";
+        var configured = Parse(configPorts);
+        if (!configured.Summary(0).Contains("25,2525", StringComparison.Ordinal) ||
+            configured.ConfiguredSmtpPorts().Count != 2 ||
+            configured.ConfiguredSmtpPorts()[1] != 2525) return false;
+        try { Parse(configPorts.Replace("25,2525", "25,0")); return false; }
+        catch (InvalidDataException) { }
         try { Parse(exim.Replace("MAIL_HOST_EXIM_BIND_POLICY=loopback_declared",
             "MAIL_HOST_EXIM_BIND_POLICY=unsafe_verified")); return false; }
         catch (InvalidDataException) { }
