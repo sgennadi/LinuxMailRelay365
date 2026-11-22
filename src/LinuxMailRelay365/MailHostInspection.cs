@@ -113,11 +113,11 @@ internal sealed class MailHostInspection
                 "declared", "not_declared") ||
             !OneOf(values, "MAIL_HOST_SENDMAIL_RELAY_POLICY",
                 "access_maps_and_relay_checks_unverified") ||
-            (values.TryGetValue("MAIL_HOST_EXIM_SMTP_PORTS", out var ports) &&
-             ports != "unverified" &&
-             (!Regex.IsMatch(ports, @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z",
+            (values.TryGetValue("MAIL_HOST_EXIM_SMTP_PORTS", out var eximPorts) &&
+             eximPorts != "unverified" &&
+             (!Regex.IsMatch(eximPorts, @"\A[1-9][0-9]{0,4}(?:,[1-9][0-9]{0,4}){0,15}\z",
                  RegexOptions.CultureInvariant) ||
-              ports.Split(',').Any(p => !int.TryParse(p, out int n) || n > 65535))))
+              eximPorts.Split(',').Any(p => !int.TryParse(p, out int n) || n > 65535))))
             throw new InvalidDataException("Untrusted MTA setting status.");
         return new MailHostInspection(values);
     }
