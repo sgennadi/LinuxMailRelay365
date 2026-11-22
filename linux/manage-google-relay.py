@@ -137,6 +137,14 @@ def route_conflicts():
             return True
     if postconf("default_transport") not in ("", "smtp"):
         return True
+    # An existing authentication map may serve many senders. The Gmail
+    # migration replaces smtp_sasl_password_maps; Workspace disables SMTP
+    # client AUTH. Never silently override unrelated credential routing.
+    password_maps = postconf("smtp_sasl_password_maps")
+    if password_maps not in ("", "hash:/etc/postfix/lmr365-google-sasl"):
+        return True
+    if postconf("smtp_sender_dependent_authentication").lower() != "no":
+        return True
     # Postfix's official default is "nexthop, dot-nexthop". Other matching
     # strategies may trust DNS or unrelated certificates, so block for review.
     matches = set(filter(None, re.split(
