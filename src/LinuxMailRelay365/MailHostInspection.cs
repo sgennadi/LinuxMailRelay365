@@ -135,6 +135,22 @@ internal sealed class MailHostInspection
         return candidates;
     }
 
+    // Advisory only. A clear socket scan does not establish that the primary
+    // MTA is disabled at boot; the root installer checks that independently.
+    internal string StandardPort25Observation()
+    {
+        if (Get("MAIL_HOST_SOCKET_STATE") != "ok" ||
+            Get("MAIL_HOST_SOCKET_TRUNCATED") != "no")
+            return "unverified";
+        for (int n = 1; n <= 24; n++)
+        {
+            string observed = Get("MAIL_HOST_SOCKET_" + n.ToString("00"));
+            if (observed.EndsWith(":25", StringComparison.Ordinal))
+                return "occupied";
+        }
+        return "no_listener_observed";
+    }
+
     private string NetworkSummary(int language)
     {
         static string Tr(int lang, string ru, string en, string he) =>
@@ -275,6 +291,12 @@ internal sealed class MailHostInspection
             "MAIL_HOST_ADDR_03=eth2,ipv4,8.8.8.8/32,global\n" +
             "MAIL_HOST_SOCKET_01=127.0.0.1:25\n";
         var withNetwork = Parse(valid + network);
+        if (Parse(valid + network + "MAIL_HOST_SOCKET_STATE=ok\n" +
+            "MAIL_HOST_SOCKET_TRUNCATED=no\n").StandardPort25Observation() != "occupied" ||
+            Parse(valid + network.Replace("MAIL_HOST_SOCKET_01=127.0.0.1:25\n", "") +
+            "MAIL_HOST_SOCKET_STATE=ok\nMAIL_HOST_SOCKET_TRUNCATED=no\n")
+                .StandardPort25Observation() != "no_listener_observed" ||
+            withNetwork.StandardPort25Observation() != "unverified") return false;
         if (!withNetwork.Summary(1).Contains("eth0,up,up", StringComparison.Ordinal) ||
             !withNetwork.Summary(1).Contains("127.0.0.1:25", StringComparison.Ordinal) ||
             withNetwork.ActivePrivateIPv4s().Count != 1 ||
