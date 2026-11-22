@@ -2572,6 +2572,27 @@ internal sealed partial class MainForm : Form
                 AddField(page, T("Входящий SMTP-порт Linux (25 или 1024–65535; по умолчанию 2525)",
                                  "Linux inbound SMTP port (25 or 1024–65535; default 2525)",
                                  "יציאת SMTP נכנסת (25 או 1024–65535; ברירת מחדל 2525)"), isolatedSmtpPort);
+                if (inspectedHostIdentity == TryCurrentIdentity() && inspectedHost is not null)
+                {
+                    var alreadyConfigured = inspectedHost.ConfiguredSmtpPorts();
+                    var configuredState = inspectedHost.ConfiguredSmtpPortState;
+                    AddLine(page, UiTheme.Text(T(
+                        "В конфигурации основного MTA входящие SMTP-порты: ",
+                        "Primary MTA configured inbound SMTP ports: ",
+                        "יציאות SMTP נכנסות שהוגדרו בשרת הראשי: ") +
+                        (alreadyConfigured.Count > 0 ? string.Join(", ", alreadyConfigured) :
+                            configuredState == "none_configured" ? T("не объявлены", "none declared", "לא הוגדרו") :
+                            T("не подтверждены", "unverified", "לא אומתו")) +
+                        " (" + inspectedHost.ConfiguredSmtpPortSource + ")."));
+                    if (int.TryParse(isolatedSmtpPort.Text.Trim(), out int selected) &&
+                        alreadyConfigured.Contains(selected))
+                        AddLine(page, UiTheme.Text(T(
+                            "ВНИМАНИЕ: выбранный TCP/" + selected +
+                            " уже указан в конфигурации основного MTA. Не использовать для отдельного Relay без проверки служб, автозапуска и сокетов.",
+                            "WARNING: TCP/" + selected +
+                            " belongs to the primary MTA configuration. Do not share it with an isolated relay without checking listeners and service restart state.",
+                            "זהירות: יציאה TCP/" + selected + " מוגדרת בשרת הדואר הראשי. יש לאמת שירותים ושקעים.")));
+                }
                 AddLine(page, UiTheme.Text(T(
                     "25 — стандартный SMTP, но его нельзя занимать у основного MTA. Выберите 25 только после проверки служб и слушателей; 2525 — запасной порт. 587 на стороне Microsoft 365 — отдельное ИСХОДЯЩЕЕ соединение. Порты 465/587 как входящие требуют отдельной настройки TLS/AUTH и пока не предлагаются.",
                     "25 is standard SMTP but must not replace the primary MTA listener. Select 25 only after service/socket checks; 2525 is an alternative. Microsoft 365:587 is a separate OUTBOUND port. Inbound 465/587 need a separately proven TLS/AUTH configuration and are not offered here.",
