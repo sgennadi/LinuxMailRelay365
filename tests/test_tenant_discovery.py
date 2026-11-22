@@ -23,6 +23,24 @@ class TenantDiscoveryContracts(unittest.TestCase):
         self.assertNotIn('client_secret', script)
         self.assertIn('Move-Item -LiteralPath $tmp -Destination $ResultPath -Force', script)
 
+    def test_failed_discovery_has_secret_free_stage_and_gui_error(self):
+        script = (ROOT / 'windows/Discover-LinuxMailRelay365Tenants.ps1').read_text(encoding='utf8')
+        parser = (ROOT / 'src/LinuxMailRelay365/TenantDiscovery.cs').read_text(encoding='utf8')
+        gui = (ROOT / 'src/LinuxMailRelay365/MainForm.cs').read_text(encoding='utf8')
+        for error in ('az_module_install_failed', 'az_module_import_failed',
+                      'device_sign_in_failed', 'tenant_enumeration_failed',
+                      'result_write_failed'):
+            self.assertIn(error, script)
+            self.assertIn(error, parser)
+        self.assertIn("errorCode = ''", script)
+        self.assertIn("status = 'error'", script)
+        self.assertIn("status = 'ok'", script)
+        self.assertIn('Write-DiscoveryResult -Data $info -Path $ResultPath', script)
+        self.assertIn('TenantDiscovery.FailureCode(', gui)
+        self.assertNotIn('$.Exception.Message', script)
+        self.assertNotIn('$_.Exception.Message |', script)
+        self.assertIn('return "invalid_result";', parser)
+
     def test_exchange_fails_closed_if_another_tenant(self):
         script = (ROOT / 'windows/Initialize-LinuxMailRelay365.ps1').read_text(encoding='utf8')
         conn = script.index('Get-ConnectionInformation -ErrorAction Stop')
