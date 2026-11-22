@@ -252,6 +252,69 @@ grep -Fxq "LMR365_VM_REBOOT_SNAPSHOT_MATCH=identical" "$work/sendmail-before-reb
 grep -Fxq "LMR365_VM_REBOOT_POSTFIX=active" "$work/sendmail-before-reboot"
 grep -Fxq "LMR365_VM_REBOOT_SENDMAIL=stopped" "$work/sendmail-before-reboot"
 grep -Fxq "LMR365_VM_REBOOT_SELINUX=enforcing" "$work/sendmail-before-reboot"
+grep -Eq '^LMR365_VM_REBOOT_PACKAGE_SELINUX_OBJECTS=[1-9][0-9]*recovery_boot_id="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 'cat /proc/sys/kernel/random/boot_id')"
+[[ "$recovery_boot_id" =~ ^[0-9a-f-]{36}$ ]] || { echo "LMR365_GUEST_RECOVERY_BOOT_ID_INVALID"; exit 1; }
+ssh "${ssh_opts[@]}" ci@127.0.0.1 'sudo systemctl reboot' >/dev/null 2>&1 || true
+recovered_reboot=no
+for attempt in $(seq 1 90); do
+    reboot_id="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)"
+    if [[ "$reboot_id" =~ ^[0-9a-f-]{36}$ ]] && test "$reboot_id" != "$recovery_boot_id"; then
+        recovered_reboot=yes
+        break
+    fi
+    if ! sudo kill -0 "$(sudo cat "$work/vm.pid")" 2>/dev/null; then
+        echo "LMR365_GUEST_SENDMAIL_RECOVERY_VM_EXITED"
+        exit 1
+    fi
+    sleep 5
+done
+test "$recovered_reboot" = yes || { echo "LMR365_GUEST_SENDMAIL_RECOVERY_REBOOT_TIMEOUT"; exit 1; }
+ssh "${ssh_opts[@]}" ci@127.0.0.1 "$reboot_check" > "$work/sendmail-after-reboot"
+if ! diff -u "$work/sendmail-before-reboot" "$work/sendmail-after-reboot"; then
+    echo "LMR365_GUEST_SENDMAIL_RECOVERY_POST_REBOOT_DRIFT"
+    exit 1
+fi
+echo "LMR365_GUEST_SENDMAIL_RECOVERY_POST_REBOOT=verified_unchanged"
+echo "LMR365_GUEST_SENDMAIL_RESTORED_SELINUX_POST_REBOOT=verified"
+echo "LMR365_GUEST_SENDMAIL_PACKAGE_SELINUX_POST_REBOOT=verified_full_v2_inventory"
+echo "LMR365_GUEST_POSTFIX_AFTER_RECOVERY_REBOOT=active"
+
+echo "LMR365_GUEST_MICROSOFT365_DELIVERY_TESTED=no"
+echo "LMR365_GUEST_EXTERNAL_MAIL_DELIVERY_TESTED=no"
+
+ "$work/sendmail-before-reboot"
+grep -Eq '^LMR365_VM_REBOOT_PACKAGE_SELINUX_SHA256=[a-f0-9]{64}recovery_boot_id="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 'cat /proc/sys/kernel/random/boot_id')"
+[[ "$recovery_boot_id" =~ ^[0-9a-f-]{36}$ ]] || { echo "LMR365_GUEST_RECOVERY_BOOT_ID_INVALID"; exit 1; }
+ssh "${ssh_opts[@]}" ci@127.0.0.1 'sudo systemctl reboot' >/dev/null 2>&1 || true
+recovered_reboot=no
+for attempt in $(seq 1 90); do
+    reboot_id="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)"
+    if [[ "$reboot_id" =~ ^[0-9a-f-]{36}$ ]] && test "$reboot_id" != "$recovery_boot_id"; then
+        recovered_reboot=yes
+        break
+    fi
+    if ! sudo kill -0 "$(sudo cat "$work/vm.pid")" 2>/dev/null; then
+        echo "LMR365_GUEST_SENDMAIL_RECOVERY_VM_EXITED"
+        exit 1
+    fi
+    sleep 5
+done
+test "$recovered_reboot" = yes || { echo "LMR365_GUEST_SENDMAIL_RECOVERY_REBOOT_TIMEOUT"; exit 1; }
+ssh "${ssh_opts[@]}" ci@127.0.0.1 "$reboot_check" > "$work/sendmail-after-reboot"
+if ! diff -u "$work/sendmail-before-reboot" "$work/sendmail-after-reboot"; then
+    echo "LMR365_GUEST_SENDMAIL_RECOVERY_POST_REBOOT_DRIFT"
+    exit 1
+fi
+echo "LMR365_GUEST_SENDMAIL_RECOVERY_POST_REBOOT=verified_unchanged"
+echo "LMR365_GUEST_SENDMAIL_RESTORED_SELINUX_POST_REBOOT=verified"
+echo "LMR365_GUEST_POSTFIX_AFTER_RECOVERY_REBOOT=active"
+
+echo "LMR365_GUEST_MICROSOFT365_DELIVERY_TESTED=no"
+echo "LMR365_GUEST_EXTERNAL_MAIL_DELIVERY_TESTED=no"
+
+ "$work/sendmail-before-reboot"
 recovery_boot_id="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 'cat /proc/sys/kernel/random/boot_id')"
 [[ "$recovery_boot_id" =~ ^[0-9a-f-]{36}$ ]] || { echo "LMR365_GUEST_RECOVERY_BOOT_ID_INVALID"; exit 1; }
 ssh "${ssh_opts[@]}" ci@127.0.0.1 'sudo systemctl reboot' >/dev/null 2>&1 || true
