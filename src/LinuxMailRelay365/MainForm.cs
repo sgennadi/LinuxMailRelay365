@@ -1357,7 +1357,7 @@ internal sealed partial class MainForm : Form
                 "Hide help and advanced SSH checks ▲", "הסתר עזרה ובדיקות SSH ▲")
             : T("Справка и дополнительные SSH-проверки ▼",
                 "Help and advanced SSH checks ▼", "עזרה ובדיקות SSH נוספות ▼"),
-            glyph: "check");
+            glyph: "");
         helpToggle.Margin = new Padding(2, 4, 0, 9);
         helpToggle.Enabled = !busy;
         helpToggle.AccessibleDescription =
@@ -1399,7 +1399,7 @@ internal sealed partial class MainForm : Form
                 "Проверить login-profile и доступность утилит…",
                 "Inspect login profile and available tools…",
                 "בדוק סביבת login ופקודות…"),
-                InspectSshLoginProfileAsync, false, "check", "ssh-login-profile");
+                InspectSshLoginProfileAsync, false, "ssh", "ssh-login-profile");
             AddLine(cards, details);
         }
         AddLine(page, cards);
