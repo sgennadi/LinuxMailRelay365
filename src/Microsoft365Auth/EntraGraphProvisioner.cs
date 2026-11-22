@@ -35,7 +35,7 @@ public static class EntraGraphProvisioner
         string publicDer = Convert.ToBase64String(cert.RawData);
         var newKey = new PublicKeyEntry(null, "AsymmetricX509Cert", "Verify",
             certificateLabel, publicDer, cert.NotBefore.ToUniversalTime().ToString("o"),
-            cert.NotAfter.ToUniversalTime().ToString("o"), null);
+            cert.NotAfter.ToUniversalTime().ToString("o"));
 
         string token = await EntraTenantDiscoveryClient.AcquireGraphWriteTokenAsync(
             tenantId, publicSignInClientId, showDeviceCode, ct).ConfigureAwait(false);
@@ -238,7 +238,7 @@ public static class EntraGraphProvisioner
             {
                 throw new EntraDiscoveryException("invalid_existing_public_key");
             }
-            all.Add(new PublicKeyEntry(keyId, type, usage, name, key, from, until, null));
+            all.Add(new PublicKeyEntry(keyId, type, usage, name, key, from, until));
         }
         if (all.Select(k => k.KeyId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != all.Count)
             throw new EntraDiscoveryException("duplicate_graph_key_identifiers");
@@ -276,7 +276,10 @@ public static class EntraGraphProvisioner
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         if (data is not null)
         {
-            string serialized = JsonSerializer.Serialize(data);
+            string serialized = JsonSerializer.Serialize(data, new JsonSerializerOptions
+            {
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            });
             if (Encoding.UTF8.GetByteCount(serialized) > MaxRequestBytes)
                 throw new EntraDiscoveryException("graph_request_too_large");
             request.Content = new StringContent(serialized, Encoding.UTF8, "application/json");
@@ -337,32 +340,20 @@ public static class EntraGraphProvisioner
         !name.Any(char.IsControl);
 
     private sealed record PublicKeyEntry(
+        [property: System.Text.Json.Serialization.JsonPropertyName("keyId")]
         string? KeyId,
+        [property: System.Text.Json.Serialization.JsonPropertyName("type")]
         string Type,
+        [property: System.Text.Json.Serialization.JsonPropertyName("usage")]
         string Usage,
+        [property: System.Text.Json.Serialization.JsonPropertyName("displayName")]
         string DisplayName,
+        [property: System.Text.Json.Serialization.JsonPropertyName("key")]
         string Key,
+        [property: System.Text.Json.Serialization.JsonPropertyName("startDateTime")]
         string StartDateTime,
-        string EndDateTime,
-        string? CustomKeyIdentifier)
-    {
-        // Graph REST property names are lower camel-case; use explicit JSON names
-        // via declared serializer attributes rather than implicitly PascalCase.
-        [System.Text.Json.Serialization.JsonPropertyName("keyId")]
-        public string? KeyIdJson => KeyId;
-        [System.Text.Json.Serialization.JsonPropertyName("type")]
-        public string TypeJson => Type;
-        [System.Text.Json.Serialization.JsonPropertyName("usage")]
-        public string UsageJson => Usage;
-        [System.Text.Json.Serialization.JsonPropertyName("displayName")]
-        public string DisplayNameJson => DisplayName;
-        [System.Text.Json.Serialization.JsonPropertyName("key")]
-        public string KeyJson => Key;
-        [System.Text.Json.Serialization.JsonPropertyName("startDateTime")]
-        public string StartDateTimeJson => StartDateTime;
-        [System.Text.Json.Serialization.JsonPropertyName("endDateTime")]
-        public string EndDateTimeJson => EndDateTime;
-    }
+        [property: System.Text.Json.Serialization.JsonPropertyName("endDateTime")]
+        string EndDateTime);
 
     public static bool SelfTest() =>
         IsSafeLabel("Linux Mail Relay 365", 90) &&
@@ -370,9 +361,9 @@ public static class EntraGraphProvisioner
         !IsSafeLabel("app\nsecret", 90) &&
         !SameKeySet(
             [new PublicKeyEntry("1", "AsymmetricX509Cert", "Verify", "A",
-                Convert.ToBase64String([1,2,3]), "2026", "2027", null)],
+                Convert.ToBase64String([1,2,3]), "2026", "2027")],
             [new PublicKeyEntry("1", "AsymmetricX509Cert", "Verify", "A",
-                Convert.ToBase64String([4,5,6]), "2026", "2027", null)]);
+                Convert.ToBase64String([4,5,6]), "2026", "2027")]);
 }
 
 public sealed record EntraProvisionResult(
