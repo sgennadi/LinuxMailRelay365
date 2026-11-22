@@ -61,10 +61,16 @@ if sudo bash "$installer" --apply \
   --accepted-domain example.org --fixed-sender alerts@example.org; then
   echo 'SECURITY ERROR: unacknowledged tenant domain was installed' >&2; exit 1
 fi
-if sudo bash "$installer" --check-only \
+# TCP/25 is a valid explicit choice, but MUST be rejected on this host
+# because the primary Postfix is active and owns its mail flow.
+sudo bash "$installer" --check-only \
+  --smtp-port 25 --mx-host example-org.mail.protection.outlook.com \
+  --accepted-domain example.org --fixed-sender alerts@example.org \
+  | grep -Fxq 'DIRECT_SEND_CUSTOM_PORT=25'
+if sudo bash "$installer" --apply --confirm-accepted-domain TENANT_DOMAIN_CHECKED \
   --smtp-port 25 --mx-host example-org.mail.protection.outlook.com \
   --accepted-domain example.org --fixed-sender alerts@example.org; then
-  echo 'SECURITY ERROR: privileged port accepted as custom listener' >&2; exit 1
+  echo 'SECURITY ERROR: TCP25 preflight stole active primary MTA' >&2; exit 1
 fi
 echo '=== Install fresh private Direct Send on TCP 46500 ==='
 sudo bash "$installer" --apply --confirm-accepted-domain TENANT_DOMAIN_CHECKED \
