@@ -6,7 +6,8 @@ internal sealed partial class MainForm
 {
     /// <summary>Reusable WinForms Device Code interaction for Graph and ARM C# calls.</summary>
     private async Task<T> WithNativeMicrosoftSignInAsync<T>(
-        Func<Func<DeviceCodeResult, Task>, CancellationToken, Task<T>> operation)
+        Func<Func<DeviceCodeResult, Task>, CancellationToken, Task<T>> operation,
+        bool mayModifyEntra = false)
     {
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(12));
         using var dialog = new NativeDeviceCodeDialog(cancellation.Cancel);
@@ -41,9 +42,14 @@ internal sealed partial class MainForm
             // Only allowlisted reason codes are displayed; never print tenant
             // challenge bodies, usernames, OAuth token or sign-in URL parameters.
             WriteLine("Native Microsoft Entra operation failed (" + ex.Code +
-                "). Cloud settings unchanged by this read-only operation.");
+                "). " + (mayModifyEntra
+                    ? "Entra App Registration or certificate MAY ALREADY HAVE CHANGED. " +
+                      "Review the exact application before retrying; no automatic deletion."
+                    : "This was a read-only operation; no cloud settings were changed."));
             throw new IOException("Microsoft Entra C# operation failed (" + ex.Code +
-                "). Verify client permissions or use the manual fallback.");
+                "). " + (mayModifyEntra
+                    ? "Review potentially partial Entra changes before retrying."
+                    : "Verify delegated client permissions or use manual Tenant ID."));
         }
         finally { dialog.Finish(); }
     }
