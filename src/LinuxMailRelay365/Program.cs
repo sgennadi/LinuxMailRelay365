@@ -84,6 +84,7 @@ internal static class Program
             ("Readable mail discovery overview and safe guidance", MailDiscoveryBrief.SelfTest),
             ("Mail intent and evidence-gated scenario ranking", MailFlowIntent.SelfTest),
             ("Local submission read-only evidence", MailSubmissionEvidence.SelfTest),
+            ("Google SMTP port and one-shot AUTH strict validation", GoogleSmtpAudit.SelfTest),
             ("Embedded local submission probe is read-only", () =>
                 EmbeddedAssets.MailSubmissionInspector.Contains("MAIL_ORIGIN_VERSION=1",
                     StringComparison.Ordinal) &&
