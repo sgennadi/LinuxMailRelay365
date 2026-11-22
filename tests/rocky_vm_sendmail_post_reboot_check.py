@@ -7,6 +7,7 @@ no service restart and no Microsoft 365 access. Both reports must be identical.
 """
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import socket
@@ -72,6 +73,90 @@ def snapshot_id_from_root_file(module):
     return value
 
 
+
+def fingerprint_package_selinux(manifest, root=Path("/")):
+    """Read-only v2 object SELinux fingerprint, including directories and links.
+
+    All filesystem lookups are lstat/lgetxattr (never follow final symlinks).
+    The KVM-only caller rechecks the archive inventory and compares this
+    fingerprint on both sides of a real reboot. No labels are written.
+    """
+    files = manifest.get("files")
+    objects = manifest.get("objects")
+    if (manifest.get("version") != 2 or manifest.get("mta") != "sendmail" or
+            not isinstance(files, dict) or not isinstance(objects, dict)):
+        refuse("INVALID_PACKAGE_LABEL_MANIFEST")
+    names = set(files) | set(objects)
+    if (set(files) & set(objects) or
+            not 1 <= len(names) <= 4096 or
+            "etc/mail" not in objects or
+            objects["etc/mail"].get("kind") != "directory"):
+        refuse("INVALID_PACKAGE_LABEL_OBJECT_SET")
+    digest = hashlib.sha256()
+    for name in sorted(names):
+        if not isinstance(name, str):
+            refuse("INVALID_PACKAGE_LABEL_PATH")
+        parts = name.split("/")
+        if (len(name.encode("utf-8")) > 512 or
+                any(part in ("", ".", "..") for part in parts) or
+                not (name == "etc/mail" or name.startswith("etc/mail/") or
+                     name in ("etc/aliases", "etc/aliases.db"))):
+            refuse("INVALID_PACKAGE_LABEL_PATH")
+        entry = files[name] if name in files else objects[name]
+        if not isinstance(entry, dict):
+            refuse("INVALID_PACKAGE_LABEL_METADATA")
+        kind = "file" if name in files else entry.get("kind")
+        if kind not in ("file", "directory", "symlink"):
+            refuse("INVALID_PACKAGE_LABEL_KIND")
+        path = root.joinpath(*parts)
+        try:
+            before = path.lstat()
+        except OSError:
+            refuse("PACKAGE_LABEL_OBJECT_UNAVAILABLE")
+        if not (
+                (kind == "file" and stat.S_ISREG(before.st_mode) and
+                 before.st_nlink == 1) or
+                (kind == "directory" and stat.S_ISDIR(before.st_mode)) or
+                (kind == "symlink" and stat.S_ISLNK(before.st_mode) and
+                 before.st_nlink == 1)):
+            refuse("PACKAGE_LABEL_OBJECT_TYPE_CHANGED")
+        if (before.st_uid != entry.get("uid") or
+                before.st_gid != entry.get("gid") or
+                (kind != "symlink" and
+                 stat.S_IMODE(before.st_mode) != entry.get("mode"))):
+            refuse("PACKAGE_LABEL_OBJECT_METADATA_CHANGED")
+        if kind == "symlink":
+            try:
+                if os.readlink(str(path)) != entry.get("target"):
+                    refuse("PACKAGE_LABEL_LINK_CHANGED")
+            except OSError:
+                refuse("PACKAGE_LABEL_LINK_UNREADABLE")
+        try:
+            label = os.getxattr(str(path), "security.selinux",
+                                follow_symlinks=False)
+            after = path.lstat()
+        except OSError:
+            refuse("PACKAGE_LABEL_UNREADABLE")
+        identity = lambda s: (s.st_dev, s.st_ino, s.st_uid, s.st_gid,
+                              s.st_mode, s.st_nlink, s.st_ctime_ns)
+        if identity(before) != identity(after):
+            refuse("PACKAGE_LABEL_OBJECT_CHANGED_DURING_PROBE")
+        if not label or len(label) > 512:
+            refuse("PACKAGE_LABEL_EMPTY_OR_OVERSIZED")
+        record = b"\0".join((
+            name.encode("utf-8"), kind.encode("ascii"),
+            str(before.st_uid).encode("ascii"),
+            str(before.st_gid).encode("ascii"),
+            (str(stat.S_IMODE(before.st_mode)).encode("ascii")
+             if kind != "symlink" else b"-"),
+            (entry["target"].encode("utf-8") if kind == "symlink" else b"-"),
+            label,
+        ))
+        digest.update(len(record).to_bytes(4, byteorder="big"))
+        digest.update(record)
+    return len(names), digest.hexdigest()
+
+
 def run():
     verify_guest()
     spec = importlib.util.spec_from_file_location("sendmail_v2_reboot_backup", BACKUP)
@@ -85,6 +170,13 @@ def run():
                 "sendmail", snapshot_id, root=Path("/"),
                 base=module.BASE, owner_uid=0)["current"] != "identical"):
         refuse("SNAPSHOT_DRIFT_OR_INVALID_V2_FORMAT")
+    manifest = json.loads(module.stable_file(
+        module.BASE / "sendmail" / snapshot_id / "manifest.json", 0)[1])
+    package_objects, package_labels_sha = fingerprint_package_selinux(manifest)
+    if module.recovery_preview(
+            "sendmail", snapshot_id, root=Path("/"),
+            base=module.BASE, owner_uid=0)["current"] != "identical":
+        refuse("PACKAGE_LABEL_INVENTORY_CONCURRENT_DRIFT")
     info, content = module.stable_file(CONFIG, 0)
     label = os.getxattr(str(CONFIG), "security.selinux", follow_symlinks=False)
     if not label:
@@ -97,6 +189,8 @@ def run():
         "CONFIG_OWNER_MODE": ("%d_%d_%04o" %
                               (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))),
         "SELINUX_LABEL_SHA256": hashlib.sha256(label).hexdigest(),
+        "PACKAGE_SELINUX_OBJECTS": str(package_objects),
+        "PACKAGE_SELINUX_SHA256": package_labels_sha,
         "SNAPSHOT_MATCH": "identical",
         "POSTFIX": "active",
         "SENDMAIL": "stopped",
