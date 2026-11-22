@@ -124,12 +124,28 @@ internal static class MailFlowIntent
             "SMTP_PUBLIC_BIND=loopback_only\nSMTP_RELAY_POLICY_RISK=relay_guard_present\n" +
             "SMTP_EXTERNAL_REACHABILITY=not_tested_from_internet\nSMTP_OPEN_RELAY_PROVEN=no\n";
         var audit = ExistingSmtpAudit.Parse(smtpAudit);
-        // Host inspection has its own strict parser with many system fields:
-        // use the existing validated fixture from its unit test pattern.
+        var host = MailHostInspection.Parse(
+            "MAIL_HOST_VERSION=1\nMAIL_HOST_SHORT=mail\n" +
+            "MAIL_HOST_FQDN=mail.example.org\nMAIL_HOST_DOMAIN=example.org\n" +
+            "MAIL_HOST_MTA=postfix\nMAIL_HOST_MTA_STATE=active\n" +
+            "MAIL_HOST_TRUST=os_report_unverified\nMAIL_HOST_CHANGES=no\n");
+        var local = Suggestions(linux, audit, host, false, Local, "external-needed", 1);
+        var remote = Suggestions(linux, audit, host, false, Smtp, "external-needed", 1);
+        var undecided = Suggestions(linux, audit, host, false, Unknown, "unknown", 1);
+        var dangerous = ExistingSmtpAudit.Parse(smtpAudit.Replace(
+            "SMTP_RELAY_POLICY_RISK=relay_guard_present",
+            "SMTP_RELAY_POLICY_RISK=suspected_unsafe_relay"));
+        var blocked = Suggestions(linux, dangerous, host, false, Jobs, "internal-only", 1);
         return Supported(Unknown) && Supported(Jobs) && Supported(Smtp) &&
             !Supported("scheduled-product-name") &&
             SourceLabel(Jobs, 1).Contains("background jobs", StringComparison.Ordinal) &&
             SourceLabel(Local, 0).Contains("Linux", StringComparison.Ordinal) &&
-            audit.Mta == "postfix" && linux.CurrentRelay.Contains("relay.example.org");
+            local.First().Code == MailScenarioPlanner.ReplaceRelay &&
+            remote.First().Code == MailScenarioPlanner.Isolated &&
+            undecided.First().Code == MailScenarioPlanner.Keep &&
+            !local.First().RequiresSeparatePort &&
+            remote.First().RequiresSeparatePort &&
+            local.All(x => !x.Name.Contains("Gmail", StringComparison.OrdinalIgnoreCase)) &&
+            blocked.Where(x => x.Code != MailScenarioPlanner.Keep).All(x => !x.Enabled);
     }
 }
