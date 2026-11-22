@@ -21,7 +21,7 @@ class TenantDiscoveryContracts(unittest.TestCase):
         self.assertIn("schema = 'linux-mail-relay-tenant-discovery/v1'", script)
         self.assertNotIn('Save-AzContext', script)
         self.assertNotIn('client_secret', script)
-        self.assertIn('Move-Item -LiteralPath $tmp -Destination $ResultPath -Force', script)
+        self.assertIn('Move-Item -LiteralPath $tmp -Destination $Path -Force', script)
 
     def test_failed_discovery_has_secret_free_stage_and_gui_error(self):
         script = (ROOT / 'windows/Discover-LinuxMailRelay365Tenants.ps1').read_text(encoding='utf8')
