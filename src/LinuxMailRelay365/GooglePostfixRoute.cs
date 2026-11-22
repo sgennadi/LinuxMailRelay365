@@ -9,7 +9,8 @@ namespace LinuxMailRelay365;
 // This NEVER chooses or changes a Linux listening port.
 internal sealed record GoogleRoutePreview(
     string Profile, int Port, string Fingerprint, bool HasConflictingMaps,
-    string Queue, bool ApplyAllowed);
+    string Queue, bool ApplyAllowed, string OutboundSasl,
+    string PasswordMap, string TlsLevel);
 
 internal sealed record GoogleRouteApplyResult(string Profile, int Port,
     string BackupId, bool StoredRootOnlyCredential)
@@ -71,19 +72,28 @@ internal static class GooglePostfixRoute
             Value(values, "INBOUND_CHANGED") != "no" ||
             Value(values, "MAIL_SENT") != "no" ||
             Value(values, "CONFIG_CHANGED") != "no" ||
-            values.Count != 10)
+            values.Count != 13)
             throw new InvalidDataException("Invalid read-only Google upstream preview.");
         string sha = Value(values, "PREVIEW_SHA256");
         string queue = Value(values, "QUEUE");
         string conflict = Value(values, "CONFLICTING_MAPS");
         string allowed = Value(values, "APPLY_ALLOWED");
+        string outboundSasl = Value(values, "OUTBOUND_SASL");
+        string passwordMap = Value(values, "PASSWORD_MAP");
+        string tlsLevel = Value(values, "TLS_LEVEL");
+        if (outboundSasl is not ("enabled" or "disabled" or "unverified") ||
+            passwordMap is not ("configured" or "not_configured") ||
+            tlsLevel is not ("none" or "may" or "encrypt" or "dane" or "dane-only"
+                or "fingerprint" or "verify" or "secure" or "unverified"))
+            throw new InvalidDataException("Unsafe Postfix outbound SASL/TLS status.");
         if (!Regex.IsMatch(sha, @"\A[a-f0-9]{64}\z") ||
             queue is not ("empty" or "nonempty" or "unverified") ||
             conflict is not ("yes" or "no") ||
             allowed is not ("yes" or "no") ||
             (allowed == "yes" && (queue != "empty" || conflict != "no")))
             throw new InvalidDataException("Unsafe or inconsistent Google relay preview.");
-        return new(profile, port, sha, conflict == "yes", queue, allowed == "yes");
+        return new(profile, port, sha, conflict == "yes", queue,
+            allowed == "yes", outboundSasl, passwordMap, tlsLevel);
     }
 
     internal static string BuildScript(string managerSource, string recoverySource,
@@ -140,7 +150,11 @@ internal static class GooglePostfixRoute
             "GOOGLE_ROUTE_PREVIEW_SHA256=" +
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
             "GOOGLE_ROUTE_CONFLICTING_MAPS=no\n" +
-            "GOOGLE_ROUTE_QUEUE=empty\nGOOGLE_ROUTE_APPLY_ALLOWED=yes\n" +
+            "GOOGLE_ROUTE_QUEUE=empty\n" +
+            "GOOGLE_ROUTE_OUTBOUND_SASL=enabled\n" +
+            "GOOGLE_ROUTE_PASSWORD_MAP=configured\n" +
+            "GOOGLE_ROUTE_TLS_LEVEL=encrypt\n" +
+            "GOOGLE_ROUTE_APPLY_ALLOWED=yes\n" +
             "GOOGLE_ROUTE_INBOUND_CHANGED=no\nGOOGLE_ROUTE_MAIL_SENT=no\n" +
             "GOOGLE_ROUTE_CONFIG_CHANGED=no\n";
         var result = ParsePreview(preview, "gmail", 587);
