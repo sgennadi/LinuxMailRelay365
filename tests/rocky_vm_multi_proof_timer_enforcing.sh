@@ -54,7 +54,7 @@ if __name__=='__main__':
     p.add_argument('--confirm',required=True)
     a=p.parse_args()
     if os.geteuid()!=0 or a.confirm!='REFRESH_PRIVILEGED_MULTI_INGRESS_PROOF': raise ValueError('synthetic_auth_refused')
-    raw=(json.dumps(inspect(a.map_sha256),sort_keys=True)+'\n').encode('ascii')
+    raw=(json.dumps(inspect(a.map_sha256),sort_keys=True)+'\\n').encode('ascii')
     fd=os.open(str(PROOF),os.O_CREAT|os.O_WRONLY|os.O_TRUNC|os.O_NOFOLLOW,0o640)
     try:
         os.fchown(fd,0,grp.getgrnam('m365mailer').gr_gid)
@@ -63,6 +63,9 @@ if __name__=='__main__':
         os.fsync(fd)
     finally: os.close(fd)
 """
+# Parse the generated nested Python source without creating __pycache__.
+import ast
+ast.parse(fake, filename="synthetic_ingress_stub.py")
 source = root / "refresh-multi-mailbox-proof.py"
 source.write_text(fake, encoding="ascii")
 source.chmod(0o644)
