@@ -533,6 +533,21 @@ def apply_services(states):
             command(["systemctl", "start", unit], timeout=55)
 
 
+def require_primary_mta_disabled_for_port25():
+    """A restored privileged listener must not race primary MTA on reboot."""
+    for unit in ("postfix.service", "exim.service", "exim4.service", "sendmail.service"):
+        load = command(["systemctl", "show", "--property=LoadState",
+                        "--value", unit], allowed=(0, 1))
+        if load == "not-found":
+            continue
+        if load not in ("loaded", "masked"):
+            raise Refused("port25_primary_service_state_unverified")
+        active = command(["systemctl", "is-active", unit], allowed=(0, 3, 4))
+        enabled = command(["systemctl", "is-enabled", unit], allowed=(0, 1))
+        if active != "inactive" or enabled not in ("disabled", "masked"):
+            raise Refused("port25_primary_mta_enabled_or_active")
+
+
 def check_offline_readiness():
     """The operator must stop only isolated services; this tool never stops MTAs."""
     states = service_state()
@@ -546,6 +561,8 @@ def check_offline_readiness():
     port = port_path.read_text(encoding="ascii").strip()
     if not port.isdigit() or not (int(port) == 25 or 1024 <= int(port) <= 65535):
         raise Refused("invalid_installed_smtp_port")
+    if int(port) == 25:
+        require_primary_mta_disabled_for_port25()
     # systemd may be stopped while Postfix was manually started with -c.
     # A bound TCP listener is an independent hard-stop before changing config.
     if command(["ss", "-H", "-ltn", "( sport = :{} )".format(port)]):
