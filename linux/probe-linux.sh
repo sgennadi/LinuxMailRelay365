@@ -32,7 +32,8 @@ if has postconf; then
   # services keep their exact configured port.
   SMTP_CONFIGURED_PORTS="$(postconf -M 2>/dev/null | awk '
     {
-      split($1, service, "/")
+      split($1, assignment, "=")
+      split(assignment[1], service, "/")
       if (service[2] != "inet") next
       name = service[1]
       if (name == "smtp") name = 25
