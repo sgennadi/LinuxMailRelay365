@@ -244,6 +244,7 @@ internal static class Program
                        !signing.Contains("--inventory-only", StringComparison.Ordinal);
             }),
             ("Mail routing safety", MailRoutingPlanStore.SelfTest),
+            ("Bash LF-over-SSH contract and sudo input safety", SshRemote.BashStdinSelfTest),
             ("Foreign primary MTA config backup is only backup/list/verify", () =>
             {
                 foreach (string mta in new[] { "exim", "sendmail" })
