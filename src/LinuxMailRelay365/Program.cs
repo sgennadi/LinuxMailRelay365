@@ -409,6 +409,7 @@ internal static class Program
                 EmbeddedAssets.CloudConnectorManager.Contains("connector_postcheck_not_unique", StringComparison.Ordinal)),
             ("Tenant discovery result parser", TenantDiscovery.SelfTest),
             ("Native C# read-only Graph app inventory", Microsoft365Auth.EntraGraphInventoryClient.SelfTest),
+            ("Native C# Graph app and public-certificate provisioning contracts", Microsoft365Auth.EntraGraphProvisioner.SelfTest),
             ("Native C# MSAL/Graph/ARM tenant discovery", Microsoft365Auth.EntraTenantDiscoveryClient.SelfTest),
             ("Device code verification URL allowlist", () =>
                 NativeDeviceCodeDialog.IsTrustedMicrosoftVerificationUrl("https://microsoft.com/devicelogin") &&

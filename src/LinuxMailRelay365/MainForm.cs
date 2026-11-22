@@ -2228,8 +2228,8 @@ internal sealed partial class MainForm : Form
                 AddAction(page, T("2. Настроить Entra и Exchange Online", "2. Configure Entra and Exchange Online", "2. הגדרת Entra ו-Exchange"), SetupM365Async, false, "cloud", "entra");
                 AddAction(page, T("3. Проверить готовность Microsoft 365", "3. Verify Microsoft 365 state", "3. בדיקת מצב Microsoft 365"), VerifyM365Async, false, "check", "entra");
                 AddLine(page, UiTheme.Text(T(
-                    "Однократный Device Code для администратора. Создаётся новое приложение либо добавляется сертификат к существующему, права SMTP.SendAsApp ограничены ящиком. Security Defaults не изменяются.",
-                    "One-time admin Device Code sign-in. Creates an app or adds a certificate to an existing app; scoped SMTP.SendAsApp; Security Defaults unchanged.",
+                    "Сначала C# / Microsoft Graph: создание App Registration и добавление только публичного сертификата. Затем Exchange Online PowerShell: отдельный Device Code и ограниченный SMTP.SendAsApp. Административное согласие и проверка Tenant обязательны.",
+                    "C# / Microsoft Graph first: create an App Registration or append only a public certificate. Then Exchange Online PowerShell: separate Device Code + scoped SMTP.SendAsApp. Admin consent and exact tenant checks are required.",
                     "אימות מנהל חד-פעמי; הרשאה מוגבלת לתיבת דואר אחת.")));
                 break;
             case 3:
@@ -7416,46 +7416,176 @@ internal sealed partial class MainForm : Form
 
     private async Task SetupM365Async()
     {
-        var cloud = CloudInputs();
-        string certFile = publicCertificatePath ?? PublicCertPath(Endpoint());
-        if (!File.Exists(certFile)) throw new InvalidOperationException("First prepare the Linux certificate.");
+        var selected = CloudInputs();
+        var endpoint = Endpoint();
+        string certificatePath = publicCertificatePath ?? PublicCertPath(endpoint);
+        if (!File.Exists(certificatePath))
+            throw new InvalidOperationException("First prepare the Linux public certificate.");
+
+        string pem = await File.ReadAllTextAsync(certificatePath);
+        using var publicCert = X509Certificate2.CreateFromPem(pem);
+        if (publicCert.HasPrivateKey)
+            throw new InvalidDataException("Only the Linux PUBLIC certificate may be used for Entra provisioning.");
+        string initialFingerprint = Convert.ToHexString(SHA256.HashData(publicCert.RawData));
+        string displayName = applicationName.Text.Trim();
+        if (displayName.Length is < 3 or > 90)
+            throw new ArgumentException("App name must be 3..90 characters.");
+        Guid? requestedApp = null;
+        string rawExisting = existingAppId.Text.Trim();
+        if (rawExisting.Length > 0)
+        {
+            if (!Guid.TryParse(rawExisting, out Guid parsed) || parsed == Guid.Empty)
+                throw new ArgumentException("Existing Entra App Client ID must be a valid GUID.");
+            requestedApp = parsed;
+        }
+        Guid bootstrapClient = EntraTenantDiscoveryClient.DefaultGraphClientId;
+        string rawBootstrap = entraSignInClientId.Text.Trim();
+        if (rawBootstrap.Length > 0)
+        {
+            if (!Guid.TryParse(rawBootstrap, out bootstrapClient) || bootstrapClient == Guid.Empty)
+                throw new ArgumentException("Approved Graph public sign-in Client ID must be a GUID.");
+        }
+        string certificateLabel = "LinuxMailRelay365 " + endpoint.Host;
+        certificateLabel = certificateLabel[..Math.Min(90, certificateLabel.Length)];
+        string finalStatePath = StatePath(selected.Tenant);
         string scriptPath = Path.Combine(dataDirectory, "Initialize-LinuxMailRelay365.ps1");
+
+        // Check that the remaining Exchange-only PowerShell dependency exists
+        // BEFORE making any Entra Graph modifications. This executes NO
+        // tenant, mailbox or configuration write.
+        var preflight = new ProcessStartInfo("pwsh.exe")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = false,
+            RedirectStandardError = false,
+            CreateNoWindow = true,
+            WorkingDirectory = dataDirectory
+        };
+        foreach (var arg in new[]
+        {
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+            "if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) { exit 9 }"
+        })
+            preflight.ArgumentList.Add(arg);
+        try
+        {
+            using var probe = Process.Start(preflight)
+                ?? throw new IOException("Could not start pwsh.exe.");
+            await probe.WaitForExitAsync();
+            if (probe.ExitCode != 0)
+                throw new InvalidOperationException(
+                    "ExchangeOnlineManagement for PowerShell 7 is required for EXO RBAC. " +
+                    "Install it for CurrentUser before Entra provisioning; nothing was changed.");
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            throw new InvalidOperationException(
+                "PowerShell 7 is required ONLY for Exchange Online RBAC. " +
+                "Install pwsh.exe before creating an Entra application; nothing was changed.");
+        }
+
+        var approval = MessageBox.Show(this,
+            "Microsoft Entra will create a new App Registration or append the Linux public " +
+            "certificate to the EXACT selected App Client ID. This requests delegated " +
+            "Application.ReadWrite.All and MFA. After C# Graph postchecks, a SEPARATE " +
+            "Exchange Online PowerShell sign-in will configure scoped SMTP.SendAsApp for " +
+            "the chosen mailbox.\n\nTenant: " + selected.Tenant +
+            "\nMailbox: " + selected.Mailbox +
+            "\nApp: " + (requestedApp?.ToString("D") ?? "(create new)") +
+            "\nPublic certificate SHA-256: " + initialFingerprint +
+            "\n\nIf Exchange authorization fails, Entra changes may already exist and " +
+            "must be reviewed. No automatic deletion or broad permission grants occur. " +
+            "Continue?",
+            "LinuxMailRelay365 | Approve Entra + Exchange provisioning",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (approval != DialogResult.Yes)
+        {
+            WriteLine("Entra/Exchange setup cancelled before any cloud changes.");
+            return;
+        }
+
+        WriteLine("Microsoft Graph provisioning: native C# MSAL Device Code + MFA. " +
+            "No Microsoft.Graph PowerShell module, client secret or mailbox password.");
+        EntraProvisionResult graph;
+        try
+        {
+            graph = await WithNativeMicrosoftSignInAsync((show, ct) =>
+                EntraGraphProvisioner.ProvisionAsync(
+                    selected.Tenant, bootstrapClient, requestedApp, displayName,
+                    certificateLabel, pem, show, ct), mayModifyEntra: true);
+        }
+        catch
+        {
+            WriteLine("CAUTION: C# Graph provisioning did not complete. " +
+                "Entra App Registration/certificate MAY ALREADY HAVE CHANGED; " +
+                "review Tenant " + selected.Tenant + " and the selected app before retrying. " +
+                "Exchange Online RBAC has NOT been started.");
+            throw;
+        }
+        // Recheck exact UI and certificate origin after user has completed MFA.
+        if (CloudInputs() != selected ||
+            !string.Equals(rawExisting, existingAppId.Text.Trim(), StringComparison.Ordinal) ||
+            !string.Equals(rawBootstrap, entraSignInClientId.Text.Trim(), StringComparison.Ordinal) ||
+            !string.Equals(displayName, applicationName.Text.Trim(), StringComparison.Ordinal) ||
+            !string.Equals(finalStatePath, StatePath(selected.Tenant), StringComparison.Ordinal) ||
+            !string.Equals(initialFingerprint, graph.CertificateSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            WriteLine("The operator changed Microsoft 365 or Linux inputs during sign-in. " +
+                "Entra may already have been changed; Exchange has NOT been started.");
+            throw new InvalidOperationException(
+                "Selection changed during Graph provisioning. Review Entra and restart setup.");
+        }
+        WriteLine("C# Graph verified exact App Registration: " + graph.ClientId +
+            "; Enterprise Application: " + graph.EnterpriseApplicationObjectId +
+            "; public certificate SHA-256: " + graph.CertificateSha256 +
+            ". Entra changes were made before Exchange authentication.");
+
+        // The embedded script is now Exchange-only. Only nonsecret identifiers,
+        // tenant, mailbox and public certificate metadata cross the process.
         File.WriteAllText(scriptPath, EmbeddedAssets.Provisioner, new UTF8Encoding(false));
         var psi = new ProcessStartInfo("pwsh.exe")
         {
             UseShellExecute = true,
             WorkingDirectory = dataDirectory
         };
-        psi.ArgumentList.Add("-NoLogo");
-        psi.ArgumentList.Add("-NoProfile");
-        psi.ArgumentList.Add("-File");
-        psi.ArgumentList.Add(scriptPath);
-        psi.ArgumentList.Add("-TenantId");
-        psi.ArgumentList.Add(cloud.Tenant.ToString());
-        psi.ArgumentList.Add("-Mailbox");
-        psi.ArgumentList.Add(cloud.Mailbox);
-        psi.ArgumentList.Add("-CertificatePath");
-        psi.ArgumentList.Add(certFile);
-        psi.ArgumentList.Add("-ResultPath");
-        psi.ArgumentList.Add(StatePath(cloud.Tenant));
-        string displayName = applicationName.Text.Trim();
-        if (displayName.Length is < 3 or > 90) throw new ArgumentException("App name must be 3..90 characters.");
-        psi.ArgumentList.Add("-ApplicationName");
-        psi.ArgumentList.Add(displayName);
-        psi.ArgumentList.Add("-CertificateLabel");
-        string label = "LinuxMailRelay365 " + Endpoint().Host;
-        psi.ArgumentList.Add(label[..Math.Min(90, label.Length)]);
-        if (!string.IsNullOrWhiteSpace(existingAppId.Text))
+        foreach (var arg in new[]
         {
-            if (!Guid.TryParse(existingAppId.Text.Trim(), out var existing) || existing == Guid.Empty)
-                throw new ArgumentException("Existing Client ID must be a GUID.");
-            psi.ArgumentList.Add("-ExistingAppId");
-            psi.ArgumentList.Add(existing.ToString());
+            "-NoLogo", "-NoProfile", "-File", scriptPath,
+            "-TenantId", selected.Tenant.ToString("D"),
+            "-Mailbox", selected.Mailbox,
+            "-ClientId", graph.ClientId.ToString("D"),
+            "-ApplicationObjectId", graph.ApplicationObjectId.ToString("D"),
+            "-EnterpriseAppObjectId", graph.EnterpriseApplicationObjectId.ToString("D"),
+            "-ApplicationName", graph.DisplayName,
+            "-CertificateSha256", graph.CertificateSha256,
+            "-CertificateExpiresUtc", graph.CertificateExpiresUtc.ToString("o"),
+            "-ResultPath", finalStatePath
+        })
+            psi.ArgumentList.Add(arg);
+        if (graph.AppCreated) psi.ArgumentList.Add("-AppCreated");
+        if (graph.EnterpriseAppCreated) psi.ArgumentList.Add("-EnterpriseAppCreated");
+        if (graph.PublicCertificateAdded) psi.ArgumentList.Add("-AddedCertificate");
+        WriteLine("Exchange Online: independent Device Code / MFA login for scoped " +
+            "SMTP.SendAsApp RBAC. The exact tenant must match before ANY EXO write.");
+        try
+        {
+            using var process = Process.Start(psi) ??
+                throw new IOException("Exchange Online PowerShell process did not start.");
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0)
+                throw new IOException("Exchange Online scoped RBAC failed.");
         }
-        WriteLine("Connecting to Microsoft Entra and Exchange Online in PowerShell 7. Complete admin Device Code prompts in the console.");
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException("Could not start PowerShell 7 (pwsh.exe).");
-        await process.WaitForExitAsync();
-        if (process.ExitCode != 0) throw new InvalidOperationException("Microsoft 365 provisioning failed; check the PowerShell output.");
+        catch
+        {
+            WriteLine("CAUTION: Exchange authorization was not verified. " +
+                "Entra App Registration or certificate MAY ALREADY HAVE BEEN CHANGED. " +
+                "No automatic Graph deletion was attempted. Review Tenant " +
+                selected.Tenant + ", App " + graph.ClientId + " before retrying.");
+            throw;
+        }
+        if (requestedApp is null)
+            existingAppId.Text = graph.ClientId.ToString("D");
         await VerifyM365Async();
     }
 

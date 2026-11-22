@@ -34,16 +34,37 @@ display-name search. Certificate *metadata* is displayed without exporting
 private or public key bytes. If Graph returns an ambiguous/denied response, the
 UI does not claim that the object is absent.
 
+## RC3: native C# Entra Graph write provisioning (test-only)
+
+With explicit operator confirmation, Microsoft365Auth now requests delegated
+`Application.ReadWrite.All` using an exact tenant MSAL session. It creates an
+App Registration with ONLY the Linux public certificate, or reads an existing
+App Registration by **exact Client ID** and appends the public certificate if
+not present. It reads back the complete keyCredential bytes and checks for
+concurrent drift before a PATCH; if Graph omits existing key bytes or the
+postcheck does not preserve every old key, it fails closed. A concurrent
+Entra write is still possible, and a drift guard is not a distributed lock.
+A new/reused Enterprise Application must be verified by app ID and object ID.
+No private Linux key, Graph Mail.Send, password or client secret is uploaded.
+
+The GUI checks `pwsh` and `ExchangeOnlineManagement` availability **before**
+Graph changes, then warns explicitly that if Exchange RBAC later fails the
+Entra objects may already have changed; it never automatically deletes them.
+Only nonsecret IDs, the mailbox and public cert SHA/date are passed to
+the remaining Exchange-only PS1. Tenant identity is separately rechecked
+by `Get-ConnectionInformation` before any Exchange mutation.
+
+This is a candidate pending real administrator consent, Entra API and
+Exchange RBAC acceptance, including app reuse with multiple public keys.
+
 ## What still needs Exchange Online PowerShell
 
 - Exchange Online scoped `Application SMTP.SendAsApp` RBAC, recipient
   management scope, CAS mailbox SMTP AUTH settings, and verification
 - Exchange Online Inbound Connectors and management roles/inventory
-- Initial Entra app/certificate **write** provisioning remains in the legacy
-  combined Graph + EXO PS1 until a separately tested native Graph write
-  transaction is introduced. It is not silently replaced in this RC.
+- Entra app/certificate Graph **write** provisioning is now in C# (RC3).
 
-The Cloud Objects inspector PowerShell is now **Exchange-only** and does not
+The Cloud Objects inspector and the Exchange RBAC provisioning PowerShell are now **Exchange-only** and does not
 load `Microsoft.Graph.Authentication`. The tenant discovery script using
 `Az.Accounts` has been removed entirely.
 

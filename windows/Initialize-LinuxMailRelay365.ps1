@@ -1,143 +1,77 @@
-# LinuxMailRelay365 | One-time app provisioning and safe multi-server certificate addition.
-# Linux private keys NEVER leave their server. Script handles PUBLIC X.509 certificates only.
-# Administrator signs in interactively via Microsoft Graph and Exchange Online PowerShell.
+#requires -Version 7.0
+# Exchange Online ONLY. Graph App Registration and certificate changes use
+# native C# MSAL / Graph and must be separately verified first.
+# No Graph PowerShell module, client secrets, OAuth tokens or Linux private keys.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory)][guid]$TenantId,
     [Parameter(Mandatory)][string]$Mailbox,
-    [Parameter(Mandatory)][string]$CertificatePath,
+    [Parameter(Mandatory)][guid]$ClientId,
+    [Parameter(Mandatory)][guid]$ApplicationObjectId,
+    [Parameter(Mandatory)][guid]$EnterpriseAppObjectId,
+    [Parameter(Mandatory)][string]$ApplicationName,
+    [Parameter(Mandatory)][string]$CertificateSha256,
+    [Parameter(Mandatory)][datetime]$CertificateExpiresUtc,
     [Parameter(Mandatory)][string]$ResultPath,
-    [ValidateLength(3, 90)][string]$ApplicationName = 'Linux Mail Relay 365',
-    [ValidateLength(3, 90)][string]$CertificateLabel = 'LinuxMailRelay365 server',
-    [guid]$ExistingAppId = [guid]::Empty,
+    [switch]$AppCreated,
+    [switch]$EnterpriseAppCreated,
+    [switch]$AddedCertificate,
     [switch]$PlanOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
 $Mailbox = $Mailbox.Trim().ToLowerInvariant()
+if ($TenantId -eq [guid]::Empty -or $ClientId -eq [guid]::Empty -or
+    $ApplicationObjectId -eq [guid]::Empty -or $EnterpriseAppObjectId -eq [guid]::Empty) {
+    throw 'exact_entra_object_identity_required'
+}
 if ($Mailbox -notmatch '^[A-Za-z0-9.!#$%&''*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$') {
-    throw 'Mailbox is invalid.'
+    throw 'invalid_mailbox'
 }
-if (-not (Test-Path -LiteralPath $CertificatePath -PathType Leaf)) { throw 'Public certificate not found.' }
-$cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($CertificatePath)
-if ($cert.HasPrivateKey) { throw 'Only public X.509 certificate is allowed on the management workstation.' }
-$now = [datetime]::UtcNow
-if ($cert.NotAfter.ToUniversalTime() -le $now.AddDays(3) -or
-    $cert.NotAfter.ToUniversalTime() -gt $cert.NotBefore.ToUniversalTime().AddDays(366)) {
-    throw 'Certificate must be valid for 1..365 days (with tolerance for time representation).'
+if ($ApplicationName.Length -lt 3 -or $ApplicationName.Length -gt 90 -or
+    $ApplicationName -match '[\x00-\x1F]') { throw 'invalid_application_name' }
+if ($CertificateSha256 -cnotmatch '^[A-F0-9]{64}$') { throw 'invalid_certificate_sha256' }
+if ($CertificateExpiresUtc.ToUniversalTime() -lt [datetime]::UtcNow.AddDays(3) -or
+    $CertificateExpiresUtc.ToUniversalTime() -gt [datetime]::UtcNow.AddDays(366)) {
+    throw 'invalid_certificate_expiry'
 }
-$sha = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($cert.RawData))
-$clientId = $ExistingAppId
+if (-not [IO.Path]::IsPathFullyQualified($ResultPath)) { throw 'absolute_result_required' }
+if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
+    throw 'exchange_online_management_module_required'
+}
+if ($PlanOnly) {
+    Write-Output 'EXO_BOOTSTRAP_PREFLIGHT=exchange_module_available_no_changes'
+    Write-Output 'CHANGES_APPLIED=no'
+    return
+}
+if (-not $PSCmdlet.ShouldProcess("Tenant $TenantId / mailbox $Mailbox",
+    'Configure exact Exchange Online scoped SMTP.SendAsApp role')) { return }
+Import-Module ExchangeOnlineManagement -ErrorAction Stop
+$clientId = $ClientId
+$serviceObjectId = $EnterpriseAppObjectId
+$sha = $CertificateSha256
+$app = [pscustomobject]@{ id = $ApplicationObjectId.ToString('D'); displayName = $ApplicationName }
 $createdThisRun = [ordered]@{
-    appRegistration = $false
-    enterpriseApplication = $false
+    appRegistration = [bool]$AppCreated
+    enterpriseApplication = [bool]$EnterpriseAppCreated
     exchangeServicePrincipal = $false
     managementScope = $false
     smtpRoleAssignment = $false
     mailboxTag = $false
-    addedCertificate = $false
+    addedCertificate = [bool]$AddedCertificate
 }
-Write-Host "PLAN: Tenant $TenantId; mailbox $Mailbox; certificate SHA256 $sha"
-Write-Host "PLAN: $($(if ($clientId -eq [guid]::Empty) {'Create new app'} else {'Reuse existing app'})) and add one public certificate."
-Write-Host 'PLAN: scoped Exchange Application SMTP.SendAsApp ONLY. No mailbox password or Graph Mail.Send.'
-Write-Host 'PLAN: Existing public certificates remain registered; the app can be shared by multiple Linux servers.'
-if ($PlanOnly -or -not $PSCmdlet.ShouldProcess("Tenant $TenantId / $ApplicationName", 'Configure Entra + scoped Exchange SMTP role')) { return }
-foreach ($module in @('Microsoft.Graph.Authentication', 'ExchangeOnlineManagement')) {
-    if (-not (Get-Module -ListAvailable -Name $module)) {
-        throw "Missing PowerShell module '$module'. Run Install-Module $module -Scope CurrentUser"
-    }
-}
-Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
-Import-Module ExchangeOnlineManagement -ErrorAction Stop
 $folder = Split-Path -Parent $ResultPath
 if ($folder -and -not (Test-Path -LiteralPath $folder)) {
-    New-Item -ItemType Directory -Path $folder -Force | Out-Null
+    [void](New-Item -ItemType Directory -Path $folder -Force)
 }
 function Save-State([object]$state) {
     $tmp = $ResultPath + '.new'
     $state | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $tmp -Encoding utf8
     Move-Item -LiteralPath $tmp -Destination $ResultPath -Force
 }
-function Graph([string]$method, [string]$uri, [object]$body = $null) {
-    if ($null -eq $body) { return Invoke-MgGraphRequest -Method $method -Uri $uri -ErrorAction Stop }
-    return Invoke-MgGraphRequest -Method $method -Uri $uri -ContentType 'application/json' `
-        -Body ($body | ConvertTo-Json -Depth 12 -Compress) -ErrorAction Stop
-}
-function CertEntry([System.Security.Cryptography.X509Certificates.X509Certificate2]$value, [string]$label) {
-    return @{
-        type = 'AsymmetricX509Cert'; usage = 'Verify'; displayName = $label
-        key = [Convert]::ToBase64String($value.RawData)
-        startDateTime = $value.NotBefore.ToUniversalTime().ToString('o')
-        endDateTime = $value.NotAfter.ToUniversalTime().ToString('o')
-    }
-}
-function Fetch-App([guid]$id) {
-    # IMPORTANT: $select=keyCredentials on a SINGLE app is required for public key bytes.
-    # Without it, Graph returns null keys and PATCH would destroy valid existing credentials.
-    $url = "https://graph.microsoft.com/v1.0/applications(appId='$id')?`$select=id,appId,displayName,keyCredentials"
-    return Graph GET $url
-}
 try {
-    Write-Host 'Connecting to Microsoft Graph by device code. Requires an authorized Entra application administrator.'
-    Connect-MgGraph -TenantId $TenantId.ToString() -Scopes 'Application.ReadWrite.All' `
-        -UseDeviceCode -ContextScope Process -NoWelcome -ErrorAction Stop | Out-Null
-    if ([guid](Get-MgContext).TenantId -ne $TenantId) { throw 'Wrong Entra tenant.' }
-    if ($clientId -eq [guid]::Empty) {
-        $app = Graph POST 'https://graph.microsoft.com/v1.0/applications' @{
-            displayName = $ApplicationName
-            signInAudience = 'AzureADMyOrg'
-            keyCredentials = @((CertEntry $cert $CertificateLabel))
-        }
-        $clientId = [guid]$app.appId
-        $createdThisRun.appRegistration = $true
-        Write-Host "New Entra application created. Client ID: $clientId"
-    } else {
-        $app = Fetch-App $clientId
-        if ($null -eq $app -or [guid]$app.appId -ne $clientId) { throw 'Existing app not found.' }
-        $old = @($app.keyCredentials)
-        if ($old.Count -gt 0 -and @($old | Where-Object { -not $_.key }).Count -gt 0) {
-            throw 'Graph omitted existing public certificate bytes. Refusing to replace existing credentials.'
-        }
-        $digestSet = @($old | ForEach-Object {
-            [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([Convert]::FromBase64String($_.key)))
-        })
-        if ($digestSet -contains $sha) {
-            Write-Host 'Certificate already registered; no Graph key replacement needed.'
-        } else {
-            # Preserve all existing X.509 public keys. Do NOT send a PATCH with only the new certificate.
-            $entries = @($old | ForEach-Object {
-                @{
-                    keyId = $_.keyId; type = $_.type; usage = $_.usage
-                    displayName = $_.displayName; key = $_.key
-                    startDateTime = $_.startDateTime; endDateTime = $_.endDateTime
-                }
-            })
-            $entries += CertEntry $cert $CertificateLabel
-            [void](Graph PATCH "https://graph.microsoft.com/v1.0/applications/$($app.id)" `
-                @{ keyCredentials = $entries })
-            $createdThisRun.addedCertificate = $true
-            $verify = Fetch-App $clientId
-            $valid = @($verify.keyCredentials | Where-Object {
-                $_.key -and [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([Convert]::FromBase64String($_.key))) -eq $sha
-            }).Count -gt 0
-            if (-not $valid -or @($verify.keyCredentials).Count -ne $entries.Count) {
-                throw 'Certificate add verification failed. STOP and verify all certificate credentials in Entra.'
-            }
-            Write-Host "Added public certificate; preserved $($old.Count) existing credential(s)."
-        }
-    }
-    $app = Fetch-App $clientId
-    try {
-        $service = Graph GET "https://graph.microsoft.com/v1.0/servicePrincipals(appId='$clientId')"
-    } catch {
-        # New registration often has no Enterprise Application until created.
-        $service = Graph POST 'https://graph.microsoft.com/v1.0/servicePrincipals' @{ appId = $clientId.ToString() }
-        $createdThisRun.enterpriseApplication = $true
-    }
-    if (-not $service.id) { throw 'Enterprise Application object ID missing.' }
-    $serviceObjectId = [guid]$service.id
-    Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
-
     Write-Host 'Connecting to Exchange Online with device authentication.'
     Connect-ExchangeOnline -Device -ShowBanner:$false -ErrorAction Stop
     # Even when Graph authentication used the selected tenant, EXO opens a separate
@@ -213,7 +147,7 @@ try {
         applicationObjectId = [string]$app.id
         clientId = $clientId.ToString()
         enterpriseAppObjectId = $serviceObjectId.ToString()
-        certificateSha256 = $sha; certificateExpiresUtc = $cert.NotAfter.ToUniversalTime().ToString('o')
+        certificateSha256 = $sha; certificateExpiresUtc = $CertificateExpiresUtc.ToUniversalTime().ToString('o')
         rbacReady = $true
         createdObjectEvidence = [ordered]@{
             schema = 'linuxmailrelay365-created-object-hints/v1'
@@ -230,6 +164,5 @@ try {
     Write-Host 'CAUTION: Tenant Security Defaults or Conditional Access can still block SMTP AUTH.'
     Write-Host 'No Entra app permissions, Graph Mail.Send, refresh tokens or passwords were created.'
 } finally {
-    Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
     Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
 }

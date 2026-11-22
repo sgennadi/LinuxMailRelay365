@@ -66,18 +66,33 @@ public static class EntraTenantDiscoveryClient
         }
     }
 
-    // Shared, in-process token acquisition for strictly read-only Graph object
-    // inspection. Exact tenant bound. No token is returned to the WinForms UI.
-    internal static async Task<string> AcquireGraphReadTokenAsync(
+    // Shared in-process token acquisition for read-only and separately
+    // operator-approved Graph writes. Tokens never leave this library and its
+    // MSAL cache is volatile only. The exact tenant is independently checked.
+    internal static Task<string> AcquireGraphReadTokenAsync(
         Guid exactTenant, Guid approvedClientId,
+        Func<DeviceCodeResult, Task> showDeviceCode, CancellationToken ct) =>
+        AcquireGraphTokenAsync(exactTenant, approvedClientId,
+            "https://graph.microsoft.com/Application.Read.All", showDeviceCode, ct);
+
+    internal static Task<string> AcquireGraphWriteTokenAsync(
+        Guid exactTenant, Guid approvedClientId,
+        Func<DeviceCodeResult, Task> showDeviceCode, CancellationToken ct) =>
+        AcquireGraphTokenAsync(exactTenant, approvedClientId,
+            "https://graph.microsoft.com/Application.ReadWrite.All", showDeviceCode, ct);
+
+    private static async Task<string> AcquireGraphTokenAsync(
+        Guid exactTenant, Guid approvedClientId, string exactScope,
         Func<DeviceCodeResult, Task> showDeviceCode, CancellationToken ct)
     {
         if (exactTenant == Guid.Empty || approvedClientId == Guid.Empty)
             throw new EntraDiscoveryException("invalid_graph_tenant_or_public_client");
+        if (exactScope is not ("https://graph.microsoft.com/Application.Read.All" or
+                              "https://graph.microsoft.com/Application.ReadWrite.All"))
+            throw new EntraDiscoveryException("invalid_graph_scope");
         var app = Clients.GetOrAdd(approvedClientId, id =>
             PublicClientApplicationBuilder.Create(id.ToString("D"))
                 .WithAuthority(AzureCloudInstance.AzurePublic, "organizations").Build());
-        const string readScope = "https://graph.microsoft.com/Application.Read.All";
         AuthenticationResult? credential = null;
         try
         {
@@ -85,7 +100,8 @@ public static class EntraTenantDiscoveryClient
             {
                 try
                 {
-                    var silent = await app.AcquireTokenSilent([readScope], account)
+                    var silent = await app.AcquireTokenSilent([exactScope], account)
+                        .WithTenantId(exactTenant.ToString("D"))
                         .ExecuteAsync(ct).ConfigureAwait(false);
                     if (Guid.TryParse(silent.TenantId, out var found) && found == exactTenant)
                     {
@@ -95,7 +111,7 @@ public static class EntraTenantDiscoveryClient
                 }
                 catch (MsalUiRequiredException) { }
             }
-            credential ??= await app.AcquireTokenWithDeviceCode([readScope], showDeviceCode)
+            credential ??= await app.AcquireTokenWithDeviceCode([exactScope], showDeviceCode)
                 .WithTenantId(exactTenant.ToString("D"))
                 .ExecuteAsync(ct).ConfigureAwait(false);
         }

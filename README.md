@@ -1,6 +1,6 @@
 # LinuxMailRelay365
 
-> **Development branch (not yet released):** test candidate `0.1.1-rc.2` replaces PowerShell tenant discovery with a native C# / MSAL Device Code and MFA GUI, plus read-only Microsoft Graph inspection for App Registration, Enterprise Application and certificates. Advanced ARM tenant enumeration requires an approved public client ID. Exchange-only PowerShell remains for EXO management. RC1 is the published baseline; Stable is NOT authorized until live tenant and Linux acceptance.
+> **Development branch (not yet released):** test candidate `0.1.1-rc.3` migrates Entra App Registration and public-certificate write provisioning from PowerShell to C# / MSAL / Microsoft Graph, with explicit admin consent, exact tenant and App Client ID, credential preservation and Graph postchecks. Exchange Online RBAC and Connector cmdlets remain in EXO-only PowerShell 7. Do not use as signed Stable or on production without live tenant acceptance.
 
 
 Native Microsoft authentication design: [docs/NATIVE_CSHARP_MICROSOFT365_AUTH.md](docs/NATIVE_CSHARP_MICROSOFT365_AUTH.md).
