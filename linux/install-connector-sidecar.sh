@@ -41,7 +41,7 @@ try:
     port,listen,networks,mx,domain,sender,public,cert,key,foreign,hostname=sys.argv[1:]
     if foreign not in ('', 'exim', 'sendmail') or (foreign and not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+',hostname)) or (not foreign and hostname):
         raise ValueError('invalid_foreign_mta_or_explicit_sidecar_hostname')
-    if not re.fullmatch(r'[0-9]{4,5}',port) or not 1024<=int(port)<=65535:
+    if not re.fullmatch(r'(25|[1-9][0-9]{3,4})',port) or not (int(port)==25 or 1024<=int(port)<=65535):
         raise ValueError('invalid_custom_port')
     dns=r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+'
     if not re.fullmatch(dns,mx) or not mx.lower().endswith('.mail.protection.outlook.com'):
@@ -168,8 +168,29 @@ if [ -n "$LISTEN" ]; then
       echo 'CONNECTOR_ERROR=private_listener_not_assigned' >&2; exit 1;
     }
 fi
-if ss -H -ltn "( sport = :$PORT )" | grep -q .; then
-  echo 'CONNECTOR_ERROR=port_already_bound' >&2; exit 1;
+# Fail closed on unreadable kernel socket state. A privileged TCP/25
+# listener must never hijack primary mail flow, including after reboot.
+if ! observed_sockets="$(ss -H -ltn "( sport = :$PORT )")"; then
+  echo 'CONNECTOR_ERROR=smtp_socket_scan_failed' >&2; exit 1
+fi
+if [ -n "$observed_sockets" ]; then
+  echo 'CONNECTOR_ERROR=port_already_bound' >&2; exit 1
+fi
+if [ "$PORT" = 25 ]; then
+  for primary_unit in postfix.service exim.service exim4.service sendmail.service; do
+    load_state="$(systemctl show --property=LoadState --value "$primary_unit" 2>/dev/null || true)"
+    case "$load_state" in
+      not-found) continue ;;
+      loaded|masked) ;;
+      *) echo 'CONNECTOR_ERROR=primary_mta_unit_unverified_on_port25' >&2; exit 1 ;;
+    esac
+    active_state="$(systemctl is-active "$primary_unit" 2>/dev/null || true)"
+    enabled_state="$(systemctl is-enabled "$primary_unit" 2>/dev/null || true)"
+    case "$active_state/$enabled_state" in
+      inactive/disabled|inactive/masked) ;;
+      *) echo 'CONNECTOR_ERROR=primary_mta_may_claim_port25' >&2; exit 1 ;;
+    esac
+  done
 fi
 postconf -m | grep -Fxq regexp || {
   echo 'CONNECTOR_ERROR=postfix_regexp_lookup_not_installed' >&2; exit 1;
