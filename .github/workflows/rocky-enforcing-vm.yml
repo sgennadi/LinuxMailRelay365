@@ -11,6 +11,7 @@ on:
       - tests/rocky_vm_*.sh
       - tests/rocky_vm_*.py
       - linux/foreign-mta-config-backup.py
+      - linux/manage-multi-mailbox-proof-timer.py
       - tests/assert_sendmail_v2_export.py
       - tests/rehearse_sendmail_v2_metadata.py
       - linux/manage-rhel-selinux-sidecar-context.py
@@ -28,7 +29,7 @@ jobs:
   kvm-host-capability:
     name: Verify nested KVM availability on GitHub-hosted Ubuntu
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:

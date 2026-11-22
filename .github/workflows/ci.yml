@@ -17,7 +17,7 @@ jobs:
       - name: Shell and unit tests
         run: |
           bash -n tests/smoke_native_exim_offline_restore.sh tests/smoke_native_sendmail_backup.sh
-          bash -n tests/rocky_vm_sendmail_systemd_enforcing.sh tests/rocky_vm_boot_enforcing.sh tests/rocky_vm_tls_auth_enforcing.sh tests/rocky_vm_isolated_postfix_enforcing.sh
+          bash -n tests/rocky_vm_sendmail_systemd_enforcing.sh tests/rocky_vm_boot_enforcing.sh tests/rocky_vm_tls_auth_enforcing.sh tests/rocky_vm_isolated_postfix_enforcing.sh tests/rocky_vm_multi_proof_timer_enforcing.sh
           python3 -m py_compile tests/rocky_vm_sendmail_stopped_config_restore.py
           python3 -m py_compile tests/rocky_vm_sendmail_stopped_dual_config_restore.py
           python3 -m py_compile tests/rocky_vm_sendmail_post_reboot_check.py

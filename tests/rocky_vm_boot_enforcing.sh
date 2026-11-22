@@ -121,6 +121,27 @@ echo "LMR365_GUEST_SELINUXFS=active"
 echo "LMR365_GUEST_SSHD=active"
 GUEST
 
+# Real systemd + SELinux Enforcing; a synthetic auditor exercises only the
+# optional proof-timer lifecycle, NOT mail authentication or cloud delivery.
+scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+    linux/manage-multi-mailbox-proof-timer.py \
+    ci@127.0.0.1:/home/ci/lmr365-proof-timer-manager.py
+scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+    tests/rocky_vm_multi_proof_timer_enforcing.sh \
+    ci@127.0.0.1:/home/ci/lmr365-proof-timer-smoke.sh
+ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    'sudo env GITHUB_ACTIONS=true bash /home/ci/lmr365-proof-timer-smoke.sh' \
+    > "$work/proof-timer"
+grep -Fxq 'LMR365_VM_TIMER_PREVIEW=read_only' "$work/proof-timer"
+grep -Fxq 'LMR365_VM_TIMER_SYSTEMD=active_under_enforcing' "$work/proof-timer"
+grep -Fxq 'LMR365_VM_TIMER_SCHEDULED=renewed' "$work/proof-timer"
+grep -Fxq 'LMR365_VM_TIMER_REVOCATION=verified' "$work/proof-timer"
+grep -Fxq 'LMR365_VM_TIMER_FIXTURE=removed' "$work/proof-timer"
+grep -Fxq 'LMR365_VM_TIMER_REAL_M365_ACCEPTANCE=no' "$work/proof-timer"
+echo 'LMR365_GUEST_PROOF_TIMER=synthetic_systemd_lifecycle_under_enforcing_verified'
+
 scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
     linux/rhel-selinux-doctor.py ci@127.0.0.1:/tmp/lmr365-doctor.py
