@@ -3411,6 +3411,19 @@ internal sealed partial class MainForm : Form
                 finally { routingLoading = false; }
             }
         }
+        // New main-window layout: record both the default compact form and
+        // the operator-expandable help. Real Windows controls, never mockups.
+        step = 0;
+        Size = new Size(1050, 830);
+        sshHelpExpanded = true;
+        RenderPage();
+        Screenshot("01-linux-help-expanded.png");
+        Screenshot("01-linux-help-expanded-bottom.png", scrollToBottom: true);
+        Size = new Size(760, 700);
+        RenderPage();
+        Screenshot("01-linux-help-compact.png");
+        sshHelpExpanded = false;
+
         // Additional compact-window QA across ALL five pages. These are
         // captured on actual WinForms controls, not assistant mockups.
         // A compact viewport exposes text wrapping and footer regressions.
