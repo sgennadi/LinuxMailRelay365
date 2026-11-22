@@ -42,9 +42,11 @@ class TenantDiscoveryContracts(unittest.TestCase):
         self.assertIn('Open Microsoft sign-in', code)
         self.assertIn('if (!completed) cancel();', code)
         self.assertIn('IsTrustedMicrosoftVerificationUrl', code)
-        self.assertIn('new NativeDeviceCodeDialog(cancellation.Cancel)', main)
+        self.assertIn('WithNativeMicrosoftSignInAsync(', main)
+        helper = (SRC / 'MainForm.NativeCloud.cs').read_text(encoding='utf8')
+        self.assertIn('new NativeDeviceCodeDialog(cancellation.Cancel)', helper)
         self.assertIn('DiscoverAsync(', main)
-        self.assertIn('dialog.Finish()', main)
+        self.assertIn('dialog.Finish()', helper)
         self.assertNotIn('TenantDiscovery.FailureCode(', main)
         self.assertNotIn('EmbeddedAssets.TenantDiscoveryScript', main)
 
