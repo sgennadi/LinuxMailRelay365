@@ -7170,7 +7170,14 @@ internal sealed partial class MainForm : Form
         using var process = Process.Start(psi) ?? throw new IOException("PowerShell 7 could not be started.");
         await process.WaitForExitAsync();
         if (process.ExitCode != 0 || !File.Exists(resultPath))
-            throw new IOException("Tenant discovery failed. No settings were modified; manual Tenant ID remains available.");
+        {
+            string failure = File.Exists(resultPath)
+                ? TenantDiscovery.FailureCode(await File.ReadAllTextAsync(resultPath))
+                : "result_missing";
+            throw new IOException("Tenant discovery failed (" + failure +
+                "). No settings were modified; manual Tenant ID remains available. " +
+                "Review the PowerShell sign-in window or retry.");
+        }
         var choices = TenantDiscovery.Parse(await File.ReadAllTextAsync(resultPath));
         discoveredTenants = choices;
         tenantSelectionLoading = true;
