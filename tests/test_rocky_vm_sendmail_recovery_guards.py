@@ -27,6 +27,55 @@ reboot = importlib.util.module_from_spec(reboot_spec)
 reboot_spec.loader.exec_module(reboot)
 
 
+
+class PostRebootListenerGuardTests(unittest.TestCase):
+    """Pure string tests; never bind a port or inspect actual host sockets."""
+
+    def test_exact_postfix_ipv4_listener_accepted_with_unrelated_ssh(self):
+        capture = (
+            "LISTEN 0 4096 127.0.0.1:25 0.0.0.0:*\n"
+            "LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*\n")
+        self.assertEqual(
+            reboot.require_only_primary_postfix_listener(capture),
+            "loopback_ipv4_25_only")
+
+    def test_ipv6_wildcard_ipv4_wildcard_and_public_bind_refused(self):
+        for addr in ("0.0.0.0", "[::]", "192.0.2.15", "[2001:db8::1]"):
+            with self.subTest(address=addr):
+                capture = "LISTEN 0 4096 %s:25 0.0.0.0:*\n" % addr
+                with self.assertRaisesRegex(
+                        RuntimeError, "UNEXPECTED_SMTP_LISTENER"):
+                    reboot.require_only_primary_postfix_listener(capture)
+
+    def test_ipv6_loopback_mismatches_explicit_ipv4_fixture(self):
+        with self.assertRaisesRegex(
+                RuntimeError, "UNEXPECTED_SMTP_LISTENER"):
+            reboot.require_only_primary_postfix_listener(
+                "LISTEN 0 4096 [::1]:25 [::]:*\n")
+
+    def test_additional_submission_and_custom_port_refused(self):
+        base = "LISTEN 0 4096 127.0.0.1:25 0.0.0.0:*\n"
+        for port in (465, 587, 2525, 2526):
+            with self.subTest(port=port):
+                capture = base + ("LISTEN 0 4096 127.0.0.1:%d 0.0.0.0:*\n"
+                                  % port)
+                with self.assertRaisesRegex(
+                        RuntimeError, "UNEXPECTED_SMTP_LISTENER"):
+                    reboot.require_only_primary_postfix_listener(capture)
+
+    def test_missing_duplicate_and_garbage_listeners_refused(self):
+        primary = "LISTEN 0 4096 127.0.0.1:25 0.0.0.0:*\n"
+        for capture, error in (
+                ("", "MISSING_OR_DUPLICATE_PRIMARY"),
+                (primary + primary, "MISSING_OR_DUPLICATE_PRIMARY"),
+                ("garbled\n", "UNPARSEABLE_TCP_LISTENER"),
+                ("LISTEN 0 4096 broken 0.0.0.0:*\n",
+                 "INVALID_TCP_LISTENER_ADDRESS")):
+            with self.subTest(capture=capture):
+                with self.assertRaisesRegex(RuntimeError, error):
+                    reboot.require_only_primary_postfix_listener(capture)
+
+
 class PostRebootReadOnlyGuardTests(unittest.TestCase):
     def test_nonroot_reboot_probe_refuses_without_host_inspection(self):
         with mock.patch.object(reboot.os, "geteuid", return_value=1000):
