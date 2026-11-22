@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
+using Microsoft365Auth;
 
 namespace LinuxMailRelay365;
 
@@ -63,8 +64,28 @@ internal sealed partial class MainForm
         // match the original requested app, not just parse successfully.
         string requestedClientField = existingAppId.Text.Trim();
         string requestedConnectorName = outboundConnectorName.Text.Trim();
+        string requestedBootstrap = entraSignInClientId.Text.Trim();
         ValidateCloudInventorySelection(
             tenantId, clientId, requestedClientField, requestedConnectorName);
+        // App Registration / Enterprise Application / public credentials are
+        // read directly via C# Graph. Exchange cmdlets below remain EXO-only.
+        EntraApplicationInventory? nativeGraph = null;
+        if (clientId is { } exactApp)
+        {
+            Guid? bootstrap = null;
+            if (requestedBootstrap.Length > 0)
+            {
+                if (!Guid.TryParse(requestedBootstrap, out var parsed) || parsed == Guid.Empty)
+                    throw new ArgumentException("Approved Microsoft Graph public sign-in Client ID must be a GUID.");
+                bootstrap = parsed;
+            }
+            WriteLine("Microsoft Graph App/SP/certificates: native C# MSAL read-only inspection (Application.Read.All).");
+            nativeGraph = await WithNativeMicrosoftSignInAsync((show, ct) =>
+                EntraGraphInventoryClient.InspectAsync(tenantId, exactApp, bootstrap, show, ct));
+            ValidateCloudInventorySelection(tenantId, clientId, requestedClientField, requestedConnectorName);
+            if (!string.Equals(requestedBootstrap, entraSignInClientId.Text.Trim(), StringComparison.Ordinal))
+                throw new InvalidOperationException("Microsoft sign-in client changed during read-only inspection.");
+        }
         Directory.CreateDirectory(dataDirectory);
         string script = Path.Combine(dataDirectory, "Inspect-LinuxMailRelay365Objects.ps1");
         string report = Path.Combine(dataDirectory,
@@ -103,9 +124,23 @@ internal sealed partial class MainForm
                 throw new InvalidDataException("Microsoft 365 cloud inventory report is missing.");
             var inventory = CloudObjectsInventory.Parse(
                 await File.ReadAllTextAsync(report), tenantId, clientId);
+            if (nativeGraph is not null)
+            {
+                inventory = inventory with
+                {
+                    ApplicationStatus = "found",
+                    ApplicationObjectId = nativeGraph.AppObjectId,
+                    ApplicationName = nativeGraph.DisplayName,
+                    ServicePrincipalStatus = nativeGraph.EnterpriseStatus,
+                    ServicePrincipalObjectId = nativeGraph.EnterpriseObjectId,
+                    Certificates = nativeGraph.Certificates.Select(c =>
+                        new CloudCredentialObject(c.KeyId, c.Label, c.Type,
+                            c.Usage, c.ValidFrom, c.ValidUntil)).ToArray()
+                };
+            }
             ValidateCloudInventorySelection(
                 tenantId, clientId, requestedClientField, requestedConnectorName);
-            WriteLine("Read-only Microsoft 365 object inspection: " +
+            WriteLine("Native C# Graph + Exchange-only PowerShell object inspection: " +
                 inventory.Connectors.Count + " candidate connectors, " +
                 inventory.Certificates.Count + " public credential records, " +
                 inventory.Scopes.Count + " candidate scopes. No tenant objects changed.");
