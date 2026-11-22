@@ -3318,6 +3318,36 @@ internal sealed partial class MainForm : Form
                 break;
             case 4:
                 EnsureRoutingLoaded();
+                if (!HasMailDiscovery())
+                {
+                    AddLine(page, MailFlowText(T(
+                        "После изменений или нового подключения повторно проверьте Linux. До этого проверки выбранного маршрута недостоверны.",
+                        "Reinspect Linux after changes or reconnecting. Mail-flow diagnostics require a current server profile.",
+                        "יש לבצע בדיקת Linux עדכנית לפני בדיקת מסלול הדואר."),
+                        Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
+                    AddAction(page, T("Повторить read-only аудит",
+                        "Run read-only discovery again", "בדיקה חוזרת"),
+                        InspectMailRoutingAsync, true, "check", "mail-flow-discover");
+                    break;
+                }
+                if (selectedMailScenario is MailScenarioPlanner.Keep or
+                    MailScenarioPlanner.ReplaceRelay ||
+                    selectedMailTarget == MailFlowIntent.TargetCustom)
+                {
+                    AddLine(page, BuildLiveMailFlowDiagram());
+                    AddLine(page, MailFlowText(T(
+                        "Это выбор маршрута, но не доказательство установленной доставки. Не будем отправлять тест от имени XOAUTH2 через возможно прежний upstream. Сначала нужно подтвердить фактическую конфигурацию.",
+                        "This is a plan, not proof of a deployed transport. No misleading XOAUTH2 test will be sent through a possibly unchanged upstream; inspect the actual route first.",
+                        "זהו תכנון בלבד; לא תישלח הודעת בדיקה ללא אימות הניתוב."),
+                        Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
+                    AddAction(page, T("Проверить активный MTA и исходящий relay",
+                        "Inspect live MTA and current upstream", "בדיקת שרת הדואר"),
+                        InspectMailRoutingAsync, true, "check", "mail-flow-verify");
+                    if (selectedMailTarget == MailFlowIntent.TargetM365 &&
+                        selectedMailScenario == MailScenarioPlanner.ReplaceRelay)
+                        AddUnverifiedM365Capabilities(page);
+                    break;
+                }
                 if (mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 0)
                 {
                     AddLine(page, UiTheme.Text(T(
