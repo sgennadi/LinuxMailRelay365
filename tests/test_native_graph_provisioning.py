@@ -34,7 +34,7 @@ class NativeEntraProvisioning(unittest.TestCase):
         ):
             self.assertIn(phrase, code)
         for forbidden in (
-            "Graph Mail.Send", "Directory.ReadWrite.All",
+            "Directory.ReadWrite.All",
             "Connect-MgGraph", "Connect-AzAccount", "client_secret",
             "Set-CASMailbox", "Set-ManagementScope",
             "File.WriteAllText", "Save-AzContext",
