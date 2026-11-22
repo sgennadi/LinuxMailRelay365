@@ -11,8 +11,10 @@ internal static class MailFlowIntent
     internal const string Mixed = "mixed";
     internal const string TargetM365 = "m365";
     internal const string TargetCustom = "custom-smtp";
+    internal const string TargetGmail = "google-gmail";
+    internal const string TargetWorkspace = "google-workspace";
     internal static bool SupportedTarget(string? target) =>
-        target is TargetM365 or TargetCustom;
+        target is TargetM365 or TargetCustom or TargetGmail or TargetWorkspace;
 
     internal static bool Supported(string? source) =>
         source is Unknown or Local or Jobs or Smtp or Mixed;
@@ -56,12 +58,20 @@ internal static class MailFlowIntent
         string preliminary = destination == TargetM365
             ? T(language, "Кандидат · права M365 не проверены",
                 "Candidate · M365 rights not verified", "מועמד · זכויות M365 לא אומתו")
+            : destination == TargetWorkspace
+            ? T(language, "Кандидат · IP/TLS и политика Workspace не проверены",
+                "Candidate · Workspace IP/TLS policy unverified", "אימות Google Workspace נדרש")
             : T(language, "Кандидат · SMTP/TLS/AUTH не проверены",
                 "Candidate · SMTP/TLS/AUTH not verified", "מועמד · TLS ואימות לא אומתו");
         string safe = T(language, "Без изменений", "No changes", "ללא שינוי");
 
-        string destinationName = destination == TargetM365
-            ? "Microsoft 365" : T(language, "другой SMTP Relay", "another SMTP relay", "ממסר SMTP אחר");
+        string destinationName = destination switch
+        {
+            TargetM365 => "Microsoft 365",
+            TargetGmail => "Gmail · smtp.gmail.com",
+            TargetWorkspace => "Google Workspace · smtp-relay.gmail.com",
+            _ => T(language, "другой SMTP Relay", "another SMTP relay", "ממסר SMTP אחר")
+        };
         var options = new List<MailOption>();
         options.Add(new(MailScenarioPlanner.Keep,
             T(language, "Оставить существующий почтовый маршрут",
