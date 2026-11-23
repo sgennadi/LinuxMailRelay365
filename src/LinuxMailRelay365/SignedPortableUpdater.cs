@@ -1004,16 +1004,16 @@ internal static class SignedPortableUpdater
             bool duplicate = false)
         {
             string link = "https://github.com/sgennadi/LinuxMailRelay365/releases/download/" +
-                "v0.1.1-rc.8/" + asset;
+                "v0.1.1-rc.9/" + asset;
             string item = JsonSerializer.Serialize(new
             {
                 name = asset, digest = "sha256:" + digest, size = 100L,
                 browser_download_url = link
             });
-            return "[{\"tag_name\":\"v0.1.1-rc.8\",\"draft\":false," +
+            return "[{\"tag_name\":\"v0.1.1-rc.9\",\"draft\":false," +
                 "\"prerelease\":" + (preview ? "true" : "false") +
                 ",\"html_url\":\"https://github.com/sgennadi/LinuxMailRelay365/releases/tag/" +
-                "v0.1.1-rc.8\",\"assets\":[" + item +
+                "v0.1.1-rc.9\",\"assets\":[" + item +
                 (duplicate ? "," + item : "") + "]}]";
         }
         static SignedUpdateOffer? Parse(string json, bool allow)
@@ -1027,7 +1027,7 @@ internal static class SignedPortableUpdater
             "0.1.0-preview.25", asset);
         // Equal installed prerelease version must never count as an update.
         bool sameVersionRejected = SelectRelease(previewFixture.RootElement,
-            true, "0.1.1-rc.8", asset) is null;
+            true, "0.1.1-rc.9", asset) is null;
         bool installedStable = !IsUnsignedTestVersion(UpdateCheck.Version);
         // Confirm a verified historical Preview offer is NEVER eligible as an
         // unsigned Preview upgrade for an already installed numeric Stable.
@@ -1043,7 +1043,7 @@ internal static class SignedPortableUpdater
                    "https://github.com/sgennadi/LinuxMailRelay365/releases/tag/v0.1.1",
                    new Uri("https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.1/" + asset),
                    asset, hash, 100L)) &&
-               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.1-rc.8" &&
+               Parse(Fixture(asset, hash, true), true)?.Version == "0.1.1-rc.9" &&
                Parse(Fixture(asset, hash, true), false) is null &&
                Parse(Fixture(asset, hash, false), false) is null &&
                Parse(Fixture(asset, hash, true, duplicate: true), true) is null &&
