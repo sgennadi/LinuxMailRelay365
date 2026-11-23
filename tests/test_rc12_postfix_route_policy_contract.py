@@ -4,6 +4,7 @@ These Linux-running contracts complement the real Windows C# SelfTest.
 No test asserts that map lookups or SMTP delivery were performed.
 """
 from pathlib import Path
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,12 +78,18 @@ class PostfixRoutePolicyContractTests(unittest.TestCase):
     def test_rc12_release_only_after_full_acceptance(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         csproj = (CS / "LinuxMailRelay365.csproj").read_text(encoding="utf-8")
-        self.assertIn("<Version>0.1.1-rc.12</Version>", csproj)
+        # RC12 publication must remain unchanged, while development version
+        # may advance as new release candidates are added.
+        match = re.search(r"<Version>(0\.1\.1-rc\.([0-9]+))</Version>", csproj)
+        self.assertIsNotNone(match)
+        current = match.group(1)
+        self.assertGreaterEqual(int(match.group(2)), 12)
         for path in ("UpdateCheck.cs", "UpdateCheck.Fallback.cs"):
-            self.assertIn('internal const string Version = "0.1.1-rc.12";',
+            self.assertIn('internal const string Version = "' + current + '";',
                           (CS / path).read_text(encoding="utf-8"))
-        self.assertIn("-ExpectedCandidateVersion '0.1.1-rc.12'", ci)
-        job = ci.split("  rc12-prerelease-publish:", 1)[1]
+        self.assertIn("-ExpectedCandidateVersion '" + current + "'", ci)
+        job = ci.split("  rc12-prerelease-publish:", 1)[1].split(
+            "\n  rc13-prerelease-publish:", 1)[0]
         self.assertIn("github.event_name == 'push'", job)
         self.assertIn("refs/heads/feature/rc12-postfix-route-policy-audit", job)
         for requirement in ("- linux-tests", "- windows-build",
