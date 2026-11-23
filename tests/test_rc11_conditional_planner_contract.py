@@ -49,6 +49,18 @@ class ConditionalRouteUiContractTests(unittest.TestCase):
         self.assertIn("TLS/AUTH combination", engine)
         self.assertIn("string PlanSha256", engine)
 
+    def test_rule_cards_are_editable_without_postfix_changes(self):
+        ui = (CS / "MainForm.AdvancedRoutes.cs").read_text(encoding="utf-8")
+        self.assertIn("BeginAdvancedRouteEdit(", ui)
+        self.assertIn("advancedRoutingEditIndex = -1", ui)
+        self.assertIn("candidates[advancedRoutingEditIndex] = proposed", ui)
+        self.assertIn("AdvancedRoutePlanner.ValidatePlan(candidates)", ui)
+        self.assertIn("Cancel rule edit", ui)
+        self.assertIn("simulation.SampleSender", ui)
+        self.assertIn("simulation.SampleRecipient", ui)
+        planner = (CS / "AdvancedRoutePlanner.cs").read_text(encoding="utf-8")
+        self.assertIn("string SampleSender, string SampleRecipient", planner)
+
     def test_csharp_executable_self_test_is_registered(self):
         source = (CS / "Program.cs").read_text(encoding="utf-8")
         self.assertIn("AdvancedRoutePlanner.SelfTest", source)
