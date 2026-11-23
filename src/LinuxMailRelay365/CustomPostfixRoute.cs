@@ -46,7 +46,7 @@ internal static class CustomPostfixRoute
                 throw new InvalidDataException("Malformed custom route status.");
             string key = line[..cut], value = line[(cut + 1)..];
             if (!Regex.IsMatch(key, @"\ACUSTOM_ROUTE_[A-Z0-9_]+\z") ||
-                !Regex.IsMatch(value, @"\A[a-z0-9_.-]+\z") ||
+                !Regex.IsMatch(value, @"\A[A-Za-z0-9_.-]+\z") ||
                 !values.TryAdd(key, value))
                 throw new InvalidDataException("Unexpected or repeated custom route status field.");
         }
