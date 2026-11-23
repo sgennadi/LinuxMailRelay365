@@ -238,7 +238,7 @@ internal sealed record MailDiscoveryBrief(
             "MAIL_HOST_FQDN=mail.example.org\nMAIL_HOST_DOMAIN=example.org\n" +
             "MAIL_HOST_MTA=postfix\nMAIL_HOST_MTA_STATE=active\n" +
             "MAIL_HOST_TRUST=os_report_unverified\nMAIL_HOST_CHANGES=no\n" +
-            "MAIL_HOST_POSTFIX_MYDESTINATION=\\$myhostname, localhost\n" +
+            "MAIL_HOST_POSTFIX_MYDESTINATION=$myhostname, localhost\n" +
             "MAIL_HOST_POSTFIX_ROLE_VIRTUAL_MAILBOX_DOMAINS=declared\n" +
             "MAIL_HOST_POSTFIX_ROLE_TRANSPORT_MAPS=declared\n" +
             "MAIL_HOST_POSTFIX_ROLE_SENDER_CANONICAL_MAPS=declared\n";
