@@ -268,12 +268,16 @@ internal static class CustomPostfixRoute
                 "plain", "password", "preview"); return false; }
         catch (ArgumentException) { }
         try { BuildScript(py, recovery, "relay.example.org", 25,
-                "plain", "none", "apply", new string('a', 64)); return false; }
+                "plain", "none", "apply", new string('a', 64),
+                expectedResolutionSha: new string('b', 64)); return false; }
         catch (InvalidOperationException) { }
         try { BuildScript(py, recovery, "relay.example.org", 25,
                 "starttls", "none", "apply", new string('a', 64),
-                "user", "secret"); return false; }
+                "user", "secret", expectedResolutionSha: new string('b', 64)); return false; }
         catch (InvalidDataException) { }
+        try { BuildScript(py, recovery, "relay.example.org", 25,
+                "starttls", "none", "apply", new string('a', 64)); return false; }
+        catch (ArgumentException) { }
         return true;
     }
 }
