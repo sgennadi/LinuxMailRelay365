@@ -19,6 +19,19 @@ printf '#!/bin/sh\nexit 101\n' | sudo tee "$policy" >/dev/null
 sudo chmod 0755 "$policy"
 trap 'sudo rm -f /usr/sbin/policy-rc.d' EXIT
 
+# CI-only disposable Sendmail host: avoid unqualified-host DNS delays in
+# native -bt -C parsing. Keep the production 15-second fail-closed timeout.
+if test "$mta" = sendmail && test "${GITHUB_ACTIONS:-}" = true; then
+  smoke_short=lmr365-sendmail-ci
+  smoke_fqdn="${smoke_short}.example.invalid"
+  printf '127.0.1.10 %s %s\n' "$smoke_fqdn" "$smoke_short" | sudo tee -a /etc/hosts >/dev/null
+  sudo hostname "$smoke_short"
+  if test "$(hostname -f)" != "$smoke_fqdn"; then
+    echo 'sendmail_disposable_fqdn_resolution_failed' >&2
+    exit 2
+  fi
+  echo 'NATIVE_SENDMAIL_CI_FQDN_READY=yes'
+fi
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -qq
 if test "$mta" = exim; then

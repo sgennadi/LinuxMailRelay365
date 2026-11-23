@@ -42,6 +42,18 @@ class PostfixCandidatePreviewTests(unittest.TestCase):
         program = (CS / "Program.cs").read_text(encoding="utf-8")
         self.assertIn("PostfixConditionalMapPreview.SelfTest", program)
 
+    def test_ci_sendmail_hostname_fixture_preserves_native_validation(self):
+        fixture = (ROOT / "tests" / "smoke_native_foreign_mta.sh").read_text(
+            encoding="utf-8")
+        native = (ROOT / "linux" / "restore-foreign-mta-config.py").read_text(
+            encoding="utf-8")
+        self.assertIn("GITHUB_ACTIONS", fixture)
+        self.assertIn("hostname -f", fixture)
+        self.assertIn("NATIVE_SENDMAIL_CI_FQDN_READY=yes", fixture)
+        self.assertIn("native_mta_static_parser_timed_out", native)
+        self.assertIn("timeout=15", native)
+        self.assertIn('("sendmail.cf", "submit.cf")', native)
+
     def test_exact_version_and_release_gates(self):
         for file in ("LinuxMailRelay365.csproj", "UpdateCheck.cs",
                      "UpdateCheck.Fallback.cs"):
