@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import pathlib
+import socket
 import tempfile
 import unittest
 from unittest import mock
@@ -28,9 +29,14 @@ class CustomPostfixRouteTests(unittest.TestCase):
     def request(self, **updates):
         request = dict(host="smtp.example.org", port=2525, tls="starttls",
                        auth_mode="none", operation="preview",
-                       expected_sha="", username="", secret="",
+                       expected_sha="", expected_resolution_sha="", username="", secret="",
                        plaintext_approval="")
         request.update(updates)
+        # Existing synthetic Apply fixtures represent reviewed DNS evidence.
+        if (request["operation"] == "apply" and
+                request["expected_sha"] == "a"*64 and
+                "expected_resolution_sha" not in updates):
+            request["expected_resolution_sha"] = "b"*64
         return mod.config(request)
 
     def test_ports_tls_modes_and_destination_validation(self):
@@ -99,7 +105,9 @@ class CustomPostfixRouteTests(unittest.TestCase):
              mock.patch.object(mod, "queue_state", return_value="empty"), \
              mock.patch.object(mod, "scope_status", return_value="verified"), \
              mock.patch.object(mod, "client_sasl_status", return_value="ready"), \
-             mock.patch.object(mod, "postconf", side_effect=lambda name: {
+             mock.patch.object(mod, "outbound_destination_evidence",
+                               return_value=("no", "b"*64)), \
+                          mock.patch.object(mod, "postconf", side_effect=lambda name: {
                  "smtp_sasl_auth_enable": "yes",
                  "smtp_sasl_password_maps": mod.MANAGED_MAP,
                  "smtp_tls_security_level": "secure"}.get(name, "")), \
@@ -120,6 +128,7 @@ class CustomPostfixRouteTests(unittest.TestCase):
         for scenario in (
                 dict(host="localhost"),
                 dict(host="127.0.0.1"),
+                 dict(risk="unverified"),
                 dict(queue="nonempty"),
                 dict(conflict=True),
                 dict(scope="unverified"),
@@ -136,7 +145,11 @@ class CustomPostfixRouteTests(unittest.TestCase):
                                        return_value=scenario.get("scope", "verified")), \
                      mock.patch.object(mod, "client_sasl_status",
                                        return_value=scenario.get("sasl", "ready")), \
-                     mock.patch.object(mod, "postconf", return_value=""):
+                     mock.patch.object(mod, "outbound_destination_evidence",
+                                             return_value=(scenario.get("risk",
+                                                 "yes" if scenario.get("host") in
+                                                 ("localhost", "127.0.0.1") else "no"), "b"*64)), \
+                                          mock.patch.object(mod, "postconf", return_value=""):
                     capture = io.StringIO()
                     with contextlib.redirect_stdout(capture):
                         mod.preview(request)
@@ -150,7 +163,9 @@ class CustomPostfixRouteTests(unittest.TestCase):
                  mock.patch.object(mod, "route_conflicts", return_value=False), \
                  mock.patch.object(mod, "queue_state", return_value=queue), \
                  mock.patch.object(mod, "scope_status", return_value="verified"), \
-                 mock.patch.object(mod, "verified_backup") as backup:
+                 mock.patch.object(mod, "outbound_destination_evidence",
+                                   return_value=("no", "b"*64)), \
+                                  mock.patch.object(mod, "verified_backup") as backup:
                 with self.assertRaises(RuntimeError):
                     mod.apply(req)
                 backup.assert_not_called()
@@ -165,7 +180,9 @@ class CustomPostfixRouteTests(unittest.TestCase):
              mock.patch.object(mod, "queue_state", return_value="empty"), \
              mock.patch.object(mod, "scope_status", return_value="verified"), \
              mock.patch.object(mod, "client_sasl_status", return_value="ready"), \
-             mock.patch.object(mod, "fingerprint", return_value="a"*64), \
+             mock.patch.object(mod, "outbound_destination_evidence",
+                               return_value=("no", "b"*64)), \
+                          mock.patch.object(mod, "fingerprint", return_value="a"*64), \
              mock.patch.object(mod, "inbound_snapshot", return_value=(b"x", ())), \
              mock.patch.object(mod.pathlib.Path, "is_file", return_value=True), \
              mock.patch.object(mod, "verified_backup", return_value=backup), \
@@ -195,7 +212,9 @@ class CustomPostfixRouteTests(unittest.TestCase):
              mock.patch.object(mod, "route_conflicts", return_value=False), \
              mock.patch.object(mod, "queue_state", return_value="empty"), \
              mock.patch.object(mod, "scope_status", return_value="verified"), \
-             mock.patch.object(mod, "fingerprint", return_value="a"*64), \
+             mock.patch.object(mod, "outbound_destination_evidence",
+                               return_value=("no", "b"*64)), \
+                          mock.patch.object(mod, "fingerprint", return_value="a"*64), \
              mock.patch.object(mod, "inbound_snapshot",
                                side_effect=[(b"before", ()), (b"different", ())]), \
              mock.patch.object(mod.pathlib.Path, "is_file", return_value=True), \
