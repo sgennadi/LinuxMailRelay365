@@ -76,7 +76,8 @@ internal static class MailScenarioPlanner
     internal static Topology Flow(
         string code, string? configuredExistingRelay, string? existingLocalPorts,
         string? separateInboundPort, string? upstreamMode, int language,
-        string mailSource = "unknown", string? customTarget = null)
+        string mailSource = "unknown", string? customTarget = null,
+        string currentMta = "postfix", bool customTlsVerified = false)
     {
         if (!Supported(code)) code = Choose;
         string existing = string.IsNullOrWhiteSpace(configuredExistingRelay)
@@ -99,7 +100,8 @@ internal static class MailScenarioPlanner
             "custom" => string.IsNullOrWhiteSpace(customTarget)
                 ? L(language, "Другой SMTP relay (не проверен)",
                     "Custom SMTP relay (unverified)", "ממסר SMTP אחר (לא אומת)")
-                : "SMTP relay " + customTarget + " (unverified)",
+                : "SMTP relay " + customTarget +
+                    (customTlsVerified ? " (TLS verified; delivery NOT tested)" : " (transport unverified)"),
             _ => "Microsoft 365 XOAUTH2 · TCP 587"
         };
         string incoming = MailFlowIntent.SourceLabel(mailSource, language);
@@ -107,19 +109,24 @@ internal static class MailScenarioPlanner
             incoming = L(language, "Локальные письма / SMTP-клиенты (проверьте источник)",
                 "Local submissions / SMTP clients (source not established)",
                 "שליחה מקומית / לקוחות SMTP (לא אומת)");
-        string postfix = mailSource switch
+        string mtaName = currentMta switch
         {
-            MailFlowIntent.Local or MailFlowIntent.Jobs =>
-                L(language, "Postfix · локальная очередь/pickup",
-                    "Postfix · local pickup / queue", "Postfix · תור מקומי"),
-            MailFlowIntent.Mixed =>
-                L(language, "Postfix · pickup + SMTP ", "Postfix · pickup + SMTP ",
-                    "Postfix · pickup + SMTP ") + localPort,
-            _ => "Postfix · SMTP " + localPort
+            "postfix" => "Postfix", "exim" => "Exim", "sendmail" => "Sendmail",
+            _ => L(language, "Linux MTA (не подтверждён)",
+                    "Linux MTA (unverified type)", "שרת דואר Linux לא אומת")
+        };
+        string localSubmission = currentMta == "postfix"
+            ? L(language, "локальная очередь/pickup", "local pickup / queue", "תור מקומי")
+            : L(language, "локальная отправка / очередь", "local submission / queue", "הגשה מקומית");
+        string primaryMta = mailSource switch
+        {
+            MailFlowIntent.Local or MailFlowIntent.Jobs => mtaName + " · " + localSubmission,
+            MailFlowIntent.Mixed => mtaName + " · local submission + SMTP " + localPort,
+            _ => mtaName + " · SMTP " + localPort
         };
         return code switch
         {
-            Keep => new([incoming, postfix, existing],
+            Keep => new([incoming, primaryMta, existing],
                 L(language, "Без изменения Linux и M365", "No Linux or M365 changes", "ללא שינוי"), false),
             Isolated => new([
                 L(language, "Клиенты отдельного Relay", "Clients of isolated relay", "לקוחות ממסר נפרד"),
@@ -127,9 +134,9 @@ internal static class MailScenarioPlanner
                     (string.IsNullOrWhiteSpace(separateInboundPort) ? "?" : separateInboundPort),
                 L(language, "Отдельный Postfix + очередь", "Isolated Postfix + queue", "Postfix נפרד"),
                 target],
-                L(language, "Текущий Postfix не меняется. Порт нового listener надо проверить.",
-                    "Primary Postfix stays unchanged; verify the new listener port.", "Postfix קיים ללא שינוי."), true),
-            ReplaceRelay => new([incoming, postfix, target],
+                L(language, "Текущий почтовый сервер не меняется. Порт нового listener надо проверить.",
+                    "Existing Linux MTA stays unchanged; verify the new listener port.", "שרת Linux קיים ללא שינוי."), true),
+            ReplaceRelay => new([incoming, primaryMta, target],
                 L(language, "Тот же входящий SMTP. Меняется только исходящий маршрут, не порт Linux.",
                     "Same inbound SMTP; only upstream routing changes, not Linux listening ports.",
                     "SMTP נכנס ללא שינוי; רק הניתוב היוצא משתנה."), false),
@@ -157,7 +164,19 @@ internal static class MailScenarioPlanner
             "oauth2", 1, MailFlowIntent.Local);
         var custom = Flow(ReplaceRelay, "[relay.example.org]:465", "25", "2525",
             "custom", 1, MailFlowIntent.Jobs, "smtp.example.net:587");
-        return cards.Count == 4 &&
+        var exim = Flow(Keep, "[old.example]:25", "25", null, "custom", 1,
+            MailFlowIntent.Local, "relay.example.org:587", currentMta: "exim");
+        var sendmail = Flow(Keep, "[old.example]:25", "25", null, "custom", 1,
+            MailFlowIntent.Mixed, "relay.example.org:587", currentMta: "sendmail");
+        var verifiedCustom = Flow(ReplaceRelay, "[old.example]:25", "25", null,
+            "custom", 1, MailFlowIntent.Jobs, "relay.example.org:587",
+            currentMta: "exim", customTlsVerified: true);
+        return exim.Nodes[1].StartsWith("Exim · local submission", StringComparison.Ordinal) &&
+            sendmail.Nodes[1].StartsWith("Sendmail · local submission", StringComparison.Ordinal) &&
+            !sendmail.Nodes.Any(n => n.StartsWith("Postfix", StringComparison.Ordinal)) &&
+            verifiedCustom.Nodes.Last().Contains(
+                "TLS verified; delivery NOT tested", StringComparison.Ordinal) &&
+            cards.Count == 4 &&
             cards.Any(c => c.Code == ReplaceRelay) &&
             replace.Nodes.SequenceEqual(new [] { "Local submissions / SMTP clients (source not established)", "Postfix · SMTP 25",
                 "Microsoft 365 XOAUTH2 · TCP 587" }) &&

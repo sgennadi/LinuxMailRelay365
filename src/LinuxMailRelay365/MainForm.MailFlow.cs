@@ -136,9 +136,13 @@ internal sealed partial class MainForm
               !string.IsNullOrWhiteSpace(alternateUpstreamHost.Text)
                 ? alternateUpstreamHost.Text.Trim() + ":" + alternateUpstreamPort.Text.Trim()
                 : null;
+        bool transportVerified = selectedMailTarget == MailFlowIntent.TargetCustom &&
+            customSmtpAuditContext == CurrentCustomSmtpContext() &&
+            customSmtpAudit is { Tls: "verified", Tcp: "reachable" };
         var topology = MailScenarioPlanner.Flow(selectedMailScenario,
             inspectedMail?.CurrentRelay, configuredPorts, isolatedPort, mode,
-            language.SelectedIndex, mailSource, customEndpoint);
+            language.SelectedIndex, mailSource, customEndpoint,
+            inspectedMail?.Mta ?? "unknown", transportVerified);
 
         int maxWidth = Math.Max(320, pageHost.ClientSize.Width - 90);
         int scale = Math.Clamp((int)Math.Round(DeviceDpi / 96.0 * 100), 100, 250);

@@ -83,6 +83,7 @@ internal static class Program
             ("Recipient-aware read-only delivery recommendations", MailDeliveryAdvisor.SelfTest),
             ("Readable mail discovery overview and safe guidance", MailDiscoveryBrief.SelfTest),
             ("Mail intent and evidence-gated scenario ranking", MailFlowIntent.SelfTest),
+            ("Discovered MTA and custom SMTP TLS live topology", MailScenarioPlanner.SelfTest),
             ("Local submission read-only evidence", MailSubmissionEvidence.SelfTest),
             ("Google SMTP port and one-shot AUTH strict validation", GoogleSmtpAudit.SelfTest),
             ("Custom SMTP destination and one-shot TLS AUTH safety", CustomSmtpAudit.SelfTest),
