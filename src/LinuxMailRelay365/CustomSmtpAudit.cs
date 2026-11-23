@@ -92,7 +92,7 @@ internal sealed record CustomSmtpAudit(
         string Value(string suffix) =>
             values.TryGetValue("CUSTOM_SMTP_AUDIT_" + suffix, out var found)
                 ? found : throw new InvalidDataException("Missing SMTP report field.");
-        if (values.Count != 11 || Value("VERSION") != "1" ||
+        if (values.Count != 12 || Value("VERSION") != "1" ||
             Value("HOST") != expected || Value("PORT") != port.ToString() ||
             Value("MODE") != mode || Value("MAIL_SENT") != "no" ||
             Value("CONFIG_CHANGED") != "no" || Value("SECRETS_ECHOED") != "no")
@@ -155,6 +155,12 @@ internal sealed record CustomSmtpAudit(
         try { Parse(fixture, parsed.Host, 587, parsed.Mode, false); return false; }
         catch (InvalidDataException) { }
         try { Parse(fixture.Replace("AUTH_RESULT=not_requested", "AUTH_RESULT=accepted"),
+                parsed.Host, parsed.Port, parsed.Mode, false); return false; }
+        catch (InvalidDataException) { }
+        try { Parse(fixture + "CUSTOM_SMTP_AUDIT_EXTRA=unexpected\n",
+                parsed.Host, parsed.Port, parsed.Mode, false); return false; }
+        catch (InvalidDataException) { }
+        try { Parse(fixture + "CUSTOM_SMTP_AUDIT_TLS=verified\n",
                 parsed.Host, parsed.Port, parsed.Mode, false); return false; }
         catch (InvalidDataException) { }
         return true;
