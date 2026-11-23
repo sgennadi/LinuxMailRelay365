@@ -55,7 +55,7 @@ internal static class GooglePostfixRoute
             var key = line[..pos];
             var value = line[(pos + 1)..];
             if (!Regex.IsMatch(key, @"\AGOOGLE_ROUTE_[A-Z0-9_]+\z") ||
-                !Regex.IsMatch(value, @"\A[a-z0-9_.-]+\z") ||
+                !Regex.IsMatch(value, @"\A[A-Za-z0-9_.-]+\z") ||
                 !values.TryAdd(key, value))
                 throw new InvalidDataException("Unexpected or duplicate Google route report entry.");
         }

@@ -19,6 +19,15 @@ SHORT = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 VALUE = re.compile(r"^[A-Za-z0-9_.$/,: @{}\[\]+-]{0,200}$")
 POSTFIX = ("myhostname", "mydomain", "myorigin", "mydestination",
            "inet_interfaces", "inet_protocols")
+# Report only presence of advanced delivery/routing settings, NEVER values.
+# Source maps may contain sensitive addresses, LDAP URLs or even credentials.
+POSTFIX_ROLE_KEYS = (
+    "virtual_mailbox_domains", "virtual_alias_domains", "relay_domains",
+    "virtual_mailbox_maps", "virtual_alias_maps", "transport_maps",
+    "sender_dependent_relayhost_maps", "sender_canonical_maps",
+    "smtp_generic_maps", "masquerade_domains", "local_transport",
+)
+
 
 
 def call(argv):
@@ -426,6 +435,18 @@ def sendmail_mc_flags(path):
     return "readable", listener, masquerade
 
 
+def postfix_role_state(key, raw):
+    """Read-only declaration state, never return a sensitive lookup value."""
+    if raw is None:
+        return "unverified"
+    normalized = raw.strip()
+    # Standard Postfix relay_domains often equals $mydestination. This is not
+    # evidence of an additional externally relayed domain or transport map.
+    if not normalized or (key == "relay_domains" and normalized == "$mydestination"):
+        return "not_declared"
+    return "declared"
+
+
 def inspect(runner=call):
     short, fqdn, domain = identity(runner)
     mta, state = mta_status(runner)
@@ -444,6 +465,11 @@ def inspect(runner=call):
         for key in POSTFIX:
             result["MAIL_HOST_POSTFIX_" + key.upper()] = safe(
                 runner(["postconf", "-h", key]))
+        for key in POSTFIX_ROLE_KEYS:
+            raw = runner(["postconf", "-h", key])
+            # Not a configuration value: only a bounded proof of declaration.
+            value = postfix_role_state(key, raw)
+            result["MAIL_HOST_POSTFIX_ROLE_" + key.upper()] = value
     elif mta == "exim":
         tool = "exim4" if shutil.which("exim4") else "exim"
         for key in ("primary_hostname", "qualify_domain", "local_interfaces"):

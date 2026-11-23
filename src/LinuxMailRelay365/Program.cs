@@ -88,6 +88,7 @@ internal static class Program
             ("Google SMTP port and one-shot AUTH strict validation", GoogleSmtpAudit.SelfTest),
             ("Custom SMTP destination and one-shot TLS AUTH safety", CustomSmtpAudit.SelfTest),
             ("Google upstream Postfix preview/apply fingerprint contract", GooglePostfixRoute.SelfTest),
+            ("Custom Postfix SMTP route preview/apply, auth and backup contract", CustomPostfixRoute.SelfTest),
             ("Embedded local submission probe is read-only", () =>
                 EmbeddedAssets.MailSubmissionInspector.Contains("MAIL_ORIGIN_VERSION=1",
                     StringComparison.Ordinal) &&

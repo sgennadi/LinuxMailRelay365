@@ -1001,19 +1001,20 @@ internal static class SignedPortableUpdater
         var asset = "LinuxMailRelay365-win-x64.zip";
         const string hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         static string Fixture(string asset, string digest, bool preview,
-            bool duplicate = false)
+            bool duplicate = false, string version = "0.1.1-rc.9")
         {
+            string tag = "v" + version;
             string link = "https://github.com/sgennadi/LinuxMailRelay365/releases/download/" +
-                "v0.1.1-rc.9/" + asset;
+                tag + "/" + asset;
             string item = JsonSerializer.Serialize(new
             {
                 name = asset, digest = "sha256:" + digest, size = 100L,
                 browser_download_url = link
             });
-            return "[{\"tag_name\":\"v0.1.1-rc.9\",\"draft\":false," +
+            return "[{\"tag_name\":\"" + tag + "\",\"draft\":false," +
                 "\"prerelease\":" + (preview ? "true" : "false") +
                 ",\"html_url\":\"https://github.com/sgennadi/LinuxMailRelay365/releases/tag/" +
-                "v0.1.1-rc.9\",\"assets\":[" + item +
+                tag + "\",\"assets\":[" + item +
                 (duplicate ? "," + item : "") + "]}]";
         }
         static SignedUpdateOffer? Parse(string json, bool allow)
@@ -1029,13 +1030,27 @@ internal static class SignedPortableUpdater
         bool sameVersionRejected = SelectRelease(previewFixture.RootElement,
             true, "0.1.1-rc.9", asset) is null;
         bool installedStable = !IsUnsignedTestVersion(UpdateCheck.Version);
-        // Confirm a verified historical Preview offer is NEVER eligible as an
-        // unsigned Preview upgrade for an already installed numeric Stable.
+        // Keep the RC9 fixture as an immutable historical test, and synthesize
+        // the NEXT RC to prove a currently installed RC can discover a newer
+        // signed/digested test candidate without accepting the same version.
+        var currentParts = UpdateCheck.Version.Split(
+            ["-rc."], StringSplitOptions.None);
+        string futureVersion = currentParts.Length == 2 &&
+            int.TryParse(currentParts[1], out int currentRc) &&
+            currentRc is >= 0 and < int.MaxValue
+            ? currentParts[0] + "-rc." + (currentRc + 1)
+            : "999.999.999-rc.1";
+        var futureOffer = Parse(
+            Fixture(asset, hash, true, version: futureVersion), true);
+        // An older RC must never become an unsigned update for a signed
+        // Stable install. For an installed Preview, only a strictly newer RC
+        // is eligible; the already installed or older RC must be rejected.
         bool previewSafety = installedStable
             ? (fixtureOffer is not null && !IsPreviewRelease(fixtureOffer) &&
                SelectRelease(previewFixture.RootElement, true,
                    UpdateCheck.Version, asset) is null)
-            : (fixtureOffer is not null && IsPreviewRelease(fixtureOffer));
+            : (futureOffer is not null && IsPreviewRelease(futureOffer) &&
+               fixtureOffer is not null && !IsPreviewRelease(fixtureOffer));
         return ApplyFromHelper(Array.Empty<string>()) == 2 &&
                ApplyFromHelper(Array.Empty<string>(), unsignedPreview: true) == 2 &&
                previewSafety && sameVersionRejected &&

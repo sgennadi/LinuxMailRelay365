@@ -72,6 +72,52 @@ internal sealed record MailDiscoveryBrief(
                     "Linux domain (sender authorization unverified)", "דומיין Linux (שולח לא אומת)"),
                 domain)
         };
+        if (postfix && host?.Mta == "postfix")
+        {
+            string localScope = host.Get("MAIL_HOST_POSTFIX_MYDESTINATION");
+            bool declaredLocal = !string.IsNullOrWhiteSpace(localScope) &&
+                localScope is not ("unverified" or "unavailable");
+            string virtualMailbox = host.Get("MAIL_HOST_POSTFIX_ROLE_VIRTUAL_MAILBOX_DOMAINS");
+            string virtualAlias = host.Get("MAIL_HOST_POSTFIX_ROLE_VIRTUAL_ALIAS_DOMAINS");
+            string localSummary = virtualMailbox == "declared"
+                ? T(l, "объявлены virtual mailbox domains; реальные ящики и доставка не проверены",
+                    "virtual mailbox domains declared; accounts and delivery NOT verified",
+                    "תחומי תיבות וירטואליות הוגדרו; המסירה לא אומתה")
+                : declaredLocal
+                ? T(l, "объявлена область локальных доменов (mydestination); наличие пользователей и доставка не доказаны",
+                    "local domain scope declared (mydestination); users and delivery NOT verified",
+                    "תחומי דואר מקומיים הוגדרו; משתמשים לא אומתו")
+                : T(l, "локальная доставка не подтверждена",
+                    "local delivery not verified", "מסירה מקומית לא אומתה");
+            if (virtualAlias == "declared")
+                localSummary += T(l, "; virtual aliases присутствуют",
+                    "; virtual aliases declared", "; כינויים וירטואליים הוגדרו");
+            facts.Add(new(T(l, "Локальная доставка", "Local delivery", "מסירה מקומית"),
+                localSummary));
+            bool complexRouting = new[] {
+                "MAIL_HOST_POSTFIX_ROLE_TRANSPORT_MAPS",
+                "MAIL_HOST_POSTFIX_ROLE_SENDER_DEPENDENT_RELAYHOST_MAPS",
+                "MAIL_HOST_POSTFIX_ROLE_RELAY_DOMAINS"
+            }.Any(key => host.Get(key) == "declared");
+            facts.Add(new(T(l, "Дополнительная маршрутизация",
+                    "Advanced routing declarations", "ניתוב מתקדם"),
+                complexRouting
+                ? T(l, "обнаружены дополнительные маршруты/домены — не заменять автоматически",
+                    "additional routes/domains declared — do not overwrite automatically",
+                    "הוגדרו נתיבים נוספים; אין להחליף אוטומטית")
+                : T(l, "настройки не обнаружены или не подтверждены; необходима проверка",
+                    "not declared or not verified; manual review still required",
+                    "לא זוהו או לא אומתו הגדרות נוספות")));
+            bool rewrite = host.Get("MAIL_HOST_POSTFIX_ROLE_MASQUERADE_DOMAINS") == "declared" ||
+                host.Get("MAIL_HOST_POSTFIX_ROLE_SENDER_CANONICAL_MAPS") == "declared" ||
+                host.Get("MAIL_HOST_POSTFIX_ROLE_SMTP_GENERIC_MAPS") == "declared";
+            if (rewrite)
+                facts.Add(new(T(l, "Изменение адресов отправителей",
+                        "Sender rewriting", "שכתוב שולחים"),
+                    T(l, "обнаружены правила переписывания — обязательно сохранить при смене upstream",
+                        "rewriting declared — preserve during any upstream migration",
+                        "הוגדר שכתוב שולחים; יש לשמור עליו")));
+        }
         if (!string.IsNullOrWhiteSpace(proposedPort))
             facts.Add(new(T(l, "Порт нового Relay (предложение)", "Proposed new relay port", "יציאת ממסר חדשה מוצעת"),
                 proposedPort + " · " + T(l, "не считайте работающим", "not evidence of an active listener", "לא מעיד על שירות פעיל")));
@@ -187,8 +233,27 @@ internal sealed record MailDiscoveryBrief(
             result.ExtraNote is null) return false;
         var internalOnly = Build(active, null, null, false,
             new MailServerDiscoveryDecision("postfix_active", true, false), 1, "25", 1);
+        const string hostReport =
+            "MAIL_HOST_VERSION=1\nMAIL_HOST_SHORT=mail\n" +
+            "MAIL_HOST_FQDN=mail.example.org\nMAIL_HOST_DOMAIN=example.org\n" +
+            "MAIL_HOST_MTA=postfix\nMAIL_HOST_MTA_STATE=active\n" +
+            "MAIL_HOST_TRUST=os_report_unverified\nMAIL_HOST_CHANGES=no\n" +
+            "MAIL_HOST_POSTFIX_MYDESTINATION=$myhostname, localhost\n" +
+            "MAIL_HOST_POSTFIX_ROLE_VIRTUAL_MAILBOX_DOMAINS=declared\n" +
+            "MAIL_HOST_POSTFIX_ROLE_TRANSPORT_MAPS=declared\n" +
+            "MAIL_HOST_POSTFIX_ROLE_SENDER_CANONICAL_MAPS=declared\n";
+        // Present advanced settings must not be interpreted as proof of live mail.
+        var inspected = MailHostInspection.Parse(hostReport);
+        var categorized = Build(active, null, inspected, false,
+            new MailServerDiscoveryDecision("postfix_active", true, false),
+            2, null, 1);
         return internalOnly.SuggestedNextStep.Contains("Direct Send", StringComparison.Ordinal) &&
                internalOnly.Facts.Any(x => x.Caption == "Proposed new relay port" &&
-                   x.Value.Contains("not evidence", StringComparison.Ordinal));
+                   x.Value.Contains("not evidence", StringComparison.Ordinal)) &&
+               categorized.Facts.Any(x => x.Caption == "Local delivery" &&
+                   x.Value.Contains("NOT verified", StringComparison.Ordinal)) &&
+               categorized.Facts.Any(x => x.Caption == "Advanced routing declarations" &&
+                   x.Value.Contains("do not overwrite", StringComparison.Ordinal)) &&
+               categorized.Facts.Any(x => x.Caption == "Sender rewriting");
     }
 }

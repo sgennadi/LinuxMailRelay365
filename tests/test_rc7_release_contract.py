@@ -1,5 +1,6 @@
 """Immutable RC7 prerelease contract; offline, no GitHub mutation or signing."""
 from pathlib import Path
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -7,9 +8,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class RC7ReleaseContractTests(unittest.TestCase):
     def test_exact_version_in_all_windows_build_paths(self):
-        expected = "0.1.1-rc.8"
         csproj = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
-        self.assertIn("<Version>" + expected + "</Version>", csproj)
+        match = re.search(r"<Version>(0\.1\.1-rc\.[1-9][0-9]*)</Version>", csproj)
+        self.assertIsNotNone(match)
+        expected = match.group(1)
+        # Never freeze this test to a released RC tag: the current development
+        # version must advance, while RC7/RC8 publication contracts stay immutable.
+        self.assertGreaterEqual(int(expected.rsplit(".", 1)[1]), 8)
         for path in ("UpdateCheck.cs", "UpdateCheck.Fallback.cs"):
             text = (ROOT / "src/LinuxMailRelay365" / path).read_text(encoding="utf-8")
             self.assertIn('internal const string Version = "' + expected + '";', text)
@@ -44,7 +49,13 @@ class RC7ReleaseContractTests(unittest.TestCase):
 
     def test_unsigned_preview_is_not_treated_as_stable(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn("ExpectedCandidateVersion '0.1.1-rc.8'", ci)
+        project = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+        current = re.search(r"<Version>(0\.1\.1-rc\.[1-9][0-9]*)</Version>", project)
+        self.assertIsNotNone(current)
+        self.assertIn("ExpectedCandidateVersion '" + current.group(1) + "'", ci)
+        # Previous signed/unsigned release checks are not silently disabled.
+        self.assertIn("tag='v0.1.1-rc.7'", ci)
+        self.assertIn("tag='v0.1.1-rc.8'", ci)
         self.assertIn("STABLE_UNSIGNED_RELEASE_GATE=refused_expected", ci)
         signed_gate = (ROOT / "scripts/Test-LinuxMailRelay365SignedRelease.ps1").read_text(encoding="utf-8")
         self.assertIn("Get-AuthenticodeSignature", signed_gate)
