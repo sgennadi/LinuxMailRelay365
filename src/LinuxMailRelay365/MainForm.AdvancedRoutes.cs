@@ -17,6 +17,7 @@ internal sealed partial class MainForm
         AccessibleName = "Expand conditional outbound mail routing planner"
     };
     private bool advancedRoutingEventsWired;
+    private bool advancedRoutingToggleUpdating;
     private string? advancedRoutingIdentity;
     private readonly List<AdvancedRouteRule> advancedRoutingRules = [];
     private readonly ComboBox advancedRoutingMatchKind = new()
@@ -87,7 +88,7 @@ internal sealed partial class MainForm
             advancedRoutingToggle.CheckedChanged += (_, _) =>
             {
                 advancedRoutingSimulation = null;
-                if (!busy && !IsDisposed) RenderPage();
+                if (!advancedRoutingToggleUpdating && !busy && !IsDisposed) RenderPage();
             };
         }
     }
@@ -133,7 +134,9 @@ internal sealed partial class MainForm
             advancedRoutingRules.Clear();
             advancedRoutingSimulation = null;
             advancedRoutingIdentity = identity;
-            advancedRoutingToggle.Checked = false;
+            advancedRoutingToggleUpdating = true;
+            try { advancedRoutingToggle.Checked = false; }
+            finally { advancedRoutingToggleUpdating = false; }
         }
         PrepareAdvancedRoutingControls(width);
         advancedRoutingToggle.Text = TranslateMailFlow(l,

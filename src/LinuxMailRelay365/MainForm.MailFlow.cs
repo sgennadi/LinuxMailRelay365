@@ -359,6 +359,8 @@ internal sealed partial class MainForm
             SaveRoutingChoices();
             RenderPage();
         }));
+        // RC11: collapsed by default; read-only what-if routing only.
+        ShowAdvancedConditionalRoutingPlanner(page, width, languageIndex);
         if (selectedMailScenario == MailScenarioPlanner.Choose)
         {
             AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
