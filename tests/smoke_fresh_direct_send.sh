@@ -9,39 +9,63 @@ CONF=/etc/linuxmailrelay365/sidecar-postfix
 on_exit() {
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    sudo journalctl -u "$UNIT" -n 70 --no-pager || true
-    sudo postfix -c "$CONF" check || true
+    timeout --signal=TERM --kill-after=4s 12s sudo journalctl -u "$UNIT" -n 70 --no-pager || true
+    timeout --signal=TERM --kill-after=4s 12s sudo postfix -c "$CONF" check || true
   fi
-  sudo systemctl stop "$UNIT" >/dev/null 2>&1 || true
+  timeout --signal=TERM --kill-after=4s 12s sudo systemctl stop "$UNIT" >/dev/null 2>&1 || true
   exit "$rc"
 }
 trap on_exit EXIT
 if command -v debconf-set-selections >/dev/null; then
   printf '%s\n' 'postfix postfix/main_mailer_type select Local only' \
      'postfix postfix/mailname string ci.example.test' |
-     sudo debconf-set-selections
+     timeout --signal=TERM --kill-after=4s 15s sudo debconf-set-selections
 fi
 # Transient Ubuntu mirror outages must not be mistaken for a Postfix defect.
-# Fail after 3 bounded attempts; never continue with a missing Postfix binary.
+# Keep all 3 attempts but cap total APT time to six minutes so the
+# Postfix and rollback tests run before GitHub Actions' 12-minute job limit.
+apt_deadline=$((SECONDS + 360))
+apt_step() {
+  local stage="$1" remaining
+  shift
+  remaining=$((apt_deadline - SECONDS))
+  if ((remaining <= 0)); then
+    echo "CI_APT_BUDGET_EXHAUSTED=yes stage=$stage" >&2
+    return 124
+  fi
+  echo "CI_APT_STAGE=$stage remaining_seconds=$remaining"
+  timeout --signal=TERM --kill-after=8s "${remaining}s" "$@"
+}
 installed=no
 for attempt in 1 2 3; do
-  if sudo apt-get update -qq -o Acquire::Retries=2 \
-         -o APT::Update::Error-Mode=any &&
+  echo "CI_APT_ATTEMPT=$attempt"
+  if apt_step "update-$attempt" sudo apt-get update -qq \
+       -o Acquire::Retries=2 -o APT::Update::Error-Mode=any \
+       -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 &&
      apt-cache show postfix >/dev/null 2>&1 &&
-     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-       -o Acquire::Retries=2 postfix iproute2 openssl; then
+     apt_step "install-$attempt" sudo env DEBIAN_FRONTEND=noninteractive \
+       apt-get install -y -qq -o Acquire::Retries=2 \
+       -o DPkg::Lock::Timeout=30 \
+       -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+       postfix iproute2 openssl; then
     installed=yes
     break
   fi
   if [ "$attempt" -lt 3 ]; then
     echo "CI_APT_TRANSIENT_FAILURE_RETRY=$attempt"
+    if ((apt_deadline - SECONDS <= attempt * 6)); then
+      echo "CI_APT_BUDGET_EXHAUSTED=yes stage=retry" >&2
+      break
+    fi
     sleep "$((attempt * 6))"
   fi
 done
+echo "CI_APT_INSTALL_RESULT=$installed"
 if [ "$installed" != yes ] || ! command -v postconf >/dev/null 2>&1; then
   echo 'CI_APT_POSTFIX_INSTALL_FAILED_AFTER_3_ATTEMPTS=yes' >&2
   exit 100
 fi
+echo "CI_DIRECT_SEND_PHASE=primary_postfix"
 sudo postconf -e 'myhostname = direct-send-ci.example.test'
 sudo postfix check
 sudo systemctl start postfix

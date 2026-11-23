@@ -143,7 +143,8 @@ internal sealed partial class MainForm
                 "  ·  Alternate routes: " + (plan.HasConflictingMaps ? "present" : "none") +
                 "  ·  Postfix scope: " + plan.PostfixScope +
                 "  ·  Client SASL: " + plan.ClientSasl + Environment.NewLine +
-                "Self-loop warning: " + (plan.HasSelfLoopRisk ? "yes" : "no") +
+                "Self-loop/DNS: " + plan.SelfLoopStatus +
+                "  ·  DNS proof: " + plan.ResolutionFingerprint[..12] +
                 "  ·  Apply: " + (plan.ApplyAllowed ? "eligible" : "BLOCKED"),
                 width, warning: !plan.ApplyAllowed));
         }
@@ -197,6 +198,7 @@ internal sealed partial class MainForm
         customRoutePreviewContext = CurrentCustomRouteContext(planned.Fingerprint);
         WriteLine("Read-only custom Postfix preview: queue=" + planned.Queue +
             "; protected routes=" + (planned.HasConflictingMaps ? "present" : "absent") +
+            "; DNS self-loop=" + planned.SelfLoopStatus +
             "; Apply=" + (planned.ApplyAllowed ? "eligible" : "blocked") +
             "; no mail sent or Linux configuration changed.");
         RenderPage();
@@ -280,9 +282,11 @@ internal sealed partial class MainForm
                     "Fresh read-only Postfix Preview failed; nothing applied.");
             var updated = CustomPostfixRoute.ParsePreview(
                 fresh.StdOut, host, port, tls, authMode);
-            if (!updated.ApplyAllowed || updated.Fingerprint != plan.Fingerprint)
+            if (!updated.ApplyAllowed || updated.Fingerprint != plan.Fingerprint ||
+                updated.ResolutionFingerprint != plan.ResolutionFingerprint ||
+                updated.SelfLoopStatus != "no")
                 throw new InvalidOperationException(
-                    "Postfix configuration, routing or queue drift detected; nothing applied.");
+                    "Postfix/DNS destination changed since approval, or a self-loop was detected; nothing applied.");
 
             string? plaintextConsent = tls == "plain"
                 ? "I_ACCEPT_UNENCRYPTED_OUTBOUND_SMTP" : null;
@@ -291,7 +295,7 @@ internal sealed partial class MainForm
                 host, port, tls, authMode, "apply", plan.Fingerprint,
                 authMode == "password" ? user : null,
                 authMode == "password" ? secret : null,
-                plaintextConsent);
+                plaintextConsent, plan.ResolutionFingerprint);
             customRoutePreview = null;
             customRoutePreviewContext = null;
             var result = await SshRemote.RunRootScriptAsync(

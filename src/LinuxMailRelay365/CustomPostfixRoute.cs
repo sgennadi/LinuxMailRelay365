@@ -10,7 +10,8 @@ internal sealed record CustomRoutePreview(
     string Host, int Port, string Tls, string AuthMode, string Fingerprint,
     bool HasConflictingMaps, string Queue, bool ApplyAllowed,
     string OutboundSasl, string PasswordMap, string TlsLevel,
-    string PostfixScope, string ClientSasl, bool HasSelfLoopRisk);
+    string PostfixScope, string ClientSasl, bool HasSelfLoopRisk,
+    string SelfLoopStatus, string ResolutionFingerprint);
 
 internal sealed record CustomRouteApplyResult(
     string Host, int Port, string Tls, string AuthMode,
@@ -63,7 +64,7 @@ internal static class CustomPostfixRoute
         host = CustomSmtpAudit.CheckedHost(host);
         CheckedMode(tls, authMode);
         var data = ParseDictionary(output);
-        if (data.Count != 18 || Value(data, "VERSION") != "1" ||
+        if (data.Count != 19 || Value(data, "VERSION") != "1" ||
             Value(data, "HOST") != host ||
             Value(data, "PORT") != port.ToString() ||
             Value(data, "TLS") != tls || Value(data, "AUTH_MODE") != authMode ||
@@ -80,6 +81,7 @@ internal static class CustomPostfixRoute
         string scope = Value(data, "POSTFIX_SCOPE");
         string client = Value(data, "CLIENT_SASL");
         string risk = Value(data, "SELF_LOOP_RISK");
+        string dnsSha = Value(data, "RESOLUTION_SHA256");
         string allowed = Value(data, "APPLY_ALLOWED");
         if (!ShaPattern.IsMatch(sha) ||
             conflicts is not ("yes" or "no") ||
@@ -90,18 +92,20 @@ internal static class CustomPostfixRoute
                 or "dane" or "dane-only" or "fingerprint" or "unverified") ||
             scope is not ("verified" or "unverified") ||
             client is not ("ready" or "missing" or "unverified" or "not_required") ||
-            risk is not ("yes" or "no") ||
+            risk is not ("yes" or "no" or "unverified") ||
+            !ShaPattern.IsMatch(dnsSha) ||
             allowed is not ("yes" or "no") ||
             (authMode == "password" && client == "not_required") ||
             (authMode == "none" && client != "not_required") ||
             (allowed == "yes" &&
                 (conflicts == "yes" || queue != "empty" ||
-                 scope != "verified" || risk == "yes" ||
+                 scope != "verified" || risk != "no" ||
+                 dnsSha == new string('0', 64) ||
                  (authMode == "password" && client != "ready"))))
             throw new InvalidDataException("Custom SMTP migration not safely authorized.");
         return new(host, port, tls, authMode, sha, conflicts == "yes",
             queue, allowed == "yes", outboundSasl, map, tlsLevel, scope,
-            client, risk == "yes");
+            client, risk == "yes", risk, dnsSha);
     }
 
     internal static CustomRouteApplyResult ParseApply(
@@ -131,7 +135,7 @@ internal static class CustomPostfixRoute
         string host, int port, string tls, string authMode,
         string operation, string? expectedSha = null,
         string? username = null, string? oneUseSecret = null,
-        string? plaintextApproval = null)
+        string? plaintextApproval = null, string? expectedResolutionSha = null)
     {
         host = CustomSmtpAudit.CheckedHost(host);
         CheckedMode(tls, authMode);
@@ -141,8 +145,13 @@ internal static class CustomPostfixRoute
         bool apply = operation == "apply";
         if (apply && (expectedSha is null || !ShaPattern.IsMatch(expectedSha)))
             throw new ArgumentException("Exact approved Postfix SHA256 required.");
-        if (!apply && (expectedSha is not null || username is not null ||
-            oneUseSecret is not null || plaintextApproval is not null))
+        if (apply && (expectedResolutionSha is null ||
+            !ShaPattern.IsMatch(expectedResolutionSha) ||
+            expectedResolutionSha == new string('0', 64)))
+            throw new ArgumentException("Exact verified outbound DNS resolution SHA256 required.");
+        if (!apply && (expectedSha is not null || expectedResolutionSha is not null ||
+            username is not null || oneUseSecret is not null ||
+            plaintextApproval is not null))
             throw new ArgumentException("Read-only Preview must not carry authorization or secrets.");
         if (apply && authMode == "password" &&
             (string.IsNullOrWhiteSpace(username) || oneUseSecret is null ||
@@ -168,6 +177,7 @@ internal static class CustomPostfixRoute
             auth_mode = authMode,
             operation,
             expected_sha = expectedSha ?? "",
+            expected_resolution_sha = expectedResolutionSha ?? "",
             username = username ?? "",
             secret = oneUseSecret ?? "",
             plaintext_approval = plaintextApproval ?? ""
@@ -204,12 +214,16 @@ internal static class CustomPostfixRoute
             "CUSTOM_ROUTE_POSTFIX_SCOPE=verified\n" +
             "CUSTOM_ROUTE_CLIENT_SASL=ready\n" +
             "CUSTOM_ROUTE_SELF_LOOP_RISK=no\n" +
+            "CUSTOM_ROUTE_RESOLUTION_SHA256=" +
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n" +
             "CUSTOM_ROUTE_APPLY_ALLOWED=yes\n" +
             "CUSTOM_ROUTE_INBOUND_CHANGED=no\n" +
             "CUSTOM_ROUTE_MAIL_SENT=no\n" +
             "CUSTOM_ROUTE_CONFIG_CHANGED=no\n";
         var parsed = ParsePreview(preview, "relay.example.org", 2525, "starttls", "password");
-        if (!parsed.ApplyAllowed || parsed.HasSelfLoopRisk || parsed.Fingerprint.Length != 64)
+        if (!parsed.ApplyAllowed || parsed.HasSelfLoopRisk ||
+            parsed.ResolutionFingerprint != new string('b', 64) ||
+            parsed.SelfLoopStatus != "no" || parsed.Fingerprint.Length != 64)
             return false;
         const string apply =
             "CUSTOM_ROUTE_VERSION=1\n" +
@@ -232,6 +246,13 @@ internal static class CustomPostfixRoute
         try { ParsePreview(preview.Replace("QUEUE=empty", "QUEUE=nonempty"),
                 "relay.example.org", 2525, "starttls", "password"); return false; }
         catch (InvalidDataException) { }
+        try { ParsePreview(preview.Replace("SELF_LOOP_RISK=no", "SELF_LOOP_RISK=unverified"),
+                "relay.example.org", 2525, "starttls", "password"); return false; }
+        catch (InvalidDataException) { }
+        try { ParsePreview(preview.Replace("RESOLUTION_SHA256=" + new string('b', 64),
+                "RESOLUTION_SHA256=" + new string('0', 64)),
+                "relay.example.org", 2525, "starttls", "password"); return false; }
+        catch (InvalidDataException) { }
         try { ParseApply(apply.Replace("MAIL_SENT=no", "MAIL_SENT=yes"),
                 "relay.example.org", 2525, "starttls", "password"); return false; }
         catch (InvalidDataException) { }
@@ -239,19 +260,24 @@ internal static class CustomPostfixRoute
         const string recovery = "BACKUP_STATUS=verified";
         string builder = BuildScript(py, recovery, "relay.example.org", 2525,
             "starttls", "password", "apply", new string('a', 64),
-            "user@example.org", "ONE-USE-PASSWORD");
+            "user@example.org", "ONE-USE-PASSWORD",
+            expectedResolutionSha: new string('b', 64));
         if (builder.Contains("ONE-USE-PASSWORD", StringComparison.Ordinal))
             return false;
         try { BuildScript(py, recovery, "relay.example.org", 587,
                 "plain", "password", "preview"); return false; }
         catch (ArgumentException) { }
         try { BuildScript(py, recovery, "relay.example.org", 25,
-                "plain", "none", "apply", new string('a', 64)); return false; }
+                "plain", "none", "apply", new string('a', 64),
+                expectedResolutionSha: new string('b', 64)); return false; }
         catch (InvalidOperationException) { }
         try { BuildScript(py, recovery, "relay.example.org", 25,
                 "starttls", "none", "apply", new string('a', 64),
-                "user", "secret"); return false; }
+                "user", "secret", expectedResolutionSha: new string('b', 64)); return false; }
         catch (InvalidDataException) { }
+        try { BuildScript(py, recovery, "relay.example.org", 25,
+                "starttls", "none", "apply", new string('a', 64)); return false; }
+        catch (ArgumentException) { }
         return true;
     }
 }

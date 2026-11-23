@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import pathlib
+import socket
 import tempfile
 import unittest
 from unittest import mock
@@ -28,9 +29,14 @@ class CustomPostfixRouteTests(unittest.TestCase):
     def request(self, **updates):
         request = dict(host="smtp.example.org", port=2525, tls="starttls",
                        auth_mode="none", operation="preview",
-                       expected_sha="", username="", secret="",
+                       expected_sha="", expected_resolution_sha="", username="", secret="",
                        plaintext_approval="")
         request.update(updates)
+        # Existing synthetic Apply fixtures represent reviewed DNS evidence.
+        if (request["operation"] == "apply" and
+                request["expected_sha"] == "a"*64 and
+                "expected_resolution_sha" not in updates):
+            request["expected_resolution_sha"] = "b"*64
         return mod.config(request)
 
     def test_ports_tls_modes_and_destination_validation(self):
@@ -99,6 +105,8 @@ class CustomPostfixRouteTests(unittest.TestCase):
              mock.patch.object(mod, "queue_state", return_value="empty"), \
              mock.patch.object(mod, "scope_status", return_value="verified"), \
              mock.patch.object(mod, "client_sasl_status", return_value="ready"), \
+             mock.patch.object(mod, "outbound_destination_evidence",
+                               return_value=("no", "b"*64)), \
              mock.patch.object(mod, "postconf", side_effect=lambda name: {
                  "smtp_sasl_auth_enable": "yes",
                  "smtp_sasl_password_maps": mod.MANAGED_MAP,
@@ -120,6 +128,7 @@ class CustomPostfixRouteTests(unittest.TestCase):
         for scenario in (
                 dict(host="localhost"),
                 dict(host="127.0.0.1"),
+                dict(risk="unverified"),
                 dict(queue="nonempty"),
                 dict(conflict=True),
                 dict(scope="unverified"),
@@ -136,6 +145,10 @@ class CustomPostfixRouteTests(unittest.TestCase):
                                        return_value=scenario.get("scope", "verified")), \
                      mock.patch.object(mod, "client_sasl_status",
                                        return_value=scenario.get("sasl", "ready")), \
+                     mock.patch.object(mod, "outbound_destination_evidence",
+                                             return_value=(scenario.get("risk",
+                                                 "yes" if scenario.get("host") in
+                                                 ("localhost", "127.0.0.1") else "no"), "b"*64)), \
                      mock.patch.object(mod, "postconf", return_value=""):
                     capture = io.StringIO()
                     with contextlib.redirect_stdout(capture):
@@ -150,6 +163,8 @@ class CustomPostfixRouteTests(unittest.TestCase):
                  mock.patch.object(mod, "route_conflicts", return_value=False), \
                  mock.patch.object(mod, "queue_state", return_value=queue), \
                  mock.patch.object(mod, "scope_status", return_value="verified"), \
+                 mock.patch.object(mod, "outbound_destination_evidence",
+                                   return_value=("no", "b"*64)), \
                  mock.patch.object(mod, "verified_backup") as backup:
                 with self.assertRaises(RuntimeError):
                     mod.apply(req)
@@ -165,6 +180,8 @@ class CustomPostfixRouteTests(unittest.TestCase):
              mock.patch.object(mod, "queue_state", return_value="empty"), \
              mock.patch.object(mod, "scope_status", return_value="verified"), \
              mock.patch.object(mod, "client_sasl_status", return_value="ready"), \
+             mock.patch.object(mod, "outbound_destination_evidence",
+                               return_value=("no", "b"*64)), \
              mock.patch.object(mod, "fingerprint", return_value="a"*64), \
              mock.patch.object(mod, "inbound_snapshot", return_value=(b"x", ())), \
              mock.patch.object(mod.pathlib.Path, "is_file", return_value=True), \
@@ -195,6 +212,8 @@ class CustomPostfixRouteTests(unittest.TestCase):
              mock.patch.object(mod, "route_conflicts", return_value=False), \
              mock.patch.object(mod, "queue_state", return_value="empty"), \
              mock.patch.object(mod, "scope_status", return_value="verified"), \
+             mock.patch.object(mod, "outbound_destination_evidence",
+                               return_value=("no", "b"*64)), \
              mock.patch.object(mod, "fingerprint", return_value="a"*64), \
              mock.patch.object(mod, "inbound_snapshot",
                                side_effect=[(b"before", ()), (b"different", ())]), \
@@ -214,6 +233,90 @@ class CustomPostfixRouteTests(unittest.TestCase):
         self.assertNotIn("mydestination", [k for k, _ in calls])
         rollback.assert_called_once_with(backup)
         self.assertIn("CUSTOM_ROUTE_ROLLBACK=ok", capture.getvalue())
+
+    def test_destination_dns_resolves_to_local_interface_blocks_migration(self):
+        address = [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                    ("192.0.2.20", 0))]
+        interfaces = (b'[{"addr_info":[{"family":"inet",'
+                      b'"local":"192.0.2.20"}]}]')
+        with mock.patch.object(mod.socket, "getaddrinfo", return_value=address), \
+             mock.patch.object(mod.shutil, "which", return_value="/usr/sbin/ip"), \
+             mock.patch.object(mod, "run", return_value=Result(output=interfaces)):
+            risk, digest = mod.outbound_destination_evidence("relay.example.org")
+        self.assertEqual(risk, "yes")
+        self.assertEqual(len(digest), 64)
+        self.assertEqual(mod.outbound_destination_evidence("localhost")[0], "yes")
+        self.assertEqual(mod.outbound_destination_evidence("mail.localhost")[0], "yes")
+
+    def test_destination_dns_verified_remote_passes_and_hash_changes_on_rebind(self):
+        interfaces = b'[{"addr_info":[{"local":"192.0.2.20"}]}]'
+        def resolve(ip):
+            with mock.patch.object(mod.socket, "getaddrinfo", return_value=[
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]), \
+                 mock.patch.object(mod.shutil, "which", return_value="/usr/sbin/ip"), \
+                 mock.patch.object(mod, "run", return_value=Result(output=interfaces)):
+                return mod.outbound_destination_evidence("relay.example.org")
+        first_risk, first_sha = resolve("203.0.113.33")
+        second_risk, second_sha = resolve("203.0.113.34")
+        self.assertEqual((first_risk, second_risk), ("no", "no"))
+        self.assertNotEqual(first_sha, second_sha)
+
+    def test_unknown_dns_and_unverifiable_interfaces_fail_closed(self):
+        with mock.patch.object(mod.socket, "getaddrinfo",
+                               side_effect=socket.gaierror("not resolved")):
+            self.assertEqual(mod.outbound_destination_evidence("relay.example.org"),
+                             ("unverified", "0"*64))
+        addresses = [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                      ("203.0.113.33", 0))]
+        with mock.patch.object(mod.socket, "getaddrinfo", return_value=addresses), \
+             mock.patch.object(mod.shutil, "which", return_value=None):
+            self.assertEqual(mod.outbound_destination_evidence("relay.example.org"),
+                             ("unverified", "0"*64))
+        with mock.patch.object(mod.socket, "getaddrinfo", return_value=addresses), \
+             mock.patch.object(mod.shutil, "which", return_value="/usr/sbin/ip"), \
+             mock.patch.object(mod, "run", return_value=Result(output=b"bad-json")):
+            self.assertEqual(mod.outbound_destination_evidence("relay.example.org"),
+                             ("unverified", "0"*64))
+        with mock.patch.object(mod.socket, "getaddrinfo", return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]):
+            self.assertEqual(mod.outbound_destination_evidence("relay.example.org")[0],
+                             "yes")
+
+    def test_dns_rebind_before_backup_refuses_without_linux_mutation(self):
+        req = self.request(operation="apply", expected_sha="a"*64,
+                           expected_resolution_sha="b"*64)
+        with mock.patch.object(mod, "prerequisites", return_value="a"*64), \
+             mock.patch.object(mod, "outbound_destination_evidence",
+                               return_value=("no", "c"*64)), \
+             mock.patch.object(mod, "route_conflicts", return_value=False), \
+             mock.patch.object(mod, "queue_state", return_value="empty"), \
+             mock.patch.object(mod, "scope_status", return_value="verified"), \
+             mock.patch.object(mod, "verified_backup") as backup, \
+             mock.patch.object(mod, "update_postconf") as update:
+            with self.assertRaises(RuntimeError):
+                mod.apply(req)
+            backup.assert_not_called()
+            update.assert_not_called()
+
+    def test_dns_rebind_during_backup_refuses_before_postfix_write(self):
+        req = self.request(operation="apply", expected_sha="a"*64,
+                           expected_resolution_sha="b"*64)
+        with mock.patch.object(mod, "prerequisites", return_value="a"*64), \
+             mock.patch.object(mod, "outbound_destination_evidence",
+                               side_effect=[("no", "b"*64), ("no", "c"*64)]), \
+             mock.patch.object(mod, "route_conflicts", return_value=False), \
+             mock.patch.object(mod, "queue_state", return_value="empty"), \
+             mock.patch.object(mod, "scope_status", return_value="verified"), \
+             mock.patch.object(mod, "fingerprint", return_value="a"*64), \
+             mock.patch.object(mod, "inbound_snapshot", return_value=(b"old", ())), \
+             mock.patch.object(mod.pathlib.Path, "is_file", return_value=True), \
+             mock.patch.object(mod, "verified_backup",
+                               return_value="20261123T020101Z-abcdef123456") as backup, \
+             mock.patch.object(mod, "update_postconf") as update:
+            with self.assertRaises(RuntimeError):
+                mod.apply(req)
+            backup.assert_called_once()
+            update.assert_not_called()
 
     def test_read_only_diff_captures_root_owned_credential_db(self):
         with tempfile.TemporaryDirectory() as tmp:

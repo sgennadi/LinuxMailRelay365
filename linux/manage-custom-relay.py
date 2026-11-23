@@ -9,11 +9,13 @@ explicit approval; never log its contents or upstream SMTP responses.
 """
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import pathlib
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -47,7 +49,8 @@ def host_name(value):
 
 def config(data):
     keys = {"host", "port", "tls", "auth_mode", "operation",
-            "expected_sha", "username", "secret", "plaintext_approval"}
+            "expected_sha", "expected_resolution_sha",
+            "username", "secret", "plaintext_approval"}
     if type(data) is not dict or set(data) != keys:
         raise ValueError("Invalid outbound SMTP request")
     data["host"] = host_name(data["host"])
@@ -64,6 +67,11 @@ def config(data):
     if type(sha) is not str or (applying and not HEX.fullmatch(sha)) or (
             not applying and sha):
         raise ValueError("Exact reviewed SHA required for Apply")
+    resolved_sha = data["expected_resolution_sha"]
+    if (type(resolved_sha) is not str or
+            (applying and not HEX.fullmatch(resolved_sha)) or
+            (not applying and resolved_sha)):
+        raise ValueError("Exact reviewed destination DNS SHA required for Apply")
     user, secret = data["username"], data["secret"]
     if type(user) is not str or type(secret) is not str:
         raise ValueError("Invalid SMTP credentials")
@@ -72,7 +80,7 @@ def config(data):
             raise ValueError("Password authentication over plaintext forbidden")
         if applying:
             if (not 1 <= len(user) <= 254 or not 1 <= len(secret) <= 256 or
-                    any(ord(x) < 33 or ord(x) > 126 for x in user) or
+                    any(ord(x) < 33 or ord(x) > 126 or x == ":" for x in user) or
                     any(ord(x) < 32 or ord(x) == 127 for x in secret)):
                 raise ValueError("Invalid one-time SMTP credential")
         elif user or secret:
@@ -302,6 +310,57 @@ def prerequisites():
     return fingerprint()
 
 
+def outbound_destination_evidence(host):
+    """Fail closed when destination DNS resolves to this host.
+
+    Only emit a status and a SHA256 of sorted resolved IPs, never raw network
+    inventory. The ip -j address show command reports Linux interface IPs.
+    Missing utility, ambiguous JSON or DNS errors block automatic Apply.
+    """
+    unknown = ("unverified", "0" * 64)
+    if host == "localhost" or host.endswith(".localhost"):
+        return ("yes", "0" * 64)
+    try:
+        records = socket.getaddrinfo(host, 0, type=socket.SOCK_STREAM)
+        resolved = set()
+        for record in records:
+            addr = ipaddress.ip_address(record[4][0].split("%", 1)[0])
+            if addr.version == 6 and addr.ipv4_mapped:
+                addr = addr.ipv4_mapped
+            resolved.add(addr)
+        if not resolved or len(resolved) > 128:
+            return unknown
+        serialized = "\n".join(sorted(str(a) for a in resolved)).encode("ascii")
+        proof = hashlib.sha256(serialized).hexdigest()
+        if any(a.is_loopback or a.is_unspecified or a.is_multicast or
+               a.is_link_local for a in resolved):
+            return ("yes", proof)
+        if shutil.which("ip") is None:
+            return unknown
+        result = run(["ip", "-j", "address", "show"])
+        if result.returncode or len(result.stdout) > 131072:
+            return unknown
+        interfaces = json.loads(result.stdout.decode("utf-8"))
+        if type(interfaces) is not list or not 1 <= len(interfaces) <= 256:
+            return unknown
+        local = set()
+        for iface in interfaces:
+            if type(iface) is not dict or type(iface.get("addr_info")) is not list:
+                return unknown
+            for entry in iface["addr_info"]:
+                if type(entry) is not dict:
+                    return unknown
+                address = entry.get("local")
+                if type(address) is str:
+                    local.add(ipaddress.ip_address(address.split("%", 1)[0]))
+        if not local:
+            return unknown
+        return ("yes" if resolved & local else "no", proof)
+    except (ValueError, KeyError, IndexError, TypeError, OSError,
+            socket.gaierror, UnicodeError, json.JSONDecodeError):
+        return unknown
+
+
 def preview(request):
     sha = prerequisites()
     conflict = route_conflicts()
@@ -315,9 +374,9 @@ def preview(request):
     if tls_level not in ("none", "may", "encrypt", "dane", "dane-only",
                          "fingerprint", "verify", "secure"):
         tls_level = "unverified"
-    loop = request["host"] == "localhost" or request["host"].startswith("127.")
+    loop, resolved_sha = outbound_destination_evidence(request["host"])
     allowed = (not conflict and queue == "empty" and scope == "verified" and
-               not loop and (request["auth_mode"] != "password" or sasl == "ready"))
+               loop == "no" and (request["auth_mode"] != "password" or sasl == "ready"))
     fields = {
         "VERSION": "1", "HOST": request["host"],
         "PORT": str(request["port"]), "TLS": request["tls"],
@@ -326,7 +385,8 @@ def preview(request):
         "QUEUE": queue, "OUTBOUND_SASL": outbound_auth,
         "PASSWORD_MAP": ("configured" if postconf("smtp_sasl_password_maps") else "not_configured"),
         "TLS_LEVEL": tls_level, "POSTFIX_SCOPE": scope,
-        "CLIENT_SASL": sasl, "SELF_LOOP_RISK": "yes" if loop else "no",
+        "CLIENT_SASL": sasl, "SELF_LOOP_RISK": loop,
+        "RESOLUTION_SHA256": resolved_sha,
         "APPLY_ALLOWED": "yes" if allowed else "no",
         "INBOUND_CHANGED": "no", "MAIL_SENT": "no", "CONFIG_CHANGED": "no"
     }
@@ -396,11 +456,12 @@ def apply(request):
     sha = prerequisites()
     if sha != request["expected_sha"]:
         raise RuntimeError("Postfix configuration drifted since Preview")
-    if (route_conflicts() or queue_state() != "empty" or
+    route_risk, resolution_sha = outbound_destination_evidence(request["host"])
+    if (route_risk != "no" or resolution_sha != request["expected_resolution_sha"] or
+            route_conflicts() or queue_state() != "empty" or
             scope_status() != "verified" or
-            (request["auth_mode"] == "password" and client_sasl_status() != "ready") or
-            request["host"] == "localhost" or request["host"].startswith("127.")):
-        raise RuntimeError("Existing Postfix configuration unsafe to change")
+            (request["auth_mode"] == "password" and client_sasl_status() != "ready")):
+        raise RuntimeError("Destination DNS or Postfix configuration changed since Preview")
     trust = pathlib.Path("/etc/ssl/certs/ca-certificates.crt")
     if not trust.is_file():
         trust = pathlib.Path("/etc/pki/tls/certs/ca-bundle.crt")
@@ -408,7 +469,9 @@ def apply(request):
         raise RuntimeError("No trusted certificate bundle")
     inbound = inbound_snapshot()
     backup_id = verified_backup()
-    if (fingerprint() != sha or route_conflicts() or
+    renewed_risk, renewed_resolution_sha = outbound_destination_evidence(request["host"])
+    if (fingerprint() != sha or renewed_risk != "no" or
+            renewed_resolution_sha != resolution_sha or route_conflicts() or
             queue_state() != "empty" or scope_status() != "verified" or
             (request["auth_mode"] == "password" and client_sasl_status() != "ready")):
         raise RuntimeError("Postfix configuration drifted during backup")
@@ -505,14 +568,17 @@ def release_lock(fd):
 def self_test():
     base = dict(host="mail.example.org", port=587, tls="starttls",
                 auth_mode="password", operation="preview", expected_sha="",
-                username="", secret="", plaintext_approval="")
+                expected_resolution_sha="", username="", secret="",
+                plaintext_approval="")
     config(dict(base))
     config(dict(base, port=2525))
     config(dict(base, port=25, tls="plain", auth_mode="none"))
     config(dict(base, operation="apply", expected_sha="a"*64,
+                expected_resolution_sha="b"*64,
                 username="user@example.org", secret="one-use-only"))
     config(dict(base, port=25, auth_mode="none", tls="plain",
                 operation="apply", expected_sha="a"*64,
+                expected_resolution_sha="b"*64,
                 plaintext_approval="I_ACCEPT_UNENCRYPTED_OUTBOUND_SMTP"))
     for invalid in (
             dict(base, host="host;rm"), dict(base, host="300.300.1.1"),
