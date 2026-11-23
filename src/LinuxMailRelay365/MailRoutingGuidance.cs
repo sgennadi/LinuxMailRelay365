@@ -101,7 +101,7 @@ internal static class MailRoutingGuidance
                 break;
             case "direct-send":
                 intro = "Direct Send";
-                scope = lang == 0 ? "Только внутренние адресаты Microsoft 365. Gmail и внешняя почта заблокированы."
+                scope = lang == 0 ? "Только внутренние адресаты Microsoft 365. Внешняя почта не поддерживается."
                     : lang == 2 ? "נמענים פנימיים בלבד; דואר חיצוני חסום."
                     : "Microsoft 365 internal recipients ONLY; Gmail and external recipients are blocked.";
                 requirements = lang == 0

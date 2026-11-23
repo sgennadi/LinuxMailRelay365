@@ -17,6 +17,17 @@ internal sealed class MailRoutingPlan
     public string PostfixBasicsInterfaces { get; set; } = "loopback-only";
     // Recipient preference only. Never evidence of tenant authorization.
     public string RecipientScope { get; set; } = "unknown";
+    // Operator intention, not proof of observed message source or approval
+    // to alter an existing active MTA.
+    public string MailSource { get; set; } = MailFlowIntent.Unknown;
+    public string MigrationScenario { get; set; } = MailScenarioPlanner.Choose;
+    public string Destination { get; set; } = MailFlowIntent.TargetM365;
+    // Nonsecret planning data only. No SMTP passwords or authorization grants
+    // and no generic SMTP smarthost deployment is implied.
+    public string CustomUpstreamHost { get; set; } = "";
+    public int CustomUpstreamPort { get; set; } = 587;
+    // Google outbound listener is independent of Linux incoming SMTP/25.
+    public int GoogleOutboundPort { get; set; } = 587;
     public string SenderPolicy { get; set; } = "fixed-mailbox";
     // Operator intent only. Multi-mailbox XOAUTH2 is NOT applied until
     // authenticated sender ownership and Exchange rights are validated.
@@ -121,6 +132,21 @@ internal static class MailRoutingPlanStore
             throw new InvalidDataException("Inbound SMTP port must be 25 or between 1024 and 65535.");
         if (state.RecipientScope is not ("unknown" or "internal-only" or "external-needed"))
             throw new InvalidDataException("Invalid recipient scope.");
+        if (!MailFlowIntent.Supported(state.MailSource) ||
+            !MailScenarioPlanner.Supported(state.MigrationScenario) ||
+            !MailFlowIntent.SupportedTarget(state.Destination))
+            throw new InvalidDataException("Unknown mail source, destination or migration scenario.");
+        if (state.GoogleOutboundPort is not (25 or 465 or 587) ||
+            (state.Destination == MailFlowIntent.TargetGmail &&
+             state.GoogleOutboundPort == 25))
+            throw new InvalidDataException("Unsupported Google outbound port.");
+        if (state.CustomUpstreamPort is < 1 or > 65535 ||
+            state.CustomUpstreamHost.Length > 253 ||
+            (state.CustomUpstreamHost.Length > 0 &&
+             !Regex.IsMatch(state.CustomUpstreamHost,
+                @"\A[A-Za-z0-9](?:[A-Za-z0-9.\-]{0,251}[A-Za-z0-9])?\z",
+                RegexOptions.CultureInvariant)))
+            throw new InvalidDataException("Invalid custom upstream SMTP host or outbound port.");
         if (state.Transport is not ("oauth2" or "connector" or "direct-send") ||
             state.SenderPolicy is not ("fixed-mailbox" or "preserve-domain" or "masquerade") ||
             state.OAuthSenderMode is not ("fixed-mailbox" or "authorized-multiple-mailboxes"))
@@ -208,7 +234,11 @@ internal static class MailRoutingPlanStore
                 defaults.SenderPolicy != "fixed-mailbox" ||
                 defaults.OAuthSenderMode != "fixed-mailbox" || defaults.OAuthSenderMapPath != "" ||
                 !defaults.PreserveExistingMail || defaults.SidecarPort != 2525 ||
-                defaults.PublicInternetRequested || defaults.ShowAdvancedSmtpTools) return false;
+                defaults.PublicInternetRequested || defaults.ShowAdvancedSmtpTools ||
+                defaults.MailSource != MailFlowIntent.Unknown ||
+                defaults.MigrationScenario != MailScenarioPlanner.Choose ||
+                defaults.Destination != MailFlowIntent.TargetM365 ||
+                defaults.GoogleOutboundPort != 587) return false;
             Save(folder, b, new MailRoutingPlan { PublicInternetRequested = true,
                 PrivateSmtpServerName = "smtp-b.example.org", ShowAdvancedSmtpTools = true });
             if (!Load(folder, b).PublicInternetRequested ||
@@ -240,6 +270,31 @@ internal static class MailRoutingPlanStore
                 OAuthSenderMode = "authorized-multiple-mailboxes" }); return false;
             } catch (InvalidDataException) { }
             try { Validate(new MailRoutingPlan { RecipientScope = "invalid" }); return false; }
+            catch (InvalidDataException) { }
+            Save(folder, a, new MailRoutingPlan
+            {
+                MailSource = MailFlowIntent.Jobs,
+                MigrationScenario = MailScenarioPlanner.ReplaceRelay,
+                Destination = MailFlowIntent.TargetCustom,
+                CustomUpstreamHost = "smtp-relay.example.org",
+                CustomUpstreamPort = 465
+            });
+            if (Load(folder, a).MailSource != MailFlowIntent.Jobs ||
+                Load(folder, a).MigrationScenario != MailScenarioPlanner.ReplaceRelay ||
+                Load(folder, a).CustomUpstreamHost != "smtp-relay.example.org" ||
+                Load(folder, a).CustomUpstreamPort != 465) return false;
+            try { Validate(new MailRoutingPlan { MailSource = "product-specific" }); return false; }
+            catch (InvalidDataException) { }
+            try { Validate(new MailRoutingPlan { Destination = "unrecognized" }); return false; }
+            catch (InvalidDataException) { }
+            try { Validate(new MailRoutingPlan { CustomUpstreamHost = "name;shutdown" }); return false; }
+            catch (InvalidDataException) { }
+            try { Validate(new MailRoutingPlan { CustomUpstreamPort = 0 }); return false; }
+            catch (InvalidDataException) { }
+            Validate(new MailRoutingPlan { Destination = MailFlowIntent.TargetGmail, GoogleOutboundPort = 465 });
+            Validate(new MailRoutingPlan { Destination = MailFlowIntent.TargetWorkspace, GoogleOutboundPort = 25 });
+            try { Validate(new MailRoutingPlan {
+                Destination = MailFlowIntent.TargetGmail, GoogleOutboundPort = 25 }); return false; }
             catch (InvalidDataException) { }
             Save(folder, b, new MailRoutingPlan { RecipientScope = "external-needed" });
             if (Load(folder, b).RecipientScope != "external-needed") return false;

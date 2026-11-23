@@ -81,6 +81,19 @@ internal static class Program
                 MainForm.UseWideDeliveryChoices(1500, 192)),
             ("Delivery route chooser guidance", DeliveryModeOverview.SelfTest),
             ("Recipient-aware read-only delivery recommendations", MailDeliveryAdvisor.SelfTest),
+            ("Readable mail discovery overview and safe guidance", MailDiscoveryBrief.SelfTest),
+            ("Mail intent and evidence-gated scenario ranking", MailFlowIntent.SelfTest),
+            ("Discovered MTA and custom SMTP TLS live topology", MailScenarioPlanner.SelfTest),
+            ("Local submission read-only evidence", MailSubmissionEvidence.SelfTest),
+            ("Google SMTP port and one-shot AUTH strict validation", GoogleSmtpAudit.SelfTest),
+            ("Custom SMTP destination and one-shot TLS AUTH safety", CustomSmtpAudit.SelfTest),
+            ("Google upstream Postfix preview/apply fingerprint contract", GooglePostfixRoute.SelfTest),
+            ("Embedded local submission probe is read-only", () =>
+                EmbeddedAssets.MailSubmissionInspector.Contains("MAIL_ORIGIN_VERSION=1",
+                    StringComparison.Ordinal) &&
+                !EmbeddedAssets.MailSubmissionInspector.Contains("postconf -e",
+                    StringComparison.Ordinal)),
+            ("English-first UI preference persistence", UiLanguagePreference.SelfTest),
             ("Read-only MTA discovery recommendations", MailServerDiscoveryDecision.SelfTest),
             ("Read-only hostname/domain and MTA settings report", MailHostInspection.SelfTest),
             ("SSH mail-host inspection embedded resource", () =>

@@ -1,5 +1,7 @@
 # LinuxMailRelay365
 
+> **Unsigned RC8 test candidate:** `0.1.1-rc.8` adds discovery-first WinForms mail routing, live topology using the actually discovered Postfix/Exim/Sendmail MTA, Google Gmail/Workspace SMTP diagnostics and guarded Postfix upstream change with root-only backup and rollback. **Custom SMTP** now supports real DNS, TCP, TLS and optional single AUTH tests from the connected Linux server on operator-selected outbound ports without sending any mail. Arbitrary smarthost Apply is not implemented. SMTP secrets are not logged or stored on Windows. The RC8 binary is an **UNSIGNED TEST BUILD, NOT STABLE**. Live Google accounts, Microsoft 365 tenants, external delivery, SELinux Enforcing installations and physical 200%-DPI Windows acceptance remain unverified. All earlier RC releases remain immutable.
+
 > **Unsigned RC7 test candidate:** `0.1.1-rc.7` refreshes the Windows main screen: full-width SSH credentials, stacked fields on compact/high-DPI windows, collapsible help and opt-in login-profile diagnostics, and a clearly labelled Check for updates toolbar with distinct Stable and Preview/RC checks. RC6 SSH profile and Clear log controls, RC5 read-only SMTP port discovery, all existing Linux/Entra/Exchange operations, update verification, SHA-256, backup, restore and rollback remain available. This is **UNSIGNED TEST ONLY**; actual tenant delivery, physical TPM/HSM and hardware 200%-DPI acceptance are not asserted. RC5 and RC6 release assets are preserved.
 
 

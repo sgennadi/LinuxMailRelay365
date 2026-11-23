@@ -9,6 +9,8 @@ namespace LinuxMailRelay365;
 
 internal sealed partial class MainForm
 {
+    private CloudObjectsInventory? lastReadOnlyCloudInventory;
+    private string? lastReadOnlyCloudLinuxIdentity;
     private async Task InspectCloudObjectsAsync()
     {
         if (!Guid.TryParse(tenant.Text.Trim(), out Guid tenantId) || tenantId == Guid.Empty)
@@ -53,7 +55,10 @@ internal sealed partial class MainForm
             }
         }
         var output = await QueryCloudObjectsAsync(tenantId, clientId);
+        lastReadOnlyCloudInventory = output;
+        lastReadOnlyCloudLinuxIdentity = TryCurrentIdentity();
         ShowCloudObjectInventory(output);
+        if (!IsDisposed) RenderPage();
     }
 
     private async Task<CloudObjectsInventory> QueryCloudObjectsAsync(

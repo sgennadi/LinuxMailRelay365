@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class RC7ReleaseContractTests(unittest.TestCase):
     def test_exact_version_in_all_windows_build_paths(self):
-        expected = "0.1.1-rc.7"
+        expected = "0.1.1-rc.8"
         csproj = (ROOT / "src/LinuxMailRelay365/LinuxMailRelay365.csproj").read_text(encoding="utf-8")
         self.assertIn("<Version>" + expected + "</Version>", csproj)
         for path in ("UpdateCheck.cs", "UpdateCheck.Fallback.cs"):
@@ -18,8 +18,8 @@ class RC7ReleaseContractTests(unittest.TestCase):
         self.assertIn('Compare("0.1.1", "0.1.1-rc.7") > 0', fallback)
         updater = (ROOT / "src/LinuxMailRelay365/SignedPortableUpdater.cs").read_text(encoding="utf-8")
         self.assertIn('bool sameVersionRejected = SelectRelease(', updater)
-        self.assertIn('true, "0.1.1-rc.8", asset) is null', updater)
-        self.assertIn('Parse(Fixture(asset, hash, true), true)?.Version == "0.1.1-rc.8"', updater)
+        self.assertIn('true, "0.1.1-rc.9", asset) is null', updater)
+        self.assertIn('Parse(Fixture(asset, hash, true), true)?.Version == "0.1.1-rc.9"', updater)
 
     def test_rc7_publication_is_exact_branch_only_and_immutable(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -44,7 +44,7 @@ class RC7ReleaseContractTests(unittest.TestCase):
 
     def test_unsigned_preview_is_not_treated_as_stable(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn("ExpectedCandidateVersion '0.1.1-rc.7'", ci)
+        self.assertIn("ExpectedCandidateVersion '0.1.1-rc.8'", ci)
         self.assertIn("STABLE_UNSIGNED_RELEASE_GATE=refused_expected", ci)
         signed_gate = (ROOT / "scripts/Test-LinuxMailRelay365SignedRelease.ps1").read_text(encoding="utf-8")
         self.assertIn("Get-AuthenticodeSignature", signed_gate)
