@@ -473,6 +473,35 @@ def apply(request):
         raise
 
 
+
+def write_lock():
+    """Exclusive shared write lock across Google and generic Postfix managers.
+
+    Held from the first reviewed Apply recheck through backup, mutation and
+    any rollback. Unknown owner/mode, symlink or concurrent migration fails.
+    No lock is acquired for the read-only Preview path.
+    """
+    path = "/run/linuxmailrelay365-postfix-route.lock"
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(path, flags, 0o600)
+    try:
+        meta = os.fstat(fd)
+        if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != 0 or
+                meta.st_mode & 0o077):
+            raise RuntimeError("Unsafe shared Postfix route lock")
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
+
+
+def release_lock(fd):
+    # Closing releases the advisory kernel lock even after a failed rollback.
+    os.close(fd)
+
+
 def self_test():
     base = dict(host="mail.example.org", port=587, tls="starttls",
                 auth_mode="password", operation="preview", expected_sha="",
@@ -513,7 +542,11 @@ if __name__ == "__main__":
             if request["operation"] == "preview":
                 preview(request)
             else:
-                apply(request)
+                lock_fd = write_lock()
+                try:
+                    apply(request)
+                finally:
+                    release_lock(lock_fd)
         except Exception:
             # Never print credentials, encoded SSH input or SMTP server replies.
             print("CUSTOM_ROUTE_ERROR=preflight_or_apply_failed")
