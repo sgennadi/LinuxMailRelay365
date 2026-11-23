@@ -1,6 +1,6 @@
 # RC12 — read-only Postfix routing conflict review
 
-**Development branch only; no production Apply and no verified mail delivery.**
+**Unsigned RC12 test candidate; no production Apply and no verified mail delivery.**
 
 RC12 extends the RC11 visual mail-rule planner. Once SSH discovery has
 succeeded for the *current* Linux identity, the WinForms panel shows a

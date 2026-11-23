@@ -74,6 +74,26 @@ class PostfixRoutePolicyContractTests(unittest.TestCase):
         self.assertNotIn("ApplyConditionalRoutingAsync", ui)
         self.assertNotIn("postconf -e", ui)
 
+    def test_rc12_release_only_after_full_acceptance(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        csproj = (CS / "LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+        self.assertIn("<Version>0.1.1-rc.12</Version>", csproj)
+        for path in ("UpdateCheck.cs", "UpdateCheck.Fallback.cs"):
+            self.assertIn('internal const string Version = "0.1.1-rc.12";',
+                          (CS / path).read_text(encoding="utf-8"))
+        self.assertIn("-ExpectedCandidateVersion '0.1.1-rc.12'", ci)
+        job = ci.split("  rc12-prerelease-publish:", 1)[1]
+        self.assertIn("github.event_name == 'push'", job)
+        self.assertIn("refs/heads/feature/rc12-postfix-route-policy-audit", job)
+        for requirement in ("- linux-tests", "- windows-build",
+                            "- ubuntu-postfix-smoke", "- rhel-native-foreign-mta-smoke",
+                            "- rhel-selinux-offline-policy-smoke"):
+            self.assertIn(requirement, job)
+        self.assertIn("UNSIGNED_RC12_RELEASE_SHA256_AND_ZIP=PASS", job)
+        self.assertIn("tag='v0.1.1-rc.12'", job)
+        self.assertIn("--prerelease", job)
+        self.assertNotIn("--latest", job)
+
     def test_csharp_selftest_is_registered_in_windows_ci(self):
         program = (CS / "Program.cs").read_text(encoding="utf-8")
         self.assertIn("PostfixRoutePolicyAudit.SelfTest", program)

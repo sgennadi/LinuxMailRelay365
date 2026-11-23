@@ -444,7 +444,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
-          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.11'
+          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.12'
       - name: Capture actual Windows Wizard and early-route screens (CI-only)
         shell: pwsh
         timeout-minutes: 3
@@ -1091,3 +1091,92 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "LinuxMailRelay365 v0.1.1 RC11 (UNSIGNED TEST ONLY)" --prerelease \
             --notes "UNSIGNED TEST RC11, NOT Stable or production approved. Adds a discovery-gated GUI what-if planner for exact envelope sender, sender domain and recipient domain routes. Up to 24 rules can be added, edited, removed and reordered for display, with strict host/port/TLS/AUTH validation, SHA-256 plan identity, overlap warnings and sample sender/recipient matching. This is OFFLINE ONLY: no route maps, Postfix/Exim/Sendmail settings, files, credentials, inbound ports, queued mail, firewall, Entra objects or SMTP messages are changed. The existing RC10 guarded single-upstream SMTP Apply and Google/M365 paths are preserved. Routing precedence and real delivery remain unverified, and no conditional routing Apply is provided. No real tenant, physical TPM/SELinux Enforcing or 200% DPI hardware acceptance is claimed."
+
+  rc12-prerelease-publish:
+    name: Publish unsigned RC12 after all Linux and Windows CI acceptance
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/rc12-conditional-routing-planner'
+    needs:
+      - linux-tests
+      - ubuntu-clean-postfix-bootstrap
+      - ubuntu-native-foreign-mta-smoke
+      - ubuntu-postfix-smoke
+      - ubuntu-fresh-direct-send-smoke
+      - ubuntu-fresh-connector-smoke
+      - rhel-family-readonly-smoke
+      - rhel-native-foreign-mta-smoke
+      - rhel-selinux-offline-policy-smoke
+      - windows-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify release-candidate SHA, version and unsigned status
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          grep -Fxq '    <Version>0.1.1-rc.12</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.1-rc.12";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fq 'internal const string Version = "0.1.1-rc.12";' src/LinuxMailRelay365/UpdateCheck.cs
+          test "$GITHUB_REF" = 'refs/heads/feature/rc12-conditional-routing-planner'
+      - uses: actions/download-artifact@v6
+        with:
+          name: LinuxMailRelay365-preview-builds
+          path: out/published
+      - name: Verify SHA-256 manifest and root EXE ZIPs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          from zipfile import ZipFile
+          root = Path("out/published")
+          lines = (root / "preview-artifact-digests.txt").read_text(encoding="utf-8-sig").splitlines()
+          expected = {}
+          status = False
+          for line in lines:
+              if line.startswith("STATUS="):
+                  assert line == "STATUS=preview_unsigned_not_for_production"
+                  status = True
+                  continue
+              arch, name, digest = line.split()
+              assert digest.startswith("sha256:") and len(digest) == 71
+              expected[(arch, name)] = digest[7:]
+          assert status and len(expected) == 4
+          for arch in ("x64", "arm64"):
+              suffix = "win-" + arch
+              exe = root / suffix / "LinuxMailRelay365.exe"
+              archive = root / "release-candidates" / ("LinuxMailRelay365-" + suffix + ".zip")
+              assert exe.is_file() and archive.is_file()
+              digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+              assert digest(exe) == expected[(suffix, "LinuxMailRelay365.exe")]
+              assert digest(archive) == expected[(suffix, archive.name)]
+              with ZipFile(archive) as z:
+                  assert z.namelist() == ["LinuxMailRelay365.exe"]
+                  assert hashlib.sha256(z.read("LinuxMailRelay365.exe")).hexdigest() == digest(exe)
+          print("UNSIGNED_RC12_RELEASE_SHA256_AND_ZIP=PASS")
+          PY
+      - name: Publish one GitHub prerelease without overwrite
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='v0.1.1-rc.12'
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::0.1.1-RC12 already published. Never replace a released candidate."
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Existing tag has no release; manual review required."
+            exit 1
+          fi
+          gh release create "$tag" \
+            out/published/release-candidates/LinuxMailRelay365-win-x64.zip \
+            out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
+            out/published/preview-artifact-digests.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "LinuxMailRelay365 v0.1.1 RC12 (UNSIGNED TEST ONLY)" --prerelease \
+            --notes "UNSIGNED TEST RC12, NOT Stable or production approved. Adds a read-only Postfix route policy audit for the RC11 discovery-first conditional routing what-if planner. Discovers declaration-only transport_maps, relayhost, sender_dependent_relayhost_maps, sender_dependent_default_transport_maps, SMTP SASL AUTH and TLS policy, warns about literal local domains and unverified dynamic classes without reading password map contents. No conditional route Apply, file changes, SMTP sessions, new ports, tenant changes or queued mail changes are authorized. Existing RC10 single-upstream SMTP Apply and other delivery methods remain unchanged. No hardware 200-percent-DPI, live tenant, external mail or production SELinux/TPM acceptance is claimed."
