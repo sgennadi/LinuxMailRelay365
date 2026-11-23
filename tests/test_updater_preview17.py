@@ -1,5 +1,6 @@
 """Guard GUI updater entry, release versions and publisher restrictions."""
 from pathlib import Path
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,10 +25,15 @@ class UpdaterPreview25Contracts(unittest.TestCase):
         self.assertIn("SignedPortableUpdater.LastUpdateStatus()", MAIN)
 
     def test_release_and_updater_version_are_consistent(self):
-        self.assertIn("<Version>0.1.1-rc.8</Version>", PROJECT)
-        self.assertIn('internal const string Version = "0.1.1-rc.8";', CHECK)
+        match = re.search(r"<Version>(0\.1\.1-rc\.[1-9][0-9]*)</Version>", PROJECT)
+        self.assertIsNotNone(match)
+        expected = match.group(1)
+        self.assertIn('internal const string Version = "' + expected + '";', CHECK)
         shared = (ROOT / "src/LinuxMailRelay365/UpdateCheck.cs").read_text(encoding="utf-8")
-        self.assertIn('internal const string Version = "0.1.1-rc.8";', shared)
+        self.assertIn('internal const string Version = "' + expected + '";', shared)
+        self.assertIn("ExpectedCandidateVersion '" + expected + "'", WORKFLOW)
+        # Immutable published RC8 test asset must remain an explicit branch gate.
+        self.assertIn("tag='v0.1.1-rc.8'", WORKFLOW)
         self.assertIn("tag='v0.1.0-preview.25'", WORKFLOW)
         self.assertIn("Test-LinuxMailRelay365PreviewUpgrade.ps1", WORKFLOW)
 
