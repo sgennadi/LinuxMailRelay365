@@ -444,7 +444,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
-          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.8'
+          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.9'
       - name: Capture actual Windows Wizard and early-route screens (CI-only)
         shell: pwsh
         timeout-minutes: 3
@@ -823,3 +823,92 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "LinuxMailRelay365 v0.1.1 RC8 (UNSIGNED TEST ONLY)" --prerelease \
             --notes "UNSIGNED TEST RC8, NOT STABLE OR PRODUCTION APPROVED. Discovery-first WinForms mail routing, real Postfix/Exim/Sendmail topology, Google Gmail/Workspace TLS and optional one-shot SMTP AUTH. Guarded primary Postfix Gmail/Workspace upstream migration requires fingerprint, empty queue, root-only verified backup and rollback. Custom SMTP endpoint/port/TLS/optional one-shot AUTH checks operate read-only from the selected Linux server: automatic custom upstream Apply is NOT implemented. Existing inbound SMTP listener ports are preserved. CI verifies x64/ARM64 Windows builds, Python unit tests, Linux MTA/SELinux offline tests, SHA-256 and one-root-EXE ZIP contents. Unsigned RC requires explicit non-elevated operator consent; NOT for unattended production upgrades. Real tenant, Google account, external delivery, physical TPM/HSM, SELinux Enforcing and hardware 200%-DPI acceptance remain unverified. Earlier release tags/assets remain immutable."
+
+  rc9-prerelease-publish:
+    name: Publish unsigned RC9 after all Linux and Windows CI acceptance
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/rc9-universal-smtp-route'
+    needs:
+      - linux-tests
+      - ubuntu-clean-postfix-bootstrap
+      - ubuntu-native-foreign-mta-smoke
+      - ubuntu-postfix-smoke
+      - ubuntu-fresh-direct-send-smoke
+      - ubuntu-fresh-connector-smoke
+      - rhel-family-readonly-smoke
+      - rhel-native-foreign-mta-smoke
+      - rhel-selinux-offline-policy-smoke
+      - windows-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify release-candidate SHA, version and unsigned status
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          grep -Fxq '    <Version>0.1.1-rc.9</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.1-rc.9";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fq 'internal const string Version = "0.1.1-rc.9";' src/LinuxMailRelay365/UpdateCheck.cs
+          test "$GITHUB_REF" = 'refs/heads/feature/rc9-universal-smtp-route'
+      - uses: actions/download-artifact@v6
+        with:
+          name: LinuxMailRelay365-preview-builds
+          path: out/published
+      - name: Verify SHA-256 manifest and root EXE ZIPs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          from zipfile import ZipFile
+          root = Path("out/published")
+          lines = (root / "preview-artifact-digests.txt").read_text(encoding="utf-8-sig").splitlines()
+          expected = {}
+          status = False
+          for line in lines:
+              if line.startswith("STATUS="):
+                  assert line == "STATUS=preview_unsigned_not_for_production"
+                  status = True
+                  continue
+              arch, name, digest = line.split()
+              assert digest.startswith("sha256:") and len(digest) == 71
+              expected[(arch, name)] = digest[7:]
+          assert status and len(expected) == 4
+          for arch in ("x64", "arm64"):
+              suffix = "win-" + arch
+              exe = root / suffix / "LinuxMailRelay365.exe"
+              archive = root / "release-candidates" / ("LinuxMailRelay365-" + suffix + ".zip")
+              assert exe.is_file() and archive.is_file()
+              digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+              assert digest(exe) == expected[(suffix, "LinuxMailRelay365.exe")]
+              assert digest(archive) == expected[(suffix, archive.name)]
+              with ZipFile(archive) as z:
+                  assert z.namelist() == ["LinuxMailRelay365.exe"]
+                  assert hashlib.sha256(z.read("LinuxMailRelay365.exe")).hexdigest() == digest(exe)
+          print("UNSIGNED_RC9_RELEASE_SHA256_AND_ZIP=PASS")
+          PY
+      - name: Publish one GitHub prerelease without overwrite
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='v0.1.1-rc.9'
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::0.1.1-RC9 already published. Never replace a released candidate."
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Existing tag has no release; manual review required."
+            exit 1
+          fi
+          gh release create "$tag" \
+            out/published/release-candidates/LinuxMailRelay365-win-x64.zip \
+            out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
+            out/published/preview-artifact-digests.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "LinuxMailRelay365 v0.1.1 RC9 (UNSIGNED TEST ONLY)" --prerelease \
+            --notes "UNSIGNED TEST RC9, NOT Stable/production approved. Adds universal primary Postfix outbound SMTP Preview/Apply (arbitrary hostname/IPv4 and outbound port) using provider-neutral STARTTLS or implicit TLS, optionally password AUTH; plaintext NO AUTH requires an explicit typed warning. Existing Linux listener, local domains, users and mail queues are not changed. Google/Gmail/Workspace workflows remain available. Includes read-only Postfix virtual-mailbox, extra routing and sender rewriting declarations, exact SHA-256 Preview, root-only verified backup, serialized Apply, postchecks, rollback, Linux x64/ARM64 test matrices and Windows x64/ARM64 self-tests. Password map stored ONLY on Linux readable by root after operator approval. No real SMTP delivery, tenant, physical TPM or real 200-percent-DPI production acceptance claimed. Previous RC7/RC8 tags/assets remain immutable."
