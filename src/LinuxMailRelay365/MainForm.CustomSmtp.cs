@@ -119,6 +119,7 @@ internal sealed partial class MainForm
                 "Password authentication is disabled in plaintext mode.",
                 "אימות סיסמה אינו זמין ללא TLS."),
                 width, warning: true));
+        ShowCustomRouteActions(page, width, l);
     }
 
     private async Task InspectCustomSmtpAsync(bool withAuth)

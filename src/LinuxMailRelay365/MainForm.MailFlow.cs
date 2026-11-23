@@ -311,6 +311,8 @@ internal sealed partial class MainForm
             customSmtpPassword.Clear(); // Never retain a custom SMTP secret after a target change.
             customSmtpAudit = null;
             customSmtpAuditContext = null;
+            customRoutePreview = null;
+            customRoutePreviewContext = null;
             if (code == MailFlowIntent.TargetGmail && googleOutboundPort.Text.Trim() == "25")
                 googleOutboundPort.Text = "587";
             googleSmtpAudit = null;
@@ -333,8 +335,8 @@ internal sealed partial class MainForm
                 alternateUpstreamPort);
             ShowCustomSmtpChecks(page, width, languageIndex);
             AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
-                "Проверки доступны, но автоматическая смена Postfix на произвольный smarthost пока НЕ поддерживается. Конфигурация Linux остаётся без изменений.",
-                "Read-only tests are available, but automatic Postfix migration to an arbitrary smarthost is NOT supported yet. Linux settings stay unchanged.",
+                "Для активного основного Postfix доступен защищённый Custom SMTP Preview/Apply. Exim/Sendmail и сложные маршруты не меняются автоматически.",
+                "Guarded Custom SMTP Preview/Apply is available for an active primary Postfix. Exim/Sendmail and advanced routing remain read-only.",
                 "בדיקות זמינות, אך שינוי אוטומטי של Postfix אינו נתמך עדיין."),
                 width, warning: true));
         }
@@ -406,8 +408,8 @@ internal sealed partial class MainForm
         if (selectedMailTarget == MailFlowIntent.TargetCustom)
         {
             AddLine(page, MailFlowText(TranslateMailFlow(language.SelectedIndex,
-                "Проверка Custom SMTP не подтверждает права отправителя или фактическую доставку. Автоматическая смена маршрута пока недоступна.",
-                "Custom SMTP checks do not establish sender authorization or mail delivery. Automatic route migration is not yet available.",
+                "Проверка Custom SMTP не подтверждает права отправителя или реальную доставку. Изменение основного Postfix требует отдельного Preview, backup и подтверждения.",
+                "Custom SMTP checks do not prove sender authorization or delivery. Primary Postfix migration requires separate Preview, backup and explicit approval.",
                 "ממסר SMTP אחר טרם אומת; יש לבדוק TLS והרשאות."),
                 Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
             return;

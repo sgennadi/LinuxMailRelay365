@@ -50,6 +50,7 @@ internal static class EmbeddedAssets
     internal static string GoogleSmtpProbe => Text("LinuxMailRelay365.linux.check-google-smtp.py");
     internal static string CustomSmtpProbe => Text("LinuxMailRelay365.linux.check-custom-smtp.py");
     internal static string GooglePostfixRoute => Text("LinuxMailRelay365.linux.manage-google-relay.py");
+    internal static string CustomPostfixRoute => Text("LinuxMailRelay365.linux.manage-custom-relay.py");
     internal static string MailBindInspector => Text("LinuxMailRelay365.linux.audit-mail-bindings.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
     internal static string MtaCoexistenceDoctor => Text("LinuxMailRelay365.linux.mta-coexistence-doctor.py");
