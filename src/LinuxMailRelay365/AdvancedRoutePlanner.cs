@@ -30,7 +30,8 @@ internal sealed record AdvancedRouteRule(
 
 internal sealed record AdvancedRouteSimulation(
     string Status, string Explanation,
-    IReadOnlyList<AdvancedRouteRule> Matches, string PlanSha256);
+    IReadOnlyList<AdvancedRouteRule> Matches, string PlanSha256,
+    string SampleSender, string SampleRecipient);
 
 internal static class AdvancedRoutePlanner
 {
@@ -134,7 +135,8 @@ internal static class AdvancedRoutePlanner
             1 => "One proposed rule matches. Real Postfix precedence and delivery are not verified.",
             _ => "Multiple conditions overlap. Real Postfix map precedence is not modeled; do not Apply."
         };
-        return new(status, explanation, matches, PlanSha256(items));
+        return new(status, explanation, matches, PlanSha256(items),
+            sender, recipient);
     }
 
     internal static bool SelfTest()
@@ -153,6 +155,8 @@ internal static class AdvancedRoutePlanner
                 != "overlap-requires-review" ||
             Simulate([receiver], "somebody@example.org", "other@external.example")
                 .Matches.Single() != receiver ||
+            Simulate([receiver], "SOMEBODY@EXAMPLE.ORG", "Other@External.Example")
+                .SampleRecipient != "other@external.example" ||
             Simulate([domain], "a@sub.example.org", "other@elsewhere.example").Status
                 != "no-match")
             return false;
