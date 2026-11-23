@@ -17,8 +17,11 @@ STARTTLS/implicit TLS/plaintext, and proposed SMTP AUTH/no AUTH. No password
 is requested or stored in this planner. The configured **inbound Linux SMTP
 port is not changed or inferred from the outbound port**.
 
-Rules can be added, reordered for display, removed, and tested using
-user-supplied sample sender and recipient addresses. Simulations report
+Rules can be added, edited, reordered for display, removed, and tested using
+user-supplied sample sender and recipient addresses. Editing a rule is local,
+can be cancelled, and does not alter the original until Save is chosen.
+Simulation results are invalidated if the rule plan or sample sender/recipient
+changes, avoiding stale results from another hypothetical message. Simulations report
 all matching candidates. Zero matches means no proposal; one means only
 a *hypothetical* match; multiple means overlapping conditions requiring
 review. There is **no simulated or implied Postfix precedence**.
