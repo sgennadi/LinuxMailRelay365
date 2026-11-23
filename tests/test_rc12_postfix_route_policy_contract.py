@@ -86,6 +86,7 @@ class PostfixRoutePolicyContractTests(unittest.TestCase):
         self.assertIn("github.event_name == 'push'", job)
         self.assertIn("refs/heads/feature/rc12-postfix-route-policy-audit", job)
         for requirement in ("- linux-tests", "- windows-build",
+                            "- ubuntu-real-proof-timer-systemd",
                             "- ubuntu-postfix-smoke", "- rhel-native-foreign-mta-smoke",
                             "- rhel-selinux-offline-policy-smoke"):
             self.assertIn(requirement, job)

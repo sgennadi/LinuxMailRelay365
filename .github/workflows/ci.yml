@@ -1097,6 +1097,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature/rc12-postfix-route-policy-audit'
     needs:
       - linux-tests
+      - ubuntu-real-proof-timer-systemd
       - ubuntu-clean-postfix-bootstrap
       - ubuntu-native-foreign-mta-smoke
       - ubuntu-postfix-smoke
