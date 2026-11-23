@@ -293,8 +293,8 @@ internal sealed partial class MainForm
              Title: TranslateMailFlow(languageIndex,
                  "Другой SMTP-сервер", "Another SMTP server / smarthost", "שרת SMTP אחר"),
              Description: TranslateMailFlow(languageIndex,
-                 "Укажите исходящий сервер и порт. Пока это план; пароль SMTP не сохраняется.",
-                 "Specify an outbound server and port. Planning only; SMTP passwords are not stored.",
+                 "Укажите сервер и исходящий порт. DNS, TLS и необязательную SMTP AUTH можно проверить без отправки письма.",
+                 "Specify an outbound server and port. Read-only DNS/TLS and optional SMTP AUTH checks do not send mail.",
                  "בחרו שרת ויציאה. תכנון בלבד."),
              Status: TranslateMailFlow(languageIndex,
                  "Нет автоматической установки", "No automatic deployment", "ללא התקנה אוטומטית"),
@@ -304,6 +304,9 @@ internal sealed partial class MainForm
         {
             selectedMailTarget = code;
             googleAppPassword.Clear(); // Never carry Google credentials between destinations.
+            customSmtpPassword.Clear(); // Never retain a custom SMTP secret after a target change.
+            customSmtpAudit = null;
+            customSmtpAuditContext = null;
             if (code == MailFlowIntent.TargetGmail && googleOutboundPort.Text.Trim() == "25")
                 googleOutboundPort.Text = "587";
             googleSmtpAudit = null;
@@ -324,10 +327,11 @@ internal sealed partial class MainForm
                 "Исходящий TCP-порт (это НЕ входящий порт Linux)",
                 "Outbound TCP port (NOT a Linux inbound port)", "יציאה יוצאת TCP"),
                 alternateUpstreamPort);
+            ShowCustomSmtpChecks(page, width, languageIndex);
             AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
-                "Универсальный SMTP smarthost пока только в плане: перед включением нужны TLS, способ аутентификации, проверка DNS/доступности и backup. Существующий Postfix не меняется.",
-                "Custom SMTP smarthost is a planning option only: verify TLS, authentication, DNS/connectivity and backups before activation. Existing Postfix stays untouched.",
-                "היעד הוא תכנון בלבד, עד לאימות TLS ואבטחה."),
+                "Проверки доступны, но автоматическая смена Postfix на произвольный smarthost пока НЕ поддерживается. Конфигурация Linux остаётся без изменений.",
+                "Read-only tests are available, but automatic Postfix migration to an arbitrary smarthost is NOT supported yet. Linux settings stay unchanged.",
+                "בדיקות זמינות, אך שינוי אוטומטי של Postfix אינו נתמך עדיין."),
                 width, warning: true));
         }
         AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
@@ -398,8 +402,8 @@ internal sealed partial class MainForm
         if (selectedMailTarget == MailFlowIntent.TargetCustom)
         {
             AddLine(page, MailFlowText(TranslateMailFlow(language.SelectedIndex,
-                "Другой SMTP upstream пока не подтверждён: потребуется проверить DNS, подключение, TLS, AUTH и разрешения провайдера перед настройкой.",
-                "Custom upstream is not verified: inspect DNS, connectivity, TLS, AUTH and provider permissions before configuration.",
+                "Проверка Custom SMTP не подтверждает права отправителя или фактическую доставку. Автоматическая смена маршрута пока недоступна.",
+                "Custom SMTP checks do not establish sender authorization or mail delivery. Automatic route migration is not yet available.",
                 "ממסר SMTP אחר טרם אומת; יש לבדוק TLS והרשאות."),
                 Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
             return;
