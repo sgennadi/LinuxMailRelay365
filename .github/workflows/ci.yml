@@ -1094,7 +1094,7 @@ jobs:
 
   rc12-prerelease-publish:
     name: Publish unsigned RC12 after all Linux and Windows CI acceptance
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/rc12-conditional-routing-planner'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/rc12-postfix-route-policy-audit'
     needs:
       - linux-tests
       - ubuntu-clean-postfix-bootstrap
@@ -1119,7 +1119,7 @@ jobs:
           grep -Fxq '    <Version>0.1.1-rc.12</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
           grep -Fq 'internal const string Version = "0.1.1-rc.12";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
           grep -Fq 'internal const string Version = "0.1.1-rc.12";' src/LinuxMailRelay365/UpdateCheck.cs
-          test "$GITHUB_REF" = 'refs/heads/feature/rc12-conditional-routing-planner'
+          test "$GITHUB_REF" = 'refs/heads/feature/rc12-postfix-route-policy-audit'
       - uses: actions/download-artifact@v6
         with:
           name: LinuxMailRelay365-preview-builds
