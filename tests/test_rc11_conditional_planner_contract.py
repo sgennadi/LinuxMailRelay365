@@ -66,6 +66,21 @@ class ConditionalRouteUiContractTests(unittest.TestCase):
         planner = (CS / "AdvancedRoutePlanner.cs").read_text(encoding="utf-8")
         self.assertIn("string SampleSender, string SampleRecipient", planner)
 
+    def test_interactive_diagram_is_native_and_local_only(self):
+        diagram = (CS / "MainForm.AdvancedRouteDiagram.cs").read_text(
+            encoding="utf-8")
+        gui = (CS / "MainForm.AdvancedRoutes.cs").read_text(encoding="utf-8")
+        self.assertIn("BuildConditionalRoutingDiagram(width, l)", gui)
+        self.assertIn("BeginAdvancedRouteEdit(index)", diagram)
+        self.assertIn("AdvancedRoutePlanner.PossibleOverlaps(", diagram)
+        self.assertIn("WrapContents = false", diagram)
+        self.assertIn("DeviceDpi", diagram)
+        self.assertIn("PROPOSAL, not active routing", diagram)
+        for prohibited in ("SshRemote.", "RunRootScriptAsync",
+                           "ExecuteAsync", "File.Write", "SaveRoutingChoices("):
+            with self.subTest(prohibited=prohibited):
+                self.assertNotIn(prohibited, diagram)
+
     def test_csharp_executable_self_test_is_registered(self):
         source = (CS / "Program.cs").read_text(encoding="utf-8")
         self.assertIn("AdvancedRoutePlanner.SelfTest", source)

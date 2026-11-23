@@ -20,6 +20,10 @@ port is not changed or inferred from the outbound port**.
 Rules can be added, edited, reordered for display, removed, and tested using
 user-supplied sample sender and recipient addresses. Editing a rule is local,
 can be cancelled, and does not alter the original until Save is chosen.
+Rules are also displayed as native, clickable WinForms condition → outbound
+SMTP diagrams. Clicking either node opens that rule's in-memory editor;
+potential overlaps are highlighted, but no precedence is inferred. All
+diagram elements remain programmatic, with responsive narrow/200%-DPI layouts.
 Simulation results are invalidated if the rule plan or sample sender/recipient
 changes, avoiding stale results from another hypothetical message. Simulations report
 all matching candidates. Zero matches means no proposal; one means only
