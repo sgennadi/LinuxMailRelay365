@@ -33,6 +33,8 @@ internal sealed record AdvancedRouteSimulation(
     IReadOnlyList<AdvancedRouteRule> Matches, string PlanSha256,
     string SampleSender, string SampleRecipient);
 
+internal sealed record AdvancedRouteOverlap(int FirstRule, int SecondRule, string Reason);
+
 internal static class AdvancedRoutePlanner
 {
     internal const int MaximumRules = 24;
@@ -93,6 +95,40 @@ internal static class AdvancedRoutePlanner
             if (!seen.Add(rule.Selector + "|" + rule.Pattern))
                 throw new ArgumentException("Duplicate route selector and condition.");
         return items;
+    }
+
+    // Possible simultaneous matches are diagnostics only. Real Postfix
+    // sender relayhost and recipient transport maps are NOT first-match
+    // rules in one common ordered list.
+    internal static IReadOnlyList<AdvancedRouteOverlap> PossibleOverlaps(
+        IEnumerable<AdvancedRouteRule> rules)
+    {
+        var items = ValidatePlan(rules);
+        var overlaps = new List<AdvancedRouteOverlap>();
+        for (int i = 0; i < items.Count; i++)
+        {
+            for (int j = i + 1; j < items.Count; j++)
+            {
+                var a = items[i];
+                var b = items[j];
+                bool senderA = a.Kind != AdvancedRouteMatchKind.RecipientDomain;
+                bool senderB = b.Kind != AdvancedRouteMatchKind.RecipientDomain;
+                if (senderA != senderB)
+                {
+                    overlaps.Add(new(i, j, "sender-vs-recipient"));
+                    continue;
+                }
+                if (a.Kind == AdvancedRouteMatchKind.ExactEnvelopeSender &&
+                    b.Kind == AdvancedRouteMatchKind.EnvelopeSenderDomain &&
+                    a.Pattern.EndsWith("@" + b.Pattern, StringComparison.Ordinal))
+                    overlaps.Add(new(i, j, "exact-vs-sender-domain"));
+                else if (b.Kind == AdvancedRouteMatchKind.ExactEnvelopeSender &&
+                    a.Kind == AdvancedRouteMatchKind.EnvelopeSenderDomain &&
+                    b.Pattern.EndsWith("@" + a.Pattern, StringComparison.Ordinal))
+                    overlaps.Add(new(i, j, "exact-vs-sender-domain"));
+            }
+        }
+        return overlaps;
     }
 
     internal static string PlanSha256(IEnumerable<AdvancedRouteRule> rules)
@@ -158,7 +194,15 @@ internal static class AdvancedRoutePlanner
             Simulate([receiver], "SOMEBODY@EXAMPLE.ORG", "Other@External.Example")
                 .SampleRecipient != "other@external.example" ||
             Simulate([domain], "a@sub.example.org", "other@elsewhere.example").Status
-                != "no-match")
+                != "no-match" ||
+            PossibleOverlaps([exact, domain]).Single().Reason !=
+                "exact-vs-sender-domain" ||
+            PossibleOverlaps([domain, receiver]).Single().Reason !=
+                "sender-vs-recipient" ||
+            PossibleOverlaps([domain, Normalize(new(
+                AdvancedRouteMatchKind.EnvelopeSenderDomain,
+                "another.example.org", "another.example.net",
+                25, "starttls", "none"))]).Count != 0)
             return false;
         var hash = PlanSha256([exact, domain]);
         if (hash.Length != 64 || hash == PlanSha256([domain, exact]))
