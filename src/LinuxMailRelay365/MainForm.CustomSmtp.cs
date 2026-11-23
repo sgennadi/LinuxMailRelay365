@@ -22,6 +22,7 @@ internal sealed partial class MainForm
     };
     private CustomSmtpAudit? customSmtpAudit;
     private string? customSmtpAuditContext;
+    private string? customSmtpAuditedUser;
 
     private string CustomSmtpMode()
     {
@@ -139,6 +140,7 @@ internal sealed partial class MainForm
         customSmtpPassword.Clear(); // Do not keep the secret visible after click.
         customSmtpAudit = null;
         customSmtpAuditContext = null;
+        customSmtpAuditedUser = null;
         try
         {
             if (withAuth && MessageBox.Show(this,
@@ -169,6 +171,8 @@ internal sealed partial class MainForm
                     "Linux or custom SMTP selection changed during diagnostics.");
             customSmtpAudit = report;
             customSmtpAuditContext = selectedContext;
+            customSmtpAuditedUser = withAuth && report.AuthResult == "accepted"
+                ? username : null;
             WriteLine("Custom SMTP read-only check: TCP=" + report.Tcp +
                 "; TLS=" + report.Tls + "; AUTH=" + report.AuthResult +
                 "; NO mail sent and NO Linux configuration changed.");
