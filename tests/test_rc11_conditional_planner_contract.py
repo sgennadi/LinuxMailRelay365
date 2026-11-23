@@ -23,13 +23,18 @@ class ConditionalRouteUiContractTests(unittest.TestCase):
 
     def test_gui_is_local_only_without_hidden_mutation_or_persistence(self):
         ui = (CS / "MainForm.AdvancedRoutes.cs").read_text(encoding="utf-8")
+        # The forbidden command names may legitimately appear in explanatory
+        # comments. Inspect non-comment source so documentation does not
+        # trigger a false positive while executable calls remain blocked.
+        effective = "\n".join(line for line in ui.splitlines()
+                              if not line.lstrip().startswith("//"))
         for disallowed in (
                 "SshRemote.", "RunRootScriptAsync", "ExecuteAsync",
                 "postconf -e", "postmap", "postfix reload", "SaveRoutingChoices(",
                 "File.Write", "FileStream(", "Registry.",
                 "ApplyAdvancedRoutingAsync", "ApplyConditionalRoutingAsync"):
             with self.subTest(disallowed=disallowed):
-                self.assertNotIn(disallowed, ui)
+                self.assertNotIn(disallowed, effective)
         self.assertIn("private readonly List<AdvancedRouteRule>", ui)
         self.assertIn("HasMailDiscovery()", ui)
         self.assertIn("AdvancedRoutePlanner.Simulate", ui)
