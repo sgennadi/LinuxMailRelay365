@@ -47,6 +47,7 @@ internal sealed partial class MainForm
     private readonly TextBox advancedRoutingSampleSender = Field("");
     private readonly TextBox advancedRoutingSampleRecipient = Field("");
     private AdvancedRouteSimulation? advancedRoutingSimulation;
+    private int advancedRoutingEditIndex = -1;
 
     private void PrepareAdvancedRoutingControls(int width)
     {
@@ -133,6 +134,7 @@ internal sealed partial class MainForm
         {
             advancedRoutingRules.Clear();
             advancedRoutingSimulation = null;
+            advancedRoutingEditIndex = -1;
             advancedRoutingIdentity = identity;
             advancedRoutingToggleUpdating = true;
             try { advancedRoutingToggle.Checked = false; }
@@ -209,12 +211,27 @@ internal sealed partial class MainForm
             "Предполагаемый SMTP AUTH", "Proposed SMTP AUTH", "אימות SMTP מוצע")));
         AddLine(page, advancedRoutingAuth);
 
-        var add = AddAction(page, TranslateMailFlow(l,
-            "Добавить правило в модель (Linux не меняется)",
-            "Add a rule to this simulation (Linux unchanged)",
-            "הוסף כלל להדמיה בלבד"),
-            AddAdvancedRoutingRuleAsync, false, "plus", "conditional-route-plan");
-        add.Enabled = !busy && advancedRoutingRules.Count < AdvancedRoutePlanner.MaximumRules;
+        bool editing = advancedRoutingEditIndex >= 0 &&
+            advancedRoutingEditIndex < advancedRoutingRules.Count;
+        var add = AddAction(page, editing
+            ? TranslateMailFlow(l, "Сохранить изменения в модели (только локально)",
+                "Save edited rule to the simulation (local only)", "שמור כלל ערוך בהדמיה")
+            : TranslateMailFlow(l, "Добавить правило в модель (Linux не меняется)",
+                "Add a rule to this simulation (Linux unchanged)", "הוסף כלל להדמיה בלבד"),
+            AddAdvancedRoutingRuleAsync, false, editing ? "check" : "plus",
+            "conditional-route-plan");
+        add.Enabled = !busy && (editing ||
+            advancedRoutingRules.Count < AdvancedRoutePlanner.MaximumRules);
+        if (editing)
+            AddAction(page, TranslateMailFlow(l, "Отменить редактирование",
+                "Cancel rule edit", "בטל עריכה"),
+                () =>
+                {
+                    advancedRoutingEditIndex = -1;
+                    advancedRoutingSimulation = null;
+                    RenderPage();
+                    return Task.CompletedTask;
+                }, false, "x", "conditional-route-plan");
 
         if (advancedRoutingRules.Count > 0)
         {
@@ -257,6 +274,8 @@ internal sealed partial class MainForm
                     button.Click += (_, _) => { callback(); RenderPage(); };
                     controls.Controls.Add(button);
                 }
+                AddLocalAction(TranslateMailFlow(l, "Изменить", "Edit", "ערוך"),
+                    "pencil", () => BeginAdvancedRouteEdit(at), true);
                 AddLocalAction("↑", "arrow-up", () => MoveAdvancedRoute(at, -1), i > 0);
                 AddLocalAction("↓", "arrow-down", () => MoveAdvancedRoute(at, 1),
                     i + 1 < advancedRoutingRules.Count);
@@ -264,6 +283,7 @@ internal sealed partial class MainForm
                     "trash-2", () =>
                     {
                         advancedRoutingRules.RemoveAt(at);
+                        advancedRoutingEditIndex = -1;
                         advancedRoutingSimulation = null;
                     }, true);
                 AddLine(line, controls);
@@ -293,7 +313,11 @@ internal sealed partial class MainForm
 
             if (advancedRoutingSimulation is { } simulation &&
                 simulation.PlanSha256 ==
-                    AdvancedRoutePlanner.PlanSha256(advancedRoutingRules))
+                    AdvancedRoutePlanner.PlanSha256(advancedRoutingRules) &&
+                string.Equals(simulation.SampleSender,
+                    advancedRoutingSampleSender.Text, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(simulation.SampleRecipient,
+                    advancedRoutingSampleRecipient.Text, StringComparison.OrdinalIgnoreCase))
             {
                 AddLine(page, MailFlowText(
                     "WHAT-IF: " + simulation.Status + Environment.NewLine +
@@ -331,15 +355,42 @@ internal sealed partial class MainForm
             kind, advancedRoutingCondition.Text,
             advancedRoutingHost.Text, port,
             AdvancedRoutingTlsMode(), AdvancedRoutingAuthMode()));
-        var reviewed = AdvancedRoutePlanner.ValidatePlan(
-            advancedRoutingRules.Append(proposed));
+        bool editing = advancedRoutingEditIndex >= 0 &&
+            advancedRoutingEditIndex < advancedRoutingRules.Count;
+        var candidates = advancedRoutingRules.ToList();
+        if (editing)
+            candidates[advancedRoutingEditIndex] = proposed;
+        else
+            candidates.Add(proposed);
+        var reviewed = AdvancedRoutePlanner.ValidatePlan(candidates);
         advancedRoutingRules.Clear();
         advancedRoutingRules.AddRange(reviewed);
+        advancedRoutingEditIndex = -1;
         advancedRoutingSimulation = null;
-        WriteLine("Conditional SMTP route added to an UNSAVED offline model only; " +
+        WriteLine("Conditional SMTP route " + (editing ? "edited" : "added") +
+            " in an UNSAVED offline model only; " +
             "no Linux settings or queued messages were changed.");
         RenderPage();
         return Task.CompletedTask;
+    }
+
+    private void BeginAdvancedRouteEdit(int at)
+    {
+        if (at < 0 || at >= advancedRoutingRules.Count)
+            return;
+        var item = advancedRoutingRules[at];
+        advancedRoutingEditIndex = at;
+        advancedRoutingMatchKind.SelectedIndex = (int)item.Kind;
+        advancedRoutingCondition.Text = item.Pattern;
+        advancedRoutingHost.Text = item.Host;
+        advancedRoutingPort.Text = item.Port.ToString(
+            System.Globalization.CultureInfo.InvariantCulture);
+        advancedRoutingTls.SelectedIndex = item.TlsMode switch
+        {
+            "implicit" => 1, "plain" => 2, _ => 0
+        };
+        advancedRoutingAuth.SelectedIndex = item.AuthMode == "password" ? 1 : 0;
+        advancedRoutingSimulation = null;
     }
 
     private void MoveAdvancedRoute(int at, int offset)
@@ -350,6 +401,7 @@ internal sealed partial class MainForm
             return;
         (advancedRoutingRules[at], advancedRoutingRules[target]) =
             (advancedRoutingRules[target], advancedRoutingRules[at]);
+        advancedRoutingEditIndex = -1;
         advancedRoutingSimulation = null;
     }
 
