@@ -235,6 +235,9 @@ internal sealed partial class MainForm
 
         if (advancedRoutingRules.Count > 0)
         {
+            // Interactive native WinForms visualization; every node opens
+            // the existing local-only edit form, never an SMTP action.
+            AddLine(page, BuildConditionalRoutingDiagram(width, l));
             var overlaps = AdvancedRoutePlanner.PossibleOverlaps(advancedRoutingRules);
             if (overlaps.Count > 0)
             {
