@@ -84,6 +84,7 @@ internal static class Program
             ("Readable mail discovery overview and safe guidance", MailDiscoveryBrief.SelfTest),
             ("Mail intent and evidence-gated scenario ranking", MailFlowIntent.SelfTest),
             ("Offline sender/domain route planner rejects overlap, invalid and fake precedence", AdvancedRoutePlanner.SelfTest),
+            ("Read-only Postfix sender/transport/local-delivery policy audit", PostfixRoutePolicyAudit.SelfTest),
             ("Discovered MTA and custom SMTP TLS live topology", MailScenarioPlanner.SelfTest),
             ("Local submission read-only evidence", MailSubmissionEvidence.SelfTest),
             ("Google SMTP port and one-shot AUTH strict validation", GoogleSmtpAudit.SelfTest),

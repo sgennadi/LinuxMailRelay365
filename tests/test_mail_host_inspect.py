@@ -188,5 +188,67 @@ class MailHostInspectorTests(unittest.TestCase):
                              "template_only_no_verified_router")
 
 
+
+    def test_route_map_probe_never_returns_credentials_or_lookup_content(self):
+        self.assertEqual(module.postfix_role_state(
+            "smtp_sasl_auth_enable", "no"), "not_declared")
+        self.assertEqual(module.postfix_role_state(
+            "smtp_sender_dependent_authentication", "no"), "not_declared")
+        self.assertEqual(module.postfix_role_state(
+            "smtp_sasl_auth_enable", "yes"), "declared")
+        self.assertEqual(module.postfix_role_state(
+            "smtp_sasl_auth_enable", "unexpected"), "unverified")
+        self.assertEqual(module.postfix_role_state(
+            "smtp_sasl_password_maps", "hash:/etc/postfix/private/auth"),
+            "declared")
+        self.assertEqual(module.postfix_role_state(
+            "transport_maps", "hash:/etc/postfix/transport"),
+            "declared")
+        self.assertEqual(module.postfix_role_state(
+            "transport_maps", None), "unverified")
+
+    def test_postfix_effective_role_probe_is_read_only_and_presence_only(self):
+        responses = {
+            ("hostname", "-f"): "mail.example.org",
+            ("hostname", "-s"): "mail",
+            ("hostname", "-d"): "example.org",
+            ("systemctl", "is-active", "postfix.service"): "active",
+            ("systemctl", "is-active", "postfix@-.service"): "inactive",
+            ("systemctl", "is-active", "exim.service"): "inactive",
+            ("systemctl", "is-active", "exim4.service"): "inactive",
+            ("systemctl", "is-active", "sendmail.service"): "inactive",
+            ("postconf", "-M"): "smtp inet n - n - - smtpd",
+            ("postconf", "-h", "mydestination"): "$myhostname, localhost.$mydomain",
+            ("postconf", "-h", "smtp_sasl_password_maps"): "hash:/PRIVATE/PASSWORDS",
+            ("postconf", "-h", "sender_dependent_default_transport_maps"):
+                "hash:/PRIVATE/ROUTING",
+            ("postconf", "-h", "smtp_sasl_auth_enable"): "no",
+            ("postconf", "-h", "smtp_sender_dependent_authentication"): "yes",
+            ("postconf", "-h", "smtp_tls_policy_maps"): "",
+        }
+        calls = []
+        def fake(argv):
+            calls.append(tuple(argv))
+            return responses.get(tuple(argv))
+        result = module.inspect(fake)
+        self.assertEqual(result["MAIL_HOST_MTA"], "postfix")
+        self.assertEqual(result["MAIL_HOST_SMTP_CONFIG_PORTS"], "25")
+        self.assertEqual(result["MAIL_HOST_POSTFIX_ROLE_SMTP_SASL_PASSWORD_MAPS"],
+                         "declared")
+        self.assertEqual(result["MAIL_HOST_POSTFIX_ROLE_SENDER_DEPENDENT_DEFAULT_TRANSPORT_MAPS"],
+                         "declared")
+        self.assertEqual(result["MAIL_HOST_POSTFIX_ROLE_SMTP_SASL_AUTH_ENABLE"],
+                         "not_declared")
+        self.assertEqual(result["MAIL_HOST_POSTFIX_ROLE_SMTP_SENDER_DEPENDENT_AUTHENTICATION"],
+                         "declared")
+        self.assertEqual(result["MAIL_HOST_POSTFIX_ROLE_SMTP_TLS_POLICY_MAPS"],
+                         "not_declared")
+        self.assertNotIn("/PRIVATE/", repr(result))
+        self.assertTrue(all(call[0] in ("hostname", "systemctl", "postconf")
+                            for call in calls))
+        self.assertTrue(all(call[:2] in (
+            ("postconf", "-h"), ("postconf", "-M"))
+            for call in calls if call[0] == "postconf"))
+
 if __name__ == "__main__":
     unittest.main()

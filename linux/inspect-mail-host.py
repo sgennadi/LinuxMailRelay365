@@ -26,6 +26,9 @@ POSTFIX_ROLE_KEYS = (
     "virtual_mailbox_maps", "virtual_alias_maps", "transport_maps",
     "sender_dependent_relayhost_maps", "sender_canonical_maps",
     "smtp_generic_maps", "masquerade_domains", "local_transport",
+    "relayhost", "sender_dependent_default_transport_maps",
+    "smtp_sasl_password_maps", "smtp_sender_dependent_authentication",
+    "smtp_sasl_auth_enable", "smtp_tls_policy_maps",
 )
 
 
@@ -444,6 +447,13 @@ def postfix_role_state(key, raw):
     # evidence of an additional externally relayed domain or transport map.
     if not normalized or (key == "relay_domains" and normalized == "$mydestination"):
         return "not_declared"
+    # These values are boolean in Postfix; "no" is NOT a configured SMTP
+    # authentication policy. Never return a secret or map location.
+    if key in ("smtp_sasl_auth_enable", "smtp_sender_dependent_authentication"):
+        if normalized.lower() == "no":
+            return "not_declared"
+        if normalized.lower() != "yes":
+            return "unverified"
     return "declared"
 
 

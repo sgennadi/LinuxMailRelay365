@@ -238,6 +238,13 @@ internal sealed partial class MainForm
             // Interactive native WinForms visualization; every node opens
             // the existing local-only edit form, never an SMTP action.
             AddLine(page, BuildConditionalRoutingDiagram(width, l));
+            // Route-policy diagnostics use only the current read-only MTA
+            // inventory and local in-memory proposal; never initiate SSH,
+            // read secret maps or enable an Apply operation.
+            var routePolicyReview = PostfixRoutePolicyAudit.Review(
+                inspectedHost, advancedRoutingRules);
+            AddLine(page, MailFlowText(routePolicyReview.Describe(l),
+                width, warning: true));
             var overlaps = AdvancedRoutePlanner.PossibleOverlaps(advancedRoutingRules);
             if (overlaps.Count > 0)
             {
