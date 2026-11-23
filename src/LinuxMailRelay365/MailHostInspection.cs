@@ -54,6 +54,21 @@ internal sealed class MailHostInspection
             values["MAIL_HOST_TRUST"] != "os_report_unverified" ||
             values["MAIL_HOST_MTA"] is not ("postfix" or "exim" or "sendmail" or "none" or "unknown"))
             throw new InvalidDataException("Untrusted hostname report.");
+        // Additional RC9 Postfix mail-purpose discovery reports presence only:
+        // no raw transport map, user address, password or external lookup URL.
+        foreach (var option in new[] {
+            "VIRTUAL_MAILBOX_DOMAINS", "VIRTUAL_ALIAS_DOMAINS", "RELAY_DOMAINS",
+            "VIRTUAL_MAILBOX_MAPS", "VIRTUAL_ALIAS_MAPS", "TRANSPORT_MAPS",
+            "SENDER_DEPENDENT_RELAYHOST_MAPS", "SENDER_CANONICAL_MAPS",
+            "SMTP_GENERIC_MAPS", "MASQUERADE_DOMAINS", "LOCAL_TRANSPORT"
+        })
+        {
+            if (values.TryGetValue("MAIL_HOST_POSTFIX_ROLE_" + option, out var value) &&
+                (values["MAIL_HOST_MTA"] != "postfix" ||
+                 value is not ("declared" or "not_declared" or "unverified")))
+                throw new InvalidDataException(
+                    "Untrusted Postfix role/mapping declaration.");
+        }
         // Configuration ports are NOT an assertion of live socket ownership.
         // Optional for older read-only fixture schemas; never trusted if absent.
         string source = values.TryGetValue("MAIL_HOST_SMTP_CONFIG_SOURCE", out var declaredSource)
