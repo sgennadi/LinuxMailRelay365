@@ -913,7 +913,7 @@ jobs:
             --title "LinuxMailRelay365 v0.1.1 RC9 (UNSIGNED TEST ONLY)" --prerelease \
             --notes "UNSIGNED TEST RC9, NOT Stable/production approved. Adds universal primary Postfix outbound SMTP Preview/Apply (arbitrary hostname/IPv4 and outbound port) using provider-neutral STARTTLS or implicit TLS, optionally password AUTH; plaintext NO AUTH requires an explicit typed warning. Existing Linux listener, local domains, users and mail queues are not changed. Google/Gmail/Workspace workflows remain available. Includes read-only Postfix virtual-mailbox, extra routing and sender rewriting declarations, exact SHA-256 Preview, root-only verified backup, serialized Apply, postchecks, rollback, Linux x64/ARM64 test matrices and Windows x64/ARM64 self-tests. Password map stored ONLY on Linux readable by root after operator approval. No real SMTP delivery, tenant, physical TPM or real 200-percent-DPI production acceptance claimed. Previous RC7/RC8 tags/assets remain immutable."
 
-rc10-prerelease-publish:
+  rc10-prerelease-publish:
     name: Publish unsigned RC10 after all Linux and Windows CI acceptance
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature/rc10-smtp-loop-guard'
     needs:
