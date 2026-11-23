@@ -435,6 +435,18 @@ def sendmail_mc_flags(path):
     return "readable", listener, masquerade
 
 
+def postfix_role_state(key, raw):
+    """Read-only declaration state, never return a sensitive lookup value."""
+    if raw is None:
+        return "unverified"
+    normalized = raw.strip()
+    # Standard Postfix relay_domains often equals $mydestination. This is not
+    # evidence of an additional externally relayed domain or transport map.
+    if not normalized or (key == "relay_domains" and normalized == "$mydestination"):
+        return "not_declared"
+    return "declared"
+
+
 def inspect(runner=call):
     short, fqdn, domain = identity(runner)
     mta, state = mta_status(runner)
@@ -456,8 +468,7 @@ def inspect(runner=call):
         for key in POSTFIX_ROLE_KEYS:
             raw = runner(["postconf", "-h", key])
             # Not a configuration value: only a bounded proof of declaration.
-            value = "unverified" if raw is None else (
-                "declared" if raw.strip() else "not_declared")
+            value = postfix_role_state(key, raw)
             result["MAIL_HOST_POSTFIX_ROLE_" + key.upper()] = value
     elif mta == "exim":
         tool = "exim4" if shutil.which("exim4") else "exim"
