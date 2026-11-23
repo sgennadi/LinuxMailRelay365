@@ -235,6 +235,22 @@ internal sealed partial class MainForm
 
         if (advancedRoutingRules.Count > 0)
         {
+            var overlaps = AdvancedRoutePlanner.PossibleOverlaps(advancedRoutingRules);
+            if (overlaps.Count > 0)
+            {
+                AddLine(page, MailFlowText(TranslateMailFlow(l,
+                    "Возможные пересечения условий (НЕ фактический маршрут): ",
+                    "Possible matching-rule overlaps (NOT actual MTA routing): ",
+                    "חפיפות אפשריות בין תנאי הניתוב: ") +
+                    string.Join(", ", overlaps.Take(8).Select(x =>
+                        "#" + (x.FirstRule + 1) + " ↔ #" + (x.SecondRule + 1))) +
+                    (overlaps.Count > 8 ? " …" : "") + Environment.NewLine +
+                    TranslateMailFlow(l,
+                        "Приоритет sender/recipient карт не вычисляется и должен быть проверен отдельно.",
+                        "Sender/recipient map precedence is NOT inferred and requires separate inspection.",
+                        "קדימות מפות השולח והנמען אינה ידועה."),
+                    width, warning: true));
+            }
             AddLine(page, UiTheme.Text(TranslateMailFlow(l,
                 "Предлагаемые правила — порядок только для просмотра",
                 "Proposed rules — display order only (NOT Postfix precedence)",
