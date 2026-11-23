@@ -58,7 +58,9 @@ internal sealed partial class MainForm
         if (audit.Tls != "verified")
             return false;
         return CustomAuthMode() != "password" ||
-            (audit.AuthResult == "accepted" && audit.Auth is "plain" or "login");
+            (string.Equals(customSmtpAuditedUser, customSmtpUser.Text,
+                    StringComparison.Ordinal) &&
+             audit.AuthResult == "accepted" && audit.Auth is "plain" or "login");
     }
 
     private void RequireCustomRouteEvidence()
@@ -231,7 +233,9 @@ internal sealed partial class MainForm
                 caution + "Requires a fresh exact SHA256, EMPTY queue, verified root-only backup, " +
                 "Postfix reload and post-apply verification. Automatic rollback is attempted on failure. " +
                 "SMTP AUTH attempts and test-message submission can have account/provider effects.",
-                "CHANGE_CUSTOM_OUTBOUND_RELAY"))
+                tls == "plain"
+                    ? "I_ACCEPT_UNENCRYPTED_OUTBOUND_SMTP"
+                    : "CHANGE_CUSTOM_OUTBOUND_RELAY"))
                 return;
             RequireCustomRouteEvidence();
             if (TryCurrentIdentity() != identity ||
