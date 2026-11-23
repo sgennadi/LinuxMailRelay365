@@ -89,8 +89,7 @@ internal static class PostfixConditionalMapPreview
         "MAIL_HOST_POSTFIX_ROLE_RELAY_DOMAINS",
         "MAIL_HOST_POSTFIX_ROLE_SMTP_SASL_PASSWORD_MAPS",
         "MAIL_HOST_POSTFIX_ROLE_SMTP_SENDER_DEPENDENT_AUTHENTICATION",
-        "MAIL_HOST_POSTFIX_ROLE_SMTP_TLS_POLICY_MAPS",
-        "MAIL_HOST_POSTFIX_TRANSPORT_SUBDOMAIN_POLICY"
+        "MAIL_HOST_POSTFIX_ROLE_SMTP_TLS_POLICY_MAPS"
     ];
 
     internal static PostfixConditionalMapReview Build(
@@ -104,7 +103,6 @@ internal static class PostfixConditionalMapPreview
 
         string planHash = AdvancedRoutePlanner.PlanSha256(rules);
         var snapshot = new StringBuilder("LMR365-ROUTE-CANDIDATES-V1\n")
-            .Append(planHash).Append('\n')
             .Append(host?.Mta ?? "unavailable").Append('\n')
             .Append(host?.MtaState ?? "unavailable").Append('\n')
             .Append(host?.Fqdn ?? "unavailable").Append('\n');
@@ -154,9 +152,9 @@ internal static class PostfixConditionalMapPreview
                 "Выбор STARTTLS сам по себе НЕ обеспечивает TLS и проверку сертификата без отдельной политики клиента.",
                 "בחירת STARTTLS אינה אוכפת הצפנה ואימות תעודות ללא מדיניות נפרדת.");
             Warn("subdomain-rule",
-                "Recipient-domain transport matching can include subdomains under Postfix parent_domain_matches_subdomains; do not assume an exact match.",
-                "Postfix transport_maps может охватывать поддомены в зависимости от parent_domain_matches_subdomains; точное совпадение не гарантировано.",
-                "transport_maps עשוי להתאים גם לתת-דומיינים בהתאם להגדרת Postfix.");
+                "Postfix transport(5) can perform parent-domain and leading-dot lookups; backend/map type must be verified before assuming exact recipient matching.",
+                "Postfix transport(5) может проверять родительские домены и записи с ведущей точкой. Без проверки backend нельзя считать совпадение точным.",
+                "Postfix transport(5) עשוי לבדוק גם דומיין אב ורשומות עם נקודה; יש לבדוק את סוג המפה.");
             if (rules.Any(x => x.TlsMode == "implicit"))
                 Warn("wrapper-mode",
                     "Implicit TLS (often 465) cannot be enabled by a relayhost/transport map line; a dedicated wrapper-mode SMTP transport needs review.",
@@ -183,18 +181,6 @@ internal static class PostfixConditionalMapPreview
                             " выбраны разные режимы TLS/AUTH; это требует отдельной политики.",
                         "אותו יעד SMTP קיבל מדיניות TLS/AUTH שונה; יש לאמת הפרדה.");
             }
-            if (host?.Get("MAIL_HOST_POSTFIX_TRANSPORT_SUBDOMAIN_POLICY") ==
-                "parent_matches_subdomains")
-                Warn("broad-recipient-match",
-                    "Postfix declares transport_maps parent-domain matching: proposed recipient domains may include subdomains.",
-                    "Postfix включает сопоставление transport_maps с поддоменами — правила могут действовать шире.",
-                    "Postfix מאפשר התאמת דומיין אב גם לתת-דומיינים.");
-            else if (host?.Get("MAIL_HOST_POSTFIX_TRANSPORT_SUBDOMAIN_POLICY") !=
-                "literal_domain_only")
-                Warn("subdomain-unverified",
-                    "Postfix transport-domain/subdomain matching could not be confirmed.",
-                    "Не удалось подтвердить правила сопоставления доменов и поддоменов transport_maps.",
-                    "התאמת דומיינים ותתי-דומיינים ב-transport_maps לא אומתה.");
         }
         return new(planHash, inventoryHash,
             sender, recipient, warnings, hasPostfix);
@@ -207,8 +193,7 @@ internal static class PostfixConditionalMapPreview
             "MAIL_HOST_FQDN=mail.example.org\nMAIL_HOST_DOMAIN=example.org\n" +
             "MAIL_HOST_MTA=postfix\nMAIL_HOST_MTA_STATE=active\n" +
             "MAIL_HOST_TRUST=os_report_unverified\nMAIL_HOST_CHANGES=no\n" +
-            "MAIL_HOST_POSTFIX_MYDESTINATION=mail.example.org,example.org\n" +
-            "MAIL_HOST_POSTFIX_TRANSPORT_SUBDOMAIN_POLICY=literal_domain_only\n";
+            "MAIL_HOST_POSTFIX_MYDESTINATION=mail.example.org,example.org\n";
         var host = MailHostInspection.Parse(hostRecord);
         var exact = new AdvancedRouteRule(AdvancedRouteMatchKind.ExactEnvelopeSender,
             "USER@EXAMPLE.ORG", "relay.example.net", 587, "starttls", "password");
@@ -233,7 +218,7 @@ internal static class PostfixConditionalMapPreview
             return false;
         var edited = Build(host, [exact with { Port = 25 }, domain, recipient]);
         if (edited.PlanSha256 == plan.PlanSha256 ||
-            edited.InventorySha256 == plan.InventorySha256) return false;
+            edited.InventorySha256 != plan.InventorySha256) return false;
         var other = Build(MailHostInspection.Parse(hostRecord.Replace(
             "MAIL_HOST_FQDN=mail.example.org", "MAIL_HOST_FQDN=mail.other.org")),
             [exact, domain, recipient]);
@@ -244,9 +229,8 @@ internal static class PostfixConditionalMapPreview
         if (noPostfix.PostfixDetected || noPostfix.CanApply ||
             noPostfix.RecipientCandidates.Count != 0 ||
             !noPostfix.Warnings.Any(x => x.Code == "unsupported-mta")) return false;
-        var broad = Build(MailHostInspection.Parse(hostRecord.Replace(
-            "literal_domain_only", "parent_matches_subdomains")), [recipient]);
-        if (!broad.Warnings.Any(x => x.Code == "broad-recipient-match")) return false;
+        if (!plan.Warnings.Any(x => x.Code == "subdomain-rule") ||
+            !plan.Warnings.Any(x => x.Code == "tls-not-bound")) return false;
         var conflicting = Build(host, [exact, exact with {
             Kind = AdvancedRouteMatchKind.EnvelopeSenderDomain, Pattern = "example.org",
             TlsMode = "implicit" }]);

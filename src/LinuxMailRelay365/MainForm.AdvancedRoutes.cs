@@ -245,6 +245,25 @@ internal sealed partial class MainForm
                 inspectedHost, advancedRoutingRules);
             AddLine(page, MailFlowText(routePolicyReview.Describe(l),
                 width, warning: true));
+            // RC13: local and scrollable candidate Postfix key shapes only.
+            var candidate = PostfixConditionalMapPreview.Build(
+                inspectedHost, advancedRoutingRules);
+            AddLine(page, UiTheme.Text(TranslateMailFlow(l,
+                "Предпросмотр ключей Postfix — только для изучения",
+                "Postfix map key preview — review only, no Apply",
+                "תצוגת מפתחות Postfix בלבד ללא החלה"), true));
+            AddLine(page, new TextBox
+            {
+                Multiline = true, ReadOnly = true, WordWrap = false,
+                ScrollBars = ScrollBars.Both, TabStop = true,
+                Width = Math.Max(285, width - 25),
+                Height = Math.Clamp((int)Math.Round(300 * DeviceDpi / 96.0),
+                    260, 520),
+                Font = new Font("Consolas", 9.5f),
+                BackColor = Color.White, ForeColor = UiTheme.Navy,
+                Text = candidate.Render(l),
+                AccessibleName = "In-memory Postfix candidate map keys; NOT runnable"
+            });
             var overlaps = AdvancedRoutePlanner.PossibleOverlaps(advancedRoutingRules);
             if (overlaps.Count > 0)
             {
