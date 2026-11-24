@@ -321,6 +321,7 @@ internal static class Program
             ("Exact native MTA read-only Restore Plan", ForeignRestorePlan.SelfTest),
             ("Sendmail v2 strict read-only compiled configuration review", SendmailV2Review.SelfTest),
             ("Sendmail v2 experimental recovery receipt and fixed action bundles", SendmailV2RecoveryReceipt.SelfTest),
+            ("Sendmail v2 read-only recovery guidance and no-op classification", SendmailRecoveryGuidance.SelfTest),
             ("Experimental offline Exim Restore receipt and bounded apply bundle", EximNativeRestoreReceipt.SelfTest),
             ("Global interrupted native Restore receipt and read-only bundle", ForeignPendingInspection.SelfTest),
             ("Experimental Exim pending rollback reviewed plan and applied receipt", EximPendingRollbackPlan.SelfTest),

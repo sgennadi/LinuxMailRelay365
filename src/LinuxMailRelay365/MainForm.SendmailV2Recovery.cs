@@ -54,7 +54,12 @@ internal sealed partial class MainForm
         var plan = SendmailV2Review.Parse(response.StdOut, id, archiveSha);
         RequireStoppedSendmailV2Selection(reviewed, identity, id);
         if (!SendmailV2RecoveryReceipt.CanRestore(plan))
-            throw new InvalidOperationException("Sendmail v2 Restore is blocked or there are no compiled file changes: " + plan.Gate);
+        {
+            // Explain the exact blocked/no-op plan; never carry a write
+            // approval across this return or dispatch any recovery command.
+            ShowSendmailV2ReviewReport(reviewed, id, plan);
+            return;
+        }
         string details = "Host: " + reviewed.Host + ":" + reviewed.Port + "\nMTA: Sendmail v2\nSnapshot: " + id +
             "\nChanged compiled files: " + plan.CompiledChanged + "/2\nService: " + plan.Service +
             "\nQueue: " + plan.Queue + "\nProcesses: " + plan.Processes + "\nListener: " + plan.Listener +
