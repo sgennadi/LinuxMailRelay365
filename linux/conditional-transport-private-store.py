@@ -368,6 +368,148 @@ class PrivateStore:
                "private_snapshot_publication_unverified")
         return self.revision
 
+    def activation_observation(self):
+        relative = self.snapshot + "/" + R.ACTIVATION
+        self.check_anchor()
+        fd = self.open_directory(relative)
+        try:
+            identity = self.directory(fd, relative)
+            entries = set(os.listdir(fd))
+            allowed = {path.rsplit("/", 1)[1] for path, mode in self.paths.items()
+                       if mode == "file" and path.startswith(relative + "/")}
+            X.need(X.JOURNAL in entries and entries <= allowed,
+                   "private_activation_incomplete_or_foreign")
+            records = {name: self.observe(relative + "/" + name)
+                       for name in sorted(entries)}
+            X.need(set(os.listdir(fd)) == entries and
+                   self.observe_directory(relative) == identity and
+                   all(self.observe(relative + "/" + name) == value
+                       for name, value in records.items()) and
+                   set(os.listdir(fd)) == entries,
+                   "private_activation_changed")
+            return identity, records
+        finally:
+            os.close(fd)
+
+    def no_edit_pending(self):
+        self.check_anchor()
+        if T.exists(self.parent, X.EDIT_BASE):
+            fd = self.open_directory(X.EDIT_BASE)
+            try:
+                X.need(not os.listdir(fd), "transport_edit_recovery_required")
+                X.need(self.observe_directory(X.EDIT_BASE) ==
+                       self.directory(fd, X.EDIT_BASE), "private_edit_directory_changed")
+            finally:
+                os.close(fd)
+
+    def read_activation(self):
+        """Read a complete, labeled journal with optional partial map receipts.
+
+        Pending rotations/edits are refused; a future dedicated recovery
+        reader must validate their marker schema and selected generations.
+        Missing receipts are represented as None, never inferred from bytes.
+        """
+        self.no_edit_pending()
+        info, files = self.read_snapshot(allow_activation=True)
+        X.need(R.labeled(info), "private_activation_requires_v2")
+        observed = self.activation_observation()
+        records = observed[1]
+        X.need(X.ROTATION_PENDING not in records, "credential_rotation_recovery_required")
+        journal = X.parse_journal(records[X.JOURNAL][0], info, self.revision)
+        receipts = {}
+        for name in X.map_names(info):
+            receipt = records.get(X.receipt_name(name))
+            receipts[name] = (None if receipt is None else
+                              X.parse_receipt(receipt[0], self.revision, name))
+        if X.ROTATION_CURRENT in records:
+            journal, receipts = X.parse_rotation_overlay(
+                records[X.ROTATION_CURRENT][0], info, journal, receipts)
+        self.no_edit_pending()
+        X.need(self.read_snapshot(allow_activation=True) == (info, files) and
+               self.activation_observation() == observed, "private_activation_changed")
+        self.no_edit_pending()
+        return info, files, journal, receipts
+
+    def create_activation(self, databases, map_gid):
+        """Create immutable labeled publication journal before live writes.
+
+        databases must be the caller's already native-verified compiler result.
+        Only digests are written; no database, source or password is stored.
+        """
+        self.no_edit_pending()
+        info, files = self.read_snapshot()
+        X.need(R.labeled(info), "private_activation_requires_v2")
+        maps = X.native_database_set(info, databases)
+        journal = X.journal_for(self.revision, info, files, maps, map_gid)
+        raw = M.canonical(journal)
+        X.parse_journal(raw, info, self.revision)
+        relative = self.snapshot + "/" + R.ACTIVATION
+        self.create_directory(relative)
+        self._write(relative + "/" + X.JOURNAL, raw)
+        X.need(self.read_activation() ==
+               (info, files, journal, dict.fromkeys(maps)),
+               "private_activation_publication_unverified")
+        return journal
+
+    def publish_map(self, config, name, data, reviewed):
+        """Exclusive first-install map publication and exact ownership receipt.
+
+        Caller must still enforce stopped maintenance, native plan and
+        exact live map policy in guard. This does not activate routing or
+        modify either configuration file. A lost receipt is never recreated
+        by adopting an equal-byte file; unknown maps require manual review.
+        """
+        self.no_edit_pending()
+        record = self.read_activation()
+        X.need(record == reviewed, "private_activation_review_changed")
+        info, files, journal, receipts = record
+        X.need(name in X.map_names(info) and receipts[name] is None and
+               type(data) is bytes and 0 < len(data) <= M.MAX_DB_BYTES and
+               M.digest(data) == journal["maps"][name],
+               "private_map_publication_not_reviewed")
+        activation = self.snapshot + "/" + R.ACTIVATION
+        X.need(X.ROTATION_CURRENT not in self.activation_observation()[1],
+               "private_map_publication_after_rotation")
+        X.assert_pair(config, info, files, ".before", self.uid)
+        X.check_sources(config, info)
+        X.need(not T.exists(config, name), "managed_map_destination_exists")
+        for present in X.map_names(info):
+            if receipts[present] is None:
+                X.need(not T.exists(config, present), "map_publication_unproven")
+            else:
+                X.checked_map(config, present, journal, receipts[present], self.uid)
+        prepared, published = [], []
+
+        def before_link(identity):
+            self.check_anchor()
+            X.need(self.read_activation() == record and
+                   not T.exists(config, name), "private_map_publication_context_changed")
+            X.assert_pair(config, info, files, ".before", self.uid)
+            X.check_sources(config, info)
+            for other in X.map_names(info):
+                if receipts[other] is None:
+                    X.need(not T.exists(config, other), "map_publication_unproven")
+                else:
+                    X.checked_map(config, other, journal, receipts[other], self.uid)
+            prepared[:] = [identity]
+
+        T.atomic_write(config, name, data, X.map_meta(journal, name), self.uid, False,
+                       published.append, before_publish=before_link)
+        identity = T.file_identity(os.stat(name, dir_fd=config, follow_symlinks=False))
+        X.need(prepared == published == [identity[:4]], "private_map_publication_unproven")
+        self.check_anchor()
+        X.need(self.read_activation() == record, "private_activation_review_changed")
+        X.assert_pair(config, info, files, ".before", self.uid)
+        X.check_sources(config, info)
+        X.checked_map(config, name, journal, identity, self.uid)
+        value = {"revision": self.revision, "name": name, "identity": identity}
+        receipt_path = activation + "/" + X.receipt_name(name)
+        self._write(receipt_path, M.canonical(value))
+        expected = (info, files, journal, dict(receipts, **{name: identity}))
+        X.need(self.read_activation() == expected, "private_map_receipt_unverified")
+        X.checked_map(config, name, journal, identity, self.uid)
+        return identity
+
 
 if __name__ == "__main__":
     raise SystemExit("Private policy-bound recovery store library only.")

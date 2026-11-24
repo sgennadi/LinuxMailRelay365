@@ -212,6 +212,101 @@ class PrivateStoreTests(unittest.TestCase):
         self.assertFalse(any(p.name.startswith(".lmr365-txn-")
                              for p in (self.root / self.activation).iterdir()))
 
+    def activation_fixture(self):
+        self.remove_empty_snapshot()
+        info, files = self.snapshot_fixture()
+        config = self.root / "postfix"
+        config.mkdir(mode=0o700)
+        os.setxattr(str(config), ATTRIBUTE, bytes.fromhex(info["directory_selinux"]))
+        for name, meta in zip(P.X.CONFIGS, info["metadata"]):
+            path = config / (name + ".cf")
+            path.write_bytes(files[name + ".before"])
+            path.chmod(meta["mode"])
+            os.setxattr(str(path), ATTRIBUTE, bytes.fromhex(meta["selinux"]))
+        fd = os.open(str(config), P.M.DIR_FLAGS)
+        self.addCleanup(os.close, fd)
+        info["identity"] = P.T.context(fd, self.uid)
+        databases = {P.X.C.ROUTE_MAP: b"synthetic routing database",
+                     P.X.C.profile_name(info["plan"], 1) + "-sasl":
+                         b"synthetic private database"}
+        self.store.create_snapshot(info, files)
+        journal = self.store.create_activation(databases, self.gid)
+        maps = P.X.native_database_set(info, databases)
+        return fd, config, info, files, journal, maps
+
+    def test_activation_journal_and_exclusive_map_receipts(self):
+        fd, config, info, files, journal, maps = self.activation_fixture()
+        record = self.store.read_activation()
+        self.assertEqual(record, (info, files, journal, dict.fromkeys(maps)))
+        for name, data in maps.items():
+            identity = self.store.publish_map(fd, name, data, record)
+            record = self.store.read_activation()
+            self.assertEqual(record[3][name], identity)
+            P.X.checked_map(fd, name, journal, identity, self.uid)
+            receipt = self.activation + "/" + P.X.receipt_name(name)
+            self.assertEqual(os.getxattr(str(self.root / receipt), ATTRIBUTE).hex(),
+                             self.labels[receipt])
+            with self.assertRaises(P.Refused):
+                self.store.publish_map(fd, name, data, record)
+        self.assertTrue(all(record[3].values()))
+        self.assertEqual((config / "main.cf").read_bytes(), files["main.before"])
+        self.assertEqual((config / "master.cf").read_bytes(), files["master.before"])
+        for path in (self.root / self.store.snapshot).rglob("*"):
+            if path.is_file():
+                self.assertFalse(any(data in path.read_bytes() for data in maps.values()))
+
+    def test_activation_rejects_foreign_equal_bytes_without_receipt(self):
+        fd, config, info, files, journal, maps = self.activation_fixture()
+        name, data = next(iter(maps.items()))
+        record = self.store.read_activation()
+        path = config / name
+        path.write_bytes(data)
+        path.chmod(0o640)
+        os.setxattr(str(path), ATTRIBUTE, bytes.fromhex(info["map_selinux"][name]))
+        before = P.T.file_identity(path.stat())
+        with self.assertRaises(P.Refused):
+            self.store.publish_map(fd, name, data, record)
+        self.assertEqual(P.T.file_identity(path.stat()), before)
+        self.assertIsNone(self.store.read_activation()[3][name])
+
+    def test_activation_lost_receipt_requires_manual_review(self):
+        fd, config, info, files, journal, maps = self.activation_fixture()
+        name, data = next(iter(maps.items()))
+        record = self.store.read_activation()
+        real = self.store._write
+
+        def interrupt(relative, raw, previous=None):
+            if relative.endswith(".published.json"):
+                raise KeyboardInterrupt()
+            return real(relative, raw, previous)
+
+        with patch.object(self.store, "_write", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.store.publish_map(fd, name, data, record)
+        self.assertEqual((config / name).read_bytes(), data)
+        self.assertIsNone(self.store.read_activation()[3][name])
+        with self.assertRaises(P.Refused):
+            self.store.publish_map(fd, name, data, self.store.read_activation())
+
+    def test_activation_policy_drift_and_pending_marker_block_read(self):
+        fd, config, info, files, journal, maps = self.activation_fixture()
+        self.labels[self.journal] = label("changed_journal_t")
+        with self.assertRaises(P.Refused):
+            self.store.read_activation()
+        self.labels[self.journal] = label("lmr365_journal_t")
+        self.store.write_json(self.pending, {"phase": "pending"})
+        with self.assertRaisesRegex(P.Refused, "credential_rotation_recovery_required"):
+            self.store.read_activation()
+
+    def test_activation_refuses_stale_review_before_second_map(self):
+        fd, config, info, files, journal, maps = self.activation_fixture()
+        original = self.store.read_activation()
+        first, second = list(maps)
+        self.store.publish_map(fd, first, maps[first], original)
+        with self.assertRaisesRegex(P.Refused, "private_activation_review_changed"):
+            self.store.publish_map(fd, second, maps[second], original)
+        self.assertFalse((config / second).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -124,7 +124,10 @@ def read_receipt(fd, revision, name, uid):
     filename = receipt_name(name)
     if not T.exists(fd, filename):
         return None
-    raw = M.read_file(fd, filename, uid)
+    return parse_receipt(M.read_file(fd, filename, uid), revision, name)
+
+
+def parse_receipt(raw, revision, name):
     value = M.decode(raw)
     need(type(value) is dict and set(value) == {"revision", "name", "identity"} and
          value["revision"] == revision and value["name"] == name and
@@ -151,7 +154,11 @@ def valid_identity(value):
 def rotation_overlay(fd, info, journal, receipts, uid):
     if not T.exists(fd, ROTATION_CURRENT):
         return journal, receipts
-    raw = M.read_file(fd, ROTATION_CURRENT, uid)
+    return parse_rotation_overlay(M.read_file(fd, ROTATION_CURRENT, uid),
+                                  info, journal, receipts)
+
+
+def parse_rotation_overlay(raw, info, journal, receipts):
     overlay = M.decode(raw)
     need(type(overlay) is dict and set(overlay) ==
          {"format", "revision", "base", "generation", "maps", "receipts"} and
@@ -185,6 +192,25 @@ def assert_no_edit_pending(parent, uid):
         os.close(fd)
 
 
+def parse_journal(raw, info, revision):
+    journal = M.decode(raw)
+    names = map_names(info)
+    fields = {"format", "revision", "snapshot_sha256", "gid", "maps"}
+    labeled = R.labeled(info)
+    need(type(journal) is dict and
+         set(journal) == (fields | {"map_selinux"} if labeled else fields) and
+         journal["format"] == ("LMR365-TRANSPORT-PUBLICATION-V2" if labeled else
+                               "LMR365-TRANSPORT-PUBLICATION-V1") and
+         (not labeled or journal["map_selinux"] == info["map_selinux"]) and
+         journal["revision"] == revision and
+         journal["snapshot_sha256"] == M.digest(M.canonical(info)) and
+         type(journal["gid"]) is int and journal["gid"] >= 0 and
+         type(journal["maps"]) is dict and set(journal["maps"]) == set(names) and
+         all(R.valid_sha(v) for v in journal["maps"].values()) and
+         M.canonical(journal) == raw, "invalid_transport_journal")
+    return journal
+
+
 def load(parent, revision, uid, allow_pending=False, allow_edit_pending=False):
     if not allow_edit_pending:
         assert_no_edit_pending(parent, uid)
@@ -192,21 +218,8 @@ def load(parent, revision, uid, allow_pending=False, allow_edit_pending=False):
     fd = activation_fd(parent, revision, uid)
     try:
         raw = M.read_file(fd, JOURNAL, uid)
-        journal = M.decode(raw)
+        journal = parse_journal(raw, info, revision)
         names = map_names(info)
-        fields = {"format", "revision", "snapshot_sha256", "gid", "maps"}
-        labeled = R.labeled(info)
-        need(type(journal) is dict and
-             set(journal) == (fields | {"map_selinux"} if labeled else fields) and
-             journal["format"] == ("LMR365-TRANSPORT-PUBLICATION-V2" if labeled else
-                                   "LMR365-TRANSPORT-PUBLICATION-V1") and
-             (not labeled or journal["map_selinux"] == info["map_selinux"]) and
-             journal["revision"] == revision and
-             journal["snapshot_sha256"] == M.digest(M.canonical(info)) and
-             type(journal["gid"]) is int and journal["gid"] >= 0 and
-             type(journal["maps"]) is dict and set(journal["maps"]) == set(names) and
-             all(R.valid_sha(v) for v in journal["maps"].values()) and
-             M.canonical(journal) == raw, "invalid_transport_journal")
         entries = set(os.listdir(fd))
         allowed = {JOURNAL, ROTATION_CURRENT, ROTATION_PENDING} | {
             receipt_name(name) for name in names}

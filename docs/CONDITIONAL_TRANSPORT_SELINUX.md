@@ -86,3 +86,19 @@ between scratch preparation and publication can block the link. The new
 primitives remain isolated from the production CLI: activation-journal and
 receipt creation, full recovery integration and Enforcing VM acceptance are
 still required.
+
+## Labeled activation journal and publication receipts
+
+The scoped V2 store now creates a labeled immutable activation journal from
+already verified database candidates and reuses the existing journal, receipt
+and rotation-overlay validators (legacy readers keep the same schemas). It
+checks exact activation-directory entries and per-file policy metadata. The
+internal first-install map publisher performs exclusive publication under the
+caller guard, verifies the actual inode/content/label and creates its own
+immutable labeled receipt. It refuses stale records, foreign equal-byte maps,
+unknown entries, pending edits or rotations, and changes to the original
+configuration. A lost publication receipt remains unproven; the library never
+adopts or removes such a file. No database is stored in the recovery directory.
+These are isolated library APIs, not a production Apply/Restore replacement.
+The stopped-host CLI/GUI remains unchanged and active SELinux writes remain
+blocked until full transaction integration and real Enforcing acceptance.
