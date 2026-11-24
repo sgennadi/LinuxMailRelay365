@@ -11,6 +11,10 @@ spec = importlib.util.spec_from_file_location(
     "private_store", str(ROOT / "linux/conditional-transport-private-store.py"))
 P = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(P)
+rotation_spec = importlib.util.spec_from_file_location(
+    "scoped_rotation", str(ROOT / "linux/conditional-transport-scoped-rotation.py"))
+SR = importlib.util.module_from_spec(rotation_spec)
+rotation_spec.loader.exec_module(SR)
 ATTRIBUTE = "user.lmr365_test_selinux"
 REV = "a" * 64
 
@@ -428,6 +432,125 @@ class PrivateStoreTests(unittest.TestCase):
         with self.assertRaises(P.Refused):
             restore()
         self.assertTrue((config / remaining[0]).exists())
+
+    def rotation_fixture(self):
+        fd, config, info, files, maps, labels, verified, apply, restore = self.live_fixture()
+        self.assertEqual(apply(), REV)
+        record = self.store.read_activation()
+        name = SR.Q.target_name(info, 1)
+        candidate = b"synthetic replacement credential map"
+        neighbors = {n: P.T.file_identity((config / n).stat())
+                     for n in maps if n != name}
+
+        def policy(rules, backend):
+            self.assertEqual(rules, info["rules"])
+            self.assertEqual(backend, info["backend"])
+            return dict(labels)
+
+        manager = SR.ScopedRotation(self.store, fd, policy)
+
+        def verify(active, reviewed, target, data):
+            self.assertEqual(reviewed, info)
+            self.assertEqual(target, name)
+            self.assertEqual((config / target).read_bytes(), data)
+            self.assertEqual(os.getxattr(str(config / target), ATTRIBUTE).hex(), labels[target])
+            for n, identity in neighbors.items():
+                self.assertEqual(P.T.file_identity((config / n).stat()), identity)
+            return True
+
+        def rotate(check=verify):
+            return manager.rotate(1, record, candidate, self.gid, SR.CONFIRM,
+                                  check, self.store.read_activation)
+
+        def recover(check=verify):
+            return manager.recover(manager.pending_review(), self.gid, SR.RECOVER, check)
+
+        return manager, record, config, name, candidate, maps, labels, rotate, recover, verify, restore
+
+    def test_scoped_rotation_and_restore(self):
+        manager, old, config, name, candidate, maps, labels, rotate, recover, verify, restore = self.rotation_fixture()
+        self.assertTrue(P.R.valid_sha(rotate()))
+        current = self.store.read_activation()
+        self.assertEqual(current[2]["maps"][name], P.M.digest(candidate))
+        self.assertNotEqual(current[3][name], old[3][name])
+        self.assertEqual(current[2]["map_selinux"], old[2]["map_selinux"])
+        self.assertEqual(os.getxattr(str(self.root / self.overlay), ATTRIBUTE).hex(),
+                         self.labels[self.overlay])
+        self.assertFalse((self.root / self.pending).exists())
+        self.assertEqual(restore(), REV)
+
+    def test_scoped_rotation_native_failure_rolls_back(self):
+        manager, old, config, name, candidate, maps, labels, rotate, recover, verify, restore = self.rotation_fixture()
+
+        def fail(active, info, target, data):
+            verify(active, info, target, data)
+            return not active
+
+        with self.assertRaises(SR.Q.RotationFailed) as error:
+            rotate(fail)
+        self.assertTrue(error.exception.rolled_back)
+        self.assertEqual((config / name).read_bytes(), maps[name])
+        self.assertEqual(self.store.read_activation()[2]["maps"], old[2]["maps"])
+        self.assertEqual(restore(), REV)
+
+    def test_scoped_rotation_interrupted_overlay_recovery(self):
+        manager, old, config, name, candidate, maps, labels, rotate, recover, verify, restore = self.rotation_fixture()
+        with patch.object(manager, "overlay", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                rotate()
+        with self.assertRaisesRegex(P.Refused, "credential_rotation_recovery_required"):
+            self.store.read_activation()
+        self.assertEqual(manager.pending_review()[3], "new_retained")
+        self.assertEqual(recover(), "new_retained")
+        self.assertEqual((config / name).read_bytes(), candidate)
+        self.assertEqual(restore(), REV)
+
+    def test_scoped_rotation_interrupted_before_replace(self):
+        manager, old, config, name, candidate, maps, labels, rotate, recover, verify, restore = self.rotation_fixture()
+        original = P.T.atomic_write
+
+        def interrupt(fd, target, *args, **kwargs):
+            if target == name:
+                raise KeyboardInterrupt()
+            return original(fd, target, *args, **kwargs)
+
+        with patch.object(P.T, "atomic_write", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                rotate()
+        self.assertEqual(manager.pending_review()[3], "old_retained")
+        self.assertEqual(recover(), "old_retained")
+        self.assertEqual(self.store.read_activation(), old)
+        self.assertEqual(restore(), REV)
+
+    def test_scoped_rotation_policy_drift_blocks_recovery(self):
+        manager, old, config, name, candidate, maps, labels, rotate, recover, verify, restore = self.rotation_fixture()
+        with patch.object(manager, "overlay", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                rotate()
+        original = self.labels[self.pending]
+        self.labels[self.pending] = label("different_journal_t")
+        with self.assertRaises(P.Refused):
+            recover()
+        self.assertTrue((self.root / self.pending).exists())
+        self.assertEqual((config / name).read_bytes(), candidate)
+        self.labels[self.pending] = original
+        self.assertEqual(recover(), "new_retained")
+        self.assertEqual(restore(), REV)
+
+    def test_scoped_rotation_refuses_equal_bytes_foreign_inode(self):
+        manager, old, config, name, candidate, maps, labels, rotate, recover, verify, restore = self.rotation_fixture()
+        with patch.object(manager, "overlay", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                rotate()
+        path = config / name
+        path.rename(config / "foreign-original")
+        path.write_bytes(candidate)
+        path.chmod(0o640)
+        os.setxattr(str(path), ATTRIBUTE, bytes.fromhex(labels[name]))
+        with self.assertRaisesRegex(P.Refused, "rotation_map_publication_unproven"):
+            recover()
+        self.assertTrue((self.root / self.pending).exists())
+        self.assertEqual(path.read_bytes(), candidate)
 
 
 if __name__ == "__main__":

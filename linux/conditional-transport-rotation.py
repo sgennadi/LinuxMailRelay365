@@ -240,7 +240,10 @@ def valid_prepared(value):
 
 
 def read_marker(fd, revision, info, uid):
-    raw = M.read_file(fd, X.ROTATION_PENDING, uid)
+    return parse_marker(M.read_file(fd, X.ROTATION_PENDING, uid), revision, info)
+
+
+def parse_marker(raw, revision, info):
     marker = M.decode(raw)
     fields = {"format", "revision", "generation", "name", "old_hash", "old_identity",
               "new_hash", "before", "prepared", "phase"}

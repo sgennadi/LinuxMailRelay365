@@ -76,6 +76,9 @@ class PrivateStore:
         self.snapshot = R.BASE + "/" + revision
         self.anchor = self.parent_identity()
 
+    def transaction_core(self):
+        return X
+
     def parent_identity(self):
         st = os.fstat(self.parent)
         X.need(stat.S_ISDIR(st.st_mode) and st.st_uid == self.uid and
@@ -403,24 +406,25 @@ class PrivateStore:
                 os.close(fd)
 
     def read_activation(self):
-        """Read a complete, labeled journal with optional partial map receipts.
+        """Normal read: pending rotations and edits remain blocked."""
+        return self._activation_state(False)[0]
 
-        Pending rotations/edits are refused; a future dedicated recovery
-        reader must validate their marker schema and selected generations.
-        Missing receipts are represented as None, never inferred from bytes.
-        """
+    def _activation_state(self, allow_rotation_pending):
+        """Private exact evidence; only the rotation resolver may bypass pending."""
         self.no_edit_pending()
         info, files = self.read_snapshot(allow_activation=True)
         X.need(R.labeled(info), "private_activation_requires_v2")
         observed = self.activation_observation()
         records = observed[1]
-        X.need(X.ROTATION_PENDING not in records, "credential_rotation_recovery_required")
+        X.need(allow_rotation_pending or X.ROTATION_PENDING not in records,
+               "credential_rotation_recovery_required")
         journal = X.parse_journal(records[X.JOURNAL][0], info, self.revision)
         receipts = {}
         for name in X.map_names(info):
             receipt = records.get(X.receipt_name(name))
             receipts[name] = (None if receipt is None else
                               X.parse_receipt(receipt[0], self.revision, name))
+        base = (journal, receipts)
         if X.ROTATION_CURRENT in records:
             journal, receipts = X.parse_rotation_overlay(
                 records[X.ROTATION_CURRENT][0], info, journal, receipts)
@@ -428,7 +432,33 @@ class PrivateStore:
         X.need(self.read_snapshot(allow_activation=True) == (info, files) and
                self.activation_observation() == observed, "private_activation_changed")
         self.no_edit_pending()
-        return info, files, journal, receipts
+        return (info, files, journal, receipts), observed, base
+
+    def remove_rotation_marker(self, expected):
+        """Remove only the exact reviewed pending marker, never a foreign file."""
+        self.no_edit_pending()
+        relative = self.snapshot + "/" + R.ACTIVATION + "/" + X.ROTATION_PENDING
+        fd, name = self.open_parent(relative)
+        try:
+            self.check_anchor()
+            X.need(self.observe(relative) == expected and
+                   self.metadata(fd, name, relative) == expected,
+                   "private_rotation_marker_changed")
+            other, target = self.open_parent(relative)
+            try:
+                X.need((os.fstat(fd).st_dev, os.fstat(fd).st_ino) ==
+                       (os.fstat(other).st_dev, os.fstat(other).st_ino) and
+                       self.metadata(other, target, relative) == expected,
+                       "private_rotation_marker_changed")
+                os.unlink(name, dir_fd=fd)
+                os.fsync(fd)
+            finally:
+                os.close(other)
+            self.no_edit_pending()
+            X.need(X.ROTATION_PENDING not in self.activation_observation()[1],
+                   "private_rotation_marker_removal_unverified")
+        finally:
+            os.close(fd)
 
     def create_activation(self, databases, map_gid):
         """Create immutable labeled publication journal before live writes.

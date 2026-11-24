@@ -120,3 +120,19 @@ config writes, policy drift and a lost publication receipt. This is a library
 integration milestone on the post-RC14 development branch, not a change to
 production CLI or the frozen RC14 release. Rotation/edit with labeled private
 stores and real SELinux Enforcing acceptance are still outstanding.
+
+## Post-RC14 scoped labeled credential rotation
+
+A new internal ScopedRotation library reuses the existing pending-marker and
+overlay validators with the policy-bound private store. It writes a durable
+labeled marker before the selected SASL database is replaced, records the
+prepared inode, verifies all other maps and native readback, and updates the
+labeled overlay using exact private receipts. Ordinary failure can restore the
+previous bytes from memory; an interrupted or uncertain transaction is resolved
+only by explicit review of the retained inode, digest, marker and overlay.
+Normal activation reads and Restore remain blocked while rotation is pending.
+Private marker removal is bound to its exact reviewed metadata. Synthetic
+user-xattr tests cover success, native rollback, both retained generations,
+policy drift and foreign equal-byte maps. This remains internal code: the
+production SELinux maintenance guard, full labeled edit integration and actual
+Enforcing acceptance are unchanged. The RC14 release branch is not modified.
