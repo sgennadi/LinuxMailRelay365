@@ -190,6 +190,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: Real isolated Postfix service and primary mail preservation smoke
         run: bash tests/smoke_isolated_postfix.sh
+      - name: Compile and query real isolated conditional Postfix maps
+        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" python3 tests/smoke_native_conditional_maps.py
 
   ubuntu-fresh-direct-send-smoke:
     # Clean system: no Entra app or OAuth cert; one synthetic DATA goes to local sink only.
