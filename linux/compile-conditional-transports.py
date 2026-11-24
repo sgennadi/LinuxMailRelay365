@@ -174,8 +174,9 @@ def parameters(raw):
 
 
 def compile_map(fd, work, backend, filename, expected, uid, runner, secret=False):
-    # An empty/comment-only source establishes private file permissions for
-    # postmap -i. Password material is supplied exclusively via stdin.
+    # postmap -i uses stdin as its input and does not necessarily inherit
+    # permissions from a separate source file. Create a verified private
+    # empty database first, then insert credentials via stdin.
     source = b"# private stdin-only credential input\n" if secret else rows(expected)
     M.write_file(fd, filename, source)
     database = filename + M.MAP_SUFFIX[backend]
@@ -183,6 +184,13 @@ def compile_map(fd, work, backend, filename, expected, uid, runner, secret=False
     spec = backend + ":" + work + "/" + filename
     prefix = ["-c", work]
     if secret:
+        command(runner, "postmap", prefix + [spec],
+                failure="private_empty_database_creation_failed")
+        M.read_file(fd, database, uid, M.MAX_DB_BYTES)
+        empty = command(runner, "postmap", prefix + ["-s", spec],
+                        failure="private_empty_database_read_failed")
+        need(not empty.strip(), "private_database_not_empty")
+        # Never disclose a secret to a newly created or unverified database.
         command(runner, "postmap", prefix + ["-i", spec], rows(expected),
                 "private_credential_compilation_failed")
     else:

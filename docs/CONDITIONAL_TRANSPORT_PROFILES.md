@@ -14,8 +14,12 @@ STARTTLS and implicit TLS are supported; plaintext and OAuth are refused by
 this first compiler. A public rule-plan SHA uses the existing Windows format.
 Password-mode rules accept independent credential slots on stdin, never as
 arguments, environment variables or plaintext source-map files. Credentials
-are compiled by postmap -i into fresh 0600 maps in a 0700 verified tmpfs scratch
-directory. No credential checksum or map contents appear in the receipt.
+are inserted by postmap -i into already-created, verified empty 0600 maps in
+a 0700 verified tmpfs scratch directory. Native postmap uses stdin metadata
+in incremental mode, so the empty database is created from a private
+non-secret source and its mode and emptiness are checked before sending any
+credential material. The populated database is again checked for exact 0600
+permissions, contents and lookup results. No credential checksum or map contents appear in the receipt.
 The directory is removed on ordinary completion/failure. tmpfs may swap and an
 abrupt termination may leave private scratch files: this is not a general
 secret vault or a secure-erasure guarantee.

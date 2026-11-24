@@ -30,9 +30,28 @@ request = {"rules": rules, "credentials": [
     {"username": "fixture-b", "password": "synthetic-B"},
     {"username": "fixture-c", "password": "synthetic-C"}, None]}
 _, sha = T.plan(rules)
-result = T.compile_profiles(request, sha, T.CONFIRM, 0,
-                            T.tmpfs_parent(), T.installed_ca())
-assert result[0] == sha and result[1] in ("hash", "lmdb") and result[2:] == (4, 3)
+# Exercise every installed backend, rather than testing only the
+# preferred one and leaving its fallback unverified.
+import tempfile
+with tempfile.TemporaryDirectory(prefix="lmr365-types-", dir=T.tmpfs_parent()) as work:
+    fd = os.open(work, T.M.DIR_FLAGS)
+    try:
+        T.M.write_file(fd, "main.cf", T.M.NATIVE_CONFIG)
+        T.M.write_file(fd, "master.cf", b"# no services\n")
+        for name in ("queue", "data"):
+            os.mkdir(name, 0o700, dir_fd=fd)
+        code, output = T.M.native_command("postconf", ["-c", work, "-m"])
+        assert code == 0
+        supported = [x for x in ("hash", "lmdb") if x in output.decode("ascii").split()]
+    finally:
+        os.close(fd)
+assert supported
+for backend in supported:
+    result = T.compile_profiles(request, sha, T.CONFIRM, 0,
+                                T.tmpfs_parent(), T.installed_ca(),
+                                forced_backend=backend)
+    assert result == (sha, backend, 4, 3)
+    print("NATIVE_DEDICATED_TRANSPORT_BACKEND=" + backend + ":PASS", flush=True)
 assert before == [hashlib.sha256(x.read_bytes()).hexdigest() for x in protected]
 print("NATIVE_DEDICATED_TRANSPORTS_AND_PRIVATE_AUTH_MAPS=PASS")
 print("NATIVE_DEDICATED_TRANSPORTS_PRIMARY_CONFIG_UNCHANGED=PASS")

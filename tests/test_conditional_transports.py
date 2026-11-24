@@ -86,20 +86,52 @@ class TransportTests(unittest.TestCase):
                 self.assertNotIn(value, " ".join(args))
                 self.assertNotIn(value.encode(), (pathlib.Path(work) / "private").read_bytes())
                 self.assertEqual(tool, "postmap")
+                if args == ["-c", work, "hash:" + work + "/private"]:
+                    self.assertIsNone(data)
+                    T.M.write_file(fd, "private.db", b"empty-db")
+                    return 0, b""
                 if "-i" in args:
                     self.assertEqual(data, T.rows(expected))
-                    T.M.write_file(fd, "private.db", b"fake-db")
+                    self.assertEqual(T.M.read_file(fd, "private.db", os.getuid()),
+                                     b"empty-db")
+                    (pathlib.Path(work) / "private.db").write_bytes(b"fake-db")
                     return 0, b""
-                if "-s" in args or "-q" in args and "-" in args:
+                if "-s" in args:
+                    return (0, b"") if len(calls) == 2 else (0, T.rows(expected))
+                if "-q" in args and "-" in args:
                     return 0, T.rows(expected)
                 return 1, b""
             try:
                 self.assertEqual(T.compile_map(fd, work, "hash", "private", expected,
                     os.getuid(), runner, secret=True), "private.db")
-                self.assertEqual(len(calls), 4)
+                self.assertEqual(len(calls), 6)
                 self.assertTrue((pathlib.Path(work) / "private.db").is_file())
             finally:
                 os.close(fd)
+
+    def test_never_supply_credentials_to_unverified_empty_database(self):
+        for defect in ("permissions", "nonempty"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as work:
+                fd = os.open(work, T.M.DIR_FLAGS)
+                calls = []
+                def runner(tool, args, data):
+                    calls.append((tool, args, data))
+                    self.assertIsNone(data)
+                    self.assertNotIn("-i", args)
+                    if "-s" in args:
+                        return 0, b"foreign-key foreign-value\n"
+                    T.M.write_file(fd, "private.db", b"empty-db")
+                    if defect == "permissions":
+                        (pathlib.Path(work) / "private.db").chmod(0o644)
+                    return 0, b""
+                try:
+                    with self.assertRaises(T.Refused):
+                        T.compile_map(fd, work, "hash", "private",
+                                      {"[relay.example.net]:587": "fixture:secret"},
+                                      os.getuid(), runner, secret=True)
+                    self.assertEqual(len(calls), 1 if defect == "permissions" else 2)
+                finally:
+                    os.close(fd)
 
     def test_wrong_approval_no_native_commands(self):
         rules = fixture()
