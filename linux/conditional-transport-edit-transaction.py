@@ -58,7 +58,7 @@ def marker_read(fd, uid):
     return marker
 
 
-def observe(config, parent, uid, gid, guard):
+def observe(config, parent, uid, gid, guard, read_policy=None):
     """Private recovery observation; never serialize hashes or DB metadata."""
     guard()
     fd = M.open_base(parent, uid, name=X.EDIT_BASE)
@@ -77,7 +77,27 @@ def observe(config, parent, uid, gid, guard):
                oi["backend"] == ni["backend"] and oi["ca"] == ni["ca"] and
                all(of[name + ".before"] == nf[name + ".before"] for name in X.CONFIGS),
                "edit_records_changed")
-        expected, files, _ = E.proposal(old, ni["rules"])
+        X.need(R.labeled(oi) == R.labeled(ni), "edit_snapshot_format_changed")
+        if R.labeled(oi):
+            # This experimental path does not yet permit a real labeled
+            # private recovery store. Never mutate a store with unknown labels.
+            X.need(not os.listxattr(parent), "labeled_private_recovery_store_unsupported")
+            Q.check_private_store(fd, oi, uid)
+            for revision in (marker["old"], marker["new"]):
+                activation = X.activation_fd(parent, revision, uid)
+                try:
+                    Q.check_private_store(activation, oi, uid)
+                finally:
+                    os.close(activation)
+            E.check_policy(oi, read_policy)
+            E.check_policy(ni, read_policy)
+            X.need(oi["directory_selinux"] == ni["directory_selinux"],
+                   "edit_directory_label_changed")
+            labels = read_policy(ni["rules"], ni["backend"])
+        else:
+            X.need(read_policy is None, "unexpected_edit_label_policy")
+            labels = None
+        expected, files, _ = E.proposal(old, ni["rules"], labels)
         X.need((expected, files) == new[:2] and
                not (set(X.map_names(oi)) & set(X.map_names(ni))),
                "edit_proposal_changed")
@@ -85,7 +105,7 @@ def observe(config, parent, uid, gid, guard):
                "old_publication_unproven")
         old_pair = X.expected_pair(oi, of, ".after")
         new_pair = X.expected_pair(ni, nf, ".after")
-        current = X.pair(config, uid)
+        current = X.pair(config, uid, oi)
         X.need(all(item in (old_pair[i], new_pair[i])
                    for i, item in enumerate(current)), "edit_configuration_drift")
         old_present = checked_present(config, old, uid)
@@ -102,10 +122,13 @@ def observe(config, parent, uid, gid, guard):
         X.need(marker_read(fd, uid) == marker and
                load_record(parent, marker["old"], uid) == old and
                load_record(parent, marker["new"], uid) == new and
-               X.pair(config, uid) == current and
+               X.pair(config, uid, oi) == current and
                checked_present(config, old, uid) == old_present and
                checked_present(config, new, uid) == new_present,
                "edit_observation_changed")
+        E.check_policy(oi, read_policy)
+        E.check_policy(ni, read_policy)
+        Q.check_private_store(fd, oi, uid)
         Q.no_orphan_scratch(config, fd)
         return marker, old, new, current, old_present, new_present
     finally:
@@ -125,12 +148,12 @@ def require_native(config, record, uid, verify):
            "selected_generation_changed")
 
 
-def switch_pair(config, parent, state, target, uid, gid, guard):
+def switch_pair(config, parent, state, target, uid, gid, guard, read_policy=None):
     marker, old, new, _, _, _ = state
     wanted = old if target == "old" else new
     pair = X.expected_pair(wanted[0], wanted[1], ".after")
     for i in (1, 0):  # exclusive stopped maintenance; master before main
-        now = observe(config, parent, uid, gid, guard)
+        now = observe(config, parent, uid, gid, guard, read_policy)
         X.need(now[:3] == (marker, old, new), "edit_records_changed")
         X.need(full(wanted, now[4 if target == "old" else 5]),
                "selected_generation_incomplete")
@@ -143,7 +166,9 @@ def switch_pair(config, parent, state, target, uid, gid, guard):
             # directly while still inside the exclusive maintenance window.
             def check_before_replace(_identity):
                 guard()
-                X.need(X.pair(config, uid) == now[3] and
+                E.check_policy(old[0], read_policy)
+                E.check_policy(new[0], read_policy)
+                X.need(X.pair(config, uid, wanted[0]) == now[3] and
                        load_record(parent, marker["old"], uid) == old and
                        load_record(parent, marker["new"], uid) == new and
                        checked_present(config, old, uid) == now[4] and
@@ -151,13 +176,14 @@ def switch_pair(config, parent, state, target, uid, gid, guard):
                        "edit_configuration_changed_before_replace")
                 fd = M.open_base(parent, uid, name=X.EDIT_BASE)
                 try:
+                    Q.check_private_store(fd, old[0], uid)
                     X.need(marker_read(fd, uid) == marker, "edit_marker_changed")
                 finally:
                     os.close(fd)
 
             T.atomic_write(config, X.CONFIGS[i] + ".cf", data, meta, uid, True,
                            before_replace=check_before_replace)
-    final = observe(config, parent, uid, gid, guard)
+    final = observe(config, parent, uid, gid, guard, read_policy)
     X.need(final[:3] == (marker, old, new) and final[3] == pair,
            "edit_switch_unverified")
     return final
@@ -171,7 +197,7 @@ class SwitchFailed(Refused):
 
 def begin(config, parent, directory, revision, reviewed, slots, uid, identity,
           guard, native_review, native_unprivileged, verify, confirmation,
-          prepublish=None):
+          prepublish=None, read_policy=None):
     """Prepare and switch, retaining old maps until separate resolution.
 
     If any post-marker operation fails, leave the durable pending state and
@@ -183,15 +209,25 @@ def begin(config, parent, directory, revision, reviewed, slots, uid, identity,
     X.assert_no_edit_pending(parent, uid)
     old, new, files, _ = reviewed
     gid = identity[1]
+    if R.labeled(old[0]):
+        X.need(not os.listxattr(parent), "labeled_private_recovery_store_unsupported")
+        activation = X.activation_fd(parent, revision, uid)
+        try:
+            Q.check_private_store(activation, old[0], uid)
+        finally:
+            os.close(activation)
 
     def fresh():
         X.need(E.review(config, parent, revision, new["rules"], uid, gid,
-                        guard, native_review) == reviewed, "edit_review_changed")
+                        guard, native_review, read_policy) == reviewed, "edit_review_changed")
         return new, files
 
     fresh()
+    # Preserve the legacy call shape; existing V1 consumers and tests do
+    # not need a policy reader. V2 requires a fresh reader, never a static map.
+    kwargs = {"read_policy": read_policy} if R.labeled(old[0]) else {}
     databases = E.prepare(config, parent, directory, revision, reviewed, slots,
-                          uid, identity, guard, native_review, native_unprivileged)
+                          uid, identity, guard, native_review, native_unprivileged, **kwargs)
     maps = X.native_database_set(new, databases)
     fresh()
     # The new ordinary snapshot retains the original pre-manager pair,
@@ -200,8 +236,10 @@ def begin(config, parent, directory, revision, reviewed, slots, uid, identity,
     journal = X.journal_for(replacement, new, files, maps, gid)
     fd = X.activation_fd(parent, replacement, uid, create=True)
     try:
+        Q.check_private_store(fd, new, uid)
         M.write_file(fd, X.JOURNAL, M.canonical(journal))
         os.fsync(fd)
+        Q.check_private_store(fd, new, uid)
     finally:
         os.close(fd)
     X.need(X.load(parent, replacement, uid) ==
@@ -216,6 +254,7 @@ def begin(config, parent, directory, revision, reviewed, slots, uid, identity,
     fd = M.open_base(parent, uid, create=True, name=X.EDIT_BASE)
     try:
         X.need(not os.listdir(fd), "transport_edit_recovery_required")
+        Q.check_private_store(fd, old[0], uid)
         M.write_file(fd, X.EDIT_PENDING, M.canonical(marker))
         os.fsync(fd)
         X.need(marker_read(fd, uid) == marker, "edit_marker_unverified")
@@ -223,23 +262,24 @@ def begin(config, parent, directory, revision, reviewed, slots, uid, identity,
         os.close(fd)
     try:
         for name, data in sorted(maps.items()):
-            state = observe(config, parent, uid, gid, guard)
+            state = observe(config, parent, uid, gid, guard, read_policy)
             X.need(state[0] == marker and state[1] == old and
                    state[3] == X.expected_pair(old[0], old[1], ".after") and
                    name not in state[5], "edit_publication_context_changed")
             X.publish(config, parent, replacement, name, data, journal, uid)
-        state = observe(config, parent, uid, gid, guard)
+        state = observe(config, parent, uid, gid, guard, read_policy)
         X.need(full(state[2], state[5]), "replacement_publication_incomplete")
-        switched = switch_pair(config, parent, state, "new", uid, gid, guard)
+        switched = switch_pair(config, parent, state, "new", uid, gid, guard, read_policy)
         require_native(config, switched[2], uid, verify)
-        X.need(observe(config, parent, uid, gid, guard) == switched,
+        X.need(observe(config, parent, uid, gid, guard, read_policy) == switched,
                "edit_switch_changed_after_verification")
     except Exception:
         raise SwitchFailed(replacement) from None
     return replacement
 
 
-def resolve(config, parent, reviewed, uid, gid, guard, verify, confirmation):
+def resolve(config, parent, reviewed, uid, gid, guard, verify, confirmation,
+            read_policy=None):
     """Explicitly commit new or roll back old, with resumable cleanup.
 
     The irreversible cleanup direction is persisted before the first unlink.
@@ -248,35 +288,36 @@ def resolve(config, parent, reviewed, uid, gid, guard, verify, confirmation):
     """
     phase = {COMMIT: "commit", ROLLBACK: "rollback"}.get(confirmation)
     X.need(phase is not None, "typed_edit_resolution_required")
-    state = observe(config, parent, uid, gid, guard)
+    state = observe(config, parent, uid, gid, guard, read_policy)
     X.need(state == reviewed, "edit_recovery_review_changed")
     marker, old, new, current, old_present, new_present = state
     X.need(marker["phase"] in ("pending", phase), "edit_resolution_direction_fixed")
     selected, discarded = (new, old) if phase == "commit" else (old, new)
     if marker["phase"] == "pending" and phase == "rollback":
-        state = switch_pair(config, parent, state, "old", uid, gid, guard)
+        state = switch_pair(config, parent, state, "old", uid, gid, guard, read_policy)
     # Commit never silently finishes a partially switched pair. Inspect and
     # roll back instead if the new generation was not fully installed.
     require_native(config, selected, uid, verify)
-    X.need(observe(config, parent, uid, gid, guard) == state,
+    X.need(observe(config, parent, uid, gid, guard, read_policy) == state,
            "edit_recovery_changed_after_verification")
     fd = M.open_base(parent, uid, name=X.EDIT_BASE)
     try:
+        Q.check_private_store(fd, old[0], uid)
         if marker["phase"] == "pending":
             marker = dict(marker, phase=phase)
             Q.private_write(fd, X.EDIT_PENDING, marker, uid)
         for name in X.map_names(discarded[0]):
-            now = observe(config, parent, uid, gid, guard)
+            now = observe(config, parent, uid, gid, guard, read_policy)
             X.need(now[:3] == (marker, old, new), "edit_cleanup_record_changed")
             if name in now[4 if phase == "commit" else 5]:
                 X.checked_map(config, name, discarded[2], discarded[3][name], uid)
                 os.unlink(name, dir_fd=config)
                 os.fsync(config)
-        now = observe(config, parent, uid, gid, guard)
+        now = observe(config, parent, uid, gid, guard, read_policy)
         X.need(now[:3] == (marker, old, new) and
                not now[4 if phase == "commit" else 5], "edit_cleanup_incomplete")
         require_native(config, selected, uid, verify)
-        X.need(observe(config, parent, uid, gid, guard) == now and
+        X.need(observe(config, parent, uid, gid, guard, read_policy) == now and
                marker_read(fd, uid) == marker, "edit_cleanup_changed")
         os.unlink(X.EDIT_PENDING, dir_fd=fd)
         os.fsync(fd)

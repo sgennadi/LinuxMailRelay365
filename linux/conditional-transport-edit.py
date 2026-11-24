@@ -36,9 +36,32 @@ def destination_check(config, old, new):
         X.need(not T.exists(config, name), "replacement_destination_exists")
 
 
-def proposal(record, draft):
+def policy_map(info, labels):
+    """Validate a complete exact-path policy result for one generation."""
+    names = set(X.map_names(info))
+    X.need(type(labels) is dict and set(labels) ==
+           {".", "main.cf", "master.cf"} | names, "invalid_edit_label_policy")
+    for value in labels.values():
+        R.label_context(value)
+    X.need(R.label_context(labels["."]) == R.label_context(info["directory_selinux"]),
+           "edit_directory_policy_changed")
+    for name, meta in zip(X.CONFIGS, info["metadata"]):
+        X.need(R.label_context(labels[name + ".cf"]) ==
+               R.label_context(meta["selinux"]), "edit_config_policy_changed")
+    return {name: labels[name] for name in names}
+
+
+def check_policy(info, read_policy):
+    if R.labeled(info):
+        X.need(callable(read_policy), "labeled_edit_requires_new_policy_review")
+        X.need(policy_map(info, read_policy(info["rules"], info["backend"])) ==
+               info["map_selinux"], "edit_map_policy_changed")
+
+
+def proposal(record, draft, policy_labels=None):
     old, files, _, _ = record
-    X.need(not R.labeled(old), "labeled_edit_requires_new_policy_review")
+    X.need(R.labeled(old) == (policy_labels is not None),
+           "labeled_edit_requires_new_policy_review")
     # Always rebuild from the exact pre-manager snapshot. Never search for
     # comment markers in, or append a second set to, the active configuration.
     try:
@@ -52,6 +75,9 @@ def proposal(record, draft):
     values = dict(files, **{"main.after": after[0], "master.after": after[1]})
     new = dict(old, plan=plan, rules=rules, map_names=names,
                files={key: M.digest(value) for key, value in values.items()})
+    if R.labeled(old):
+        # Labels belong to the destination paths, not to retained DB bytes.
+        new["map_selinux"] = policy_map(new, policy_labels)
     R.validate(new, values)
     # Exact full rule equality only. A selector/host/port/TLS/auth change
     # requires a new explicit credential. Reordering can retain an account.
@@ -63,7 +89,8 @@ def proposal(record, draft):
     return new, values, retain
 
 
-def review(config, parent, revision, draft, uid, gid, guard, native_review):
+def review(config, parent, revision, draft, uid, gid, guard, native_review,
+           read_policy=None):
     """Private exact observation. native_review(record) must prove policy.
 
     Only an owned, fully published, non-pending set may be edited. Review
@@ -74,7 +101,14 @@ def review(config, parent, revision, draft, uid, gid, guard, native_review):
     X.need(record[2]["gid"] == gid, "postfix_group_changed")
     Q.assert_installed(config, record, uid)
     X.need(native_review(record) is True, "installed_native_policy_unverified")
-    new, files, retain = proposal(record, draft)
+    check_policy(record[0], read_policy)
+    if R.labeled(record[0]):
+        labels = read_policy(draft, record[0]["backend"])
+    else:
+        X.need(read_policy is None, "unexpected_edit_label_policy")
+        labels = None
+    new, files, retain = proposal(record, draft, labels)
+    check_policy(new, read_policy)
     destination_check(config, record[0], new)
     guard()
     X.need(X.load(parent, revision, uid) == record, "installed_edit_review_changed")
@@ -83,6 +117,8 @@ def review(config, parent, revision, draft, uid, gid, guard, native_review):
     guard()
     X.need(X.load(parent, revision, uid) == record, "installed_edit_review_changed")
     Q.assert_installed(config, record, uid)
+    check_policy(record[0], read_policy)
+    check_policy(new, read_policy)
     destination_check(config, record[0], new)
     return record, new, files, retain
 
@@ -153,7 +189,7 @@ def retained_database(config, directory, record, index, uid, identity, native_un
 
 
 def prepare(config, parent, directory, revision, reviewed, slots, uid, identity,
-            guard, native_review, native_unprivileged):
+            guard, native_review, native_unprivileged, read_policy=None):
     """Prepare a private in-memory native DB set; no persistent publication.
 
     A later transaction must repeat all ownership, native policy and
@@ -166,7 +202,7 @@ def prepare(config, parent, directory, revision, reviewed, slots, uid, identity,
         def fresh():
             guard()
             X.need(review(config, parent, revision, new["rules"], uid,
-                          identity[1], guard, native_review) == reviewed,
+                          identity[1], guard, native_review, read_policy) == reviewed,
                    "installed_edit_review_changed")
 
         fresh()
