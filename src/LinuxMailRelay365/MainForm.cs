@@ -209,6 +209,13 @@ internal sealed partial class MainForm : Form
     private bool pageRenderFailed;
     private int renderedWizardStep = -1;
     private int queuedWizardStep = -1;
+    private int queuedMailPlanPhase = -1;
+    private int renderedMailPlanPhase = -1;
+    private int mailPlanPhase;
+    private int returnFromSecurityPhase;
+    private bool mailPlanProviderConfirmed;
+    private const int MailPlanReviewPhase = 5;
+    private const int MailPlanSecurityPhase = 6;
     private readonly FlowLayoutPanel navigation = new()
     {
         Dock = DockStyle.Fill, AutoSize = true,
@@ -492,7 +499,9 @@ internal sealed partial class MainForm : Form
         };
         recipientScope.SelectedIndexChanged += (_, _) =>
         {
-            if (routingLoading) return;
+            if (routingLoading || renderingPage) return;
+            if (step == 1 && mailPlanPhase == 3)
+                selectedMailScenario = MailScenarioPlanner.Choose;
             SaveRoutingChoices();
             if (step is 1 or 2 && !busy) RenderPage();
         };
@@ -552,7 +561,8 @@ internal sealed partial class MainForm : Form
         }
         wizardRefreshTimer.Tick += (_, _) =>
         {
-            if (IsDisposed || Disposing || queuedWizardStep != step || busy)
+            if (IsDisposed || Disposing || queuedWizardStep != step ||
+                queuedMailPlanPhase != mailPlanPhase || busy)
             {
                 wizardRefreshTimer.Stop();
                 return;
@@ -1513,6 +1523,8 @@ internal sealed partial class MainForm : Form
                     discoveryError.GetType().Name + "). Port status UNVERIFIED.");
             }
         }
+        mailPlanPhase = 0;
+        mailPlanProviderConfirmed = false;
         step = 1;
     }
 
@@ -2194,6 +2206,7 @@ internal sealed partial class MainForm : Form
         if (renderingPage || busy || routingLoading || IsDisposed || Disposing || !IsHandleCreated)
             return;
         queuedWizardStep = step;
+        queuedMailPlanPhase = mailPlanPhase;
         wizardRefreshTimer.Stop();
         wizardRefreshTimer.Start();
     }
@@ -2216,7 +2229,9 @@ internal sealed partial class MainForm : Form
         if (IsDisposed || Disposing || renderingPage) return;
         wizardRefreshTimer.Stop();
         queuedWizardStep = -1;
-        int previousOffset = renderedWizardStep == step ? Math.Max(0, -pageHost.AutoScrollPosition.Y) : 0;
+        bool samePage = renderedWizardStep == step &&
+            (step != 1 || renderedMailPlanPhase == mailPlanPhase);
+        int previousOffset = samePage ? Math.Max(0, -pageHost.AutoScrollPosition.Y) : 0;
         renderingPage = true;
         pageHost.Rebuilding = true;
         pageRenderFailed = false;
@@ -2225,6 +2240,7 @@ internal sealed partial class MainForm : Form
         {
             RenderPageCore();
             renderedWizardStep = step;
+            renderedMailPlanPhase = mailPlanPhase;
         }
         catch (Exception ex)
         {
@@ -2249,12 +2265,13 @@ internal sealed partial class MainForm : Form
             {
                 var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
                 back.Enabled = !busy;
-                back.Click += (_, _) => { step--; RenderPage(); };
+                back.Click += (_, _) => { MoveWizardBack(); RenderPage(); };
                 AddLine(errorPage, back);
             }
             WriteLine("ERROR: Wizard page " + (step + 1) + " rendering failed (" +
                 ex.GetType().Name + ").");
             renderedWizardStep = step;
+            renderedMailPlanPhase = mailPlanPhase;
             previousOffset = 0;
         }
         finally
@@ -2274,6 +2291,38 @@ internal sealed partial class MainForm : Form
                 renderingPage = false;
             }
         }
+    }
+
+    private void MoveWizardBack()
+    {
+        if (step == 1 && mailPlanPhase == MailPlanSecurityPhase)
+            mailPlanPhase = returnFromSecurityPhase;
+        else if (step == 1 && mailPlanPhase > 0)
+            mailPlanPhase--;
+        else if (step > 0)
+            step--;
+    }
+
+    private bool CanAdvanceWizard() => step < 4 && !busy &&
+        (step != 1 || mailPlanPhase switch
+        {
+            0 => HasMailDiscovery(),
+            1 => HasMailDiscovery() && selectedMailSource != MailFlowIntent.Unknown,
+            2 => HasMailDiscovery() && mailPlanProviderConfirmed &&
+                MailFlowIntent.SupportedTarget(selectedMailTarget),
+            3 => HasMailDiscovery(),
+            4 or MailPlanReviewPhase => MailPlanScenarioAvailable(),
+            _ => false
+        });
+
+    private void MoveWizardNext()
+    {
+        if (!CanAdvanceWizard()) return;
+        if (step == 1 && mailPlanPhase < MailPlanReviewPhase)
+            mailPlanPhase++;
+        else
+            step++;
+        RenderPage();
     }
 
     private void RenderPageCore()
@@ -2343,9 +2392,52 @@ internal sealed partial class MainForm : Form
                 EnsureSecurityLoaded();
                 EnsureRoutingLoaded();
                 LocalizeDeliveryChoices();
-                ShowMailDiscovery(page, true);
-                ShowRecipientAdvice(page);
-                ShowMailFlowPlanner(page);
+                ShowMailPlanProgress(page);
+                if (mailPlanPhase != MailPlanSecurityPhase)
+                {
+                    switch (mailPlanPhase)
+                    {
+                        case 0:
+                            ShowMailDiscovery(page, true);
+                            if (!HasMailDiscovery())
+                            {
+                                // Preserve the old skip/diagnostics path, but
+                                // do not invent discovery evidence or a plan.
+                                var skipPlan = UiTheme.Action(T("Продолжить без плана (диагностика)",
+                                    "Continue without a plan (diagnostics)", "המשך ללא תוכנית (אבחון)"));
+                                skipPlan.Enabled = !busy;
+                                skipPlan.Click += (_, _) => { step = 2; RenderPage(); };
+                                AddLine(page, skipPlan);
+                            }
+                            break;
+                        case 1:
+                        case 2:
+                        case 4:
+                            ShowMailFlowPlanner(page, mailPlanPhase);
+                            break;
+                        case 3:
+                            ShowRecipientAdvice(page);
+                            break;
+                        case MailPlanReviewPhase:
+                            ShowMailPlanSummary(page);
+                            ShowMailFlowPlanner(page, MailPlanReviewPhase);
+                            break;
+                    }
+                    if (mailPlanPhase is 0 or MailPlanReviewPhase)
+                    {
+                        var security = UiTheme.Action(T("Дополнительно: TPM/HSM и защита",
+                            "Optional: TPM/HSM and security", "אופציונלי: TPM/HSM ואבטחה"), glyph: "shield");
+                        security.Enabled = !busy;
+                        security.Click += (_, _) =>
+                        {
+                            returnFromSecurityPhase = mailPlanPhase;
+                            mailPlanPhase = MailPlanSecurityPhase;
+                            RenderPage();
+                        };
+                        AddLine(page, security);
+                    }
+                    break;
+                }
                 AddLine(page, UiTheme.Text(T(
                     "Все опции выключены. Выбор сохраняется как ПЛАН — он не меняет Entra, Postfix, сертификат или Linux. Для включения потребуются отдельные подтверждённые действия.",
                     "All options are off. Your selection is saved as a PLAN only: it does not modify Entra, Postfix, certificates or Linux. Activation requires separate approved steps.",
@@ -2634,7 +2726,17 @@ internal sealed partial class MainForm : Form
                 EnsureRoutingLoaded();
                 LocalizeDeliveryChoices();
                 ShowMailDiscovery(page, false);
-                ShowRecipientAdvice(page);
+                if (HasMailDiscovery()) ShowMailPlanSummary(page);
+                var editPlan = UiTheme.Action(T("Изменить план почты",
+                    "Edit mail plan", "עריכת תוכנית הדואר"), glyph: "back");
+                editPlan.Enabled = !busy;
+                editPlan.Click += (_, _) =>
+                {
+                    mailPlanPhase = HasMailDiscovery() ? 1 : 0;
+                    step = 1;
+                    RenderPage();
+                };
+                AddLine(page, editPlan);
                 ShowMailFlowPlanner(page);
                 if (!HasMailDiscovery() || selectedMailSource == MailFlowIntent.Unknown ||
                     selectedMailScenario == MailScenarioPlanner.Choose)
@@ -3681,6 +3783,8 @@ internal sealed partial class MainForm : Form
             {
                 try { EnsureSecurityLoaded(); }
                 catch (Exception ex) { WriteLine("ERROR: " + ex.Message); return; }
+                mailPlanPhase = 0;
+                mailPlanProviderConfirmed = false;
                 step = 1;
                 RenderPage();
             };
@@ -3690,11 +3794,12 @@ internal sealed partial class MainForm : Form
         {
             var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
             back.Enabled = !busy;
-            back.Click += (_, _) => { step--; RenderPage(); };
-            var next = UiTheme.Action(T("Далее", "Next", "הבא"),
-                primary: step < 4, glyph: "next");
-            next.Enabled = step < 4 && !busy;
-            next.Click += (_, _) => { step++; RenderPage(); };
+            back.Click += (_, _) => { MoveWizardBack(); RenderPage(); };
+            var next = UiTheme.Action(step == 1 && mailPlanPhase == MailPlanReviewPhase
+                ? T("К способу отправки", "Continue to delivery", "המשך לשיטת שליחה")
+                : T("Далее", "Next", "הבא"), primary: step < 4, glyph: "next");
+            next.Enabled = CanAdvanceWizard();
+            next.Click += (_, _) => MoveWizardNext();
             navigation.Controls.Add(next);
             navigation.Controls.Add(back);
         }
@@ -3768,6 +3873,19 @@ internal sealed partial class MainForm : Form
             RenderPage();
             AssertWizardViewport();
         }
+
+        // Exercise every mini-page and the optional security page with no
+        // discovered host. The missing-discovery state must remain visible.
+        step = 1;
+        for (int phase = 0; phase <= MailPlanSecurityPhase; phase++)
+        {
+            mailPlanPhase = phase;
+            RenderPage();
+            AssertWizardViewport();
+            if (pageHost.AutoScrollPosition.Y != 0)
+                throw new InvalidOperationException("Mini wizard did not reset scroll.");
+        }
+        mailPlanPhase = 0;
 
         void Screenshot(string filename, bool scrollToBottom = false)
         {
@@ -4184,6 +4302,8 @@ internal sealed partial class MainForm : Form
         try { identity = MailRoutingPlanStore.Identity(host.Text, sshPort.Text, sshUser.Text); }
         catch (ArgumentException) { return; }
         if (routingIdentity == identity) return;
+        mailPlanPhase = 0;
+        mailPlanProviderConfirmed = false;
         routingLoading = true;
         try
         {

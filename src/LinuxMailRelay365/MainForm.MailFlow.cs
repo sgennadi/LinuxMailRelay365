@@ -112,19 +112,20 @@ internal sealed partial class MainForm
         return grid;
     }
 
-    private Control BuildLiveMailFlowDiagram()
+    private Control BuildLiveMailFlowDiagram(bool planOnly = false)
     {
         string mailSource = selectedMailSource;
         string configuredPorts = inspectedHost?.ConfiguredSmtpPortState ?? "";
         if (configuredPorts is "unverified" or "none_configured" or "dynamic_or_unverified")
             configuredPorts = "";
-        string? isolatedPort = selectedMailScenario == MailScenarioPlanner.Isolated
+        string? isolatedPort = selectedMailScenario == MailScenarioPlanner.Isolated && !planOnly
             ? isolatedSmtpPort.Text.Trim() : null;
         string mode = selectedMailTarget switch
         {
             MailFlowIntent.TargetCustom => "custom",
             MailFlowIntent.TargetGmail => "google-gmail",
             MailFlowIntent.TargetWorkspace => "google-workspace",
+            _ when planOnly => "m365-pending",
             _ => mailTransport.SelectedIndex switch
             {
                 1 => "connector", 2 => "direct-send", _ => "oauth2"
@@ -196,7 +197,89 @@ internal sealed partial class MainForm
         };
     }
 
-    private void ShowMailFlowPlanner(TableLayoutPanel page)
+    private bool MailPlanScenarioAvailable()
+    {
+        if (!HasMailDiscovery() || selectedMailSource == MailFlowIntent.Unknown ||
+            !MailFlowIntent.SupportedTarget(selectedMailTarget)) return false;
+        string recipients = recipientScope.SelectedIndex switch
+        {
+            1 => "internal-only", 2 => "external-needed", _ => "unknown"
+        };
+        return MailFlowIntent.Suggestions(inspectedMail!, existingSmtpAudit!, inspectedHost!,
+            discoveredIsolatedRelay, selectedMailSource, recipients, language.SelectedIndex,
+            selectedMailTarget).Any(option => option.Code == selectedMailScenario && option.Enabled);
+    }
+
+    private void ShowMailPlanProgress(TableLayoutPanel page)
+    {
+        string[] names = [
+            T("Обнаружение", "Discovery", "גילוי"),
+            T("Источник", "Source", "מקור"),
+            T("Провайдер", "Provider", "ספק"),
+            T("Получатели", "Recipients", "נמענים"),
+            T("Сценарий", "Scenario", "תרחיש"),
+            T("Итоговая схема", "Review", "סיכום")
+        ];
+        int width = Math.Max(260, pageHost.ClientSize.Width - 90);
+        if (mailPlanPhase == MailPlanSecurityPhase)
+        {
+            AddLine(page, MailFlowText(T("Дополнительная защита — необязательно",
+                "Optional security tools", "כלי אבטחה אופציונליים"), width, bold: true));
+            return;
+        }
+        int phase = Math.Clamp(mailPlanPhase, 0, names.Length - 1);
+        AddLine(page, MailFlowText(T("План почты", "Mail plan", "תוכנית דואר") +
+            " · " + (phase + 1) + "/" + names.Length + " · " + names[phase], width, bold: true));
+        AddLine(page, MailFlowText(string.Join("  →  ", names.Select((name, index) =>
+            index == phase ? "[" + name + "]" : name)), width));
+    }
+
+    private void ShowMailPlanSummary(TableLayoutPanel page)
+    {
+        int l = language.SelectedIndex;
+        int width = Math.Max(260, pageHost.ClientSize.Width - 90);
+        string provider = selectedMailTarget switch
+        {
+            MailFlowIntent.TargetGmail => "Gmail",
+            MailFlowIntent.TargetWorkspace => "Google Workspace",
+            MailFlowIntent.TargetCustom => T("Другой SMTP", "Custom SMTP", "SMTP אחר"),
+            _ => "Microsoft 365"
+        };
+        if (selectedMailScenario == MailScenarioPlanner.Keep)
+            provider = T("Текущий relay без изменений", "Current relay unchanged", "הממסר הקיים ללא שינוי");
+        string recipients = recipientScope.SelectedIndex switch
+        {
+            1 => T("Только внутренние", "Internal only", "פנימיים בלבד"),
+            2 => T("Внутренние и внешние", "Internal and external", "פנימיים וחיצוניים"),
+            _ => T("Пока не определены", "Not yet determined", "טרם נקבע")
+        };
+        string scenario = T("Не выбран", "Not selected", "טרם נבחר");
+        if (HasMailDiscovery())
+        {
+            var options = MailFlowIntent.Suggestions(inspectedMail!, existingSmtpAudit!, inspectedHost!,
+                discoveredIsolatedRelay, selectedMailSource,
+                recipientScope.SelectedIndex == 1 ? "internal-only" :
+                recipientScope.SelectedIndex == 2 ? "external-needed" : "unknown",
+                l, selectedMailTarget);
+            scenario = options.FirstOrDefault(option => option.Code == selectedMailScenario)?.Name ?? scenario;
+        }
+        AddLine(page, UiTheme.Text(T("Что выбрано", "Selected mail plan", "התוכנית שנבחרה"), true));
+        AddLine(page, MailFlowText(
+            T("Источник", "Source", "מקור") + ": " + MailFlowIntent.SourceLabel(selectedMailSource, l) + Environment.NewLine +
+            T("Текущий relay", "Current relay", "ממסר נוכחי") + ": " +
+                (HasMailDiscovery() ? inspectedMail?.CurrentRelay ?? "unverified" : "unverified") + Environment.NewLine +
+            T("Целевой провайдер", "Target provider", "ספק יעד") + ": " + provider + Environment.NewLine +
+            T("Получатели", "Recipients", "נמענים") + ": " + recipients + Environment.NewLine +
+            T("Сценарий", "Scenario", "תרחיש") + ": " + scenario, width));
+        AddLine(page, MailFlowText(T(
+            "Это план, а не изменение сервера. Параметры провайдера и проверки выполняются на следующих этапах. Входящие порты не изменяются автоматически.",
+            "This is a plan, not a server change. Provider settings and checks follow on the next steps. Inbound ports are not changed automatically.",
+            "זו תוכנית בלבד. הגדרות הספק יופיעו בשלבים הבאים; היציאות לא ישתנו אוטומטית."), width, warning: true));
+    }
+
+    // -1 is provider/advanced configuration on the delivery step.
+    // Mini-wizard pages expose only their own decision and never apply.
+    private void ShowMailFlowPlanner(TableLayoutPanel page, int phase = -1)
     {
         int languageIndex = language.SelectedIndex;
         int width = Math.Max(300, pageHost.ClientSize.Width - 90);
@@ -213,44 +296,48 @@ internal sealed partial class MainForm
         var audit = existingSmtpAudit!;
         var host = inspectedHost!;
 
-        AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
-            "Для чего вам нужна исходящая почта?",
-            "What will generate outgoing mail?",
-            "מהו מקור הדואר היוצא?"), true));
-        if (mailSubmissionIdentity == TryCurrentIdentity() && mailSubmissionEvidence is not null)
-            AddLine(page, MailFlowText(mailSubmissionEvidence.Brief(languageIndex), width));
-        else
-            AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
-                "Фактические локальные источники не установлены. Выбор ниже описывает вашу цель, а не результаты автоматического обнаружения пользователей.",
-                "Actual message producers are not established. Your selection below is an intended use, not proof that users or jobs are mailing.",
-                "מקורות הדואר בפועל לא אומתו; הבחירה היא כוונה בלבד."),
-                width));
+        if (phase == 1)
+        {
+            AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
+                "Для чего вам нужна исходящая почта?",
+                "What will generate outgoing mail?",
+                "מהו מקור הדואר היוצא?"), true));
+            if (mailSubmissionIdentity == TryCurrentIdentity() && mailSubmissionEvidence is not null)
+                AddLine(page, MailFlowText(mailSubmissionEvidence.Brief(languageIndex), width));
+            else
+                AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+                    "Фактические локальные источники не установлены. Выбор ниже описывает вашу цель, а не результаты автоматического обнаружения пользователей.",
+                    "Actual message producers are not established. Your selection below is an intended use, not proof that users or jobs are mailing.",
+                    "מקורות הדואר בפועל לא אומתו; הבחירה היא כוונה בלבד."),
+                    width));
 
-        var sources = new[]
-        {
-            MailFlowIntent.Local, MailFlowIntent.Jobs,
-            MailFlowIntent.Smtp, MailFlowIntent.Mixed
-        }.Select(code => (
-            Code: code,
-            Title: MailFlowIntent.SourceLabel(code, languageIndex),
-            Description: TranslateMailFlow(languageIndex,
-                "Сначала только выбор задачи — ничего не изменяется.",
-                "Select the intended workload; nothing changes yet.",
-                "בחרו את סוג העבודה; לא יבוצעו שינויים."),
-            Status: selectedMailSource == code
-                ? TranslateMailFlow(languageIndex, "Выбрано", "Selected", "נבחר")
-                : TranslateMailFlow(languageIndex, "Выберите", "Choose", "בחר"),
-            Preferred: false,
-            Enabled: true
-        )).ToArray();
-        AddLine(page, BuildMailFlowCards(sources, selectedMailSource, code =>
-        {
-            if (code == selectedMailSource) return;
-            selectedMailSource = code;
-            selectedMailScenario = MailScenarioPlanner.Choose;
-            SaveRoutingChoices();
-            RenderPage();
-        }));
+            var sources = new[]
+            {
+                MailFlowIntent.Local, MailFlowIntent.Jobs,
+                MailFlowIntent.Smtp, MailFlowIntent.Mixed
+            }.Select(code => (
+                Code: code,
+                Title: MailFlowIntent.SourceLabel(code, languageIndex),
+                Description: TranslateMailFlow(languageIndex,
+                    "Сначала только выбор задачи — ничего не изменяется.",
+                    "Select the intended workload; nothing changes yet.",
+                    "בחרו את סוג העבודה; לא יבוצעו שינויים."),
+                Status: selectedMailSource == code
+                    ? TranslateMailFlow(languageIndex, "Выбрано", "Selected", "נבחר")
+                    : TranslateMailFlow(languageIndex, "Выберите", "Choose", "בחר"),
+                Preferred: false,
+                Enabled: true
+            )).ToArray();
+            AddLine(page, BuildMailFlowCards(sources, selectedMailSource, code =>
+            {
+                if (code == selectedMailSource) return;
+                selectedMailSource = code;
+                selectedMailScenario = MailScenarioPlanner.Choose;
+                SaveRoutingChoices();
+                RenderPage();
+            }));
+        }
+        if (phase == 1) return;
         if (selectedMailSource == MailFlowIntent.Unknown)
         {
             AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
@@ -260,74 +347,79 @@ internal sealed partial class MainForm
             return;
         }
 
-        AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
-            "Куда должна уходить почта?",
-            "Where should outbound mail go?",
-            "לאן לשלוח דואר יוצא?"), true));
-        AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
-            "Текущий обнаруженный relay и выбранный целевой провайдер — разные параметры. Выберите желаемого провайдера. Gmail, Google Workspace и другой SMTP не требуют Microsoft 365 Tenant ID.",
-            "The detected current relay and the intended provider are separate. Choose the desired destination. Gmail, Google Workspace and another SMTP server do not require a Microsoft 365 Tenant ID.",
-            "הממסר הנוכחי והספק הרצוי הם הגדרות נפרדות. Gmail, Google Workspace ושרת SMTP אחר אינם דורשים Microsoft 365 Tenant ID."), width));
-        var targetChoices = new[]
+        if (phase == 2)
         {
-            (Code: MailFlowIntent.TargetM365,
-             Title: "Microsoft 365",
-             Description: TranslateMailFlow(languageIndex,
-                 "XOAUTH2, SMTP Connector или Direct Send — после проверки tenant.",
-                 "XOAUTH2, SMTP Connector or Direct Send — after tenant verification.",
-                 "XOAUTH2, Connector או Direct Send לאחר אימות."),
-             Status: TranslateMailFlow(languageIndex,
-                 "Требуется проверка M365", "Requires M365 verification", "נדרשת בדיקת M365"),
-             Preferred: false, Enabled: true),
-            (Code: MailFlowIntent.TargetGmail,
-             Title: "Gmail SMTP · smtp.gmail.com",
-             Description: TranslateMailFlow(languageIndex,
-                 "Отправка через Google-аккаунт: 587 STARTTLS или 465 TLS, сейчас App Password; OAuth2 ещё не реализован.",
-                 "Google account submission: 587 STARTTLS or 465 TLS, App Password currently supported; OAuth2 not yet implemented.",
-                 "שליחה דרך חשבון Google עם TLS."),
-             Status: TranslateMailFlow(languageIndex,
-                 "Проверить порты и учётные данные", "Check TLS and credentials", "בדיקת TLS והרשאות"),
-             Preferred: false, Enabled: true),
-            (Code: MailFlowIntent.TargetWorkspace,
-             Title: "Google Workspace SMTP Relay",
-             Description: TranslateMailFlow(languageIndex,
-                 "smtp-relay.gmail.com · 25/465/587. Авторизация по IP или SMTP AUTH после проверки Admin Console.",
-                 "smtp-relay.gmail.com · 25/465/587. Authorized IP or SMTP AUTH per Workspace Admin Console.",
-                 "ממסר Google Workspace בכפוף למדיניות הארגון."),
-             Status: TranslateMailFlow(languageIndex,
-                 "Проверить IP/TLS и правила Google", "Check IP/TLS and Google policy", "בדיקת IP/TLS"),
-             Preferred: false, Enabled: true),
-            (Code: MailFlowIntent.TargetCustom,
-             Title: TranslateMailFlow(languageIndex,
-                 "Другой SMTP-сервер", "Another SMTP server / smarthost", "שרת SMTP אחר"),
-             Description: TranslateMailFlow(languageIndex,
-                 "Укажите сервер и исходящий порт. DNS, TLS и необязательную SMTP AUTH можно проверить без отправки письма.",
-                 "Specify an outbound server and port. Read-only DNS/TLS and optional SMTP AUTH checks do not send mail.",
-                 "בחרו שרת ויציאה. תכנון בלבד."),
-             Status: TranslateMailFlow(languageIndex,
-                 "Нет автоматической установки", "No automatic deployment", "ללא התקנה אוטומטית"),
-             Preferred: false, Enabled: true)
-        };
-        AddLine(page, BuildMailFlowCards(targetChoices, selectedMailTarget, code =>
-        {
-            selectedMailTarget = code;
-            googleAppPassword.Clear(); // Never carry Google credentials between destinations.
-            customSmtpPassword.Clear(); // Never retain a custom SMTP secret after a target change.
-            customSmtpAudit = null;
-            customSmtpAuditContext = null;
-            customRoutePreview = null;
-            customRoutePreviewContext = null;
-            if (code == MailFlowIntent.TargetGmail && googleOutboundPort.Text.Trim() == "25")
-                googleOutboundPort.Text = "587";
-            googleSmtpAudit = null;
-            googleSmtpAuditIdentity = null;
-            selectedMailScenario = MailScenarioPlanner.Choose;
-            SaveRoutingChoices();
-            RenderPage();
-        }));
-        if (IsGoogleTarget)
+            AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
+                "Куда должна уходить почта?",
+                "Where should outbound mail go?",
+                "לאן לשלוח דואר יוצא?"), true));
+            AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+                "Текущий обнаруженный relay и выбранный целевой провайдер — разные параметры. Выберите желаемого провайдера. Gmail, Google Workspace и другой SMTP не требуют Microsoft 365 Tenant ID.",
+                "The detected current relay and the intended provider are separate. Choose the desired destination. Gmail, Google Workspace and another SMTP server do not require a Microsoft 365 Tenant ID.",
+                "הממסר הנוכחי והספק הרצוי הם הגדרות נפרדות. Gmail, Google Workspace ושרת SMTP אחר אינם דורשים Microsoft 365 Tenant ID."), width));
+            var targetChoices = new[]
+            {
+                (Code: MailFlowIntent.TargetM365,
+                 Title: "Microsoft 365",
+                 Description: TranslateMailFlow(languageIndex,
+                     "XOAUTH2, SMTP Connector или Direct Send — после проверки tenant.",
+                     "XOAUTH2, SMTP Connector or Direct Send — after tenant verification.",
+                     "XOAUTH2, Connector או Direct Send לאחר אימות."),
+                 Status: TranslateMailFlow(languageIndex,
+                     "Требуется проверка M365", "Requires M365 verification", "נדרשת בדיקת M365"),
+                 Preferred: false, Enabled: true),
+                (Code: MailFlowIntent.TargetGmail,
+                 Title: "Gmail SMTP · smtp.gmail.com",
+                 Description: TranslateMailFlow(languageIndex,
+                     "Отправка через Google-аккаунт: 587 STARTTLS или 465 TLS, сейчас App Password; OAuth2 ещё не реализован.",
+                     "Google account submission: 587 STARTTLS or 465 TLS, App Password currently supported; OAuth2 not yet implemented.",
+                     "שליחה דרך חשבון Google עם TLS."),
+                 Status: TranslateMailFlow(languageIndex,
+                     "Проверить порты и учётные данные", "Check TLS and credentials", "בדיקת TLS והרשאות"),
+                 Preferred: false, Enabled: true),
+                (Code: MailFlowIntent.TargetWorkspace,
+                 Title: "Google Workspace SMTP Relay",
+                 Description: TranslateMailFlow(languageIndex,
+                     "smtp-relay.gmail.com · 25/465/587. Авторизация по IP или SMTP AUTH после проверки Admin Console.",
+                     "smtp-relay.gmail.com · 25/465/587. Authorized IP or SMTP AUTH per Workspace Admin Console.",
+                     "ממסר Google Workspace בכפוף למדיניות הארגון."),
+                 Status: TranslateMailFlow(languageIndex,
+                     "Проверить IP/TLS и правила Google", "Check IP/TLS and Google policy", "בדיקת IP/TLS"),
+                 Preferred: false, Enabled: true),
+                (Code: MailFlowIntent.TargetCustom,
+                 Title: TranslateMailFlow(languageIndex,
+                     "Другой SMTP-сервер", "Another SMTP server / smarthost", "שרת SMTP אחר"),
+                 Description: TranslateMailFlow(languageIndex,
+                     "Укажите сервер и исходящий порт. DNS, TLS и необязательную SMTP AUTH можно проверить без отправки письма.",
+                     "Specify an outbound server and port. Read-only DNS/TLS and optional SMTP AUTH checks do not send mail.",
+                     "בחרו שרת ויציאה. תכנון בלבד."),
+                 Status: TranslateMailFlow(languageIndex,
+                     "Нет автоматической установки", "No automatic deployment", "ללא התקנה אוטומטית"),
+                 Preferred: false, Enabled: true)
+            };
+            AddLine(page, BuildMailFlowCards(targetChoices, mailPlanProviderConfirmed ? selectedMailTarget : "", code =>
+            {
+                mailPlanProviderConfirmed = true;
+                selectedMailTarget = code;
+                googleAppPassword.Clear(); // Never carry Google credentials between destinations.
+                customSmtpPassword.Clear(); // Never retain a custom SMTP secret after a target change.
+                customSmtpAudit = null;
+                customSmtpAuditContext = null;
+                customRoutePreview = null;
+                customRoutePreviewContext = null;
+                if (code == MailFlowIntent.TargetGmail && googleOutboundPort.Text.Trim() == "25")
+                    googleOutboundPort.Text = "587";
+                googleSmtpAudit = null;
+                googleSmtpAuditIdentity = null;
+                selectedMailScenario = MailScenarioPlanner.Choose;
+                SaveRoutingChoices();
+                RenderPage();
+            }));
+        }
+        if (phase == 2) return;
+        if (phase == -1 && IsGoogleTarget)
             ShowGoogleSmtpChecks(page);
-        if (selectedMailTarget == MailFlowIntent.TargetCustom)
+        if (phase == -1 && selectedMailTarget == MailFlowIntent.TargetCustom)
         {
             AddField(page, TranslateMailFlow(languageIndex,
                 "Исходящий SMTP-сервер (FQDN / IPv4)",
@@ -344,10 +436,13 @@ internal sealed partial class MainForm
                 "בדיקות זמינות, אך שינוי אוטומטי של Postfix אינו נתמך עדיין."),
                 width, warning: true));
         }
-        AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
-            "Как поступить с текущей конфигурацией?",
-            "What should happen to the current mail configuration?",
-            "מה לעשות עם תצורת הדואר הקיימת?"), true));
+        if (phase == 4)
+        {
+            AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,
+                "Как поступить с текущей конфигурацией?",
+                "What should happen to the current mail configuration?",
+                "מה לעשות עם תצורת הדואר הקיימת?"), true));
+        }
         string recipients = recipientScope.SelectedIndex switch
         {
             1 => "internal-only", 2 => "external-needed", _ => "unknown"
@@ -355,19 +450,26 @@ internal sealed partial class MainForm
         var suggestions = MailFlowIntent.Suggestions(inventory, audit, host,
             discoveredIsolatedRelay, selectedMailSource, recipients, languageIndex,
             selectedMailTarget);
-        var choices = suggestions.Select(x => (
-            x.Code, x.Name, x.Detail, x.Status, x.Preferred, x.Enabled)).ToArray();
-        AddLine(page, BuildMailFlowCards(choices, selectedMailScenario, code =>
+        if (phase == 4)
         {
-            selectedMailScenario = code;
-            SaveRoutingChoices();
-            RenderPage();
-        }));
-        // RC11: collapsed by default; read-only what-if routing only.
-        ShowAdvancedConditionalRoutingPlanner(page, width, languageIndex);
-        ShowConditionalRecovery(page, width, languageIndex);
-        ShowConditionalOfflineActions(page, width, languageIndex);
-        ShowMultiTransportActions(page, width, languageIndex);
+            var choices = suggestions.Select(x => (
+                x.Code, x.Name, x.Detail, x.Status, x.Preferred, x.Enabled)).ToArray();
+            AddLine(page, BuildMailFlowCards(choices, selectedMailScenario, code =>
+            {
+                selectedMailScenario = code;
+                SaveRoutingChoices();
+                RenderPage();
+            }));
+        }
+        if (phase == 4) return;
+        if (phase == -1)
+        {
+            // All existing technical tools remain available here.
+            ShowAdvancedConditionalRoutingPlanner(page, width, languageIndex);
+            ShowConditionalRecovery(page, width, languageIndex);
+            ShowConditionalOfflineActions(page, width, languageIndex);
+            ShowMultiTransportActions(page, width, languageIndex);
+        }
         if (selectedMailScenario == MailScenarioPlanner.Choose)
         {
             AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
@@ -390,7 +492,7 @@ internal sealed partial class MainForm
             "Предпросмотр маршрута (это не установка)",
             "Selected mail flow (preview only)",
             "תצוגה מקדימה של ניתוב הדואר"), true));
-        AddLine(page, BuildLiveMailFlowDiagram());
+        AddLine(page, BuildLiveMailFlowDiagram(planOnly: phase == MailPlanReviewPhase));
         if (chosen.RequiresSeparatePort)
             AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
                 "Только для отдельного SMTP экземпляра понадобится собственный входящий порт. Он выбирается позже после проверки свободных портов.",

@@ -89,6 +89,8 @@ internal static class MailScenarioPlanner
                 "inbound port unverified", "יציאה נכנסת לא אומתה");
         string target = upstreamMode switch
         {
+            "m365-pending" => L(language, "Microsoft 365 · способ и порт предстоит выбрать",
+                "Microsoft 365 · method and port not yet selected", "Microsoft 365 · שיטה ויציאה טרם נבחרו"),
             "connector" => "Microsoft 365 EOP · TCP 25",
             "direct-send" => "Microsoft 365 MX · TCP 25",
             "google-gmail" => "Gmail · smtp.gmail.com" +
