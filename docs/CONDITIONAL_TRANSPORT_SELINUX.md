@@ -195,3 +195,41 @@ This diagnoses historical outbound connection denials only; file/TLS/other
 domain denials, real runtime acceptance and scoped mutation CLI remain separate.
 See ausearch(8) for recent/raw filters and its ambiguous exit status. The RC14
 release branch and its existing write restrictions remain unchanged.
+
+## Explicit outbound SMTP port-label transaction (post-RC14)
+
+A separate experimental CLI, manage-conditional-transport-selinux-port.py,
+keeps the legacy sidecar manager unchanged. It handles one custom TCP port
+(1024-65535) per revision; other ports can be reviewed but are not newly
+labeled. Use --review PORT to obtain a revision and review SHA. Only a fresh
+candidate with no specific type or local overlapping mapping is eligible.
+Apply requires --apply PORT --revision REV --approve-review-sha256 SHA,
+--confirm ADD_REVIEWED_OUTBOUND_SMTP_PORT and --maintenance-confirmation
+EXCLUSIVE_SELINUX_PORT_POLICY_MAINTENANCE. The administrator must ensure
+exclusive policy maintenance and review every service using the port. Both
+existing manager locks are acquired, and ss checks TCP sockets in the current
+network namespace; neither mechanism proves global dependency absence.
+
+Before semanage is invoked, a root-only immutable revision under
+/var/lib/linuxmailrelay365-outbound-selinux-port records the full and local
+normalized port tables and exact intent. This is a port-table backup, not a
+complete SELinux policy backup. The applied receipt is written only after the
+exact singleton smtp_port_t addition is verified in both tables. --status REV
+reviews retained records. --review-rollback REV gives a separate approval SHA
+only for a confirmed unchanged transaction; --rollback REV requires this SHA,
+--confirm REMOVE_REVIEWED_OUTBOUND_SMTP_PORT and the same maintenance phrase.
+Rollback writes a durable removal intent first and verifies the complete
+original port tables afterwards. Journals remain for inspection. Unrelated
+policy changes, native table regrouping, a busy port, preexisting bindings,
+unknown metadata or lost receipts prevent automatic removal. Interrupted
+unconfirmed add/remove operations deliberately require manual reconciliation;
+there is no automatic adoption of an equal-looking mapping and no bulk policy
+import. To manage several ports, review each independently; exact global table
+comparisons generally require rolling back in reverse order.
+
+The CLI is not yet wired into the GUI and is experimental. Real semanage
+mutation tests on an isolated SELinux Enforcing host, dependency review and
+production transaction integration remain outstanding. Tests here use a fake
+policy backend with real root-only filesystem journal mechanics. No firewall,
+service, boolean, Postfix configuration or SMTP delivery changes are made by
+this feature. The published RC14 is unchanged.
