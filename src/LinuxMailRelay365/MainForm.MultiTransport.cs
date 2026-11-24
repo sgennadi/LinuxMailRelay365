@@ -8,6 +8,8 @@ internal sealed partial class MainForm
     private string? multiHostIdentity;
     private string? multiReviewContext;
     private MultiTransportReview? multiReview;
+    private string? multiInstalledContext;
+    private MultiTransportInstalled? multiInstalled;
     private string? multiInventoryContext;
     private IReadOnlyList<MultiTransportRecovery>? multiInventory;
     private readonly TextBox multiRevision = new()
@@ -38,6 +40,8 @@ internal sealed partial class MainForm
             multiReviewContext = null;
             multiInventory = null;
             multiInventoryContext = null;
+            multiInstalledContext = null;
+            multiInstalled = null;
             return;
         }
         string? identity = TryCurrentIdentity();
@@ -51,6 +55,7 @@ internal sealed partial class MainForm
             multiInventoryContext = null;
         }
         if (multiInventoryContext != hostContext) multiInventory = null;
+        if (multiInstalledContext != hostContext) multiInstalled = null;
         string? context = MultiCandidateContext();
         if (context is null || context != multiReviewContext)
         {
@@ -65,6 +70,7 @@ internal sealed partial class MainForm
             "До 8 отдельных транспортов по отправителю. STARTTLS/Implicit TLS, собственный порт и отдельный пароль. Только первый набор на остановленном Postfix; изменение активного набора, SELinux/ACL и OAuth2 ещё не поддерживаются. Нужен полный backup. Входящие порты не меняются.",
             "Up to 8 independent sender transports. STARTTLS/implicit TLS, individual ports and passwords. First installation on stopped Postfix only; active-set editing, SELinux/ACL and OAuth2 are not yet supported. Full backup required. Inbound ports are unchanged.",
             "עד 8 נתיבי שולח עם TLS ופרטי התחברות נפרדים. התקנה ראשונה בלבד ב-Postfix כבוי. נדרש גיבוי מלא."), width, warning: true));
+        ShowInstalledMultiTransport(page, width, l, hostContext);
         AddAction(page, TranslateMailFlow(l, "Найти ревизии Multi-provider",
             "Scan multi-provider recovery revisions", "סרוק גרסאות שחזור"),
             ScanMultiTransportRecoveryAsync, false, "search", "multi-recovery");
@@ -106,6 +112,11 @@ internal sealed partial class MainForm
                 "Составьте 1–8 непересекающихся правил отправителя в мастере выше. TLS обязателен.",
                 "Create 1–8 disjoint sender rules in the planner above. TLS is required.",
                 "יש ליצור 1–8 כללי שולח ללא חפיפה ועם TLS."), width));
+        else if (multiInstalled?.Status is "installed_owned" or "external_or_unverified")
+            AddLine(page, MailFlowText(TranslateMailFlow(l,
+                "Первичная установка заблокирована: уже обнаружена конфигурация. Изменение установленного набора пока не поддерживается.",
+                "First installation is blocked: an existing configuration was discovered. Installed-set editing is not yet supported.",
+                "התקנה ראשונה חסומה: זוהתה תצורה קיימת."), width, warning: true));
         else
         {
             var rules = MultiTransportClient.Eligible(advancedRoutingRules);
@@ -128,6 +139,93 @@ internal sealed partial class MainForm
             "Recovery revision", "גרסת שחזור"), multiRevision);
         AddAction(page, "Multi-provider Restore...", () => RunMultiTransportAsync("restore"),
             false, "shield", "multi-restore");
+    }
+
+    private void ShowInstalledMultiTransport(TableLayoutPanel page, int width, int l, string hostContext)
+    {
+        AddAction(page, TranslateMailFlow(l, "Обнаружить установленные транспорты",
+            "Discover installed transports", "זהה נתיבי SMTP מותקנים"),
+            DiscoverMultiTransportAsync, false, "search", "multi-discovery");
+        if (multiInstalled is not { } installed) return;
+        if (installed.Status != "installed_owned")
+        {
+            AddLine(page, MailFlowText(installed.Status == "no_effective_transport_map"
+                ? TranslateMailFlow(l, "Карта выбора транспорта по отправителю не обнаружена.",
+                    "No effective sender-dependent transport map found.", "לא נמצאה מפת נתיבים לפי שולח.")
+                : TranslateMailFlow(l, "Сторонняя или неподтверждённая конфигурация. Запись не разрешена.",
+                    "External or unverified configuration. Writes are not authorized.", "תצורה חיצונית או לא מאומתת."),
+                width, warning: installed.Status != "no_effective_transport_map"));
+            return;
+        }
+        AddLine(page, MailFlowText("Installed configuration · " + installed.Backend +
+            Environment.NewLine + "Revision: " + installed.Revision + Environment.NewLine +
+            string.Join(Environment.NewLine, installed.Rules.Select((r,i) =>
+                $"{i+1}. {r.Pattern} → {r.Endpoint} · {r.TlsMode} · {r.AuthMode}")) +
+            Environment.NewLine + TranslateMailFlow(l,
+                "Это конфигурация на диске, не подтверждение доставки. Пароли не извлекаются.",
+                "Disk configuration only; runtime delivery is unverified. No passwords retrieved.",
+                "תצורה בדיסק בלבד, ללא קריאת סיסמאות."), width));
+        AddAction(page, TranslateMailFlow(l, "Импортировать в локальный редактор...",
+            "Import into local draft editor...", "ייבא לעורך המקומי..."), () =>
+        {
+            if (RecoveryInventoryContext() != hostContext || multiInstalled != installed ||
+                multiInstalledContext != hostContext)
+                throw new InvalidOperationException("Installed observation became stale.");
+            if (advancedRoutingRules.Count != 0 && MessageBox.Show(this,
+                TranslateMailFlow(l,
+                    "Заменить локальный проект найденными правилами? Linux не изменяется.",
+                    "Replace the local draft with discovered rules? Linux is not changed.",
+                    "להחליף את הטיוטה המקומית? Linux לא ישתנה."),
+                "LinuxMailRelay365", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return Task.CompletedTask;
+            advancedRoutingRules.Clear();
+            advancedRoutingRules.AddRange(installed.Rules);
+            advancedRoutingIdentity = TryCurrentIdentity();
+            advancedRoutingSimulation = null;
+            advancedRoutingEditIndex = -1;
+            conditionalRouteAudits.Clear();
+            conditionalRouteAuditContext = null;
+            conditionalStageReceipt = null;
+            conditionalStageContext = null;
+            offlineReview = null;
+            offlineReviewContext = null;
+            multiReview = null;
+            multiReviewContext = null;
+            advancedRoutingToggleUpdating = true;
+            try { advancedRoutingToggle.Checked = true; }
+            finally { advancedRoutingToggleUpdating = false; }
+            multiRevision.Text = installed.Revision!;
+            WriteLine("Installed transport rules copied into local draft only.");
+            return Task.CompletedTask;
+        }, false, "check", "multi-import");
+    }
+
+    private async Task DiscoverMultiTransportAsync()
+    {
+        string context = RecoveryInventoryContext() ??
+            throw new InvalidOperationException("Reinspect Postfix.");
+        multiInstalled = null;
+        multiInstalledContext = null;
+        multiReview = null;
+        multiReviewContext = null;
+        try
+        {
+            var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+                MultiTransportClient.Build("installed"), TimeSpan.FromMinutes(4));
+            if (RecoveryInventoryContext() != context)
+                throw new InvalidOperationException();
+            var observation = MultiTransportClient.ParseInstalled(result.StdOut);
+            if (result.ExitCode != 0 && observation.Status != "external_or_unverified")
+                throw new InvalidOperationException();
+            multiInstalled = observation;
+            multiInstalledContext = context;
+            WriteLine("Installed transport discovery: " + observation.Status + ". Read-only.");
+        }
+        catch
+        {
+            throw new InvalidOperationException("Installed transport discovery failed or became stale.");
+        }
     }
 
     private async Task ScanMultiTransportRecoveryAsync()
@@ -168,6 +266,9 @@ internal sealed partial class MainForm
         }
         else if (operation is "review" or "apply")
         {
+            if (multiInstalledContext == RecoveryInventoryContext() &&
+                multiInstalled?.Status is "installed_owned" or "external_or_unverified")
+                throw new InvalidOperationException("Existing configuration requires separate management.");
             context = MultiCandidateContext() ??
                 throw new InvalidOperationException("Prepare a valid sender plan first.");
             rules = MultiTransportClient.Eligible(advancedRoutingRules);
@@ -224,6 +325,8 @@ internal sealed partial class MainForm
             {
                 multiInventory = null;
                 multiInventoryContext = null;
+                multiInstalled = null;
+                multiInstalledContext = null;
                 offlineReview = null;
                 offlineReviewContext = null;
                 conditionalStageReceipt = null;

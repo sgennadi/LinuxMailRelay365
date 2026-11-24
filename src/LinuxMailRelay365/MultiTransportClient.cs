@@ -8,6 +8,9 @@ internal sealed record MultiTransportReview(string Plan, string Evidence, string
 internal sealed record MultiTransportRecovery(string Revision, string State);
 internal sealed record MultiTransportMutation(string Revision, string Status);
 
+internal sealed record MultiTransportInstalled(string Status, string? Revision, string? Plan,
+    string? Backend, IReadOnlyList<AdvancedRouteRule> Rules);
+
 internal static class MultiTransportClient
 {
     internal const string ApplyPhrase = "APPLY_NEW_STOPPED_POSTFIX_TRANSPORTS";
@@ -36,7 +39,7 @@ internal static class MultiTransportClient
         IReadOnlyList<(string User, string Secret)?>? credentials = null,
         string? revision = null, string? confirmation = null)
     {
-        if (operation != "scan" && maintenance != ConditionalOfflineClient.MaintenancePhrase)
+        if (operation is not ("scan" or "installed") && maintenance != ConditionalOfflineClient.MaintenancePhrase)
             throw new ArgumentException("Exclusive maintenance approval required.");
         string args, file = "manage-conditional-transports-offline.py";
         string? payload = null;
@@ -78,14 +81,14 @@ internal static class MultiTransportClient
         else if (operation == "restore" && ConditionalOfflineClient.IsSha(revision) &&
                  confirmation == RestorePhrase && rules is null && review is null && credentials is null)
             args = "--restore " + revision + " --confirm " + RestorePhrase;
-        else if (operation == "scan" && maintenance is null && rules is null && review is null &&
+        else if (operation is "scan" or "installed" && maintenance is null && rules is null && review is null &&
                  credentials is null && revision is null && confirmation is null)
         {
             file = "inspect-conditional-transport-recovery.py";
-            args = "";
+            args = operation == "installed" ? "--installed" : "";
         }
         else throw new ArgumentException("Invalid transport operation.");
-        if (operation != "scan")
+        if (operation is not ("scan" or "installed"))
             args += " --maintenance-confirmation " + ConditionalOfflineClient.MaintenancePhrase;
 
         // Fixed modules only are written to scratch. Request JSON is sent by
@@ -204,6 +207,63 @@ internal static class MultiTransportClient
         return entries;
     }
 
+    private static void ExactProperties(JsonElement element, params string[] expected)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Invalid installed transport object.");
+        var names = element.EnumerateObject().Select(x => x.Name).ToArray();
+        if (names.Length != expected.Length || !names.ToHashSet(StringComparer.Ordinal)
+                .SetEquals(expected))
+            throw new InvalidDataException("Unexpected installed transport fields.");
+    }
+
+    internal static MultiTransportInstalled ParseInstalled(string output)
+    {
+        const string prefix = "MULTI_INSTALLED_JSON=";
+        string line = output.TrimEnd('\r', '\n');
+        if (line.Length > 16384 || !line.StartsWith(prefix, StringComparison.Ordinal) ||
+            line.Contains('\n') || line.Contains('\r'))
+            throw new InvalidDataException("Malformed installed transport receipt.");
+        using var doc = JsonDocument.Parse(line[prefix.Length..]);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("status", out var statusElement))
+            throw new InvalidDataException("Missing installed status.");
+        string? status = statusElement.GetString();
+        if (status is "no_effective_transport_map" or "external_or_unverified")
+        {
+            ExactProperties(root, "status");
+            return new(status, null, null, null, Array.Empty<AdvancedRouteRule>());
+        }
+        ExactProperties(root, "status", "revision", "plan", "backend", "rules");
+        string? revision = root.GetProperty("revision").GetString();
+        string? plan = root.GetProperty("plan").GetString();
+        string? backend = root.GetProperty("backend").GetString();
+        var array = root.GetProperty("rules");
+        if (status != "installed_owned" || !ConditionalOfflineClient.IsSha(revision) ||
+            !ConditionalOfflineClient.IsSha(plan) || backend is not ("hash" or "lmdb") ||
+            array.ValueKind != JsonValueKind.Array || array.GetArrayLength() is < 1 or > 8)
+            throw new InvalidDataException("Unverified installed transport receipt.");
+        var rules = new List<AdvancedRouteRule>();
+        foreach (var entry in array.EnumerateArray())
+        {
+            ExactProperties(entry, "selector", "pattern", "host", "port", "tls", "auth");
+            var kind = entry.GetProperty("selector").GetString() switch
+            {
+                "exact-envelope-sender" => AdvancedRouteMatchKind.ExactEnvelopeSender,
+                "envelope-sender-domain" => AdvancedRouteMatchKind.EnvelopeSenderDomain,
+                _ => throw new InvalidDataException("Unsupported installed selector.")
+            };
+            rules.Add(new(kind, entry.GetProperty("pattern").GetString() ?? "",
+                entry.GetProperty("host").GetString() ?? "", entry.GetProperty("port").GetInt32(),
+                entry.GetProperty("tls").GetString() ?? "", entry.GetProperty("auth").GetString() ?? ""));
+        }
+        var normalized = Eligible(rules);
+        if (!rules.SequenceEqual(normalized) || AdvancedRoutePlanner.PlanSha256(normalized) != plan)
+            throw new InvalidDataException("Installed plan hash mismatch.");
+        return new(status, revision, plan, backend, normalized);
+    }
+
     internal static bool SelfTest()
     {
         string a = new('a',64), b = new('b',64);
@@ -224,6 +284,22 @@ internal static class MultiTransportClient
         try { ParseInventory(inventory.Replace("WRITE_ALLOWED=no","WRITE_ALLOWED=yes")); return false; }
         catch (InvalidDataException) {}
         try { ParseMutation(mutation,"restore",b); return false; } catch (InvalidDataException) {}
-        return Build("scan").Contains("inspect-conditional-transport-recovery.py",StringComparison.Ordinal);
+        var rule = new AdvancedRouteRule(AdvancedRouteMatchKind.ExactEnvelopeSender,
+            "user@example.org", "relay.example.net", 587, "starttls", "password");
+        string plan = AdvancedRoutePlanner.PlanSha256(new[] { rule });
+        string installed = "MULTI_INSTALLED_JSON=" + JsonSerializer.Serialize(new {
+            status = "installed_owned", revision = a, plan, backend = "hash",
+            rules = new[] { new { selector = rule.Selector, pattern = rule.Pattern,
+                host = rule.Host, port = rule.Port, tls = rule.TlsMode, auth = rule.AuthMode } }
+        });
+        if (ParseInstalled(installed).Rules.Single() != rule ||
+            ParseInstalled("MULTI_INSTALLED_JSON={\"status\":\"no_effective_transport_map\"}").Rules.Count != 0)
+            return false;
+        try { ParseInstalled(installed.Replace(plan,b)); return false; }
+        catch (InvalidDataException) {}
+        try { ParseInstalled(installed.Replace("\"auth\":", "\"secret\":\"x\",\"auth\":")); return false; }
+        catch (InvalidDataException) {}
+        return Build("scan").Contains("inspect-conditional-transport-recovery.py",StringComparison.Ordinal)
+            && Build("installed").Contains("inspect-conditional-transport-recovery.py\" --installed",StringComparison.Ordinal);
     }
 }
