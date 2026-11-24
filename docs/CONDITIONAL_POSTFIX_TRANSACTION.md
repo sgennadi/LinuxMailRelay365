@@ -17,3 +17,5 @@ no-clobber map publication, exact post-write checks, and guarded rollback
 are exercised by unit tests. Restore refuses unrelated configuration drift
 and unknown map bytes, retains the backup, and never touches a queue or
 service. Native offline VM acceptance and real delivery tests are still required. No production approval, GUI Apply or automatic service restart is provided.
+
+Recovery now requires an exclusive, fsynced publication receipt written after the application's no-clobber map creation and before main.cf is changed. Restore verifies the retained device/inode/size/mtime/ctime identity and content; matching bytes alone do not establish ownership. If the process dies before the receipt is durable or the map is replaced, the tool refuses automatic removal and retains recovery data. Older experimental backups without a receipt cannot authorize deleting a retained map.

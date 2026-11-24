@@ -99,6 +99,37 @@ class TransactionTests(unittest.TestCase):
                 self.apply()
         self.assertEqual(self.target.read_bytes(), self.db)
         self.assertEqual((self.config / "main.cf").read_bytes(), self.main)
+        # A later manual Restore must not delete that external map either.
+        with self.assertRaisesRegex(T.Refused, "map_publication_unproven"):
+            self.restore()
+        self.assertEqual(self.target.read_bytes(), self.db)
+
+    def test_equal_bytes_replacement_is_not_owned(self):
+        self.apply()
+        original = self.config / "retained-original.db"
+        self.target.rename(original)
+        self.target.write_bytes(self.db)
+        self.target.chmod(0o640)
+        with self.assertRaisesRegex(T.Refused, "published_map_identity_or_content_changed"):
+            self.restore()
+        self.assertTrue(self.target.exists())
+        self.assertTrue(original.exists())
+
+    def test_publication_receipt_failure_never_writes_main_cf(self):
+        original = T.publication_receipt
+        def failure(parent, sha, uid, identity=None):
+            if identity is not None:
+                raise OSError("injected durable receipt failure")
+            return original(parent, sha, uid)
+        with patch.object(T, "publication_receipt", side_effect=failure):
+            with self.assertRaises(T.RollbackRequired):
+                self.apply()
+        self.assertEqual((self.config / "main.cf").read_bytes(), self.main)
+        self.assertTrue(self.target.exists())
+        # Even a matching candidate is left for explicit manual recovery.
+        with self.assertRaisesRegex(T.Refused, "map_publication_unproven"):
+            self.restore()
+        self.assertTrue(self.target.exists())
 
     def test_drift_blocks_restore(self):
         self.apply()

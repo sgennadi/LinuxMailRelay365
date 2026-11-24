@@ -22,6 +22,7 @@ Refused = M.Refused
 BACKUP_BASE = "linuxmailrelay365-conditional-recovery"
 FILES = ("main.before", "master.before", "main.after", "candidate.db")
 MANIFEST = "transaction.json"
+PUBLICATION = "published-map.json"
 PARAMETER = "sender_dependent_relayhost_maps"
 CONFIRM = "APPLY_STOPPED_POSTFIX_SENDER_MAP"
 RESTORE = "RESTORE_STOPPED_POSTFIX_SENDER_MAP"
@@ -140,8 +141,12 @@ def load_backup(parent, sha, uid):
         fd = os.open(sha, M.DIR_FLAGS, dir_fd=base)
         try:
             M.check_directory(fd, uid, True)
-            require(set(os.listdir(fd)) == set(FILES) | {MANIFEST},
+            names = set(os.listdir(fd))
+            required = set(FILES) | {MANIFEST}
+            require(names == required or names == required | {PUBLICATION},
                     "incomplete_backup")
+            if PUBLICATION in names:
+                read_publication(fd, sha, uid)
             raw = M.read_file(fd, MANIFEST, uid)
             info = M.decode(raw)
             require(type(info) is dict and M.canonical(info) == raw and
@@ -171,6 +176,62 @@ def load_backup(parent, sha, uid):
         os.close(base)
 
 
+def file_identity(info):
+    # Exclude atime: native read-only postmap may change it. Include ctime
+    # and mtime to detect replacement or modifications even with equal bytes.
+    return [info.st_dev, info.st_ino, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns]
+
+
+def read_publication(fd, sha, uid):
+    raw = M.read_file(fd, PUBLICATION, uid)
+    value = M.decode(raw)
+    require(type(value) is dict and set(value) ==
+            {"format", "transaction_sha256", "identity"} and
+            value["format"] == "LMR365-PUBLISHED-MAP-V1" and
+            value["transaction_sha256"] == sha and
+            type(value["identity"]) is list and len(value["identity"]) == 5 and
+            all(type(x) is int and x >= 0 for x in value["identity"]) and
+            M.canonical(value) == raw, "invalid_map_publication_receipt")
+    return value["identity"]
+
+
+def publication_receipt(parent, sha, uid, identity=None):
+    base = M.open_base(parent, uid, name=BACKUP_BASE)
+    try:
+        fd = os.open(sha, M.DIR_FLAGS, dir_fd=base)
+        try:
+            M.check_directory(fd, uid, True)
+            if identity is not None:
+                # Exclusive durable record after no-clobber publication,
+                # before main.cf is modified. Never manufacture a receipt
+                # during recovery from a map with matching bytes.
+                M.write_file(fd, PUBLICATION, M.canonical({
+                    "format": "LMR365-PUBLISHED-MAP-V1",
+                    "transaction_sha256": sha, "identity": identity}))
+                os.fsync(fd)
+                os.fsync(base)
+            if not exists(fd, PUBLICATION):
+                return None
+            result = read_publication(fd, sha, uid)
+            require(identity is None or result == identity,
+                    "publication_receipt_changed")
+            return result
+        finally:
+            os.close(fd)
+    finally:
+        os.close(base)
+
+
+def checked_published_map(config, target, uid, expected, meta, identity):
+    require(identity is not None, "map_publication_unproven")
+    before = file_identity(os.stat(target, dir_fd=config, follow_symlinks=False))
+    require(before == identity and
+            config_file(config, target, uid, M.MAX_DB_BYTES) == (expected, meta) and
+            file_identity(os.stat(target, dir_fd=config, follow_symlinks=False)) == identity,
+            "published_map_identity_or_content_changed")
+
+
 def atomic_write(fd, name, data, meta, uid, replace, published=None):
     temp = ".lmr365-txn-" + uuid.uuid4().hex
     handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW |
@@ -182,6 +243,7 @@ def atomic_write(fd, name, data, meta, uid, replace, published=None):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+            prepared = file_identity(os.fstat(stream.fileno()))
         if replace:
             os.replace(temp, name, src_dir_fd=fd, dst_dir_fd=fd)
         else:
@@ -191,7 +253,7 @@ def atomic_write(fd, name, data, meta, uid, replace, published=None):
             # operation can fail. Never roll back by deleting someone else's
             # map when link() itself did not succeed.
             if published is not None:
-                published()
+                published(prepared[:4])
             os.unlink(temp, dir_fd=fd)
         os.fsync(fd)
     finally:
@@ -215,9 +277,10 @@ def restore(config, parent, sha, confirmation, uid, map_gid, guard, verify):
             files["main.before"], files["main.after"]), "main_drift_blocks_restore")
     map_meta = {"mode": 0o640, "gid": map_gid}
     had_map = exists(config, target)
+    publication = publication_receipt(parent, sha, uid)
     if had_map:
-        require(config_file(config, target, uid, M.MAX_DB_BYTES) ==
-                (files["candidate.db"], map_meta), "map_drift_blocks_restore")
+        checked_published_map(config, target, uid, files["candidate.db"],
+                              map_meta, publication)
     guard()
     if current == files["main.after"]:
         atomic_write(config, "main.cf", files["main.before"], meta, uid, True)
@@ -227,8 +290,10 @@ def restore(config, parent, sha, confirmation, uid, map_gid, guard, verify):
             (files["master.before"], info["master_meta"]), "restore_verification_failed")
     if had_map:
         guard()
-        require(config_file(config, target, uid, M.MAX_DB_BYTES) ==
-                (files["candidate.db"], map_meta), "map_drift_during_restore")
+        require(publication_receipt(parent, sha, uid) == publication,
+                "publication_receipt_changed")
+        checked_published_map(config, target, uid, files["candidate.db"],
+                              map_meta, publication)
         os.unlink(target, dir_fd=config)
         os.fsync(config)
     return sha
@@ -256,14 +321,22 @@ def apply(config, parent, reviewed, confirmation, uid, map_gid, guard, verify,
     name, suffix = checked_name(info["plan"], info["backend"])
     target = name + suffix
     map_meta = {"mode": 0o640, "gid": map_gid}
-    published = [False]
-    def remember_publication():
-        published[0] = True
+    published = [None]
+    def remember_publication(identity):
+        published[0] = identity
     try:
         guard()
         atomic_write(config, target, files["candidate.db"], map_meta, uid,
                      False, remember_publication)
+        # Capture the inode after the temporary hard link is removed (ctime
+        # changes during link/unlink). Require the same inode, size and mtime
+        # that were observed on our private source before exclusive publish.
+        identity = file_identity(os.stat(target, dir_fd=config, follow_symlinks=False))
+        require(identity[:4] == published[0], "published_map_replaced")
+        checked_published_map(config, target, uid, files["candidate.db"], map_meta, identity)
+        publication_receipt(parent, sha, uid, identity)
         guard()
+        checked_published_map(config, target, uid, files["candidate.db"], map_meta, identity)
         require(config_file(config, "main.cf", uid) ==
                 (files["main.before"], info["main_meta"]) and
                 config_file(config, "master.cf", uid) ==
@@ -275,11 +348,13 @@ def apply(config, parent, reviewed, confirmation, uid, map_gid, guard, verify,
         require(config_file(config, "main.cf", uid) ==
                 (files["main.after"], info["main_meta"]) and
                 config_file(config, "master.cf", uid) ==
-                (files["master.before"], info["master_meta"]) and
-                config_file(config, target, uid, M.MAX_DB_BYTES) ==
-                (files["candidate.db"], map_meta), "post_apply_integrity_failed")
+                (files["master.before"], info["master_meta"]), "post_apply_integrity_failed")
+        require(publication_receipt(parent, sha, uid) == identity,
+                "publication_receipt_changed")
+        checked_published_map(config, target, uid, files["candidate.db"],
+                              map_meta, identity)
     except Exception:
-        if not published[0]:
+        if published[0] is None:
             # No active configuration write was attempted; retain the
             # backup and leave any externally created map untouched.
             raise
