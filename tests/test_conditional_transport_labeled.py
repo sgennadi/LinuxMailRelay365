@@ -15,6 +15,7 @@ spec = importlib.util.spec_from_file_location(
 F = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(F)
 X, R, T = F.X, F.X.R, F.X.T
+Q = R.sibling("labeled_rotation_fixture", "conditional-transport-rotation.py")
 ATTRIBUTE = "user.lmr365_test_selinux"
 
 
@@ -38,6 +39,9 @@ class LabeledTransportTests(unittest.TestCase):
         except OSError as exc:
             self.skipTest("filesystem user xattrs unavailable: " + str(exc.errno))
         p = patch.object(T, "SELINUX_XATTR", ATTRIBUTE)
+        p.start()
+        self.addCleanup(p.stop)
+        p = patch.object(Q.T, "SELINUX_XATTR", ATTRIBUTE)
         p.start()
         self.addCleanup(p.stop)
         self.policy = {name: value.hex() for name, value in self.labels.items()}
@@ -137,6 +141,105 @@ class LabeledTransportTests(unittest.TestCase):
             self.assertEqual((self.f.config / name).read_bytes(), self.f.original[name])
             self.assertEqual(os.getxattr(str(self.f.config / name), ATTRIBUTE), self.labels[name])
         self.assertFalse(any((self.f.config / name).exists() for name in self.f.maps))
+
+    def rotation_fixture(self):
+        revision = self.apply()
+        record = Q.X.load(self.f.parent, revision, self.f.uid)
+        name = Q.target_name(record[0], 1)
+        candidate = b"synthetic labeled rotated database"
+        others = {n: Q.T.file_identity((self.f.config / n).stat())
+                  for n in self.f.maps if n != name}
+
+        def verify(active, info, target, data):
+            self.assertEqual(info, record[0])
+            self.assertEqual(target, name)
+            self.assertEqual((self.f.config / name).read_bytes(), data)
+            self.assertEqual(os.getxattr(str(self.f.config / name), ATTRIBUTE),
+                             self.labels[name])
+            for n, identity in others.items():
+                self.assertEqual(Q.T.file_identity((self.f.config / n).stat()), identity)
+                self.assertEqual(os.getxattr(str(self.f.config / n), ATTRIBUTE), self.labels[n])
+
+        def fresh():
+            return Q.X.load(self.f.parent, revision, self.f.uid)
+
+        def rotate(verification=verify):
+            return Q.rotate(self.f.fd, self.f.parent, revision, 1, record, candidate,
+                            self.f.gid, Q.CONFIRM, self.f.uid, self.f.guard, verification, fresh)
+
+        return revision, record, name, candidate, rotate, verify, fresh
+
+    def test_labeled_rotation_keeps_map_metadata_and_restore(self):
+        revision, old, name, candidate, rotate, verify, fresh = self.rotation_fixture()
+        self.assertTrue(Q.R.valid_sha(rotate()))
+        actual = fresh()
+        self.assertEqual(actual[2]["map_selinux"], old[2]["map_selinux"])
+        self.assertEqual(actual[2]["maps"][name], Q.M.digest(candidate))
+        self.assertNotEqual(actual[3][name], old[3][name])
+        verify(True, actual[0], name, candidate)
+        self.assertEqual(self.restore(revision), revision)
+
+    def test_labeled_rotation_native_failure_restores_bytes_and_label(self):
+        revision, old, name, candidate, rotate, verify, fresh = self.rotation_fixture()
+
+        def fail(active, info, target, data):
+            verify(active, info, target, data)
+            if active:
+                raise Q.Refused("synthetic verification failure")
+
+        with self.assertRaises(Q.RotationFailed) as result:
+            rotate(fail)
+        self.assertTrue(result.exception.rolled_back)
+        self.assertEqual(fresh()[2]["maps"], old[2]["maps"])
+        self.assertEqual(fresh()[2]["map_selinux"], old[2]["map_selinux"])
+        verify(False, old[0], name, self.f.maps[name])
+        self.assertEqual(self.restore(revision), revision)
+
+    def test_labeled_rotation_pending_recovery_keeps_new_label(self):
+        revision, old, name, candidate, rotate, verify, fresh = self.rotation_fixture()
+        with patch.object(Q, "commit_overlay", side_effect=OSError("fixture interruption")):
+            with self.assertRaises(Q.RotationFailed) as result:
+                rotate()
+        self.assertFalse(result.exception.rolled_back)
+        pending = Q.pending_review(self.f.fd, self.f.parent, revision, self.f.uid, self.f.gid)
+        self.assertEqual(pending[3], "new_retained")
+        self.assertEqual(Q.recover(self.f.fd, self.f.parent, revision, pending, self.f.gid,
+                                  Q.RECOVER, self.f.uid, self.f.guard, verify), "new_retained")
+        self.assertEqual(fresh()[2]["map_selinux"], old[2]["map_selinux"])
+        verify(True, old[0], name, candidate)
+        self.assertEqual(self.restore(revision), revision)
+
+    def test_labeled_private_store_refused_before_marker_or_map_write(self):
+        revision, old, name, candidate, rotate, verify, fresh = self.rotation_fixture()
+        activation = self.f.root / Q.R.BASE / revision / Q.R.ACTIVATION
+        os.setxattr(str(activation / Q.X.JOURNAL), ATTRIBUTE, label("var_lib_t"))
+        with self.assertRaisesRegex(Q.Refused, "labeled_private_recovery_store_unsupported"):
+            rotate()
+        self.assertFalse((activation / Q.X.ROTATION_PENDING).exists())
+        self.assertEqual((self.f.config / name).read_bytes(), self.f.maps[name])
+        verify(False, old[0], name, self.f.maps[name])
+
+    def test_labeled_native_lookup_requires_exact_metadata_before_query(self):
+        revision, old, name, candidate, rotate, verify, fresh = self.rotation_fixture()
+        credential = {"username": "fixture", "password": "synthetic"}
+        key = Q.C.endpoint(old[0]["rules"][0])
+        rows = Q.C.rows({key: "fixture:synthetic"})
+        calls = []
+
+        def native(args, identity, data=None):
+            calls.append(args)
+            return (0, rows) if "-s" in args or data is not None else (1, b"")
+
+        Q.verify_retained_native(self.f.fd, str(self.f.config), old[0], name,
+                                 self.f.maps[name], self.f.uid, (self.f.uid, self.f.gid),
+                                 native, credential)
+        self.assertEqual(len(calls), 3)
+        os.setxattr(str(self.f.config / name), ATTRIBUTE, label("postfix_etc_t", "s0:c99"))
+        with self.assertRaisesRegex(Q.Refused, "rotation_native_map_verification_failed"):
+            Q.verify_retained_native(self.f.fd, str(self.f.config), old[0], name,
+                                     self.f.maps[name], self.f.uid, (self.f.uid, self.f.gid),
+                                     native, credential)
+        self.assertEqual(len(calls), 3)
 
 
 if __name__ == "__main__":

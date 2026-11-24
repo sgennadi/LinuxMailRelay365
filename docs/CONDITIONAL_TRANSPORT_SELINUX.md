@@ -35,7 +35,13 @@ attributes refuse the operation. Synthetic user-xattr tests exercise the real
 filesystem publication/rollback mechanics without claiming kernel SELinux access.
 
 Production CLI guards remain unchanged: active SELinux is not yet allowed for
-writes. V2 rotation and replacement are deliberately refused until private
-journal-label updates and prospective replacement policy rechecks are implemented.
-The future trusted caller must recheck actual installed policy in every guard;
-passing a V2 label dictionary alone is not policy or runtime acceptance.
+writes. V2 replacement is still refused until prospective replacement policy
+rechecks are implemented. V2 internal credential rotation now preserves the
+selected map's exact label in normal replacement, rollback, native readback
+and pending recovery. It deliberately requires an unlabeled protected
+activation directory and unlabeled private journal files, and refuses a
+labeled recovery store before creating a rotation marker. Real SELinux recovery
+metadata needs a separate exact-path policy design; these synthetic xattr
+fixtures do not establish support for a real enforcing host. The future trusted
+caller must recheck actual installed policy in every guard; passing a V2 label
+dictionary alone is not policy or runtime acceptance.

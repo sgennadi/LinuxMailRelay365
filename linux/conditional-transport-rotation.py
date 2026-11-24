@@ -54,9 +54,28 @@ def assert_installed(config, record, uid, skip=None):
             X.checked_map(config, name, journal, receipts[name], uid)
 
 
+def check_private_store(fd, info, uid):
+    """Temporary restriction for V2 internal metadata tests.
+
+    Real SELinux recovery files can have a different context from maps and
+    require their own exact-path policy review. Refuse those stores before
+    creating/updating a rotation marker until that support is implemented.
+    """
+    if R.labeled(info):
+        X.need(not os.listxattr(fd), "labeled_private_recovery_store_unsupported")
+        for name in os.listdir(fd):
+            _, meta = T.config_file(fd, name, uid, M.MAX_BYTES)
+            X.need(meta == {"mode": 0o600, "gid": os.getegid()},
+                   "labeled_private_recovery_store_unsupported")
+
+
 def private_write(fd, name, data, uid):
     # Only the rotation overlay and pending marker are replaced, never the
     # immutable original publication journal or its receipts.
+    if T.exists(fd, name):
+        _, actual = T.config_file(fd, name, uid, M.MAX_BYTES)
+        X.need(actual == {"mode": 0o600, "gid": os.getegid()},
+               "unexpected_private_metadata")
     T.atomic_write(fd, name, M.canonical(data), {"mode": 0o600, "gid": os.getegid()},
                    uid, True)
     X.need(M.read_file(fd, name, uid) == M.canonical(data), "rotation_metadata_not_durable")
@@ -105,7 +124,6 @@ def rotate(config, parent, revision, index, reviewed, database, gid, confirmatio
     X.need(fresh_review() == reviewed and X.load(parent, revision, uid) == reviewed,
            "installed_review_changed")
     info, files, journal, receipts = reviewed
-    X.need(not R.labeled(info), "labeled_rotation_not_yet_supported")
     name = target_name(info, index)
     X.need(journal["gid"] == gid, "postfix_group_changed")
     assert_installed(config, reviewed, uid)
@@ -121,6 +139,7 @@ def rotate(config, parent, revision, index, reviewed, database, gid, confirmatio
               "new_hash": new_hash, "before": X.record_digest(journal, receipts),
               "prepared": None, "phase": "replace", "replacement_identity": None}
     try:
+        check_private_store(fd, info, uid)
         # Durable exclusive marker before any live replacement.
         M.write_file(fd, X.ROTATION_PENDING, M.canonical(marker))
         os.fsync(fd)
@@ -256,10 +275,10 @@ def pending_review(config, parent, revision, uid, gid):
     """Private observation; never serialize to a client."""
     record = X.load(parent, revision, uid, allow_pending=True)
     info, _, journal, receipts = record
-    X.need(not R.labeled(info), "labeled_rotation_not_yet_supported")
     X.need(journal["gid"] == gid, "postfix_group_changed")
     fd = X.activation_fd(parent, revision, uid)
     try:
+        check_private_store(fd, info, uid)
         no_orphan_scratch(config, fd)
         marker = read_marker(fd, revision, info, uid)
         name = marker["name"]
@@ -404,6 +423,11 @@ def verify_retained_native(config, directory, info, name, data, uid, identity,
                "invalid_rotation_native_target")
         rule = matches[0]
         expected_meta = {"mode": 0o640, "gid": identity[1]}
+        if R.labeled(info):
+            X.need(name in info["map_selinux"], "rotation_map_label_missing")
+            expected_meta["selinux"] = info["map_selinux"][name]
+            T.label_bytes(expected_meta["selinux"])
+        R.directory_metadata(config, info)
         digest = M.digest(data)
         initial = map_identity(config, name, uid, expected_meta, digest)
 
@@ -437,6 +461,7 @@ def verify_retained_native(config, directory, info, name, data, uid, identity,
         code, found = native_unprivileged(prefix + ["-q", M.NEGATIVE_KEY, spec], identity)
         X.need(code == 1 and not found.strip(), "rotation_native_negative_lookup_failed")
         check_directory()
+        R.directory_metadata(config, info)
         map_identity(config, name, uid, expected_meta, digest, exact=initial)
     except Exception:
         raise Refused("rotation_native_map_verification_failed") from None
