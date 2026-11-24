@@ -1504,6 +1504,22 @@ internal static class EmbeddedAssets
             " --static-check\n";
     }
 
+    internal static string BuildForeignMtaRestorePlanBundle(string mta, string backupId)
+    {
+        if (mta is not ("exim" or "sendmail") ||
+            !Regex.IsMatch(backupId ?? "", @"\A[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("A verified native MTA and backup ID are required.");
+        return "set -Eeuo pipefail\numask 077\n" +
+            "work=$(mktemp -d /tmp/lmr365-foreign-plan.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n" +
+            "base64 -d > \"$work/foreign-mta-config-backup.py\" <<'LMR365_PLAN_BACKUP'\n" +
+            Encode(ForeignMtaBackup) + "\nLMR365_PLAN_BACKUP\n" +
+            "base64 -d > \"$work/restore-foreign-mta-config.py\" <<'LMR365_PLAN_NATIVE'\n" +
+            Encode(ForeignMtaRestore) + "\nLMR365_PLAN_NATIVE\n" +
+            "python3 \"$work/restore-foreign-mta-config.py\" --mta " + mta +
+            " --plan " + backupId + "\n";
+    }
+
     internal static string BuildRecoveryBundle(string command, string? backupId = null)
     {
         if (command is not ("--backup" or "--list" or "--verify" or "--restore"))

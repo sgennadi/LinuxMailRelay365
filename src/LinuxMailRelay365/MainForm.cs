@@ -46,6 +46,8 @@ internal sealed partial class MainForm : Form
     private readonly ComboBox backupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox foreignBackupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private string? foreignBackupListContext;
+    private bool backupMaintenanceOpen;
+    private bool renderedBackupMaintenanceOpen;
     private readonly ComboBox sidecarBackupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private string? reviewedSidecarRestoreSha;
     private string? reviewedSidecarRestoreId;
@@ -2565,7 +2567,8 @@ internal sealed partial class MainForm : Form
         queuedWizardStep = -1;
         bool samePage = renderedWizardStep == step &&
             (step != 1 || renderedMailPlanPhase == mailPlanPhase) &&
-            (step != 2 || renderedDeliveryPhase == deliveryPhase);
+            (step != 2 || renderedDeliveryPhase == deliveryPhase) &&
+            (step != 4 || renderedBackupMaintenanceOpen == backupMaintenanceOpen);
         int previousOffset = samePage ? Math.Max(0, -pageHost.AutoScrollPosition.Y) : 0;
         renderingPage = true;
         pageHost.Rebuilding = true;
@@ -2577,6 +2580,7 @@ internal sealed partial class MainForm : Form
             renderedWizardStep = step;
             renderedMailPlanPhase = mailPlanPhase;
             renderedDeliveryPhase = deliveryPhase;
+            renderedBackupMaintenanceOpen = backupMaintenanceOpen;
         }
         catch (Exception ex)
         {
@@ -2609,6 +2613,7 @@ internal sealed partial class MainForm : Form
             renderedWizardStep = step;
             renderedMailPlanPhase = mailPlanPhase;
             renderedDeliveryPhase = deliveryPhase;
+            renderedBackupMaintenanceOpen = backupMaintenanceOpen;
             previousOffset = 0;
         }
         finally
@@ -2632,6 +2637,11 @@ internal sealed partial class MainForm : Form
 
     private void MoveWizardBack()
     {
+        if (step == 4 && backupMaintenanceOpen)
+        {
+            backupMaintenanceOpen = false;
+            return;
+        }
         if (step == 2 && deliveryToolsReturnToDiagnostics &&
             deliveryPhase is DeliveryAdvancedPhase or DeliveryCertificateToolsPhase)
         {
@@ -2712,8 +2722,14 @@ internal sealed partial class MainForm : Form
             T("4 · Настройка SMTP-маршрута", "4 · Configure SMTP delivery", "4 · הגדרת נתיב SMTP"),
             T("5 · Проверка и обслуживание", "5 · Diagnostics and updates", "5 · אבחון ועדכונים")
         };
-        headline.Text = titles[step];
-        subheading.Text = step switch
+        headline.Text = step == 4 && backupMaintenanceOpen
+            ? T("5 · Резервные копии и восстановление", "5 · Backup and recovery", "5 · גיבוי ושחזור")
+            : titles[step];
+        subheading.Text = step == 4 && backupMaintenanceOpen
+            ? T("Обслуживание обнаруженного MTA независимо от провайдера.",
+                "Maintain the detected MTA independently of the chosen provider.",
+                "תחזוקת שרת הדואר ללא תלות בספק.")
+            : step switch
         {
             0 => T("Любой Linux с SSH и правами sudo. Пароль Microsoft 365 не нужен.",
                    "Any Linux with SSH and sudo access. No Microsoft 365 mailbox password.",
@@ -3649,122 +3665,8 @@ internal sealed partial class MainForm : Form
                         "Для Connector/Direct Send используйте выше кнопки проверки и установки отдельного Relay. Общая установка XOAUTH2 здесь не предлагается; существующий Relay изменяется только через расширенный EOP Preview/Apply.",
                         "Connector/Direct Send uses the dedicated NEW isolated gateway Preview/Install actions above. The XOAUTH2 installer is not offered; changes to an existing sidecar require advanced EOP Preview/Apply.",
                         "עבור Connector/Direct Send יש להשתמש בבדיקות ובהתקנה הייעודיות של הממסר.")));
-                bool verifiedPrimary = inspectedServerIdentity == TryCurrentIdentity();
-                if (verifiedPrimary && inspectedMail?.Mta == "postfix")
-                {
-                    AddLine(page, UiTheme.Text(T(
-                        "Резервная копия только основного Postfix",
-                        "Backup for primary Postfix ONLY",
-                        "גיבוי לשרת Postfix ראשי בלבד"), true));
-                    AddAction(page, T("Создать проверенный архив основного Postfix",
-                        "Create verified primary Postfix backup", "צור גיבוי Postfix מאומת"),
-                        BackupNowAsync, false, "shield", "backup");
-                    AddAction(page, T("Показать проверенные архивы Postfix",
-                        "List verified Postfix backups", "הצג גיבויי Postfix"),
-                        ListBackupsAsync, false, "refresh", "backup");
-                    if (backupSelector.Items.Count > 0)
-                    {
-                        AddLine(page, UiTheme.Text(T("Выберите резервную копию Postfix",
-                            "Select a verified Postfix backup", "בחר גיבוי Postfix")));
-                        AddLine(page, backupSelector);
-                    }
-                    AddAction(page, T("Восстановить выбранный Postfix...",
-                        "Restore selected Postfix configuration...",
-                        "שחזור תצורת Postfix"),
-                        RestoreBackupAsync, false, "back", "restore");
-                }
-                else if (verifiedPrimary && (inspectedMail?.Mta is "exim" or "sendmail"))
-                {
-                    AddLine(page, UiTheme.Text(T(
-                        "Архив конфигурации основного Exim/Sendmail",
-                        "Primary Exim/Sendmail configuration archive",
-                        "גיבוי תצורת Exim או Sendmail"), true));
-                    AddLine(page, UiTheme.Text(T(
-                        "Закрытый архив остаётся на Linux: /var/backups/linuxmailrelay365-foreign-mta. Может содержать пароли; не включает очереди, внешние сертификаты и состояние службы. Восстановление автоматически запрещено.",
-                        "Root-only archive stays on Linux under /var/backups/linuxmailrelay365-foreign-mta. May contain passwords. Excludes mail queues, external certs and service state. Automatic Restore is DISABLED.",
-                        "הגיבוי נשמר בלינוקס בלבד, ללא תור דואר או מצב שירות. השחזור האוטומטי מושבת.")));
-                    AddAction(page, T(
-                        "Проверить синтаксис Exim/Sendmail (без изменений)",
-                        "Validate Exim/Sendmail native configuration (read-only)",
-                        "בדיקת תקינות תצורת Exim/Sendmail ללא שינוי"),
-                        CheckForeignMtaNativeSyntaxAsync, false, "check", "foreign-static-check");
-                    AddLine(page, UiTheme.Text(T(
-                        "Только статическая проверка конфигурации, без отправки почты и перезапуска MTA. Результат не подтверждает TLS, SMTP AUTH, очереди или доставку.",
-                        "Static syntax check only. No mail sent or MTA restarted. This is NOT proof of TLS, SMTP AUTH, queues or delivery.",
-                        "בדיקת תחביר בלבד, ללא שליחת דואר או הפעלה מחדש. זו אינה הוכחה למסירה.")));
-                    AddAction(page, T("Создать и проверить архив Exim/Sendmail",
-                        "Create and verify Exim/Sendmail archive",
-                        "צור ואמת גיבוי Exim/Sendmail"),
-                        BackupForeignMtaAsync, false, "shield", "foreign-backup");
-                    AddAction(page, T("Показать проверенные архивы Exim/Sendmail",
-                        "List verified Exim/Sendmail archives",
-                        "הצג גיבויי Exim/Sendmail"),
-                        ListForeignMtaBackupsAsync, false, "refresh", "foreign-backup-list");
-                    if (foreignBackupSelector.Items.Count > 0)
-                    {
-                        AddLine(page, UiTheme.Text(T("Выберите архив для повторной проверки",
-                            "Select archive to verify", "בחר גיבוי לאימות")));
-                        AddLine(page, foreignBackupSelector);
-                        AddAction(page, T("Проверить SHA-256 и содержимое архива",
-                            "Verify archive SHA-256 and contents",
-                            "אמת SHA-256 ותוכן הגיבוי"),
-                            VerifyForeignMtaBackupAsync, false, "check", "foreign-backup-verify");
-                        AddAction(page, T("Сравнить текущую конфигурацию с архивом (без изменений)",
-                            "Compare active configuration with snapshot (read-only)",
-                            "השווה תצורה נוכחית לגיבוי ללא שינוי"),
-                            PreviewForeignMtaRecoveryAsync, false, "check", "foreign-recovery-preview");
-                        AddAction(page, T(
-                            "Проверить готовность восстановления Exim/Sendmail (только аудит)",
-                            "Audit Exim/Sendmail offline recovery readiness (read-only)",
-                            "בדיקת מוכנות לשחזור Exim/Sendmail ללא שינוי"),
-                            PreflightForeignMtaRecoveryAsync, false, "check",
-                            "foreign-recovery-preflight");
-                        AddLine(page, UiTheme.Text(T(
-                            "Проверяются служба, процессы, очереди и неизменность архива. Даже успешный аудит НЕ разрешает автоматический Restore или перезапуск MTA.",
-                            "Checks service, processes, queues and archive SHA. Even a clean audit NEVER authorizes automatic Restore or service restart.",
-                            "הבדיקה אינה מאשרת שחזור אוטומטי או הפעלת שירות.")));
-                        AddAction(page, T("Извлечь архив в отдельный защищённый каталог на Linux...",
-                            "Extract verified files to separate protected Linux directory...",
-                            "חלץ גיבוי לתיקייה מוגנת ונפרדת בלינוקס"),
-                            ExportForeignMtaOfflineAsync, false, "shield", "foreign-recovery-export");
-                    }
-                }
-                else
-                    AddLine(page, UiTheme.Text(T(
-                        "Сначала выполните анализ MTA. Архив Postfix НЕ сохраняет конфигурацию Exim/Sendmail.",
-                        "Inspect the active MTA first. A Postfix backup DOES NOT cover Exim or Sendmail.",
-                        "יש לבדוק תחילה את שרת הדואר. גיבוי Postfix אינו כולל Exim או Sendmail.")));
-                if (advancedSmtpTools.Checked && (preserveExistingMail.Checked || mailTransport.SelectedIndex != 0))
-                {
-                    AddLine(page, UiTheme.Text(T(
-                        "Отдельный SMTP Relay: резервирование только его конфигурации (не основного Postfix/Exim/Sendmail). Очереди и внешние сертификаты в архив НЕ входят. Restore только при остановленных службах Relay и пустой очереди.",
-                        "Isolated SMTP Relay: CONFIG-only backup (not primary Postfix/Exim/Sendmail). Queue, external certificates and tenant settings are NOT included. Restore requires all isolated services stopped and queue empty.",
-                        "גיבוי תצורת ממסר SMTP מבודד בלבד; ללא תור דואר או מפתחות חיצוניים.")));
-                    AddAction(page, T("Создать резервную копию отдельного Relay",
-                                      "Back up isolated Relay configuration",
-                                      "גיבוי תצורת ממסר מבודד"),
-                        BackupSidecarConfigAsync, false, "shield", "sidecar-config-backup");
-                    AddAction(page, T("Показать архивы отдельного Relay",
-                                      "List isolated Relay backups",
-                                      "רשימת גיבויי ממסר"),
-                        ListSidecarConfigBackupsAsync, false, "refresh", "sidecar-config-list");
-                    if (sidecarBackupSelector.Items.Count > 0)
-                    {
-                        AddLine(page, UiTheme.Text(T(
-                            "Архив отдельного Relay (не основной MTA)",
-                            "Isolated Relay backup (not primary MTA)",
-                            "גיבוי ממסר מבודד")));
-                        AddLine(page, sidecarBackupSelector);
-                    }
-                    AddAction(page, T("Проверить восстановление отдельного Relay",
-                                      "Preview isolated Relay offline restore",
-                                      "בדיקת שחזור ממסר מבודד"),
-                        PreviewSidecarConfigRestoreAsync, false, "check", "sidecar-config-restore-preview");
-                    AddAction(page, T("Восстановить конфигурацию отдельного Relay...",
-                                      "Restore isolated Relay config (offline)...",
-                                      "שחזור תצורת ממסר מבודד"),
-                        RestoreSidecarConfigAsync, false, "shield", "sidecar-config-restore");
-                }
+                ShowBackupMaintenance(page, advancedSmtpTools.Checked &&
+                    (preserveExistingMail.Checked || mailTransport.SelectedIndex != 0));
                 AddLine(page, UiTheme.Text(T(
                     "Postfix будет принимать локальную почту и отправлять её через XOAUTH2. Не используйте этот профиль без проверки, если сервер уже принимает почту извне.",
                     "Postfix will use a local-only listener and XOAUTH2 transport. Review existing inbound-mail setups before applying.",
@@ -3772,6 +3674,20 @@ internal sealed partial class MainForm : Form
                 break;
             case 4:
                 EnsureRoutingLoaded();
+                if (backupMaintenanceOpen)
+                {
+                    AddLine(page, UiTheme.Emphasis(T("Обслуживание MTA",
+                        "Existing MTA maintenance", "תחזוקת שרת דואר"),
+                        Math.Max(260, pageHost.ClientSize.Width - 90)));
+                    AddAction(page, T("Обновить сведения о MTA (без изменений)",
+                        "Refresh MTA discovery (read-only)", "רענן גילוי שרת הדואר"),
+                        InspectMailRoutingAsync, true, "refresh", "mail-flow-discover");
+                    ShowBackupMaintenance(page, discoveredIsolatedRelay == true &&
+                        discoveredMailIdentity is not null && discoveredMailIdentity == TryCurrentIdentity());
+                    break;
+                }
+                AddAction(page, T("Резервные копии и Restore", "Backup & Restore", "גיבוי ושחזור"),
+                    OpenBackupStepAsync, false, "shield", "backup");
                 if (!HasMailDiscovery())
                 {
                     AddLine(page, MailFlowText(T(
@@ -3891,8 +3807,6 @@ internal sealed partial class MainForm : Form
                                   "Verify services and config after a real Linux reboot",
                                   "בדיקת Postfix אחרי אתחול Linux"),
                                   VerifyRebootContinuityAsync, false, "check", "reboot-verify");
-                AddAction(page, T("Резервные копии и Restore", "Backup & Restore", "גיבוי ושחזור"),
-                    OpenBackupStepAsync, false, "shield", "backup");
                 AddUpdateAccess(page);
                 AddAction(page, T("Центр защиты: проверить / настроить позже", "Security Center: inspect / configure later", "מרכז אבטחה"), OpenSecurityCenterAsync, false, "shield");
                 AddAction(page, T("Копировать безопасный диагностический отчёт", "Copy privacy-safe diagnostic report", "העתק דוח אבחון בטוח"),
@@ -6914,7 +6828,7 @@ internal sealed partial class MainForm : Form
         string gate = Value("FOREIGN_PREFLIGHT_GATE",
             "blocked_running|blocked_nonempty_queue|blocked_unverified|offline_candidate_manual_recovery_only");
         string current = SecurityOptionsStore.Identity(Endpoint()) + "|" +
-                         ConfirmedForeignBackupMta();
+                         ConfirmedForeignBackupMta(allowStopped: true);
         if (foreignBackupListContext != current || current != identity ||
             foreignBackupSelector.SelectedItem is not string selected || selected != id)
             throw new InvalidOperationException("SSH server, MTA or selected backup changed during preflight.");
@@ -6923,6 +6837,41 @@ internal sealed partial class MainForm : Form
             ", listener=" + listener + ", config=" + config + ", gate=" + gate +
             ", snapshot SHA256=" + archiveSha + ", evidence SHA256=" + planSha +
             ". No Restore, service action, SMTP send or queue change. Manual recovery only.");
+    }
+
+    private async Task PreviewExactForeignRestorePlanAsync()
+    {
+        var endpoint = Endpoint();
+        string identity = SecurityOptionsStore.Identity(endpoint);
+        string mta = ConfirmedForeignBackupMta(allowStopped: true);
+        if (foreignBackupListContext != identity + "|" + mta ||
+            foreignBackupSelector.SelectedItem is not string id)
+            throw new InvalidOperationException("Re-list and select the verified native MTA archive.");
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaRestorePlanBundle(mta, id),
+            TimeSpan.FromMinutes(4));
+        result.EnsureSuccess();
+        var plan = ForeignRestorePlan.Parse(result.StdOut, mta, id);
+        if (identity != TryCurrentIdentity() ||
+            mta != ConfirmedForeignBackupMta(allowStopped: true) ||
+            foreignBackupListContext != identity + "|" + mta ||
+            foreignBackupSelector.SelectedItem is not string current || current != id)
+            throw new InvalidOperationException("Host, MTA or selected backup changed during native Restore Plan.");
+        string summary = "MTA: " + mta + "\nSnapshot: " + id +
+            "\n" + T("Изменённых файлов", "Changed files", "קבצים ששונו") +
+            ": " + plan.Changed + "/" + plan.Total +
+            "\nService: " + plan.Service + "\nProcesses: " + plan.Processes +
+            "\nQueue: " + plan.Queue + "\nListener: " + plan.Listener +
+            "\nGate: " + plan.Gate + "\nSHA-256: " + plan.Sha + "\n\n" +
+            T("Только отчёт. Конфигурация, очередь и службы не менялись. Автоматическое восстановление запрещено.",
+                "Read-only report. Configuration, queue and services unchanged. Automated Restore is unavailable.",
+                "דוח בלבד; ללא שינוי בתצורה, בתור או בשירות.");
+        WriteLine("Exact native Restore Plan: " + mta + ", " + plan.Changed + "/" +
+            plan.Total + " changed files, " + plan.Gate + ", SHA256=" + plan.Sha +
+            ". Read-only. Apply unavailable.");
+        MessageBox.Show(this, summary, "LinuxMailRelay365 | Native Restore Plan",
+            MessageBoxButtons.OK, plan.Gate == "offline_candidate_manual_recovery_only"
+                ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     private async Task ExportForeignMtaOfflineAsync()
@@ -7036,9 +6985,139 @@ internal sealed partial class MainForm : Form
         WriteLine("Restore complete. Re-run the MTA inspection before any further modifications.");
     }
 
+    private void ShowBackupMaintenance(TableLayoutPanel page, bool includeSidecar)
+    {
+        string? identity = TryCurrentIdentity();
+        bool verifiedPrimary = identity is not null && inspectedServerIdentity == identity;
+        if (verifiedPrimary && inspectedMail?.Mta == "postfix")
+        {
+            AddLine(page, UiTheme.Text(T(
+                "Резервная копия только основного Postfix",
+                "Backup for primary Postfix ONLY",
+                "גיבוי לשרת Postfix ראשי בלבד"), true));
+            AddAction(page, T("Создать проверенный архив основного Postfix",
+                "Create verified primary Postfix backup", "צור גיבוי Postfix מאומת"),
+                BackupNowAsync, false, "shield", "backup");
+            AddAction(page, T("Показать проверенные архивы Postfix",
+                "List verified Postfix backups", "הצג גיבויי Postfix"),
+                ListBackupsAsync, false, "refresh", "backup");
+            if (backupSelector.Items.Count > 0)
+            {
+                AddLine(page, UiTheme.Text(T("Выберите резервную копию Postfix",
+                    "Select a verified Postfix backup", "בחר גיבוי Postfix")));
+                AddLine(page, backupSelector);
+            }
+            AddAction(page, T("Восстановить выбранный Postfix...",
+                "Restore selected Postfix configuration...",
+                "שחזור תצורת Postfix"),
+                RestoreBackupAsync, false, "back", "restore");
+        }
+        else if (verifiedPrimary && (inspectedMail?.Mta is "exim" or "sendmail"))
+        {
+            AddLine(page, UiTheme.Text(T(
+                "Архив конфигурации основного Exim/Sendmail",
+                "Primary Exim/Sendmail configuration archive",
+                "גיבוי תצורת Exim או Sendmail"), true));
+            AddLine(page, UiTheme.Text(T(
+                "Закрытый архив остаётся на Linux: /var/backups/linuxmailrelay365-foreign-mta. Может содержать пароли; не включает очереди, внешние сертификаты и состояние службы. Восстановление автоматически запрещено.",
+                "Root-only archive stays on Linux under /var/backups/linuxmailrelay365-foreign-mta. May contain passwords. Excludes mail queues, external certs and service state. Automatic Restore is DISABLED.",
+                "הגיבוי נשמר בלינוקס בלבד, ללא תור דואר או מצב שירות. השחזור האוטומטי מושבת.")));
+            AddAction(page, T(
+                "Проверить синтаксис Exim/Sendmail (без изменений)",
+                "Validate Exim/Sendmail native configuration (read-only)",
+                "בדיקת תקינות תצורת Exim/Sendmail ללא שינוי"),
+                CheckForeignMtaNativeSyntaxAsync, false, "check", "foreign-static-check");
+            AddLine(page, UiTheme.Text(T(
+                "Только статическая проверка конфигурации, без отправки почты и перезапуска MTA. Результат не подтверждает TLS, SMTP AUTH, очереди или доставку.",
+                "Static syntax check only. No mail sent or MTA restarted. This is NOT proof of TLS, SMTP AUTH, queues or delivery.",
+                "בדיקת תחביר בלבד, ללא שליחת דואר או הפעלה מחדש. זו אינה הוכחה למסירה.")));
+            AddAction(page, T("Создать и проверить архив Exim/Sendmail",
+                "Create and verify Exim/Sendmail archive",
+                "צור ואמת גיבוי Exim/Sendmail"),
+                BackupForeignMtaAsync, false, "shield", "foreign-backup");
+            AddAction(page, T("Показать проверенные архивы Exim/Sendmail",
+                "List verified Exim/Sendmail archives",
+                "הצג גיבויי Exim/Sendmail"),
+                ListForeignMtaBackupsAsync, false, "refresh", "foreign-backup-list");
+            if (foreignBackupSelector.Items.Count > 0)
+            {
+                AddLine(page, UiTheme.Text(T("Выберите архив для повторной проверки",
+                    "Select archive to verify", "בחר גיבוי לאימות")));
+                AddLine(page, foreignBackupSelector);
+                AddAction(page, T("Проверить SHA-256 и содержимое архива",
+                    "Verify archive SHA-256 and contents",
+                    "אמת SHA-256 ותוכן הגיבוי"),
+                    VerifyForeignMtaBackupAsync, false, "check", "foreign-backup-verify");
+                AddAction(page, T("Сравнить текущую конфигурацию с архивом (без изменений)",
+                    "Compare active configuration with snapshot (read-only)",
+                    "השווה תצורה נוכחית לגיבוי ללא שינוי"),
+                    PreviewForeignMtaRecoveryAsync, false, "check", "foreign-recovery-preview");
+                AddAction(page, T(
+                    "Проверить готовность восстановления Exim/Sendmail (только аудит)",
+                    "Audit Exim/Sendmail offline recovery readiness (read-only)",
+                    "בדיקת מוכנות לשחזור Exim/Sendmail ללא שינוי"),
+                    PreflightForeignMtaRecoveryAsync, false, "check",
+                    "foreign-recovery-preflight");
+                AddLine(page, UiTheme.Text(T(
+                    "Проверяются служба, процессы, очереди и неизменность архива. Даже успешный аудит НЕ разрешает автоматический Restore или перезапуск MTA.",
+                    "Checks service, processes, queues and archive SHA. Even a clean audit NEVER authorizes automatic Restore or service restart.",
+                    "הבדיקה אינה מאשרת שחזור אוטומטי או הפעלת שירות.")));
+                AddAction(page, T("Проверить точный план восстановления (только чтение)",
+                    "Review exact native Restore Plan (read-only)",
+                    "בדיקת תוכנית שחזור מדויקת ללא שינוי"),
+                    PreviewExactForeignRestorePlanAsync, false, "check", "foreign-restore-plan");
+                AddLine(page, MailFlowText(T(
+                    "План проверяет архив v1 и точный набор файлов. Sendmail v2 требует ручного восстановления. Apply недоступен.",
+                    "The exact plan checks v1 archives and matching file sets. Sendmail v2 requires manual recovery. Apply is unavailable.",
+                    "תוכנית v1 בלבד. שחזור v2 ידני."), Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
+                AddAction(page, T("Извлечь архив в отдельный защищённый каталог на Linux...",
+                    "Extract verified files to separate protected Linux directory...",
+                    "חלץ גיבוי לתיקייה מוגנת ונפרדת בלינוקס"),
+                    ExportForeignMtaOfflineAsync, false, "shield", "foreign-recovery-export");
+            }
+        }
+        else
+            AddLine(page, UiTheme.Text(T(
+                "Сначала выполните анализ MTA. Архив Postfix НЕ сохраняет конфигурацию Exim/Sendmail.",
+                "Inspect the active MTA first. A Postfix backup DOES NOT cover Exim or Sendmail.",
+                "יש לבדוק תחילה את שרת הדואר. גיבוי Postfix אינו כולל Exim או Sendmail.")));
+        if (includeSidecar)
+        {
+            AddLine(page, UiTheme.Text(T(
+                "Отдельный SMTP Relay: резервирование только его конфигурации (не основного Postfix/Exim/Sendmail). Очереди и внешние сертификаты в архив НЕ входят. Restore только при остановленных службах Relay и пустой очереди.",
+                "Isolated SMTP Relay: CONFIG-only backup (not primary Postfix/Exim/Sendmail). Queue, external certificates and tenant settings are NOT included. Restore requires all isolated services stopped and queue empty.",
+                "גיבוי תצורת ממסר SMTP מבודד בלבד; ללא תור דואר או מפתחות חיצוניים.")));
+            AddAction(page, T("Создать резервную копию отдельного Relay",
+                              "Back up isolated Relay configuration",
+                              "גיבוי תצורת ממסר מבודד"),
+                BackupSidecarConfigAsync, false, "shield", "sidecar-config-backup");
+            AddAction(page, T("Показать архивы отдельного Relay",
+                              "List isolated Relay backups",
+                              "רשימת גיבויי ממסר"),
+                ListSidecarConfigBackupsAsync, false, "refresh", "sidecar-config-list");
+            if (sidecarBackupSelector.Items.Count > 0)
+            {
+                AddLine(page, UiTheme.Text(T(
+                    "Архив отдельного Relay (не основной MTA)",
+                    "Isolated Relay backup (not primary MTA)",
+                    "גיבוי ממסר מבודד")));
+                AddLine(page, sidecarBackupSelector);
+            }
+            AddAction(page, T("Проверить восстановление отдельного Relay",
+                              "Preview isolated Relay offline restore",
+                              "בדיקת שחזור ממסר מבודד"),
+                PreviewSidecarConfigRestoreAsync, false, "check", "sidecar-config-restore-preview");
+            AddAction(page, T("Восстановить конфигурацию отдельного Relay...",
+                              "Restore isolated Relay config (offline)...",
+                              "שחזור תצורת ממסר מבודד"),
+                RestoreSidecarConfigAsync, false, "shield", "sidecar-config-restore");
+        }
+    }
+
     private Task OpenBackupStepAsync()
     {
-        step = 3;
+        step = 4;
+        backupMaintenanceOpen = true;
         RenderPage();
         return Task.CompletedTask;
     }

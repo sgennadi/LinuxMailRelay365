@@ -462,6 +462,10 @@ def main(argv=None):
             if args.approve_sha256 or args.confirm:
                 raise Refused("approval_not_permitted_during_preview")
             review = preview(args.mta, snapshot_id)
+            print("FOREIGN_RESTORE_PLAN_VERSION=1")
+            print("FOREIGN_RESTORE_PLAN_MTA=" + args.mta)
+            print("FOREIGN_RESTORE_PLAN_SNAPSHOT=" + snapshot_id)
+            print("FOREIGN_RESTORE_PLAN_CONFIG_CHANGED=no")
             print("FOREIGN_RESTORE_PLAN_SHA256=" + review["sha"])
             print("FOREIGN_RESTORE_CHANGED_FILES=" + str(review["changed"]))
             print("FOREIGN_RESTORE_FILE_COUNT=" + str(review["files"]))

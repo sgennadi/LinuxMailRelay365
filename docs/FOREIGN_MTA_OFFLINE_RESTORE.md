@@ -209,3 +209,7 @@ DBs to active `/etc/mail`, materialize links there, replay queues, validate
 external certificates, or send Microsoft 365 mail. Production live Restore
 remains disabled and the Windows release stays Draft until independent
 acceptance and signing gates have passed.
+
+## Post-RC16 development
+
+Diagnostics now has a provider-independent Backup & Restore page even for an unchanged mail route. The existing archive, compare, static check, preflight and export operations remain. The exact native Restore Plan runs the existing CLI in read-only --plan mode, checks a strict host/MTA/snapshot-bound receipt, and shows changed/total file counts, stopped-service, process, queue and listener evidence and plan SHA. Stopped-MTA preflight no longer accidentally requires an active service during its final identity check. Sendmail v2 still requires manual metadata recovery. No GUI native Apply or service restart is enabled. RC16 remains immutable; full live recovery acceptance is outstanding.

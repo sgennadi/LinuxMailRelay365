@@ -318,6 +318,7 @@ internal static class Program
                 }
                 return true;
             }),
+            ("Exact native MTA read-only Restore Plan", ForeignRestorePlan.SelfTest),
             ("Embedded backup / restore", () =>
             {
                 var listing = EmbeddedAssets.BuildRecoveryBundle("--list");
