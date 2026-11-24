@@ -1,0 +1,31 @@
+name: RC14 systemd VM offline CLI acceptance
+on:
+  push:
+    branches: [test/postfix-rc14-systemd-vm-cli]
+    paths:
+      - '.github/workflows/postfix-rc14-systemd-vm-cli.yml'
+      - 'tests/smoke_rc14_systemd_vm_cli.sh'
+      - 'tests/rc14_namespace_starttls_sink.py'
+permissions:
+  contents: read
+jobs:
+  hosted-postfix-vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check disposable GitHub-hosted guest and install native Postfix
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(cat /proc/1/comm)" = systemd
+          systemd-detect-virt --vm
+          failure="$(dpkg-query -W -f='${db:Status-Status}' postfix 2>/dev/null || true)"
+          test "$failure" != installed
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 update -qq
+          printf 'postfix postfix/main_mailer_type select Internet Site\npostfix postfix/mailname string mail.local.invalid\n' | sudo debconf-set-selections
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 install -y -qq postfix openssl ca-certificates iproute2
+          sudo systemctl stop postfix.service postfix@-.service
+      - name: Exercise unmodified CLI and native Postfix on isolated synthetic veth
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_TEMP bash tests/smoke_rc14_systemd_vm_cli.sh
