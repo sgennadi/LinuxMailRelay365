@@ -605,6 +605,7 @@ internal sealed partial class MainForm : Form
                 pageHost.AutoScrollPosition = new Point(0, scroll);
             }
         };
+        tenant.TextChanged += (_, _) => RefreshCloudInventoryAction();
         tenantSelector.AccessibleName = "Choose Microsoft Entra tenant";
         tenantSelector.SelectedIndexChanged += (_, _) =>
         {
@@ -614,6 +615,7 @@ internal sealed partial class MainForm : Form
                 tenant.Text = choice.Id.ToString();
                 WriteLine("Selected Microsoft Entra tenant: " + choice.Id);
             }
+            RefreshCloudInventoryAction();
         };
         sshAuthMode.SelectedIndex = 0;
         sshAuthMode.SelectedIndexChanged += (_, _) =>
@@ -2091,6 +2093,85 @@ internal sealed partial class MainForm : Form
         });
     }
 
+    private void ShowCloudTenantSelection(TableLayoutPanel page)
+    {
+        AddLine(page, UiTheme.Text(T(
+            "Microsoft 365 — выбор организации для облачных операций",
+            "Microsoft 365 — tenant selection for cloud administration",
+            "Microsoft 365 — בחירת ארגון לניהול בענן"), true));
+        AddLine(page, MailFlowText(T(
+            "Для проверки объектов и управления Microsoft 365 сначала войдите в Entra или введите точный Tenant ID. Для настройки Direct Send и уже существующего Connector на Linux вход в Entra на этом шаге необязателен. XOAUTH2 требует Tenant ID.",
+            "For Microsoft 365 object inspection or administration, sign in to Entra or enter the exact Tenant ID first. Linux-only Direct Send and existing Connector configuration do not require Entra sign-in at this step. XOAUTH2 requires a Tenant ID.",
+            "לבדיקת אובייקטים וניהול Microsoft 365 יש להיכנס ל-Entra או להזין Tenant ID מדויק. עבור Direct Send ו-Connector קיים בלינוקס הכניסה בשלב זה אינה חובה. XOAUTH2 דורש Tenant ID."),
+            Math.Max(300, pageHost.ClientSize.Width - 90)));
+        discoverAllAccessibleTenants.Text = T(
+            "Расширенный режим: показать все доступные организации через Azure ARM",
+            "Advanced: enumerate accessible tenants via Azure ARM",
+            "מצב מתקדם: איתור ארגונים דרך Azure ARM");
+        AddLine(page, discoverAllAccessibleTenants);
+        AddField(page, T(
+            "Client ID одобренного публичного приложения (для ARM обязательно; иначе Graph CLI)",
+            "Approved public client ID (required for ARM; blank uses Microsoft Graph CLI)",
+            "מזהה יישום ציבורי מאושר (חובה עבור ARM)"), entraSignInClientId);
+        AddLine(page, UiTheme.Text(T(
+            "Вход выполняется в C# через MSAL и MFA. По умолчанию определяется организация текущего входа через Graph User.Read; для списка организаций нужен разрешённый ARM user_impersonation. Токены не сохраняются.",
+            "Native C# MSAL + MFA. By default, identify the signed-in organization using Graph User.Read. Listing all accessible tenants requires an approved public app with ARM user_impersonation. OAuth tokens are not saved to disk.",
+            "כניסה דרך MSAL. ברירת המחדל היא הארגון המחובר; איתור כל הארגונים דורש הרשאה ל-ARM.")));
+        AddAction(page, T("Подключиться к Microsoft 365 через C#",
+                          "Sign in to Microsoft Entra (C# / MSAL)",
+                          "כניסה ל-Microsoft Entra באמצעות C#"),
+            DiscoverTenantsAsync, true, "cloud", "tenant-discovery");
+        if (discoveredTenants.Count > 0)
+        {
+            AddLine(page, UiTheme.Text(discoveredTenants.Count == 1
+                ? "One Entra tenant discovered and selected automatically."
+                : "Multiple Entra tenants detected. Select the correct organization before configuring anything."));
+            AddLine(page, tenantSelector);
+            AddAction(page, T("Ввести Tenant ID вручную", "Use manual Tenant ID instead",
+                              "הזנה ידנית של Tenant ID"),
+                UseManualTenantAsync, false, "gear");
+        }
+        AddField(page, T("Tenant ID (автоматически или вручную)",
+                         "Selected Tenant ID (auto-filled or manual GUID)",
+                         "Tenant ID נבחר"), tenant);
+        AddField(page, T("Client ID существующего приложения (необязательно — общий для нескольких Linux)",
+                         "Existing application Client ID (optional; shared across Linux hosts)",
+                         "Client ID של יישום קיים"), existingAppId);
+    }
+
+    private Button? cloudInventoryAction;
+
+    private bool CanInspectCloudInventory()
+    {
+        return selectedMailTarget == MailFlowIntent.TargetM365 &&
+            selectedMailScenario is not (MailScenarioPlanner.Choose or MailScenarioPlanner.Keep) &&
+            HasMailDiscovery() &&
+            Guid.TryParse(tenant.Text.Trim(), out Guid tenantId) && tenantId != Guid.Empty &&
+            (discoveredTenants.Count <= 1 || tenantSelector.SelectedItem is TenantOption) &&
+            (tenantSelector.SelectedItem is not TenantOption selected || selected.Id == tenantId);
+    }
+
+    private void RefreshCloudInventoryAction()
+    {
+        if (cloudInventoryAction is { IsDisposed: false } action)
+            action.Enabled = !busy && CanInspectCloudInventory();
+    }
+
+    private void AddCloudInventoryAction(TableLayoutPanel page)
+    {
+        cloudInventoryAction = AddAction(page, T(
+            "Microsoft 365: объекты, сертификаты и Connector (только чтение)",
+            "Microsoft 365: inspect applications, credentials and connectors (read-only)",
+            "בדיקת יישומים, אישורים ומחברים ב-Microsoft 365"),
+            InspectCloudObjectsAsync, false, "cloud", "cloud-objects");
+        AddLine(page, MailFlowText(T(
+            "Кнопка проверки доступна после выбора организации или ввода корректного Tenant GUID. Вход администратора выполняется отдельно.",
+            "Inspection becomes available after selecting the organization or entering a valid Tenant GUID. Admin sign-in is a separate step.",
+            "הבדיקה זמינה לאחר בחירת ארגון או הזנת Tenant GUID תקין. כניסת מנהל היא שלב נפרד."),
+            Math.Max(300, pageHost.ClientSize.Width - 90)));
+        RefreshCloudInventoryAction();
+    }
+
     private void RenderPage()
     {
         // Password input must never persist across wizard steps or after
@@ -2141,6 +2222,7 @@ internal sealed partial class MainForm : Form
                         "בדיקת OAuth, SMTP, תור ועדכונים.")
         };
         pageHost.SuspendLayout();
+        cloudInventoryAction = null;
         pageHost.Controls.Clear();
         AcceptButton = null;
         var page = NewPage();
@@ -2470,6 +2552,11 @@ internal sealed partial class MainForm : Form
                 if (selectedMailTarget != MailFlowIntent.TargetM365)
                 {
                     AddLine(page, BuildLiveMailFlowDiagram());
+                    AddLine(page, MailFlowText(T(
+                        "Для выбранного SMTP-провайдера Tenant ID и вход в Microsoft Entra не требуются.",
+                        "No Microsoft 365 Tenant ID or Entra sign-in is required for this SMTP provider.",
+                        "עבור ספק SMTP זה אין צורך ב-Tenant ID או בכניסה ל-Entra."),
+                        Math.Max(300, pageHost.ClientSize.Width - 90)));
                     // Destination checks are already shown by ShowMailFlowPlanner
                     // on this step; do not duplicate password fields and controls.
                     if (!IsGoogleTarget)
@@ -2488,10 +2575,8 @@ internal sealed partial class MainForm : Form
                     "בחרו כיצד Linux ישלח דואר דרך Microsoft 365")));
                 AddLine(page, BuildDeliveryModeChoices());
                 AddLine(page, BuildDeliveryModeOverview());
-                AddAction(page, T("Microsoft 365: объекты, сертификаты и Connector (только чтение)",
-                    "Microsoft 365: inspect applications, credentials and connectors (read-only)",
-                    "בדיקת יישומים, אישורים ומחברים ב-Microsoft 365"),
-                    InspectCloudObjectsAsync, false, "cloud", "cloud-objects");
+                ShowCloudTenantSelection(page);
+                AddCloudInventoryAction(page);
                 if (mailTransport.SelectedIndex is 1 or 2)
                 {
                     AddLine(page, UiTheme.Text(T(
@@ -2507,41 +2592,8 @@ internal sealed partial class MainForm : Form
                             "הגדירו יציאת ממסר נפרד, MX ודומיין.")));
                     break;
                 }
-                discoverAllAccessibleTenants.Text = T(
-                    "Расширенный режим: показать все доступные организации через Azure ARM",
-                    "Advanced: enumerate accessible tenants via Azure ARM",
-                    "מצב מתקדם: איתור ארגונים דרך Azure ARM");
-                AddLine(page, discoverAllAccessibleTenants);
-                AddField(page, T(
-                    "Client ID одобренного публичного приложения (для ARM обязательно; иначе Graph CLI)",
-                    "Approved public client ID (required for ARM; blank uses Microsoft Graph CLI)",
-                    "מזהה יישום ציבורי מאושר (חובה עבור ARM)"), entraSignInClientId);
-                AddLine(page, UiTheme.Text(T(
-                    "Вход выполняется в C# через MSAL и MFA. По умолчанию определяется организация текущего входа через Graph User.Read; для списка организаций нужен разрешённый ARM user_impersonation. Токены не сохраняются.",
-                    "Native C# MSAL + MFA. By default, identify the signed-in organization using Graph User.Read. Listing all accessible tenants requires an approved public app with ARM user_impersonation. OAuth tokens are not saved to disk.",
-                    "כניסה דרך MSAL. ברירת המחדל היא הארגון המחובר; איתור כל הארגונים דורש הרשאה ל-ARM.")));
-                AddAction(page, T("Подключиться к Microsoft 365 через C#",
-                                  "Sign in to Microsoft Entra (C# / MSAL)",
-                                  "כניסה ל-Microsoft Entra באמצעות C#"),
-                    DiscoverTenantsAsync, true, "cloud", "tenant-discovery");
-                if (discoveredTenants.Count > 0)
-                {
-                    AddLine(page, UiTheme.Text(discoveredTenants.Count == 1
-                        ? "One Entra tenant discovered and selected automatically."
-                        : "Multiple Entra tenants detected. Select the correct organization before configuring anything."));
-                    AddLine(page, tenantSelector);
-                    AddAction(page, T("Ввести Tenant ID вручную", "Use manual Tenant ID instead",
-                                      "הזנה ידנית של Tenant ID"),
-                        UseManualTenantAsync, false, "gear");
-                }
-                AddField(page, T("Tenant ID (автоматически или вручную)",
-                                 "Selected Tenant ID (auto-filled or manual GUID)",
-                                 "Tenant ID נבחר"), tenant);
                 AddField(page, T("Почтовый ящик отправителя", "Sender mailbox", "תיבת דואר שולח"), mailbox);
                 AddField(page, T("Имя приложения Entra (можно изменить)", "Entra application display name", "שם האפליקציה"), applicationName);
-                AddField(page, T("Client ID существующего приложения (необязательно — общий для нескольких Linux)",
-                                 "Existing application Client ID (optional; shared across Linux hosts)",
-                                 "Client ID של יישום קיים"), existingAppId);
                 AddField(page, T("Срок действия нового сертификата, дней (1–365)",
                                  "New certificate validity (days, 1–365)", "תוקף האישור בימים"), certificateDays);
                 AddAction(page, T("1. Создать сертификат на Linux", "1. Create certificate on Linux", "1. יצירת אישור בלינוקס"), PrepareAsync, true, "shield", "certificate");
@@ -2813,6 +2865,7 @@ internal sealed partial class MainForm : Form
                         AddLine(page, connectorApproved);
                         if (advancedSmtpTools.Checked)
                         {
+                            ShowCloudTenantSelection(page);
                             AddField(page, T("Имя нового Exchange Online Connector",
                                              "New Exchange Online Connector display name",
                                              "שם מחבר Exchange Online חדש"), outboundConnectorName);
@@ -2824,10 +2877,7 @@ internal sealed partial class MainForm : Form
                                               "Create NEW reviewed tenant Connector...",
                                               "יצירת Connector מאומת בענן"),
                                               CreateTenantConnectorAsync, false, "shield", "m365-connector-create");
-                            AddAction(page, T("Показать объекты Connector и Entra (только чтение)",
-                                "Inspect Microsoft 365 Connector and Entra objects (read-only)",
-                                "בדיקת מחברים ויישומים ללא שינוי"),
-                                InspectCloudObjectsAsync, false, "cloud", "cloud-objects");
+                            AddCloudInventoryAction(page);
                         }
                         if (senderPolicy.SelectedIndex != 0)
                         {

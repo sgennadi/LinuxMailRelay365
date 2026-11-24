@@ -264,6 +264,10 @@ internal sealed partial class MainForm
             "Куда должна уходить почта?",
             "Where should outbound mail go?",
             "לאן לשלוח דואר יוצא?"), true));
+        AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,
+            "Текущий обнаруженный relay и выбранный целевой провайдер — разные параметры. Выберите желаемого провайдера. Gmail, Google Workspace и другой SMTP не требуют Microsoft 365 Tenant ID.",
+            "The detected current relay and the intended provider are separate. Choose the desired destination. Gmail, Google Workspace and another SMTP server do not require a Microsoft 365 Tenant ID.",
+            "הממסר הנוכחי והספק הרצוי הם הגדרות נפרדות. Gmail, Google Workspace ושרת SMTP אחר אינם דורשים Microsoft 365 Tenant ID."), width));
         var targetChoices = new[]
         {
             (Code: MailFlowIntent.TargetM365,

@@ -13,8 +13,13 @@ internal sealed partial class MainForm
     private string? lastReadOnlyCloudLinuxIdentity;
     private async Task InspectCloudObjectsAsync()
     {
+        if (selectedMailTarget != MailFlowIntent.TargetM365 ||
+            selectedMailScenario is MailScenarioPlanner.Choose or MailScenarioPlanner.Keep)
+            throw new InvalidOperationException("Microsoft 365 object inspection is available only for a selected Microsoft 365 route. Gmail and Custom SMTP do not require a Tenant ID.");
+        if (!HasMailDiscovery())
+            throw new InvalidOperationException("Reinspect the Linux host and select the Microsoft 365 route first.");
         if (!Guid.TryParse(tenant.Text.Trim(), out Guid tenantId) || tenantId == Guid.Empty)
-            throw new ArgumentException("Enter the exact Microsoft 365 Tenant ID first.");
+            throw new ArgumentException("Select the intended organization using Sign in to Microsoft Entra, or enter the exact Tenant ID in the tenant section before inspecting Microsoft 365 objects.");
         if (discoveredTenants.Count > 1 && tenantSelector.SelectedItem is not TenantOption)
             throw new InvalidOperationException("Select the intended Entra tenant before inspecting.");
         if (tenantSelector.SelectedItem is TenantOption selected && selected.Id != tenantId)
