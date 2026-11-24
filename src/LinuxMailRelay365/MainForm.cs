@@ -196,7 +196,19 @@ internal sealed partial class MainForm : Form
     private bool arrangingWizardPanels;
     private bool relabelingSshMethods;
     private bool localizingAdvancedChoices;
-    private readonly Panel pageHost = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = UiTheme.Canvas };
+    private sealed class WizardScrollPanel : Panel
+    {
+        internal bool Rebuilding { get; set; }
+        protected override Point ScrollToControl(Control activeControl) =>
+            Rebuilding ? DisplayRectangle.Location : base.ScrollToControl(activeControl);
+    }
+
+    private readonly WizardScrollPanel pageHost = new() { Dock = DockStyle.Fill, AutoScroll = true, BackColor = UiTheme.Canvas };
+    private readonly System.Windows.Forms.Timer wizardRefreshTimer = new() { Interval = 250 };
+    private bool renderingPage;
+    private bool pageRenderFailed;
+    private int renderedWizardStep = -1;
+    private int queuedWizardStep = -1;
     private readonly FlowLayoutPanel navigation = new()
     {
         Dock = DockStyle.Fill, AutoSize = true,
@@ -418,9 +430,7 @@ internal sealed partial class MainForm : Form
             UpdatePreserveFlowPreview();
             if (step == 3 && !routingLoading && !busy)
             {
-                int scroll = -pageHost.AutoScrollPosition.Y;
                 RenderPage();
-                pageHost.AutoScrollPosition = new Point(0, scroll);
             }
         };
         oauthSenderMapPath.TextChanged += (_, _) =>
@@ -477,9 +487,7 @@ internal sealed partial class MainForm : Form
             SaveRoutingChoices(); UpdatePreserveFlowPreview();
             if (step is 2 or 3 && !routingLoading && !busy)
             {
-                int previousScroll = -pageHost.AutoScrollPosition.Y;
                 RenderPage();
-                pageHost.AutoScrollPosition = new Point(0, previousScroll);
             }
         };
         recipientScope.SelectedIndexChanged += (_, _) =>
@@ -498,9 +506,7 @@ internal sealed partial class MainForm : Form
             SaveRoutingChoices();
             if (step == 3 && !routingLoading && !busy)
             {
-                int previousScroll = -pageHost.AutoScrollPosition.Y;
                 RenderPage();
-                pageHost.AutoScrollPosition = new Point(0, previousScroll);
             }
         };
         acceptedDomain.Leave += (_, _) => SaveRoutingChoices();
@@ -530,21 +536,33 @@ internal sealed partial class MainForm : Form
         smtpListenIp.Leave += (_, _) => SaveRoutingChoices();
         smtpTrustedCidrs.Leave += (_, _) => SaveRoutingChoices();
         isolatedSmtpPort.Leave += (_, _) => SaveRoutingChoices();
-        alternateUpstreamHost.Leave += (_, _) =>
+        // Leave must not destroy the next target of a mouse click or Tab.
+        foreach (TextBox field in new[] { alternateUpstreamHost, alternateUpstreamPort, googleOutboundPort })
         {
-            SaveRoutingChoices();
-            if (!busy && step is 1 or 2 or 3) RenderPage();
-        };
-        alternateUpstreamPort.Leave += (_, _) =>
+            string beforeEdit = field.Text;
+            field.Enter += (_, _) => beforeEdit = field.Text;
+            field.Leave += (_, _) =>
+            {
+                if (renderingPage) return;
+                SaveRoutingChoices();
+                if (field.Text != beforeEdit && !routingLoading && (step is 1 or 2 or 3))
+                    QueueWizardRefresh();
+                beforeEdit = field.Text;
+            };
+        }
+        wizardRefreshTimer.Tick += (_, _) =>
         {
-            SaveRoutingChoices();
-            if (!busy && step is 1 or 2 or 3) RenderPage();
+            if (IsDisposed || Disposing || queuedWizardStep != step || busy)
+            {
+                wizardRefreshTimer.Stop();
+                return;
+            }
+            if (renderingPage || Control.MouseButtons != MouseButtons.None ||
+                HasFocusedWizardInput(pageHost)) return;
+            wizardRefreshTimer.Stop();
+            RenderPage();
         };
-        googleOutboundPort.Leave += (_, _) =>
-        {
-            SaveRoutingChoices();
-            if (!busy && step is 1 or 2 or 3) RenderPage();
-        };
+        Disposed += (_, _) => wizardRefreshTimer.Dispose();
         foreignSidecarHostname.Leave += (_, _) => UpdatePreserveFlowPreview();
         foreach (var field in new[] { postfixBasicsHostname, postfixBasicsDomain })
         {
@@ -571,9 +589,7 @@ internal sealed partial class MainForm : Form
         {
             if (routingLoading || busy || step != 3) return;
             SaveRoutingChoices();
-            int scroll = -pageHost.AutoScrollPosition.Y;
             RenderPage();
-            pageHost.AutoScrollPosition = new Point(0, scroll);
         };
         foreach (TextBox item in new[] { host, mailbox, tenant, smtpListenIp,
                                          isolatedSmtpPort, smtpTrustedCidrs, acceptedDomain,
@@ -600,9 +616,7 @@ internal sealed partial class MainForm : Form
             UpdatePreserveFlowPreview();
             if (step == 3 && !busy)
             {
-                int scroll = -pageHost.AutoScrollPosition.Y;
                 RenderPage();
-                pageHost.AutoScrollPosition = new Point(0, scroll);
             }
         };
         tenant.TextChanged += (_, _) => RefreshCloudInventoryAction();
@@ -642,9 +656,7 @@ internal sealed partial class MainForm : Form
         showMailTechnicalDetails.CheckedChanged += (_, _) =>
         {
             if (busy || step is not (1 or 2 or 3)) return;
-            int previousScroll = -pageHost.AutoScrollPosition.Y;
             RenderPage();
-            pageHost.AutoScrollPosition = new Point(0, previousScroll);
         };
         headerUpdateButton.AutoSize = true;
         headerUpdateButton.Margin = Padding.Empty;
@@ -776,7 +788,7 @@ internal sealed partial class MainForm : Form
         bool fittingWindowLayout = false;
         void ResizeUi()
         {
-            if (fittingWindowLayout) return;
+            if (fittingWindowLayout || renderingPage) return;
             fittingWindowLayout = true;
             try
             {
@@ -1418,10 +1430,8 @@ internal sealed partial class MainForm : Form
             "Expand or collapse SSH guidance and optional login-profile diagnostics.";
         helpToggle.Click += (_, _) =>
         {
-            int previousScroll = -pageHost.AutoScrollPosition.Y;
             sshHelpExpanded = !sshHelpExpanded;
             RenderPage();
-            pageHost.AutoScrollPosition = new Point(0, previousScroll);
         };
         AddLine(cards, helpToggle);
 
@@ -2172,7 +2182,101 @@ internal sealed partial class MainForm : Form
         RefreshCloudInventoryAction();
     }
 
+    private static bool HasFocusedWizardInput(Control root)
+    {
+        if (!root.ContainsFocus) return false;
+        if (root is TextBoxBase or ComboBox or NumericUpDown) return true;
+        return root.Controls.Cast<Control>().Any(HasFocusedWizardInput);
+    }
+
+    private void QueueWizardRefresh()
+    {
+        if (renderingPage || busy || routingLoading || IsDisposed || Disposing || !IsHandleCreated)
+            return;
+        queuedWizardStep = step;
+        wizardRefreshTimer.Stop();
+        wizardRefreshTimer.Start();
+    }
+
+    private void RestoreWizardScroll(int requested)
+    {
+        pageHost.AutoScrollPosition = Point.Empty;
+        pageHost.PerformLayout();
+        if (pageHost.Controls.OfType<TableLayoutPanel>().FirstOrDefault() is not { } page)
+            return;
+        int contentMax = Math.Max(0, page.Bottom - pageHost.ClientSize.Height);
+        int barMax = pageHost.VerticalScroll.Visible
+            ? Math.Max(0, pageHost.VerticalScroll.Maximum - pageHost.VerticalScroll.LargeChange + 1)
+            : 0;
+        pageHost.AutoScrollPosition = new Point(0, Math.Clamp(requested, 0, Math.Min(contentMax, barMax)));
+    }
+
     private void RenderPage()
+    {
+        if (IsDisposed || Disposing || renderingPage) return;
+        wizardRefreshTimer.Stop();
+        queuedWizardStep = -1;
+        int previousOffset = renderedWizardStep == step ? Math.Max(0, -pageHost.AutoScrollPosition.Y) : 0;
+        renderingPage = true;
+        pageHost.Rebuilding = true;
+        pageRenderFailed = false;
+        pageHost.SuspendLayout();
+        try
+        {
+            RenderPageCore();
+            renderedWizardStep = step;
+        }
+        catch (Exception ex)
+        {
+            pageRenderFailed = true;
+            AcceptButton = null;
+            cloudInventoryAction = null;
+            pageHost.AutoScrollPosition = Point.Empty;
+            pageHost.AutoScrollMinSize = Size.Empty;
+            pageHost.Controls.Clear();
+            navigation.Controls.Clear();
+            var errorPage = NewPage();
+            pageHost.Controls.Add(errorPage);
+            AddLine(errorPage, UiTheme.Text(T(
+                "Не удалось отобразить этот шаг. Повторите или вернитесь назад.",
+                "This wizard page could not be displayed. Retry or go back.",
+                "לא ניתן להציג שלב זה. נסו שוב או חזרו אחורה."), true));
+            var retry = UiTheme.Action(T("Повторить", "Retry page", "נסה שוב"), primary: true);
+            retry.Enabled = !busy;
+            retry.Click += (_, _) => RenderPage();
+            AddLine(errorPage, retry);
+            if (step > 0)
+            {
+                var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
+                back.Enabled = !busy;
+                back.Click += (_, _) => { step--; RenderPage(); };
+                AddLine(errorPage, back);
+            }
+            WriteLine("ERROR: Wizard page " + (step + 1) + " rendering failed (" +
+                ex.GetType().Name + ").");
+            renderedWizardStep = step;
+            previousOffset = 0;
+        }
+        finally
+        {
+            try
+            {
+                pageHost.ResumeLayout(true);
+                FitCurrentPage();
+                if (pageHost.Controls.OfType<TableLayoutPanel>().FirstOrDefault() is { } current)
+                    current.PerformLayout();
+                pageHost.PerformLayout();
+                RestoreWizardScroll(previousOffset);
+            }
+            finally
+            {
+                pageHost.Rebuilding = false;
+                renderingPage = false;
+            }
+        }
+    }
+
+    private void RenderPageCore()
     {
         // Password input must never persist across wizard steps or after
         // switching to a non-Google route; only same-step tests may read it.
@@ -2221,13 +2325,14 @@ internal sealed partial class MainForm : Form
                         "Check OAuth token, SMTP, queue and updates.",
                         "בדיקת OAuth, SMTP, תור ועדכונים.")
         };
-        pageHost.SuspendLayout();
         cloudInventoryAction = null;
+        pageHost.AutoScrollPosition = Point.Empty;
+        pageHost.AutoScrollMinSize = Size.Empty;
         pageHost.Controls.Clear();
         AcceptButton = null;
         var page = NewPage();
+        page.Location = Point.Empty;
         pageHost.Controls.Add(page);
-        pageHost.AutoScrollPosition = Point.Empty;
         ResizePreserveFlowHelp();
         switch (step)
         {
@@ -3558,8 +3663,6 @@ internal sealed partial class MainForm : Form
                     SaveSafeReportAsync, false, "download", "diagnostics");
                 break;
         }
-        pageHost.ResumeLayout();
-
         navigation.Controls.Clear();
         if (step == 0)
         {
@@ -3627,17 +3730,55 @@ internal sealed partial class MainForm : Form
         WindowState = FormWindowState.Normal;
         int captured = 0;
 
+        void AssertWizardViewport()
+        {
+            if (renderingPage || pageRenderFailed || pageHost.Controls.Count != 1 ||
+                pageHost.Controls[0] is not TableLayoutPanel page || page.Controls.Count == 0 ||
+                !page.Visible || pageHost.ClientSize.Width <= 0 || pageHost.ClientSize.Height <= 0)
+                throw new InvalidOperationException("Wizard page " + (step + 1) + " is absent or empty.");
+            Rectangle viewport = pageHost.ClientRectangle;
+            bool visible = page.Controls.Cast<Control>().Any(control =>
+            {
+                if (!control.Visible || control.Width <= 0 || control.Height <= 0) return false;
+                var bounds = new Rectangle(pageHost.PointToClient(control.PointToScreen(Point.Empty)), control.Size);
+                Rectangle intersection = Rectangle.Intersect(viewport, bounds);
+                return intersection.Width > 0 && intersection.Height > 0;
+            });
+            if (!visible) throw new InvalidOperationException("Wizard viewport is blank.");
+        }
+
+        // A real reentrant ControlRemoved callback must not detach a new page.
+        for (int index = 0; index < 5; index++)
+        {
+            step = index;
+            bool reentered = false;
+            ControlEventHandler nested = (_, _) =>
+            {
+                if (reentered) return;
+                reentered = true;
+                RenderPage();
+            };
+            pageHost.ControlRemoved += nested;
+            try { RenderPage(); }
+            finally { pageHost.ControlRemoved -= nested; }
+            if (!reentered) throw new InvalidOperationException("Wizard reentrancy fixture was not exercised.");
+            RestoreWizardScroll(0);
+            AssertWizardViewport();
+            RestoreWizardScroll(int.MaxValue);
+            RenderPage();
+            AssertWizardViewport();
+        }
+
         void Screenshot(string filename, bool scrollToBottom = false)
         {
             // Capture the real top OR bottom of the scrollable step using
             // actual WinForms widgets. Never synthesize labels or status.
-            pageHost.AutoScrollPosition = Point.Empty;
             pageHost.PerformLayout();
             PerformLayout();
-            if (scrollToBottom && pageHost.VerticalScroll.Visible)
-                pageHost.AutoScrollPosition = new Point(0, pageHost.VerticalScroll.Maximum);
+            RestoreWizardScroll(scrollToBottom ? int.MaxValue : 0);
             Refresh();
             Application.DoEvents();
+            AssertWizardViewport();
             foreach (Control footerControl in new Control[] { status, activityToggle })
             {
                 if (!footerControl.Visible) continue;
@@ -3884,9 +4025,11 @@ internal sealed partial class MainForm : Form
         lastFailed = false;
         lastStatus = T("Выполняется...", "Working...", "מתבצע...");
         journal.Record(category, "started");
-        RenderPage();
         try
         {
+            RenderPage();
+            if (pageRenderFailed)
+                throw new InvalidOperationException("Wizard page unavailable. No new operation was started.");
             await work();
             journal.Record(category, "ok");
             lastStatus = T("Операция завершена", "Operation finished", "הפעולה הסתיימה");
