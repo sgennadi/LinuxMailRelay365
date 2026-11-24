@@ -329,3 +329,21 @@ introduced. Unit tests cover partial progress, stale approvals, metadata
 and content drift, bad evidence, re-interruption and parser failure.
 Power-loss, native package/SELinux lifecycle and complete disaster recovery
 acceptance remain outstanding.
+
+### Experimental Windows Exim interrupted rollback
+
+Backup & Restore offers independent Preview and Rollback actions. Both
+request a fresh schema-3 Exim-only plan. The write action shows the exact
+host, both archive IDs/digests, file counts and plan SHA, then requires
+operator-typed ROLLBACK_INTERRUPTED_EXIM_CONFIG in the existing confirmation
+dialog. It checks the SSH connection and pinned password-mode host key,
+accepts only the matching verified apply receipt, and independently checks
+that the marker is clear. Discovery evidence is invalidated even if SSH
+fails during the write. No approval is saved or automatically reused.
+This is experimental offline recovery for disposable test hosts, not a
+normal Exim Restore Apply, Sendmail v2 recovery or approval to start services.
+The native Ubuntu Exim CI drill now additionally exits the real restore
+process immediately after a verified configuration file replacement, reviews
+and performs the interrupted rollback, and verifies original bytes, stopped
+services and the unchanged empty queue. It is not a physical power-loss test.
+No new public release or successful acceptance is claimed until CI completes.

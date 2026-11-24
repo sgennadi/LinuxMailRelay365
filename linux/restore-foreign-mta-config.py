@@ -763,7 +763,9 @@ def rollback_pending(mta, approved_sha, confirm, root=backup.ROOT,
         if final["record"] != record or final["changed"] != 0:
             raise Refused("pending_rollback_post_parser_verification_failed")
         clear_verified_pending(base, uid, record)
-        return {"changed": changed, "safety": record["safety"]}
+        return {"changed": changed, "safety": record["safety"],
+                "target": record["target"], "sha": approved_sha,
+                "files": plan["files"]}
     finally:
         # Any error, SIGINT or interruption before verified completion leaves
         # the marker intact. A fresh plan is needed even for remaining files.
@@ -942,7 +944,11 @@ def main(argv=None):
             if args.approve_sha256 or args.confirm:
                 raise Refused("approval_not_permitted_during_pending_rollback_plan")
             plan = preview_pending_rollback(args.mta)
+            print("FOREIGN_PENDING_ROLLBACK_VERSION=1")
+            print("FOREIGN_PENDING_ROLLBACK_MTA=exim")
             print("FOREIGN_PENDING_ROLLBACK_STATUS=preview_only")
+            print("FOREIGN_PENDING_ROLLBACK_SAFETY_SHA256=" + plan["record"]["safety_sha256"])
+            print("FOREIGN_PENDING_ROLLBACK_TARGET_SHA256=" + plan["record"]["target_sha256"])
             print("FOREIGN_PENDING_ROLLBACK_SAFETY_ID=" + plan["record"]["safety"])
             print("FOREIGN_PENDING_ROLLBACK_TARGET_ID=" + plan["record"]["target"])
             print("FOREIGN_PENDING_ROLLBACK_PLAN_SHA256=" + plan["sha"])
@@ -954,9 +960,16 @@ def main(argv=None):
             return 0
         if args.pending_rollback_apply:
             result = rollback_pending(args.mta, args.approve_sha256, args.confirm)
+            print("FOREIGN_PENDING_ROLLBACK_VERSION=1")
+            print("FOREIGN_PENDING_ROLLBACK_MTA=exim")
             print("FOREIGN_PENDING_ROLLBACK_STATUS=original_verified_service_not_started")
             print("FOREIGN_PENDING_ROLLBACK_SAFETY_ID=" + result["safety"])
+            print("FOREIGN_PENDING_ROLLBACK_TARGET_ID=" + result["target"])
+            print("FOREIGN_PENDING_ROLLBACK_PLAN_SHA256=" + result["sha"])
+            print("FOREIGN_PENDING_ROLLBACK_FILE_COUNT=" + str(result["files"]))
             print("FOREIGN_PENDING_ROLLBACK_CHANGED_FILES=" + str(result["changed"]))
+            print("FOREIGN_PENDING_ROLLBACK_MARKER_CLEARED=yes")
+            print("FOREIGN_PENDING_ROLLBACK_NATIVE_STATIC_CHECK=passed_partial_parse_only")
             print("FOREIGN_PENDING_ROLLBACK_QUEUE_CHANGED=no")
             print("FOREIGN_PENDING_ROLLBACK_SERVICE_CHANGED=no")
             return 0

@@ -6839,6 +6839,92 @@ internal sealed partial class MainForm : Form
             ". No Restore, service action, SMTP send or queue change. Manual recovery only.");
     }
 
+    private static bool SameRollbackConnection(SshEndpoint a, SshEndpoint b) =>
+        string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase) &&
+        a.Port == b.Port && string.Equals(a.Username, b.Username, StringComparison.Ordinal) &&
+        a.KeyPath == b.KeyPath && a.Password == b.Password && a.SudoPassword == b.SudoPassword;
+
+    private async Task ReviewEximPendingRollbackAsync(bool apply)
+    {
+        var endpoint = Endpoint();
+        var response = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildEximPendingRollbackPlanBundle(), TimeSpan.FromMinutes(5));
+        response.EnsureSuccess();
+        var plan = EximPendingRollbackPlan.Parse(response.StdOut);
+        var reviewedEndpoint = Endpoint();
+        if (!SameRollbackConnection(endpoint, reviewedEndpoint) ||
+            (endpoint.HostKeySha256.Length > 0 && endpoint.HostKeySha256 != reviewedEndpoint.HostKeySha256) ||
+            (reviewedEndpoint.Password.Length > 0 && reviewedEndpoint.HostKeySha256.Length == 0))
+            throw new InvalidOperationException("SSH connection or trusted host key changed during Exim rollback review.");
+        string details = "Host: " + reviewedEndpoint.Host + ":" + reviewedEndpoint.Port +
+            "\nMTA: Exim / schema 3\n" +
+            T("Аварийный архив", "Safety snapshot", "גיבוי חירום") + ": " + plan.SafetyId +
+            "\nSHA-256: " + plan.SafetySha +
+            "\n" + T("Целевой архив", "Target snapshot", "גיבוי יעד") + ": " + plan.TargetId +
+            "\nSHA-256: " + plan.TargetSha +
+            "\n" + T("Файлов для отката", "Files to roll back", "קבצים לשחזור") + ": " +
+            plan.Changed + "/" + plan.Total + "\nPlan SHA-256: " + plan.Sha;
+        string limitations = T(
+            "Экспериментальная функция для тестовых серверов. Восстанавливаются только исходные байты файлов. Нужны остановленный Exim, пустая очередь, совпадающий набор файлов и исходные права/SELinux-метки. Службы не запускаются, очередь не изменяется. Журнал и архив сохраняются при ошибке; потребуется новый план. Не является полной проверкой доставки.",
+            "Experimental, disposable test hosts only. Restores original file bytes only. Requires stopped Exim, empty queue, matching file set and original permissions/SELinux labels. No service start or queue changes. Failure retains the recovery evidence; a fresh plan is required. This is not delivery acceptance.",
+            "ניסיוני לשרת בדיקה בלבד. Exim חייב להיות עצור והתור ריק. ללא הפעלת שירותים; נדרשת תוכנית חדשה במקרה כשל.");
+        WriteLine("Interrupted Exim rollback preview: " + plan.Changed + "/" + plan.Total +
+            " files; SHA256=" + plan.Sha + ". No changes.");
+        if (!apply)
+        {
+            MessageBox.Show(this, details + "\n\n" + limitations,
+                "LinuxMailRelay365 | Exim rollback preview", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (!ConfirmDestructive("LinuxMailRelay365 | EXPERIMENTAL Exim offline rollback",
+                details + "\n\n" + limitations, EximPendingRollbackPlan.Confirmation))
+            return;
+        var current = Endpoint();
+        if (!SameRollbackConnection(reviewedEndpoint, current) ||
+            current.HostKeySha256 != reviewedEndpoint.HostKeySha256)
+            throw new InvalidOperationException("SSH connection changed after Exim rollback confirmation.");
+        // Never carry a stale approval across calls. The CLI reacquires its
+        // exclusive lock and recomputes the exact reviewed SHA before writing.
+        try
+        {
+            var result = await SshRemote.RunRootScriptAsync(current,
+                EmbeddedAssets.BuildEximPendingRollbackApplyBundle(plan.Sha), TimeSpan.FromMinutes(10));
+            result.EnsureSuccess();
+            plan.VerifyApplied(result.StdOut);
+            var inspection = await SshRemote.RunRootScriptAsync(current,
+                EmbeddedAssets.BuildForeignMtaPendingInspectBundle(), TimeSpan.FromMinutes(4));
+            inspection.EnsureSuccess();
+            if (!ForeignPendingInspection.Parse(inspection.StdOut).IsClear ||
+                !SameRollbackConnection(current, Endpoint()) ||
+                current.HostKeySha256 != Endpoint().HostKeySha256)
+                throw new InvalidDataException("Post-rollback marker or SSH identity could not be confirmed.");
+            WriteLine("Exim rollback receipt verified; pending marker clear. No services started. Reinspect MTA before further changes.");
+            MessageBox.Show(this, T(
+                "Аварийный откат подтверждён. Exim не запускался. Повторите диагностику сервера перед дальнейшими изменениями.",
+                "Offline rollback verified. Exim was not started. Reinspect the server before further changes.",
+                "השחזור אומת. Exim לא הופעל. יש לבדוק את השרת מחדש."),
+                "LinuxMailRelay365 | Exim rollback", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        finally
+        {
+            // Even a timeout or lost reply can mean files were changed.
+            inspectedMail = null;
+            inspectedServerIdentity = null;
+            inspectedHost = null;
+            inspectedHostIdentity = null;
+            existingSmtpAudit = null;
+            existingSmtpAuditIdentity = null;
+            discoveredMailIdentity = null;
+            discoveredIsolatedRelay = null;
+            mailSubmissionEvidence = null;
+            mailSubmissionIdentity = null;
+            foreignBackupListContext = null;
+            foreignBackupSelector.Items.Clear();
+            allowExisting.Checked = false;
+            ResetMultiMailboxRouteReview();
+        }
+    }
+
     private async Task InspectForeignPendingRestoreAsync()
     {
         var endpoint = Endpoint();
@@ -7053,6 +7139,17 @@ internal sealed partial class MainForm : Form
             "Inspect interrupted native Restore (read-only)",
             "בדיקת שחזור שנקטע ללא שינוי"),
             InspectForeignPendingRestoreAsync, false, "check", "foreign-pending-inspect");
+        AddAction(page, T("Предварительный план аварийного отката Exim",
+            "Preview interrupted Exim rollback (read-only)", "תצוגה מקדימה של שחזור Exim"),
+            () => ReviewEximPendingRollbackAsync(false), false, "check", "restore");
+        AddAction(page, T("Аварийный откат Exim (экспериментальный)...",
+            "Roll back interrupted Exim (experimental)...", "שחזור Exim ניסיוני..."),
+            () => ReviewEximPendingRollbackAsync(true), false, "back", "restore");
+        AddLine(page, MailFlowText(T(
+            "Только для остановленного Exim с журналом версии 3, пустой очередью и неизменными правами/метками. Перед записью проверяется свежий план и требуется отдельное подтверждение. Используйте только на тестовом сервере.",
+            "Experimental: stopped Exim with schema-3 journal, empty queue and matching original metadata only. A fresh plan and typed confirmation are required before writes. Disposable test hosts only.",
+            "ניסיוני: Exim עצור, יומן גרסה 3 ותור ריק. נדרש אישור מפורש; לשרת בדיקה בלבד."),
+            Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
         AddLine(page, MailFlowText(T(
             "Проверка относится ко всему Linux-серверу, независимо от текущего MTA. Она не возобновляет Restore и не разрешает запуск служб.",
             "Checks the entire Linux host, independently of the selected MTA. It never resumes Restore or authorizes starting services.",

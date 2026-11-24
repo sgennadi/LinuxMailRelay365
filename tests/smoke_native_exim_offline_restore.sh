@@ -91,3 +91,64 @@ echo "EXIM_RESTORE_LAB_NATIVE_STATIC_PARSE=passed"
 echo "EXIM_RESTORE_LAB_QUEUE=unchanged_empty"
 echo "EXIM_RESTORE_LAB_SERVICES=stopped"
 echo "EXIM_RESTORE_LAB_EXTERNAL_DELIVERY_TESTED=no"
+
+# Independent real-process interruption drill on this disposable native runner.
+# The process exits abruptly immediately AFTER the verified atomic file write;
+# this exercises durable re-entry, not physical power-loss or live delivery.
+printf "\n# LMR365 temporary interrupted recovery acceptance comment\n" | sudo tee -a "$config" >/dev/null
+pre_interrupt="$(sudo sha256sum "$config" | cut -d " " -f 1)"
+plan="$(sudo python3 linux/restore-foreign-mta-config.py --mta exim --plan "$backup_id")"
+approval="$(printf "%s\n" "$plan" | sed -n 's/^FOREIGN_RESTORE_PLAN_SHA256=//p')"
+[[ "$approval" =~ ^[a-f0-9]{64}$ ]] || exit 1
+rc=0
+sudo python3 - "$backup_id" "$approval" <<'PY' || rc=$?
+import importlib.util, os, sys
+from pathlib import Path
+if os.geteuid() != 0:
+    raise SystemExit(3)
+path = Path("linux/restore-foreign-mta-config.py").resolve()
+spec = importlib.util.spec_from_file_location("lab_restore", str(path))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+replace = module.replace_one
+def interrupted(*args, **kwargs):
+    replace(*args, **kwargs)
+    os._exit(91)
+module.replace_one = interrupted
+module.apply("exim", sys.argv[1], sys.argv[2], module.APPROVAL)
+raise SystemExit(3)
+PY
+test "$rc" = 91 || exit 1
+test "$(sudo sha256sum "$config" | cut -d " " -f 1)" = "$original"
+inspection="$(sudo python3 linux/restore-foreign-mta-config.py --mta exim --pending-inspect)"
+printf "%s\n" "$inspection" | grep -Fxq "FOREIGN_PENDING_INSPECT_STATUS=manual_recovery_required"
+printf "%s\n" "$inspection" | grep -Fxq "FOREIGN_PENDING_INSPECT_TARGET_ONLY=1"
+rollback_plan="$(sudo python3 linux/restore-foreign-mta-config.py --mta exim --pending-rollback-plan)"
+rollback_sha="$(printf "%s\n" "$rollback_plan" | sed -n 's/^FOREIGN_PENDING_ROLLBACK_PLAN_SHA256=//p')"
+[[ "$rollback_sha" =~ ^[a-f0-9]{64}$ ]] || exit 1
+printf "%s\n" "$rollback_plan" | grep -Fxq "FOREIGN_PENDING_ROLLBACK_CHANGED_FILES=1"
+rollback="$(sudo python3 linux/restore-foreign-mta-config.py --mta exim \
+  --pending-rollback-apply --approve-sha256 "$rollback_sha" \
+  --confirm ROLLBACK_INTERRUPTED_EXIM_CONFIG)"
+printf "%s\n" "$rollback" | grep -Fxq "FOREIGN_PENDING_ROLLBACK_STATUS=original_verified_service_not_started"
+printf "%s\n" "$rollback" | grep -Fxq "FOREIGN_PENDING_ROLLBACK_PLAN_SHA256=$rollback_sha"
+printf "%s\n" "$rollback" | grep -Fxq "FOREIGN_PENDING_ROLLBACK_MARKER_CLEARED=yes"
+test "$(sudo sha256sum "$config" | cut -d " " -f 1)" = "$pre_interrupt"
+sudo python3 linux/restore-foreign-mta-config.py --mta exim --pending-status |
+  grep -Fxq "FOREIGN_PENDING_STATUS=clear"
+# Remove the lab-only comment via the same independently reviewed restore.
+cleanup="$(sudo python3 linux/restore-foreign-mta-config.py --mta exim --plan "$backup_id")"
+cleanup_sha="$(printf "%s\n" "$cleanup" | sed -n 's/^FOREIGN_RESTORE_PLAN_SHA256=//p')"
+[[ "$cleanup_sha" =~ ^[a-f0-9]{64}$ ]] || exit 1
+sudo python3 linux/restore-foreign-mta-config.py --mta exim --apply "$backup_id" \
+  --approve-sha256 "$cleanup_sha" --confirm RESTORE_STOPPED_FOREIGN_MTA_CONFIG |
+  grep -Fx "FOREIGN_RESTORE_STATUS=config_replaced_service_not_started"
+test "$(sudo sha256sum "$config" | cut -d " " -f 1)" = "$original"
+test "$(sudo exim4 -bpc)" = "$queue_before"
+for service in exim.service exim4.service; do
+  ! sudo systemctl is-active --quiet "$service" || exit 1
+done
+! sudo pgrep -x exim4 >/dev/null || exit 1
+! sudo pgrep -x exim >/dev/null || exit 1
+! sudo ss -H -lnt | grep -Eq ":(25|465|587|2525)[[:space:]]" || exit 1
+echo "EXIM_RESTORE_LAB_INTERRUPTED_ROLLBACK=verified_original_bytes_stopped_empty_queue"

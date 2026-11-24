@@ -320,6 +320,7 @@ internal static class Program
             }),
             ("Exact native MTA read-only Restore Plan", ForeignRestorePlan.SelfTest),
             ("Global interrupted native Restore receipt and read-only bundle", ForeignPendingInspection.SelfTest),
+            ("Experimental Exim pending rollback reviewed plan and applied receipt", EximPendingRollbackPlan.SelfTest),
             ("Embedded backup / restore", () =>
             {
                 var listing = EmbeddedAssets.BuildRecoveryBundle("--list");

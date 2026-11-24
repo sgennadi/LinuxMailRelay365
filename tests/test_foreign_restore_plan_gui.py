@@ -31,6 +31,22 @@ class NativeRestorePlanGui(unittest.TestCase):
             self.assertNotIn(item, bundle)
         self.assertIn("ForeignPendingInspection.SelfTest", (CS / "Program.cs").read_text(encoding="utf-8"))
 
+    def test_exim_rollback_gui_requires_a_fresh_confirmed_plan(self):
+        body = FORM.split("private async Task ReviewEximPendingRollbackAsync(bool apply)", 1)[1].split(
+            "private async Task InspectForeignPendingRestoreAsync()", 1)[0]
+        for value in ("BuildEximPendingRollbackPlanBundle()", "EximPendingRollbackPlan.Parse(response.StdOut)",
+                      "if (!apply)", "ConfirmDestructive(", "EximPendingRollbackPlan.Confirmation",
+                      "BuildEximPendingRollbackApplyBundle(plan.Sha)", "plan.VerifyApplied(result.StdOut)",
+                      "ForeignPendingInspection.Parse(inspection.StdOut).IsClear",
+                      "current.HostKeySha256 != reviewedEndpoint.HostKeySha256", "finally",
+                      "inspectedServerIdentity = null"):
+            self.assertIn(value, body)
+        self.assertLess(body.index("ConfirmDestructive("),
+                        body.index("BuildEximPendingRollbackApplyBundle(plan.Sha)"))
+        self.assertLess(body.index("EximPendingRollbackPlan.Parse(response.StdOut)"),
+                        body.index("ConfirmDestructive("))
+        self.assertIn("EximPendingRollbackPlan.SelfTest", (CS / "Program.cs").read_text(encoding="utf-8"))
+
     def test_stopped_mta_and_exact_plan(self):
         preflight = FORM.split("private async Task PreflightForeignMtaRecoveryAsync()", 1)[1].split(
             "private async Task PreviewExactForeignRestorePlanAsync()", 1)[0]

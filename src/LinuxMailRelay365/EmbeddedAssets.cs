@@ -1504,6 +1504,32 @@ internal static class EmbeddedAssets
             " --static-check\n";
     }
 
+    internal static string BuildEximPendingRollbackPlanBundle() =>
+        BuildEximPendingRollbackBundle(null);
+
+    internal static string BuildEximPendingRollbackApplyBundle(string reviewedSha256)
+    {
+        if (reviewedSha256 is null ||
+            !Regex.IsMatch(reviewedSha256, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("A reviewed Exim rollback SHA-256 is required.");
+        return BuildEximPendingRollbackBundle(reviewedSha256);
+    }
+
+    private static string BuildEximPendingRollbackBundle(string? reviewedSha256)
+    {
+        string command = reviewedSha256 is null ? " --pending-rollback-plan" :
+            " --pending-rollback-apply --approve-sha256 " + reviewedSha256 +
+            " --confirm ROLLBACK_INTERRUPTED_EXIM_CONFIG";
+        return "set -Eeuo pipefail\numask 077\n" +
+            "work=$(mktemp -d /tmp/lmr365-exim-rollback.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n" +
+            "base64 -d > \"$work/foreign-mta-config-backup.py\" <<'LMR365_ROLLBACK_BACKUP'\n" +
+            Encode(ForeignMtaBackup) + "\nLMR365_ROLLBACK_BACKUP\n" +
+            "base64 -d > \"$work/restore-foreign-mta-config.py\" <<'LMR365_ROLLBACK_NATIVE'\n" +
+            Encode(ForeignMtaRestore) + "\nLMR365_ROLLBACK_NATIVE\n" +
+            "python3 \"$work/restore-foreign-mta-config.py\" --mta exim" + command + "\n";
+    }
+
     internal static string BuildForeignMtaPendingInspectBundle()
     {
         // The CLI requires an MTA argument for compatibility. Pending

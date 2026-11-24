@@ -280,6 +280,40 @@ class ForeignMtaRestoreTests(unittest.TestCase):
             self.assertTrue(review.exists())
             self.assertEqual(len(snapshot.listed("exim", base, uid)), 2)
 
+    def test_pending_rollback_cli_receipts_bind_plan_and_result(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, uid, options = self.interrupted_exim(folder)
+            plan = self.pending_plan(options)
+            output = io.StringIO()
+            with patch.object(restore.os, "geteuid", return_value=0), \
+                 patch.object(restore, "preview_pending_rollback", return_value=plan), \
+                 patch.object(restore, "rollback_pending", side_effect=AssertionError("write forbidden")), \
+                 redirect_stdout(output):
+                self.assertEqual(restore.main(["--mta", "exim", "--pending-rollback-plan"]), 0)
+            receipt = dict(line.split("=", 1) for line in output.getvalue().splitlines())
+            prefix = "FOREIGN_PENDING_ROLLBACK_"
+            self.assertEqual(receipt[prefix + "VERSION"], "1")
+            self.assertEqual(receipt[prefix + "MTA"], "exim")
+            self.assertEqual(receipt[prefix + "SAFETY_SHA256"], plan["record"]["safety_sha256"])
+            self.assertEqual(receipt[prefix + "TARGET_SHA256"], plan["record"]["target_sha256"])
+            self.assertEqual(receipt[prefix + "PLAN_SHA256"], plan["sha"])
+            actual = restore.rollback_pending
+            output = io.StringIO()
+            with patch.object(restore.os, "geteuid", return_value=0), \
+                 patch.object(restore, "rollback_pending",
+                              side_effect=lambda mta, sha, confirm:
+                              actual(mta, sha, confirm, **options)), \
+                 redirect_stdout(output):
+                self.assertEqual(restore.main(["--mta", "exim", "--pending-rollback-apply",
+                                               "--approve-sha256", plan["sha"],
+                                               "--confirm", restore.ROLLBACK_APPROVAL]), 0)
+            receipt = dict(line.split("=", 1) for line in output.getvalue().splitlines())
+            for key, value in (("VERSION", "1"), ("MTA", "exim"), ("PLAN_SHA256", plan["sha"]),
+                               ("TARGET_ID", plan["record"]["target"]), ("SAFETY_ID", plan["record"]["safety"]),
+                               ("FILE_COUNT", str(plan["files"])), ("CHANGED_FILES", str(plan["changed"])),
+                               ("MARKER_CLEARED", "yes"), ("NATIVE_STATIC_CHECK", "passed_partial_parse_only")):
+                self.assertEqual(receipt[prefix + key], value)
+
     def test_interrupted_rollback_refuses_drift_old_markers_and_running_service(self):
         for drift in ("content", "mode", "review", "legacy", "running"):
             with self.subTest(drift=drift), tempfile.TemporaryDirectory() as folder:
