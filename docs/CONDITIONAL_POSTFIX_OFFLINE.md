@@ -58,6 +58,13 @@ and may contain sensitive original configuration. It is not exported to the
 GUI. The operator, not the application, controls any later service start.
 
 Unit tests exercise the real transaction library using temporary files and
-mocked native/preflight interfaces. Native offline integration on a disposable
-VM, real routing precedence, SELinux labels/ACLs, GUI integration, provider
-authorization and real mail delivery remain separate acceptance gates.
+mocked native/preflight interfaces. The Ubuntu native smoke additionally
+compiles real indexed maps, invokes the actual transaction orchestration with
+an isolated Postfix configuration, checks effective settings with native
+postconf, queries the new map as the Postfix account, and verifies explicit
+restore and injected post-write failure rollback. It checks that the primary
+main.cf/master.cf identity and bytes remain unchanged. Only the fixture's
+maintenance and remote TLS evidence are injected; this is NOT end-to-end
+acceptance of the real host maintenance CLI, address-class routing or delivery.
+SELinux labels/ACLs, GUI integration, provider authorization and real mail
+delivery remain separate gates. Test execution must pass in CI.
