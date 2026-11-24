@@ -285,8 +285,11 @@ def apply(config, parent, reviewed, confirmation, uid, map_gid, guard, verify,
             raise
         try:
             restore(config, parent, sha, RESTORE, uid, map_gid, guard, verify)
-        except Exception:
-            raise RollbackRequired("manual_recovery_required; backup=" + sha) from None
+        except Exception as rollback_error:
+            # Preserve the original and rollback failure for automated tests.
+            # The CLI catches RollbackRequired and emits only fixed statuses
+            # and the recovery digest, never a traceback or config values.
+            raise RollbackRequired("manual_recovery_required; backup=" + sha) from rollback_error
         raise
     return sha
 
