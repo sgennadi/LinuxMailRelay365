@@ -178,6 +178,20 @@ jobs:
         shell: bash
         run: bash tests/smoke_native_sendmail_backup.sh
 
+  rc14-native-transaction-fast:
+    # Independent fresh package fixture; does not replace the full sidecar smoke.
+    if: contains(github.ref, 'rc14-postfix-map-inventory') || github.event.pull_request.head.ref == 'feature/rc14-postfix-map-inventory'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install packaged Postfix for isolated transaction
+        run: |
+          sudo apt-get update -qq
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y postfix
+      - name: Native isolated transaction and rollback
+        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" python3 tests/smoke_native_conditional_transaction.py
+
   ubuntu-postfix-smoke:
     # Test both production LTS Dovecot 2.3 and updated Dovecot 2.4 grammar.
     strategy:
