@@ -467,14 +467,14 @@ jobs:
           if ($testProcess.ExitCode -ne 0) { throw "Windows self-test failed with exit code $($testProcess.ExitCode)." }
           $files = @(Get-ChildItem ./out/win-x64 -Filter '*.exe')
           if ($files.Count -ne 1) { throw 'Expected exactly one EXE in publish output.' }
-      - name: Test published Preview 24 -> candidate RC5 backup and rollback (disposable)
+      - name: Test published Preview 24 -> candidate backup and rollback (disposable)
         shell: pwsh
         timeout-minutes: 8
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
-          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.15'
+          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.16'
       - name: Capture actual Windows Wizard and early-route screens (CI-only)
         shell: pwsh
         timeout-minutes: 3
@@ -489,7 +489,7 @@ jobs:
           foreach ($image in $images) {
             if ($image.Length -lt 3000) { throw "Empty or invalid screen PNG: $($image.Name)" }
           }
-          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=30'
+          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=33'
           Write-Host 'SMTP_TENANT_CONNECTIONS_ATTEMPTED=no'
       - name: Upload actual Wizard screenshots (no production host or tenant)
         uses: actions/upload-artifact@v6
@@ -1483,3 +1483,94 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "LinuxMailRelay365 v0.1.1 RC15 (UNSIGNED TEST ONLY)" --prerelease \
             --notes "UNSIGNED TEST RC15. Includes the RC14 routing functionality plus the six-screen Mail Flow mini wizard (Discovery, Source, Provider, Recipients, Scenario, Review), actual chosen-plan diagram, optional security subpage, non-reentrant rendering, bounded scrolling, Copy Log, and exact Microsoft 365 tenant selection before cloud inspection. Gmail and Custom SMTP do not require Microsoft Entra sign-in. The Windows CI viewport checks cover all main steps, mini-page missing-discovery states and reentrant rendering. Physical 200% DPI and real discovered-server GUI acceptance still require operator testing. SELinux outbound port and AVC diagnostics are read-only in the GUI; the new scoped labeled transaction libraries and separate experimental port-policy CLI do not enable active SELinux writes for multi-provider routing. No real tenant delivery, physical TPM or complete Enforcing acceptance is claimed. Use a disposable nonproduction host and verified backup. Existing releases are immutable. NOT Stable or production approved."
+
+  rc16-prerelease-publish:
+    name: Publish unsigned RC16 after all Linux and Windows CI acceptance
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/post-rc15-wizard-refinement'
+    needs:
+      - linux-tests
+      - rc14-native-transaction-fast
+      - ubuntu-real-proof-timer-systemd
+      - ubuntu-clean-postfix-bootstrap
+      - ubuntu-native-foreign-mta-smoke
+      - ubuntu-postfix-smoke
+      - ubuntu-fresh-direct-send-smoke
+      - ubuntu-fresh-connector-smoke
+      - rhel-family-readonly-smoke
+      - rhel-native-foreign-mta-smoke
+      - rhel-selinux-offline-policy-smoke
+      - windows-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify release-candidate SHA, version and unsigned status
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          grep -Fxq '    <Version>0.1.1-rc.16</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.1-rc.16";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fq 'internal const string Version = "0.1.1-rc.16";' src/LinuxMailRelay365/UpdateCheck.cs
+          test "$GITHUB_REF" = 'refs/heads/feature/post-rc15-wizard-refinement'
+      - uses: actions/download-artifact@v6
+        with:
+          name: LinuxMailRelay365-preview-builds
+          path: out/published
+      - name: Verify SHA-256 manifest and root EXE ZIPs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          from zipfile import ZipFile
+          root = Path("out/published")
+          lines = (root / "preview-artifact-digests.txt").read_text(encoding="utf-8-sig").splitlines()
+          expected = {}
+          status = False
+          for line in lines:
+              if line.startswith("STATUS="):
+                  assert line == "STATUS=preview_unsigned_not_for_production"
+                  status = True
+                  continue
+              arch, name, digest = line.split()
+              assert digest.startswith("sha256:") and len(digest) == 71
+              expected[(arch, name)] = digest[7:]
+          assert status and len(expected) == 4
+          for arch in ("x64", "arm64"):
+              suffix = "win-" + arch
+              exe = root / suffix / "LinuxMailRelay365.exe"
+              archive = root / "release-candidates" / ("LinuxMailRelay365-" + suffix + ".zip")
+              assert exe.is_file() and archive.is_file()
+              digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+              assert digest(exe) == expected[(suffix, "LinuxMailRelay365.exe")]
+              assert digest(archive) == expected[(suffix, archive.name)]
+              with ZipFile(archive) as z:
+                  assert z.namelist() == ["LinuxMailRelay365.exe"]
+                  assert hashlib.sha256(z.read("LinuxMailRelay365.exe")).hexdigest() == digest(exe)
+          print("UNSIGNED_RC16_RELEASE_SHA256_AND_ZIP=PASS")
+          PY
+      - name: Publish one GitHub prerelease without overwrite
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='v0.1.1-rc.16'
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::0.1.1-RC16 already published. Never replace a released candidate."
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Existing tag has no release; manual review required."
+            exit 1
+          fi
+          gh release create "$tag" \
+            out/published/release-candidates/LinuxMailRelay365-win-x64.zip \
+            out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
+            out/published/preview-artifact-digests.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "LinuxMailRelay365 v0.1.1 RC16 (UNSIGNED TEST ONLY)" --prerelease \
+            --notes "UNSIGNED TEST RC16. RC15 plus root-default remembered SSH endpoint profiles without saved passwords or SSH trust, adaptive delivery mini-wizard, automatic read-only certificate-local TPM discovery, route-specific review and headers, fixed Security Center and forward/back navigation. Windows self-tests cover delivery phase sequences, and CI includes the actual WinForms viewport capture and all existing Linux gates. Existing releases are immutable. Physical 200% DPI, real discovered-server GUI behavior, real tenant/provider delivery, TPM signing and full Enforcing acceptance remain unverified. Active SELinux writes for multi-provider routing remain blocked. Use a disposable nonproduction host and verified backup. NOT Stable or production approved."

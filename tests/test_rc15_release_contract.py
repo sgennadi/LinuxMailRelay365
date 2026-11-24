@@ -9,6 +9,7 @@ class RC15ReleaseContract(unittest.TestCase):
     def test_release_inherits_full_rc14_acceptance(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         before, after = ci.split("\n  rc15-prerelease-publish:\n", 1)
+        after = after.split("\n  rc16-prerelease-publish:\n", 1)[0]
         prior = before.split("\n  rc14-prerelease-publish:\n", 1)[1]
         def dependencies(job):
             return job.split("    needs:\n", 1)[1].split("    runs-on:", 1)[0]
@@ -31,13 +32,14 @@ class RC15ReleaseContract(unittest.TestCase):
         self.assertIn("tag='v0.1.1-rc.14'", prior)
         self.assertIn("feature/rc14-transport-transaction", prior)
 
-    def test_version_is_consistent(self):
-        cs = ROOT / "src/LinuxMailRelay365"
-        self.assertIn("<Version>0.1.1-rc.15</Version>",
-                      (cs / "LinuxMailRelay365.csproj").read_text(encoding="utf-8"))
-        for name in ("UpdateCheck.cs", "UpdateCheck.Fallback.cs"):
-            self.assertIn('internal const string Version = "0.1.1-rc.15";',
-                          (cs / name).read_text(encoding="utf-8"))
+    def test_historical_gate_keeps_rc15_version(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = ci.split("\n  rc15-prerelease-publish:\n", 1)[1].split(
+            "\n  rc16-prerelease-publish:\n", 1)[0]
+        self.assertIn("<Version>0.1.1-rc.15</Version>", job)
+        self.assertIn('internal const string Version = "0.1.1-rc.15";', job)
+        self.assertIn("tag='v0.1.1-rc.15'", job)
+        self.assertNotIn("tag='v0.1.1-rc.16'", job)
 
 
 if __name__ == "__main__":

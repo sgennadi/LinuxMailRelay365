@@ -216,6 +216,7 @@ internal sealed partial class MainForm : Form
     private bool mailPlanProviderConfirmed;
     private const int MailPlanReviewPhase = 5;
     private int deliveryPhase;
+    private bool deliveryToolsReturnToDiagnostics;
     private int renderedDeliveryPhase = -1;
     private int queuedDeliveryPhase = -1;
     private const int DeliveryReviewPhase = 4;
@@ -2600,7 +2601,7 @@ internal sealed partial class MainForm : Form
             {
                 var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
                 back.Enabled = !busy;
-                back.Click += (_, _) => { MoveWizardBack(); RenderPage(); };
+                back.Click += async (_, _) => await MoveWizardBackAsync();
                 AddLine(errorPage, back);
             }
             WriteLine("ERROR: Wizard page " + (step + 1) + " rendering failed (" +
@@ -2631,15 +2632,38 @@ internal sealed partial class MainForm : Form
 
     private void MoveWizardBack()
     {
-        if (step == 1 && mailPlanPhase > 0)
+        if (step == 2 && deliveryToolsReturnToDiagnostics &&
+            deliveryPhase is DeliveryAdvancedPhase or DeliveryCertificateToolsPhase)
+        {
+            deliveryToolsReturnToDiagnostics = false;
+            deliveryPhase = DeliveryReviewPhase;
+            step = 4;
+        }
+        else if (step == 1 && mailPlanPhase > 0)
             mailPlanPhase--;
         else if (step == 2 && deliveryPhase > 0)
-            deliveryPhase = PreviousDeliveryPhase();
+            deliveryPhase = HasMailDiscovery() ? PreviousDeliveryPhase() : 0;
         else if (step > 0)
         {
             step--;
-            if (step == 2) deliveryPhase = DeliveryReviewPhase;
+            if (step == 2) deliveryPhase = DeliveryHasPlan() ? DeliveryReviewPhase : 0;
         }
+    }
+
+    private async Task MoveWizardBackAsync()
+    {
+        if (busy) return;
+        MoveWizardBack();
+        RenderPage();
+        await ProbeOnCertificateEntryAsync();
+    }
+
+    private Task ProbeOnCertificateEntryAsync()
+    {
+        if (!pageRenderFailed && step == 2 && deliveryPhase == 2 &&
+            RequiresOAuthCertificate() && !CertificateHardwareProbeCurrent())
+            return RunBusyAsync("linux-security", AutoProbeCertificateHardwareAsync);
+        return Task.CompletedTask;
     }
 
     private bool CanAdvanceWizard() => step < 4 && !busy &&
@@ -2667,9 +2691,7 @@ internal sealed partial class MainForm : Form
             if (step == 2) deliveryPhase = 0;
         }
         RenderPage();
-        if (!pageRenderFailed && step == 2 && deliveryPhase == 2 &&
-            RequiresOAuthCertificate() && !CertificateHardwareProbeCurrent())
-            await RunBusyAsync("linux-security", AutoProbeCertificateHardwareAsync);
+        await ProbeOnCertificateEntryAsync();
     }
 
     private void RenderPageCore()
@@ -2699,13 +2721,23 @@ internal sealed partial class MainForm : Form
             1 => T("Выберите источник, провайдера и сценарий на основе обнаруженных настроек.",
                    "Choose source, provider and scenario using the discovered configuration.",
                    "בחרו מקור, ספק ותרחיש לפי ההגדרות שהתגלו."),
-            2 => mailTransport.SelectedIndex is 1 or 2
-                ? T("Для Connector/Direct Send не нужен OAuth или почтовый ящик; укажите домен и MX на следующем шаге.",
-                    "Connector / Direct Send requires no OAuth or mailbox; enter the accepted domain and MX next.",
-                    "ב-Connector ו-Direct Send אין צורך ב-OAuth או תיבה.")
-                : T("Сертификат создаётся на Linux. В Windows передаётся только открытая часть.",
-                    "The certificate is generated on Linux; only the public part is copied to Windows.",
-                    "האישור נוצר בלינוקס ורק החלק הציבורי מועבר ל-Windows."),
+            2 => !DeliveryHasPlan()
+                ? T("Сначала проверьте Linux и выберите план почты.",
+                    "Inspect Linux and choose a mail plan first.", "בדקו את Linux ובחרו תוכנית דואר.")
+                : selectedMailScenario == MailScenarioPlanner.Keep
+                    ? T("Текущая конфигурация сохраняется без изменений.",
+                        "The current mail configuration stays unchanged.", "תצורת הדואר הקיימת נשארת ללא שינוי.")
+                : selectedMailTarget != MailFlowIntent.TargetM365
+                    ? T("Настройте исходящий SMTP и проверьте порты, TLS и авторизацию выбранного провайдера.",
+                        "Review the selected provider's outbound SMTP, ports, TLS and authentication.",
+                        "בדקו SMTP יוצא, יציאות, TLS ואימות של הספק.")
+                : mailTransport.SelectedIndex is 1 or 2
+                    ? T("Для Connector/Direct Send не нужен OAuth или почтовый ящик. Домен и MX проверяются на этапе маршрута.",
+                        "Connector / Direct Send requires no OAuth or mailbox. Review domain and MX during route configuration.",
+                        "ב-Connector ו-Direct Send אין צורך ב-OAuth או תיבה.")
+                    : T("Сертификат создаётся на Linux. В Windows передаётся только открытая часть.",
+                        "The certificate is generated on Linux; only the public part is copied to Windows.",
+                        "האישור נוצר בלינוקס ורק החלק הציבורי מועבר ל-Windows."),
             3 => T("Перед изменением SMTP-маршрута проверяем основной MTA и создаём резервные копии.",
                    "Before changing SMTP delivery, inspect the primary MTA and verify configuration backups.",
                    "לפני שינוי ניתוב SMTP בודקים את שרת הדואר ומגבים את התצורה."),
@@ -2793,7 +2825,8 @@ internal sealed partial class MainForm : Form
                 {
                     ShowMailDiscovery(page, false);
                     ShowMailFlowPlanner(page, advancedOnly: true);
-                    if (selectedMailTarget == MailFlowIntent.TargetM365)
+                    if (selectedMailTarget == MailFlowIntent.TargetM365 &&
+                        selectedMailScenario != MailScenarioPlanner.Keep)
                         ShowDeliveryCloudSecurityTools(page);
                     break;
                 }
@@ -3897,7 +3930,7 @@ internal sealed partial class MainForm : Form
         {
             var back = UiTheme.Action(T("Назад", "Back", "חזרה"), glyph: "back");
             back.Enabled = !busy;
-            back.Click += (_, _) => { MoveWizardBack(); RenderPage(); };
+            back.Click += async (_, _) => await MoveWizardBackAsync();
             var next = UiTheme.Action(step == 1 && mailPlanPhase == MailPlanReviewPhase
                 ? T("К способу отправки", "Continue to delivery", "המשך לשיטת שליחה")
                 : T("Далее", "Next", "הבא"), primary: step < 4, glyph: "next");
@@ -7023,6 +7056,8 @@ internal sealed partial class MainForm : Form
             ipRequest.Checked = securityOptions.RequestIpConditionalAccess;
             monitoringRequest.Checked = securityOptions.RequestEntraSignInMonitoring;
             securityServerIdentity = identity;
+            certificateHardwareContext = null;
+            certificateProviderSummary = "";
             linuxSecurity = null;
             reviewedTpmPlanSha = null;
             reviewedTpmPlanContext = null;
@@ -8397,6 +8432,7 @@ internal sealed partial class MainForm : Form
         EnsureSecurityLoaded();
         // Step 1 is now the mail-planning mini wizard, not the security center.
         // Preserve discovery gating; never offer unrelated TPM actions.
+        deliveryToolsReturnToDiagnostics = false;
         if (!DeliveryHasPlan())
         {
             step = 1;
@@ -8405,6 +8441,7 @@ internal sealed partial class MainForm : Form
         }
         else
         {
+            deliveryToolsReturnToDiagnostics = step == 4;
             step = 2;
             deliveryPhase = RequiresOAuthCertificate()
                 ? DeliveryCertificateToolsPhase : DeliveryAdvancedPhase;

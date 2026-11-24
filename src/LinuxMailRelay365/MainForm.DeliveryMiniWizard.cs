@@ -16,23 +16,56 @@ internal sealed partial class MainForm
         selectedMailScenario != MailScenarioPlanner.Keep &&
         mailTransport.SelectedIndex == 0;
 
-    private int NextDeliveryPhase()
+    private static int[] DeliverySequence(bool keep, bool oauth) =>
+        keep ? [0, DeliveryReviewPhase] :
+        oauth ? [0, 1, 2, 3, DeliveryReviewPhase] :
+        [0, 1, DeliveryReviewPhase];
+
+    private static int AdjacentDeliveryPhase(int phase, bool keep, bool oauth, bool forward)
     {
-        if (selectedMailScenario == MailScenarioPlanner.Keep) return DeliveryReviewPhase;
-        if (deliveryPhase == 0) return 1;
-        if (deliveryPhase == 1) return RequiresOAuthCertificate() ? 2 : DeliveryReviewPhase;
-        if (deliveryPhase == 2) return 3;
-        return DeliveryReviewPhase;
+        if (!forward && phase == DeliveryAdvancedPhase) return DeliveryReviewPhase;
+        if (!forward && phase == DeliveryCertificateToolsPhase)
+            return oauth && !keep ? 2 : DeliveryReviewPhase;
+        int[] sequence = DeliverySequence(keep, oauth);
+        int index = Array.IndexOf(sequence, phase);
+        // Route changes can invalidate a previously visible certificate page.
+        if (index < 0) return forward ? DeliveryReviewPhase : 0;
+        return sequence[Math.Clamp(index + (forward ? 1 : -1), 0, sequence.Length - 1)];
     }
 
-    private int PreviousDeliveryPhase() => deliveryPhase switch
+    private int NextDeliveryPhase() => AdjacentDeliveryPhase(deliveryPhase,
+        selectedMailScenario == MailScenarioPlanner.Keep, RequiresOAuthCertificate(), true);
+
+    private int PreviousDeliveryPhase() => AdjacentDeliveryPhase(deliveryPhase,
+        selectedMailScenario is MailScenarioPlanner.Keep or MailScenarioPlanner.Choose,
+        RequiresOAuthCertificate(), false);
+
+    internal static bool DeliveryNavigationSelfTest()
     {
-        DeliveryAdvancedPhase => DeliveryReviewPhase,
-        DeliveryCertificateToolsPhase => 2,
-        DeliveryReviewPhase => RequiresOAuthCertificate() ? 3 :
-            selectedMailScenario is MailScenarioPlanner.Keep or MailScenarioPlanner.Choose ? 0 : 1,
-        _ => Math.Max(0, deliveryPhase - 1)
-    };
+        foreach (var (keep, oauth, expected) in new[]
+        {
+            (true, false, new[] { 0, 4 }),
+            (true, true, new[] { 0, 4 }),
+            (false, false, new[] { 0, 1, 4 }),
+            (false, true, new[] { 0, 1, 2, 3, 4 })
+        })
+        {
+            if (!DeliverySequence(keep, oauth).SequenceEqual(expected)) return false;
+            for (int i = 0; i < expected.Length; i++)
+            {
+                if (AdjacentDeliveryPhase(expected[i], keep, oauth, true) !=
+                    expected[Math.Min(i + 1, expected.Length - 1)]) return false;
+                if (AdjacentDeliveryPhase(expected[i], keep, oauth, false) !=
+                    expected[Math.Max(0, i - 1)]) return false;
+            }
+            if (AdjacentDeliveryPhase(DeliveryAdvancedPhase, keep, oauth, false) != DeliveryReviewPhase)
+                return false;
+            if (AdjacentDeliveryPhase(DeliveryCertificateToolsPhase, keep, oauth, false) !=
+                (oauth && !keep ? 2 : DeliveryReviewPhase)) return false;
+        }
+        return AdjacentDeliveryPhase(2, false, false, false) == 0 &&
+            AdjacentDeliveryPhase(3, false, false, true) == DeliveryReviewPhase;
+    }
 
     private void ShowDeliveryProgress(TableLayoutPanel page)
     {
@@ -56,9 +89,9 @@ internal sealed partial class MainForm
         };
         AddLine(page, UiTheme.Emphasis(T("Способ отправки", "Delivery setup", "הגדרת שליחה") +
             " · " + progress, width));
-        AddLine(page, MailFlowText(string.Join("  →  ", keep ? new[] { method, review } :
-            oauth ? new[] { method, settings, certificate, cloud, review } :
-            new[] { method, settings, review }), width));
+        string[] names = [method, settings, certificate, cloud, review];
+        AddLine(page, MailFlowText(string.Join("  →  ", DeliverySequence(keep, oauth)
+            .Select(phase => phase == deliveryPhase ? "[" + names[phase] + "]" : names[phase])), width));
     }
 
     private void AddDeliveryAdvancedAction(TableLayoutPanel page)
