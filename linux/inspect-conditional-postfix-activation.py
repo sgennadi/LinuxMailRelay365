@@ -66,7 +66,8 @@ def need(condition, reason):
 
 def trusted_tool(name):
     paths = {"systemctl": ("/usr/bin/systemctl", "/bin/systemctl"),
-             "ip": ("/usr/sbin/ip", "/usr/bin/ip", "/sbin/ip", "/bin/ip")}
+             "ip": ("/usr/sbin/ip", "/usr/bin/ip", "/sbin/ip", "/bin/ip"),
+             "matchpathcon": ("/usr/sbin/matchpathcon", "/usr/bin/matchpathcon")}
     for candidate in paths[name]:
         if not os.path.exists(candidate):
             continue
@@ -129,6 +130,37 @@ def key_values(raw, expected):
         values[key] = value.strip()
     need(set(values) == set(expected), "incomplete_native_parameter_output")
     return values
+
+
+def policy_file_label(path, command=system_command):
+    """Read the installed file-context policy, not a guessed type.
+
+    Force regular-file matching for a destination that does not exist yet.
+    -N requests the raw, untranslated label; no relabel or policy mutation.
+    """
+    need(path in (CONFIG + "/main.cf", CONFIG + "/master.cf") or
+         re.fullmatch(r"/etc/postfix/lmr365-conditional-[a-f0-9]{64}-sender"
+                      r"\.(?:db|lmdb)", path), "invalid_selinux_policy_path")
+    raw = command("matchpathcon", ["-N", "-n", "-m", "file", path])
+    lines = raw.splitlines()
+    need(len(lines) == 1 and lines[0] == lines[0].strip(),
+         "selinux_policy_label_unverified")
+    return T.checked_label(lines[0].encode("ascii") + b"\0")
+
+
+def review_selinux_labels(config, plan, backend, uid, command=system_command):
+    # Not wired to production Apply: actual Enforcing VM acceptance is
+    # required. Refuse non-default/custom unexpected labels; never relabel
+    # a working configuration in order to make it pass.
+    name, suffix = T.checked_name(plan, backend)
+    for filename in ("main.cf", "master.cf"):
+        _, meta = T.config_file(config, filename, uid)
+        actual = meta.get("selinux")
+        expected = policy_file_label(CONFIG + "/" + filename, command)
+        need(actual is not None and
+             T.label_bytes(actual).rstrip(b"\0") ==
+             T.label_bytes(expected).rstrip(b"\0"), "selinux_config_label_mismatch")
+    return policy_file_label(CONFIG + "/" + name + suffix, command)
 
 
 def postconf_values(runner=M.native_command):

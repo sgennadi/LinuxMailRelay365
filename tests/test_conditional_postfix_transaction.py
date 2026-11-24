@@ -157,6 +157,67 @@ class TransactionTests(unittest.TestCase):
             self.apply()
         self.assertFalse((self.root / T.BACKUP_BASE).exists())
 
+    def test_labeled_manifest_apply_restore_and_legacy_compatibility(self):
+        # Exercise real filesystem xattrs using an unprivileged user namespace
+        # label substitute. This is not a kernel SELinux acceptance test.
+        attribute = "user.lmr365_test_selinux"
+        config_label = b"system_u:object_r:postfix_etc_t:s0\0"
+        master_label = b"system_u:object_r:postfix_etc_t:s0:c0,c2\0"
+        map_label = b"system_u:object_r:postfix_etc_t:s0\0"
+        main_path = self.config / "main.cf"
+        master_path = self.config / "master.cf"
+        try:
+            os.setxattr(str(main_path), attribute, config_label)
+            os.setxattr(str(master_path), attribute, master_label)
+        except OSError as exc:
+            self.skipTest("filesystem user xattrs unavailable: " + str(exc.errno))
+        with patch.object(T, "SELINUX_XATTR", attribute):
+            # No label-bearing config may silently fall back to v1.
+            with self.assertRaises(T.Refused):
+                self.preview()
+            def labeled():
+                return T.preview(self.fd, self.plan, "hash", "b"*64, "c"*64,
+                                 self.db, self.uid, self.guard, map_label.hex())
+            sha, info, files = labeled()
+            self.assertEqual(info["version"], 2)
+            self.assertEqual(info["main_meta"]["selinux"], config_label.hex())
+            self.assertEqual(info["master_meta"]["selinux"], master_label.hex())
+            self.assertEqual(info["map_selinux"], map_label.hex())
+            self.assertEqual(T.apply(self.fd, self.parent, sha, T.CONFIRM,
+                self.uid, self.gid, self.guard, self.verify, labeled), sha)
+            self.assertEqual(os.getxattr(str(main_path), attribute), config_label)
+            self.assertEqual(os.getxattr(str(master_path), attribute), master_label)
+            self.assertEqual(os.getxattr(str(self.target), attribute), map_label)
+            self.assertEqual(T.load_backup(self.parent, sha, self.uid), (info, files))
+            self.assertEqual(T.restore(self.fd, self.parent, sha, T.RESTORE,
+                self.uid, self.gid, self.guard, self.verify), sha)
+            self.assertEqual(main_path.read_bytes(), self.main)
+            self.assertEqual(os.getxattr(str(main_path), attribute), config_label)
+            self.assertEqual(os.getxattr(str(master_path), attribute), master_label)
+            self.assertFalse(self.target.exists())
+
+    def test_unrecognized_attributes_and_bad_labels_refused(self):
+        path = self.config / "main.cf"
+        try:
+            os.setxattr(str(path), "user.lmr365_unknown", b"unmanaged")
+        except OSError as exc:
+            self.skipTest("filesystem user xattrs unavailable: " + str(exc.errno))
+        with self.assertRaisesRegex(T.Refused, "unsupported_extended_file_metadata"):
+            self.preview()
+        for raw in (b"", b"wrong", b"u:r:t:s0\n", b"u:r:t:s0\0extra"):
+            with self.assertRaises(T.Refused):
+                T.checked_label(raw)
+
+    def test_label_install_failure_does_not_replace_original(self):
+        path = self.config / "main.cf"
+        with patch.object(T, "restore_file_metadata", side_effect=OSError("relabel denied")):
+            with self.assertRaises(OSError):
+                T.atomic_write(self.fd, "main.cf", b"changed\n",
+                               {"mode": 0o644, "gid": self.gid}, self.uid, True)
+        self.assertEqual(path.read_bytes(), self.main)
+        self.assertFalse(any(x.name.startswith(".lmr365-txn-")
+                             for x in self.config.iterdir()))
+
     def test_existing_assignment_is_not_rewritten(self):
         with self.assertRaises(T.Refused):
             T.proposed(self.main + b"sender_dependent_relayhost_maps =\n",

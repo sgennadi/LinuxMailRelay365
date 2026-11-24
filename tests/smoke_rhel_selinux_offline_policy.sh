@@ -108,6 +108,24 @@ grep -Fxq 'RHEL_ENFORCING_LIVE_SMTP=refused' "$state/live"
 grep -Fxq 'RHEL_ENFORCING_REASON=selinux_enforcing_mode_required' "$state/live"
 grep -Fxq 'CHANGES_APPLIED=no' "$state/live"
 
+# Actual installed policy path matching for a not-yet-created managed map.
+# This is policy lookup only; no security.selinux writes in Docker.
+python3 - <<'PY'
+import importlib.util
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location(
+    "conditional_policy", str(Path("linux/inspect-conditional-postfix-activation.py")))
+P = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(P)
+for path in ("/etc/postfix/main.cf", "/etc/postfix/master.cf",
+             "/etc/postfix/lmr365-conditional-" + "a"*64 + "-sender.db",
+             "/etc/postfix/lmr365-conditional-" + "a"*64 + "-sender.lmdb"):
+    raw = P.T.label_bytes(P.policy_file_label(path))
+    assert raw.endswith(b"\0")
+    print("CONDITIONAL_NATIVE_FILE_POLICY_QUERY=PASS")
+PY
+python3 -m unittest discover -s tests -p test_conditional_selinux_policy.py
 python3 -m unittest discover -s tests -p test_rhel_selinux_doctor.py
 python3 -m unittest discover -s tests -p test_rhel_selinux_port_manager.py
 python3 -m unittest discover -s tests -p test_rhel_enforcing_live_smoke.py

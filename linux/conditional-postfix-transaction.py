@@ -10,6 +10,7 @@ and verification callbacks are injected; there is no permissive default.
 import importlib.util
 import os
 import pathlib
+import re
 import stat
 import uuid
 
@@ -27,6 +28,7 @@ PARAMETER = "sender_dependent_relayhost_maps"
 CONFIRM = "APPLY_STOPPED_POSTFIX_SENDER_MAP"
 RESTORE = "RESTORE_STOPPED_POSTFIX_SENDER_MAP"
 LIMIT = 2 * 1024 * 1024
+SELINUX_XATTR = "security.selinux"
 
 
 def require(condition, message):
@@ -40,15 +42,75 @@ def checked_name(plan, backend):
     return "lmr365-conditional-" + plan + "-sender", M.MAP_SUFFIX[backend]
 
 
+def checked_label(raw):
+    """Bounded raw context, including an optional terminating NUL."""
+    require(type(raw) is bytes and 0 < len(raw) <= 1024,
+            "invalid_selinux_label")
+    value = raw[:-1] if raw.endswith(b"\0") else raw
+    require(re.fullmatch(rb"[A-Za-z0-9_]+:[A-Za-z0-9_]+:[A-Za-z0-9_]+:"
+                         rb"[A-Za-z0-9_.,:-]+", value) is not None,
+            "invalid_selinux_label")
+    return raw.hex()
+
+
+def label_bytes(value):
+    require(type(value) is str and 0 < len(value) <= 2048 and
+            re.fullmatch(r"[0-9a-f]+", value) and len(value) % 2 == 0,
+            "invalid_selinux_label_encoding")
+    raw = bytes.fromhex(value)
+    require(checked_label(raw) == value, "invalid_selinux_label_encoding")
+    return raw
+
+
+def file_label(handle):
+    names = set(os.listxattr(handle))
+    require(names in (set(), {SELINUX_XATTR}),
+            "unsupported_extended_file_metadata")
+    if SELINUX_XATTR not in names:
+        return None
+    return checked_label(os.getxattr(handle, SELINUX_XATTR))
+
+
+def valid_meta(meta, labeled):
+    require(type(meta) is dict and set(meta) ==
+            ({"mode", "gid", "selinux"} if labeled else {"mode", "gid"}) and
+            type(meta["mode"]) is int and 0 <= meta["mode"] <= 0o777 and
+            not meta["mode"] & 0o022 and type(meta["gid"]) is int and
+            meta["gid"] >= 0, "invalid_config_metadata")
+    if labeled:
+        label_bytes(meta["selinux"])
+
+
+def map_metadata(info, gid):
+    meta = {"mode": 0o640, "gid": gid}
+    if info.get("version") == 2:
+        label_bytes(info["map_selinux"])
+        meta["selinux"] = info["map_selinux"]
+    return meta
+
+
+def restore_file_metadata(handle, meta):
+    # Only SELinux's own xattr is supported. Do not copy or remove ACLs,
+    # capabilities, integrity attributes, or arbitrary extended metadata.
+    existing = file_label(handle)
+    expected = meta.get("selinux")
+    if expected is not None:
+        desired = label_bytes(expected)
+        if existing != expected:
+            os.setxattr(handle, SELINUX_XATTR, desired)
+    require(file_label(handle) == expected, "file_label_not_preserved")
+
+
 def config_file(fd, name, uid, maximum=LIMIT):
     handle = os.open(name, M.READ_FLAGS, dir_fd=fd)
     with os.fdopen(handle, "rb") as stream:
         a = os.fstat(stream.fileno())
         require(stat.S_ISREG(a.st_mode) and a.st_uid == uid and
                 a.st_nlink == 1 and not a.st_mode & 0o7022 and
-                0 < a.st_size <= maximum and not os.listxattr(stream.fileno()),
-                "untrusted_config_file")
+                0 < a.st_size <= maximum, "untrusted_config_file")
+        label = file_label(stream.fileno())
         data = stream.read(maximum + 1)
+        require(file_label(stream.fileno()) == label, "file_label_changed_during_read")
         b = os.fstat(stream.fileno())
         c = os.stat(name, dir_fd=fd, follow_symlinks=False)
         def identity(x):
@@ -56,7 +118,10 @@ def config_file(fd, name, uid, maximum=LIMIT):
                     x.st_size, x.st_nlink, x.st_mtime_ns, x.st_ctime_ns)
         require(len(data) == a.st_size and identity(a) == identity(b) ==
                 identity(c), "config_changed_during_read")
-        return data, {"mode": stat.S_IMODE(a.st_mode), "gid": a.st_gid}
+        meta = {"mode": stat.S_IMODE(a.st_mode), "gid": a.st_gid}
+        if label is not None:
+            meta["selinux"] = label
+        return data, meta
 
 
 def exists(fd, name):
@@ -85,7 +150,8 @@ def context(fd, uid):
     return [info.st_dev, info.st_ino]
 
 
-def preview(config, plan, backend, stage_sha, compiled_sha, database, uid, guard):
+def preview(config, plan, backend, stage_sha, compiled_sha, database, uid, guard,
+            map_selinux=None):
     guard()  # caller must refuse unless maintenance evidence is fresh
     name, suffix = checked_name(plan, backend)
     require(all(type(x) is str and M.HEX.fullmatch(x)
@@ -96,14 +162,21 @@ def preview(config, plan, backend, stage_sha, compiled_sha, database, uid, guard
             "managed_destination_already_exists")
     main, main_meta = config_file(config, "main.cf", uid)
     master, master_meta = config_file(config, "master.cf", uid)
+    labeled = map_selinux is not None
+    valid_meta(main_meta, labeled)
+    valid_meta(master_meta, labeled)
+    if labeled:
+        label_bytes(map_selinux)
     files = dict(zip(FILES, (main, master, proposed(main, plan, backend), database)))
     manifest = {
-        "version": 1, "plan": plan, "backend": backend,
+        "version": 2 if labeled else 1, "plan": plan, "backend": backend,
         "stage_sha": stage_sha, "compiled_sha": compiled_sha,
         "config_identity": context(config, uid),
         "main_meta": main_meta, "master_meta": master_meta,
         "files": {key: M.digest(value) for key, value in files.items()},
     }
+    if labeled:
+        manifest["map_selinux"] = map_selinux
     guard()
     require(config_file(config, "main.cf", uid) == (main, main_meta) and
             config_file(config, "master.cf", uid) == (master, master_meta) and
@@ -149,21 +222,23 @@ def load_backup(parent, sha, uid):
                 read_publication(fd, sha, uid)
             raw = M.read_file(fd, MANIFEST, uid)
             info = M.decode(raw)
+            common = {"version", "plan", "backend", "stage_sha",
+                      "compiled_sha", "config_identity", "main_meta",
+                      "master_meta", "files"}
             require(type(info) is dict and M.canonical(info) == raw and
-                    M.digest(raw) == sha and info.get("version") == 1 and
-                    set(info) == {"version", "plan", "backend", "stage_sha",
-                                  "compiled_sha", "config_identity", "main_meta",
-                                  "master_meta", "files"}, "invalid_backup_manifest")
+                    M.digest(raw) == sha and type(info.get("version")) is int and
+                    info["version"] in (1, 2), "invalid_backup_manifest")
+            labeled = info["version"] == 2
+            require(set(info) == (common | {"map_selinux"} if labeled else common),
+                    "invalid_backup_manifest")
+            if labeled:
+                label_bytes(info["map_selinux"])
             checked_name(info["plan"], info["backend"])
             for key in ("stage_sha", "compiled_sha"):
                 require(type(info[key]) is str and M.HEX.fullmatch(info[key]),
                         "invalid_manifest_digest")
             for key in ("main_meta", "master_meta"):
-                meta = info[key]
-                require(type(meta) is dict and set(meta) == {"mode", "gid"} and
-                        type(meta["mode"]) is int and 0 <= meta["mode"] <= 0o777 and
-                        not meta["mode"] & 0o022 and type(meta["gid"]) is int and
-                        meta["gid"] >= 0, "invalid_config_metadata")
+                valid_meta(info[key], labeled)
             files = {k: M.read_file(fd, k, uid, M.MAX_DB_BYTES if
                                    k == "candidate.db" else LIMIT) for k in FILES}
             require(info["files"] == {k: M.digest(v) for k, v in files.items()}
@@ -242,6 +317,7 @@ def atomic_write(fd, name, data, meta, uid, replace, published=None):
             os.fchmod(stream.fileno(), meta["mode"])
             stream.write(data)
             stream.flush()
+            restore_file_metadata(stream.fileno(), meta)
             os.fsync(stream.fileno())
             prepared = file_identity(os.fstat(stream.fileno()))
         if replace:
@@ -275,7 +351,7 @@ def restore(config, parent, sha, confirmation, uid, map_gid, guard, verify):
     current, meta = config_file(config, "main.cf", uid)
     require(meta == info["main_meta"] and current in (
             files["main.before"], files["main.after"]), "main_drift_blocks_restore")
-    map_meta = {"mode": 0o640, "gid": map_gid}
+    map_meta = map_metadata(info, map_gid)
     had_map = exists(config, target)
     publication = publication_receipt(parent, sha, uid)
     if had_map:
@@ -320,7 +396,7 @@ def apply(config, parent, reviewed, confirmation, uid, map_gid, guard, verify,
     require(fresh_preview() == (sha, info, files), "drift_during_backup")
     name, suffix = checked_name(info["plan"], info["backend"])
     target = name + suffix
-    map_meta = {"mode": 0o640, "gid": map_gid}
+    map_meta = map_metadata(info, map_gid)
     published = [None]
     def remember_publication(identity):
         published[0] = identity

@@ -43,7 +43,7 @@ def observe(config, parent, sha, info, files, uid, map_gid):
         return "map_ownership_unproven"
     try:
         T.checked_published_map(config, target, uid, files["candidate.db"],
-                                {"mode": 0o640, "gid": map_gid}, receipt)
+                                T.map_metadata(info, map_gid), receipt)
     except (Refused, OSError, ValueError):
         return "map_identity_or_content_changed"
     return "original_owned_map" if original else "configured_owned_map"
