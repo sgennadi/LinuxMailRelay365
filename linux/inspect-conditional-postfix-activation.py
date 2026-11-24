@@ -67,7 +67,8 @@ def need(condition, reason):
 def trusted_tool(name):
     paths = {"systemctl": ("/usr/bin/systemctl", "/bin/systemctl"),
              "ip": ("/usr/sbin/ip", "/usr/bin/ip", "/sbin/ip", "/bin/ip"),
-             "matchpathcon": ("/usr/sbin/matchpathcon", "/usr/bin/matchpathcon")}
+             "matchpathcon": ("/usr/sbin/matchpathcon", "/usr/bin/matchpathcon"),
+             "semanage": ("/usr/sbin/semanage", "/usr/bin/semanage")}
     for candidate in paths[name]:
         if not os.path.exists(candidate):
             continue

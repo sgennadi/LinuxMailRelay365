@@ -156,3 +156,21 @@ interruption, policy drift, foreign inodes and lost receipts. These APIs are
 not wired to the production CLI/GUI, do not change the active SELinux guard,
 and do not establish real Enforcing-domain permissions. The published RC14
 remains unchanged.
+
+## Outbound route readiness in the Windows planner (post-RC14)
+
+The new read-only host command accepts a nonsecret sender-plan array on stdin,
+selects an installed indexed Postfix backend (Hash, then LMDB, or an explicit
+selection), reports native Cyrus client availability and checks every distinct
+outbound TCP port against the current SELinux port-context table. It checks
+prospective map and live config labels with the existing exact-path metadata
+review. Installed-map inspection requires an explicit backend and --installed.
+Missing tools, conflicting specific types, malformed or changed policy and
+metadata drift are reported as unverified or requiring review. No port mapping
+is created, no SELinux access rule is inferred, and no SMTP contact occurs.
+The Windows Multi-provider planner exposes the draft check even while Postfix
+is running. The strict receipt is bound to the host and exact draft; it cannot
+serve as an Apply approval. The CLI does not yet invoke the scoped labeled
+transaction APIs. AVC diagnostics, real SELinux domain access, private-store
+runtime acceptance and policy-preserving mutations remain outstanding. The
+published RC14 is unchanged.

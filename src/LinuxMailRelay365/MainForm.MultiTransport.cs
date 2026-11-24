@@ -74,6 +74,7 @@ internal sealed partial class MainForm
             "До 8 отдельных транспортов по отправителю. STARTTLS/Implicit TLS, собственный порт и отдельный пароль. Установка и редактирование принадлежащего менеджеру набора только на остановленном Postfix. SELinux/ACL и OAuth2 ещё не поддерживаются. Нужен полный backup. Входящие порты не меняются.",
             "Up to 8 independent sender transports. STARTTLS/implicit TLS, individual ports and passwords. Install or edit a manager-owned set on stopped Postfix only. SELinux/ACL and OAuth2 are not yet supported. Full backup required. Inbound ports are unchanged.",
             "עד 8 נתיבי שולח עם TLS ופרטי התחברות נפרדים. התקנה ועריכה של תצורה מנוהלת ב-Postfix כבוי בלבד. נדרש גיבוי מלא."), width, warning: true));
+        ShowTransportSelinuxReadiness(page, width, l);
         ShowInstalledMultiTransport(page, width, l, hostContext);
         AddAction(page, TranslateMailFlow(l, "Найти ревизии Multi-provider",
             "Scan multi-provider recovery revisions", "סרוק גרסאות שחזור"),
