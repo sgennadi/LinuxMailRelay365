@@ -82,8 +82,34 @@ def native_command(*args, expected_code=0, child=False):
     return parse_fields(result.stdout)
 
 
+# Log only predefined state names and bounded counts, never raw probe
+# output, pathnames, mail data or credentials. Keep the original refusal.
+def log_blocked_review(fields):
+    choices = {
+        "GATE": (CANDIDATE, "blocked_inventory_drift", "blocked_offline_preflight",
+                 "blocked_untrusted_write_scope"),
+        "OFFLINE_SERVICE": ("stopped_declared", "running", "unverified"),
+        "OFFLINE_PROCESSES": ("none_observed", "running", "unverified"),
+        "OFFLINE_QUEUE": ("empty_reported", "nonempty_reported", "unverified"),
+        "OFFLINE_LISTENER": ("none_observed", "running", "unverified"),
+        "OFFLINE_GATE": ("offline_candidate_manual_recovery_only", "blocked_running",
+                         "blocked_nonempty_queue", "blocked_unverified"),
+    }
+    for key, allowed in choices.items():
+        value = fields.get("SENDMAIL_V2_PLAN_" + key)
+        print(PREFIX + "REVIEW_" + key + "=" +
+              (value if value in allowed else "unrecognized"), flush=True)
+    for key in ("COMPILED_TARGETS", "COMPILED_CHANGED", "OTHER_CHANGED",
+                "MISSING", "EXTRA", "METADATA_CHANGED", "OBJECT_DRIFT"):
+        value = fields.get("SENDMAIL_V2_PLAN_" + key, "")
+        print(PREFIX + "REVIEW_" + key + "=" +
+              (value if re.fullmatch(r"[0-9]{1,4}", value) else "unrecognized"), flush=True)
+
+
 def review(snapshot_id, changed):
     fields = native_command("--sendmail-v2-plan", snapshot_id)
+    if fields.get("SENDMAIL_V2_PLAN_GATE") != CANDIDATE:
+        log_blocked_review(fields)
     expect(fields, "SENDMAIL_V2_PLAN_SNAPSHOT", snapshot_id)
     expect(fields, "SENDMAIL_V2_PLAN_STATUS", "review_only")
     expect(fields, "SENDMAIL_V2_PLAN_GATE", CANDIDATE)

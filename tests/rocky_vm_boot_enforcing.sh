@@ -61,6 +61,12 @@ PY
 ssh-keygen -q -t ed25519 -N "" -f "$work/guest-key"
 cat > "$work/user-data" <<EOF
 #cloud-config
+# Sendmail's default resolver can wait 60 seconds for an unqualified name.
+# Give the disposable guest a local-only FQDN without depending on external DNS.
+hostname: rocky-selinux-ci
+fqdn: rocky-selinux-ci.example.invalid
+prefer_fqdn_over_hostname: false
+manage_etc_hosts: true
 disable_root: true
 ssh_pwauth: false
 users:
@@ -74,7 +80,7 @@ users:
 EOF
 cat > "$work/meta-data" <<EOF
 instance-id: lmr365-$GITHUB_RUN_ID
-local-hostname: rocky-selinux-ci
+local-hostname: rocky-selinux-ci.example.invalid
 EOF
 cloud-localds "$work/seed.iso" "$work/user-data" "$work/meta-data"
 qemu-img create -q -f qcow2 -F qcow2 -b "$work/$image" "$work/overlay.qcow2" 16G
@@ -114,6 +120,13 @@ test "$(cat /proc/1/comm)" = systemd
 test "$(getenforce)" = Enforcing
 test "$(cat /sys/fs/selinux/enforce)" = 1
 sudo systemctl is-active --quiet sshd
+# Fail fast if cloud-init did not create the guest's local hostname mapping.
+# No hostname or DNS setting on the runner or any real mail server is changed.
+test "$(hostname -s)" = rocky-selinux-ci
+test "$(timeout 5 hostname -f)" = rocky-selinux-ci.example.invalid
+getent -s files hosts rocky-selinux-ci.example.invalid >/dev/null
+getent -s files hosts rocky-selinux-ci >/dev/null
+echo "LMR365_GUEST_LOCAL_FQDN=verified"
 echo "LMR365_GUEST_DISTRO=rocky_9_9"
 echo "LMR365_GUEST_PID1=systemd"
 echo "LMR365_GUEST_SELINUX=enforcing"

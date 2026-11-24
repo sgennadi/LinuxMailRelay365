@@ -10,6 +10,7 @@ import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 PATH = ROOT / "linux" / "foreign-mta-config-backup.py"
@@ -308,6 +309,29 @@ class ForeignMtaBackupTests(unittest.TestCase):
                     ' 0.0.0.0:* users:(("other",pid=123,fd=4))\n')
                 self.assertEqual(snapshot.offline_listener_state(
                     "exim", lambda args: (0, rows)), expected)
+
+    def test_sendmail_queue_probe_refuses_other_mta_alternative(self):
+        for resolved in ("/usr/sbin/sendmail.postfix", "/usr/sbin/exim4",
+                         "/usr/libexec/postfix/sendmail"):
+            with self.subTest(resolved=resolved), \
+                    patch.object(snapshot.shutil, "which", return_value="/usr/sbin/sendmail"), \
+                    patch.object(snapshot.os.path, "realpath", return_value=resolved), \
+                    patch.object(snapshot.subprocess, "run") as runner:
+                self.assertIsNone(snapshot.read_only_probe(["sendmail", "-bp"]))
+                self.assertIsNone(snapshot.read_only_probe(["sendmail", "-Ac", "-bp"]))
+                runner.assert_not_called()
+
+    def test_sendmail_queue_probe_executes_verified_native_target(self):
+        metadata = SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=0)
+        result = subprocess.CompletedProcess([], 0, b"Mail queue is empty\n")
+        with patch.object(snapshot.shutil, "which", return_value="/usr/sbin/sendmail"), \
+                patch.object(snapshot.os.path, "realpath", return_value="/usr/sbin/sendmail.sendmail"), \
+                patch.object(snapshot.os, "stat", return_value=metadata), \
+                patch.object(snapshot.subprocess, "run", return_value=result) as runner:
+            self.assertEqual(snapshot.read_only_probe(["sendmail", "-Ac", "-bp"]),
+                             (0, "Mail queue is empty\n"))
+            self.assertEqual(runner.call_args[0][0], ["/usr/sbin/sendmail.sendmail", "-Ac", "-bp"])
+            self.assertEqual(runner.call_args[1]["timeout"], 8)
 
     def test_sendmail_client_queue_unknown_blocks_manual_restore_preflight(self):
         with tempfile.TemporaryDirectory() as directory:

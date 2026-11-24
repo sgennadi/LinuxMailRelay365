@@ -1,5 +1,7 @@
 """Source and guard tests; no host configuration or services are modified."""
 import importlib.util
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 import subprocess
 import unittest
@@ -45,6 +47,32 @@ class ProductRestoreFixtureTests(unittest.TestCase):
             self.assertEqual(kwargs["timeout"], 240)
             with self.assertRaisesRegex(RuntimeError, "CLI_EXIT_91"):
                 fixture.native_command("--pending-inspect")
+
+    def test_blocked_review_logs_only_safe_categories_and_counts(self):
+        output = io.StringIO()
+        fields = {"SENDMAIL_V2_PLAN_GATE": "blocked_offline_preflight",
+                  "SENDMAIL_V2_PLAN_OFFLINE_QUEUE": "unverified",
+                  "SENDMAIL_V2_PLAN_OFFLINE_SERVICE": "stopped_declared",
+                  "SENDMAIL_V2_PLAN_OTHER_CHANGED": "0",
+                  "SENDMAIL_V2_PLAN_OFFLINE_LISTENER": "private raw value",
+                  "SENDMAIL_V2_PLAN_EXTRA": "sensitive text"}
+        with redirect_stdout(output):
+            fixture.log_blocked_review(fields)
+        value = output.getvalue()
+        self.assertIn("REVIEW_GATE=blocked_offline_preflight", value)
+        self.assertIn("REVIEW_OFFLINE_QUEUE=unverified", value)
+        self.assertIn("REVIEW_OTHER_CHANGED=0", value)
+        self.assertIn("REVIEW_OFFLINE_LISTENER=unrecognized", value)
+        self.assertNotIn("private raw value", value)
+        self.assertNotIn("sensitive text", value)
+
+    def test_vm_hostname_is_locally_qualified_before_native_probes(self):
+        boot = (ROOT / "tests/rocky_vm_boot_enforcing.sh").read_text()
+        self.assertIn("fqdn: rocky-selinux-ci.example.invalid", boot)
+        self.assertIn("manage_etc_hosts: true", boot)
+        self.assertIn("getent -s files hosts rocky-selinux-ci.example.invalid", boot)
+        self.assertLess(boot.index("LMR365_GUEST_LOCAL_FQDN=verified"),
+                        boot.index("lmr365-sendmail-systemd-enforcing.sh"))
 
     def test_wired_before_sendmail_start_with_attested_vm(self):
         source = FILE.read_text(encoding="utf-8")

@@ -795,12 +795,20 @@ def read_only_probe(args, timeout=8):
     resolved = os.path.realpath(binary)
     if not resolved.startswith(("/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/")):
         return None
+    # The system sendmail command can be an alternatives link to Postfix
+    # or Exim. Their exit code/output cannot prove both native Sendmail
+    # queues are empty. Match the native parser's fail-closed identity rule.
+    if args[0] == "sendmail" and resolved not in (
+            "/usr/sbin/sendmail", "/usr/sbin/sendmail.sendmail",
+            "/usr/bin/sendmail", "/usr/bin/sendmail.sendmail",
+            "/sbin/sendmail", "/sbin/sendmail.sendmail"):
+        return None
     try:
         meta = os.stat(resolved)
         if not stat.S_ISREG(meta.st_mode) or meta.st_uid != 0 or                 meta.st_mode & 0o022:
             return None
         result = subprocess.run(
-            [binary] + list(args[1:]), stdout=subprocess.PIPE,
+            [resolved if args[0] == "sendmail" else binary] + list(args[1:]), stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, timeout=timeout, check=False,
             env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
         if len(result.stdout) > 8192:
