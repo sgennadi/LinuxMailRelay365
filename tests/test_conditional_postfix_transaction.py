@@ -4,6 +4,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -85,6 +86,19 @@ class TransactionTests(unittest.TestCase):
         self.assertFalse(self.target.exists())
         self.assertEqual((self.config / "main.cf").read_bytes(), self.main)
         self.assertEqual(T.load_backup(self.parent, self.sha, self.uid)[0], self.info)
+
+    def test_no_clobber_race_never_removes_external_map(self):
+        original = T.atomic_write
+        def race(fd, name, data, meta, uid, replace, published=None):
+            if not replace:
+                self.target.write_bytes(data)
+                self.target.chmod(0o640)
+            return original(fd, name, data, meta, uid, replace, published)
+        with patch.object(T, "atomic_write", side_effect=race):
+            with self.assertRaises(FileExistsError):
+                self.apply()
+        self.assertEqual(self.target.read_bytes(), self.db)
+        self.assertEqual((self.config / "main.cf").read_bytes(), self.main)
 
     def test_drift_blocks_restore(self):
         self.apply()

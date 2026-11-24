@@ -171,7 +171,7 @@ def load_backup(parent, sha, uid):
         os.close(base)
 
 
-def atomic_write(fd, name, data, meta, uid, replace):
+def atomic_write(fd, name, data, meta, uid, replace, published=None):
     temp = ".lmr365-txn-" + uuid.uuid4().hex
     handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW |
                      os.O_CLOEXEC, 0o600, dir_fd=fd)
@@ -187,6 +187,11 @@ def atomic_write(fd, name, data, meta, uid, replace):
         else:
             os.link(temp, name, src_dir_fd=fd, dst_dir_fd=fd,
                     follow_symlinks=False)
+            # Remember successful exclusive publication before any later
+            # operation can fail. Never roll back by deleting someone else's
+            # map when link() itself did not succeed.
+            if published is not None:
+                published()
             os.unlink(temp, dir_fd=fd)
         os.fsync(fd)
     finally:
@@ -201,6 +206,7 @@ def restore(config, parent, sha, confirmation, uid, map_gid, guard, verify):
     name, suffix = checked_name(info["plan"], info["backend"])
     target = name + suffix
     guard()
+    require(not exists(config, name), "unexpected_managed_source_file")
     require(config_file(config, "master.cf", uid) ==
             (files["master.before"], info["master_meta"]),
             "master_drift_blocks_restore")
@@ -250,9 +256,13 @@ def apply(config, parent, reviewed, confirmation, uid, map_gid, guard, verify,
     name, suffix = checked_name(info["plan"], info["backend"])
     target = name + suffix
     map_meta = {"mode": 0o640, "gid": map_gid}
+    published = [False]
+    def remember_publication():
+        published[0] = True
     try:
         guard()
-        atomic_write(config, target, files["candidate.db"], map_meta, uid, False)
+        atomic_write(config, target, files["candidate.db"], map_meta, uid,
+                     False, remember_publication)
         guard()
         require(config_file(config, "main.cf", uid) ==
                 (files["main.before"], info["main_meta"]) and
@@ -269,6 +279,10 @@ def apply(config, parent, reviewed, confirmation, uid, map_gid, guard, verify,
                 config_file(config, target, uid, M.MAX_DB_BYTES) ==
                 (files["candidate.db"], map_meta), "post_apply_integrity_failed")
     except Exception:
+        if not published[0]:
+            # No active configuration write was attempted; retain the
+            # backup and leave any externally created map untouched.
+            raise
         try:
             restore(config, parent, sha, RESTORE, uid, map_gid, guard, verify)
         except Exception:

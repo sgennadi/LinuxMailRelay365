@@ -1,7 +1,6 @@
 # Conditional sender-map transaction core (RC14 development)
 
-This is a file transaction library, not a runnable production activation
-command. Tests use private temporary directories and explicitly injected
+This is a file transaction library, not a runnable production activation command. The separate experimental offline CLI integrates guarded review and verification. See CONDITIONAL_POSTFIX_OFFLINE.md. Tests use private temporary directories and explicitly injected
 maintenance/native verification callbacks. The future Linux integration must
 prove stopped primary Postfix, empty queues (including maildrop), correct
 address-class precedence, no foreign maps, mandatory verified TLS, no
@@ -17,6 +16,4 @@ SHA-bound manifest. The backup is verified before mutation. Atomic writes,
 no-clobber map publication, exact post-write checks, and guarded rollback
 are exercised by unit tests. Restore refuses unrelated configuration drift
 and unknown map bytes, retains the backup, and never touches a queue or
-service. Native runtime guard integration and real delivery tests are still
-required. No production CLI, GUI Apply, or automatic service restart is
-provided by this module.
+service. Native offline VM acceptance and real delivery tests are still required. No production approval, GUI Apply or automatic service restart is provided.

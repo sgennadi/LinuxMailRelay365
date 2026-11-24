@@ -10,7 +10,7 @@ SMTP service and master.cf override requirements, absence of competing routing
 and rewriting maps, mandatory secure TLS with nexthop matching and one
 supported CA bundle, no SMTP AUTH, service/process inactivity, empty message
 queues (including maildrop), and exact transaction before/after fingerprint.
-The current narrow scope requires non-chroot smtp/relay services. This may
+The current narrow scope requires non-chroot smtp/relay/trivial-rewrite services. This may
 refuse otherwise valid distributions/configurations; do not relax conditions
 or change a working server merely to make this preliminary check pass.
 
@@ -29,6 +29,4 @@ or delivery proof. Queue/process scans cannot prevent future submissions,
 service starts, administrator edits or DNS changes. The operator must ensure
 exclusive maintenance. SELinux/ACL and physical RHEL acceptance remain open.
 
-Successful preflight still reports APPLY_ALLOWED=no. No production activation
-or restore CLI is exposed yet. The exact-file transaction core remains
-test-only pending native stopped-instance integration and real rollback tests.
+Successful preflight still reports APPLY_ALLOWED=no. An experimental, separate offline manager now requires its own explicit maintenance review and approvals. See CONDITIONAL_POSTFIX_OFFLINE.md. Production activation remains unapproved.

@@ -44,7 +44,8 @@ class ConditionalPreflightTests(unittest.TestCase):
     def test_master_defaults_and_override_conflicts(self):
         def runner(tool, args):
             if "-M" in args:
-                return 0, b"smtp unix - - n - - smtp\nrelay unix - - n - - smtp\n"
+                return 0, (b"smtp unix - - n - - smtp\nrelay unix - - n - - smtp\n"
+                           b"rewrite unix - - n - - trivial-rewrite\n")
             return 0, b"relay/unix/syslog_name=postfix/relay\n"
         P.inspect_master(runner)
         for override in (b"smtp/unix/smtp_tls_security_level=none\n",

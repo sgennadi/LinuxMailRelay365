@@ -154,21 +154,23 @@ def inspect_policy(values):
 
 
 def inspect_master(runner=M.native_command):
-    code, raw = runner("postconf", ["-c", CONFIG, "-M", "smtp/unix", "relay/unix"])
+    services = {"smtp": "smtp", "relay": "smtp", "rewrite": "trivial-rewrite"}
+    code, raw = runner("postconf", ["-c", CONFIG, "-M",
+                                   "smtp/unix", "relay/unix", "rewrite/unix"])
     need(code == 0, "native_smtp_services_unverified")
     seen = set()
     for line in raw.decode("ascii").splitlines():
         columns = line.split()
-        need(len(columns) >= 8 and columns[0] in ("smtp", "relay") and
+        need(len(columns) >= 8 and columns[0] in services and
              columns[0] not in seen and columns[1] == "unix" and
-             columns[7] == "smtp", "nonstandard_outbound_service")
+             columns[7] == services[columns[0]], "nonstandard_outbound_service")
         # No chroot/extra delivery command except ordinary -o settings,
         # which are independently enumerated by postconf -P.
         need(columns[4] == "n", "outbound_chroot_needs_separate_acceptance")
         need(all(not part.startswith(("-c", "-D")) for part in columns[8:]),
              "custom_outbound_service_arguments")
         seen.add(columns[0])
-    need(seen == {"smtp", "relay"}, "outbound_services_missing")
+    need(seen == set(services), "outbound_services_missing")
     code, raw = runner("postconf", ["-c", CONFIG, "-P"])
     need(code == 0, "master_overrides_unverified")
     for line in raw.decode("utf-8", "strict").splitlines():
@@ -355,7 +357,7 @@ def network_evidence(rules, ca, local, resolve=socket.getaddrinfo, check=tls_pee
     return M.digest(M.canonical({"trust": trust, "endpoints": seen})), len(endpoints)
 
 
-def preflight(parent, config, queue, plan, expected_compiled):
+def review(parent, config, queue, plan, expected_compiled):
     need(type(expected_compiled) is str and M.HEX.fullmatch(expected_compiled),
          "invalid_reviewed_compiled_sha")
     original = None
@@ -382,21 +384,34 @@ def preflight(parent, config, queue, plan, expected_compiled):
     need(actual_backend == backend and actual_sha == compiled_sha and
          set(dbs) == {"sender-candidates.txt" + M.MAP_SUFFIX[backend]},
          "sender_candidate_unverified")
-    transaction_sha, _, _ = T.preview(
+    transaction = T.preview(
         config, plan, backend, stage_sha, compiled_sha,
         dbs["sender-candidates.txt" + M.MAP_SUFFIX[backend]], 0, guard)
+    transaction_sha = transaction[0]
     network_sha, count = network_evidence(rules, ca, local_addresses())
-    final_sha, _, _ = T.preview(
+    final_transaction = T.preview(
         config, plan, backend, stage_sha, compiled_sha,
         dbs["sender-candidates.txt" + M.MAP_SUFFIX[backend]], 0, guard)
-    need(final_sha == transaction_sha, "config_changed_during_tls_check")
+    need(final_transaction == transaction, "config_changed_during_tls_check")
+    current_stage, current_files = M.load_stage(parent, plan, 0)
+    current_backend, current_db, current_sha = M.read_compiled(
+        parent, plan, current_stage, current_files, 0)
+    need((current_stage, current_files, current_backend, current_db, current_sha) ==
+         (stage_sha, files, backend, dbs, compiled_sha),
+         "candidate_changed_during_tls_check")
     evidence = M.digest(M.canonical({
         "version": 1, "transaction_sha256": transaction_sha,
         "effective_policy_sha256": M.digest(M.canonical(original)),
         "destination_sha256": network_sha, "plan_sha256": plan,
         "compiled_sha256": compiled_sha,
     }))
-    return transaction_sha, evidence, count
+    return transaction, evidence, count, original, rules
+
+
+def preflight(parent, config, queue, plan, expected_compiled):
+    transaction, evidence, count, _, _ = review(
+        parent, config, queue, plan, expected_compiled)
+    return transaction[0], evidence, count
 
 
 def main(argv=None):
