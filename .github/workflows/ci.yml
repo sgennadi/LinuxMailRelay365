@@ -476,7 +476,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
-          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.16'
+          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.17'
       - name: Capture actual Windows Wizard and early-route screens (CI-only)
         shell: pwsh
         timeout-minutes: 3
@@ -487,11 +487,14 @@ jobs:
           $result = Start-Process -FilePath $exe -ArgumentList @('--capture-wizard-screens', ('"{0}"' -f $folder)) -Wait -PassThru
           if ($result.ExitCode -ne 0) { throw "Wizard screenshot capture failed: exit $($result.ExitCode)" }
           $images = @(Get-ChildItem -LiteralPath $folder -Filter '*.png')
-          if ($images.Count -ne 33) { throw "Expected 33 real Wizard PNG screens (including responsive SSH help); found $($images.Count)" }
+          if ($images.Count -ne 37) { throw "Expected 37 real Wizard PNG screens (including responsive SSH and recovery center); found $($images.Count)" }
+          foreach ($required in @('05-native-recovery-center.png', '05-native-recovery-center-bottom.png', 'compact-05-native-recovery-center.png', 'compact-05-native-recovery-center-bottom.png')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $folder $required))) { throw "Missing recovery center capture: $required" }
+          }
           foreach ($image in $images) {
             if ($image.Length -lt 3000) { throw "Empty or invalid screen PNG: $($image.Name)" }
           }
-          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=33'
+          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=37'
           Write-Host 'SMTP_TENANT_CONNECTIONS_ATTEMPTED=no'
       - name: Upload actual Wizard screenshots (no production host or tenant)
         uses: actions/upload-artifact@v6
@@ -1576,3 +1579,94 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "LinuxMailRelay365 v0.1.1 RC16 (UNSIGNED TEST ONLY)" --prerelease \
             --notes "UNSIGNED TEST RC16. RC15 plus root-default remembered SSH endpoint profiles without saved passwords or SSH trust, adaptive delivery mini-wizard, automatic read-only certificate-local TPM discovery, route-specific review and headers, fixed Security Center and forward/back navigation. Windows self-tests cover delivery phase sequences, and CI includes the actual WinForms viewport capture and all existing Linux gates. Existing releases are immutable. Physical 200% DPI, real discovered-server GUI behavior, real tenant/provider delivery, TPM signing and full Enforcing acceptance remain unverified. Active SELinux writes for multi-provider routing remain blocked. Use a disposable nonproduction host and verified backup. NOT Stable or production approved."
+
+  rc17-prerelease-publish:
+    name: Publish unsigned RC17 after all Linux and Windows CI acceptance
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/post-rc16-native-recovery'
+    needs:
+      - linux-tests
+      - rc14-native-transaction-fast
+      - ubuntu-real-proof-timer-systemd
+      - ubuntu-clean-postfix-bootstrap
+      - ubuntu-native-foreign-mta-smoke
+      - ubuntu-postfix-smoke
+      - ubuntu-fresh-direct-send-smoke
+      - ubuntu-fresh-connector-smoke
+      - rhel-family-readonly-smoke
+      - rhel-native-foreign-mta-smoke
+      - rhel-selinux-offline-policy-smoke
+      - windows-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify release-candidate SHA, version and unsigned status
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          grep -Fxq '    <Version>0.1.1-rc.17</Version>' src/LinuxMailRelay365/LinuxMailRelay365.csproj
+          grep -Fq 'internal const string Version = "0.1.1-rc.17";' src/LinuxMailRelay365/UpdateCheck.Fallback.cs
+          grep -Fq 'internal const string Version = "0.1.1-rc.17";' src/LinuxMailRelay365/UpdateCheck.cs
+          test "$GITHUB_REF" = 'refs/heads/feature/post-rc16-native-recovery'
+      - uses: actions/download-artifact@v6
+        with:
+          name: LinuxMailRelay365-preview-builds
+          path: out/published
+      - name: Verify SHA-256 manifest and root EXE ZIPs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+          from zipfile import ZipFile
+          root = Path("out/published")
+          lines = (root / "preview-artifact-digests.txt").read_text(encoding="utf-8-sig").splitlines()
+          expected = {}
+          status = False
+          for line in lines:
+              if line.startswith("STATUS="):
+                  assert line == "STATUS=preview_unsigned_not_for_production"
+                  status = True
+                  continue
+              arch, name, digest = line.split()
+              assert digest.startswith("sha256:") and len(digest) == 71
+              expected[(arch, name)] = digest[7:]
+          assert status and len(expected) == 4
+          for arch in ("x64", "arm64"):
+              suffix = "win-" + arch
+              exe = root / suffix / "LinuxMailRelay365.exe"
+              archive = root / "release-candidates" / ("LinuxMailRelay365-" + suffix + ".zip")
+              assert exe.is_file() and archive.is_file()
+              digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+              assert digest(exe) == expected[(suffix, "LinuxMailRelay365.exe")]
+              assert digest(archive) == expected[(suffix, archive.name)]
+              with ZipFile(archive) as z:
+                  assert z.namelist() == ["LinuxMailRelay365.exe"]
+                  assert hashlib.sha256(z.read("LinuxMailRelay365.exe")).hexdigest() == digest(exe)
+          print("UNSIGNED_RC17_RELEASE_SHA256_AND_ZIP=PASS")
+          PY
+      - name: Publish one GitHub prerelease without overwrite
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='v0.1.1-rc.17'
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::0.1.1-RC17 already published. Never replace a released candidate."
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Existing tag has no release; manual review required."
+            exit 1
+          fi
+          gh release create "$tag" \
+            out/published/release-candidates/LinuxMailRelay365-win-x64.zip \
+            out/published/release-candidates/LinuxMailRelay365-win-arm64.zip \
+            out/published/preview-artifact-digests.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "LinuxMailRelay365 v0.1.1 RC17 (UNSIGNED TEST ONLY)" --prerelease \
+            --notes "UNSIGNED TEST RC17. RC16 plus provider-independent Backup and Restore, native archive verification, durable interrupted-restore journal, SELinux label binding, global interrupted recovery inspection, experimental Exim-only offline Restore and SHA-reviewed emergency Rollback. CI includes native Exim abrupt-process recovery and real WinForms viewport capture; existing releases are immutable. Sendmail v2 Apply, automatic Restore resume, real provider delivery, physical TPM, Physical 200% DPI and complete SELinux Enforcing disaster-recovery acceptance remain unverified or incomplete. Active SELinux writes for multi-provider routing remain blocked. Use a disposable nonproduction host with independent verified backup. NOT Stable or production approved."

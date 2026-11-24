@@ -9,6 +9,7 @@ class RC16ReleaseContract(unittest.TestCase):
     def test_full_exact_branch_gate(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         before, job = ci.split("\n  rc16-prerelease-publish:\n", 1)
+        job = job.split("\n  rc17-prerelease-publish:\n", 1)[0]
         prior = before.split("\n  rc15-prerelease-publish:\n", 1)[1]
         def dependencies(value):
             return value.split("    needs:\n", 1)[1].split("    runs-on:", 1)[0]
@@ -32,17 +33,17 @@ class RC16ReleaseContract(unittest.TestCase):
         self.assertIn("github.event.pull_request.head.ref == 'feature/post-rc15-wizard-refinement'", native)
         self.assertIn("tag='v0.1.1-rc.15'", prior)
 
-    def test_version_and_navigation_test_wired(self):
+    def test_historical_version_and_navigation_test_wired(self):
         src = ROOT / "src/LinuxMailRelay365"
-        self.assertIn("<Version>0.1.1-rc.16</Version>",
-                      (src / "LinuxMailRelay365.csproj").read_text(encoding="utf-8"))
-        for name in ("UpdateCheck.cs", "UpdateCheck.Fallback.cs"):
-            self.assertIn('internal const string Version = "0.1.1-rc.16";',
-                          (src / name).read_text(encoding="utf-8"))
         self.assertIn("MainForm.DeliveryNavigationSelfTest",
                       (src / "Program.cs").read_text(encoding="utf-8"))
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn("-ExpectedCandidateVersion '0.1.1-rc.16'", ci)
+        job = ci.split("\n  rc16-prerelease-publish:\n", 1)[1].split(
+            "\n  rc17-prerelease-publish:\n", 1)[0]
+        self.assertIn("<Version>0.1.1-rc.16</Version>", job)
+        self.assertIn('internal const string Version = "0.1.1-rc.16";', job)
+        self.assertIn("tag='v0.1.1-rc.16'", job)
+        self.assertNotIn("tag='v0.1.1-rc.17'", job)
 
 
 if __name__ == "__main__":

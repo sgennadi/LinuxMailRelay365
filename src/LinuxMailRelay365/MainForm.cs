@@ -4125,6 +4125,29 @@ internal sealed partial class MainForm : Form
         routingLoading = true;
         try { oauthSenderMode.SelectedIndex = 0; }
         finally { routingLoading = false; }
+        // Exercise the real recovery-center page with no live host. A
+        // missing MTA must not hide the global interruption diagnostics.
+        language.SelectedIndex = 1;
+        step = 4;
+        backupMaintenanceOpen = true;
+        Size = new Size(1050, 830);
+        RenderPage();
+        AssertWizardViewport();
+        if (!pageHost.Controls[0].Controls.OfType<Button>().Any(button =>
+                button.Text.Contains("Inspect interrupted native Restore", StringComparison.Ordinal)))
+            throw new InvalidOperationException("Global recovery inspection is absent.");
+        Screenshot("05-native-recovery-center.png");
+        Screenshot("05-native-recovery-center-bottom.png", scrollToBottom: true);
+        Size = new Size(760, 700);
+        RenderPage();
+        Screenshot("compact-05-native-recovery-center.png");
+        Screenshot("compact-05-native-recovery-center-bottom.png", scrollToBottom: true);
+        MoveWizardBack();
+        RenderPage();
+        if (step != 4 || backupMaintenanceOpen || pageHost.AutoScrollPosition.Y != 0)
+            throw new InvalidOperationException("Recovery center Back did not restore diagnostics.");
+        AssertWizardViewport();
+        language.SelectedIndex = 0;
         // Verify the same connection form reflows at the compact window size.
         Size = new Size(760, 700);
         step = 0;
@@ -4145,7 +4168,7 @@ internal sealed partial class MainForm : Form
         File.WriteAllText(Path.Combine(root, "README.txt"),
             "Actual WinForms Preview wizard screenshots from a disposable CI runner.\n" +
             "Factory defaults only; no real SSH, Microsoft 365 tenant, TPM or SMTP delivery.\n" +
-            "Captures top and bottom of all five scrollable pages and Multi-mailbox; no real 200% DPI monitor is emulated.\n");
+            "Captures top and bottom of all five scrollable pages, Multi-mailbox and recovery center; no real 200% DPI monitor is emulated.\n");
         step = 0;
         RenderPage();
         return captured;
