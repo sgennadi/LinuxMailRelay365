@@ -264,7 +264,8 @@ def installed_ca():
 
 
 def compile_profiles(request, approved, confirmation, uid, scratch_parent,
-                     ca, runner=M.native_command, forced_backend=None):
+                     ca, runner=M.native_command, forced_backend=None,
+                     verified_consumer=None):
     need(type(request) is dict and set(request) == {"rules", "credentials"},
          "invalid_transport_compile_request")
     rules, sha = plan(request["rules"])
@@ -303,6 +304,14 @@ def compile_profiles(request, approved, confirmation, uid, scratch_parent,
                             {endpoint(rules[index - 1]): passwords[index - 1]},
                             uid, runner, secret=True)
             verify_services(work, services, backend, runner)
+            if verified_consumer is not None:
+                # Internal library callback only. CLI callers cannot select it.
+                # Return verified DB bytes while still in private scratch.
+                names = [ROUTE_MAP] + list(auth_maps.values())
+                databases = {name: M.read_file(fd, name + M.MAP_SUFFIX[backend],
+                                               uid, M.MAX_DB_BYTES)
+                             for name in names}
+                verified_consumer(rules, sha, backend, ca, databases)
             # Public receipt intentionally contains no credential checksum,
             # endpoint, account name, secret, or credential DB bytes.
             return sha, backend, len(services), len(auth_maps)

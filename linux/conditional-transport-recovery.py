@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Multi-transport configuration review and private recovery snapshot.
 
-Library only. No live configuration writes or credential persistence.
+Library only. Snapshot and journal storage for guarded offline transactions.
 Caller must establish exclusive maintenance and native policy compatibility.
 """
 import importlib.util
@@ -29,6 +29,7 @@ Refused = M.Refused
 BASE = "linuxmailrelay365-transport-recovery"
 FILES = ("main.before", "master.before", "main.after", "master.after")
 MANIFEST = "transaction.json"
+ACTIVATION = "activation"
 CONFIRM = "BACKUP_STOPPED_POSTFIX_TRANSPORTS"
 CONFLICTS = ("transport_maps", "sender_dependent_default_transport_maps",
              "sender_dependent_relayhost_maps")
@@ -119,14 +120,24 @@ def validate(info, files):
          "snapshot_plan_mismatch")
 
 
-def load(parent, revision, uid):
+def load(parent, revision, uid, allow_activation=False):
     need(valid_sha(revision), "invalid_revision")
     base = M.open_base(parent, uid, name=BASE)
     try:
         fd = os.open(revision, M.DIR_FLAGS, dir_fd=base)
         try:
             M.check_directory(fd, uid, True)
-            need(set(os.listdir(fd)) == set(FILES) | {MANIFEST}, "incomplete_snapshot")
+            names = set(os.listdir(fd))
+            required = set(FILES) | {MANIFEST}
+            need(names == required or
+                 (allow_activation and names == required | {ACTIVATION}),
+                 "incomplete_snapshot")
+            if ACTIVATION in names:
+                child = os.open(ACTIVATION, M.DIR_FLAGS, dir_fd=fd)
+                try:
+                    M.check_directory(child, uid, True)
+                finally:
+                    os.close(child)
             raw = M.read_file(fd, MANIFEST, uid)
             record = M.decode(raw)
             need(type(record) is dict and set(record) == {"revision", "snapshot"} and
