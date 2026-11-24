@@ -289,3 +289,43 @@ a report. A legacy marker never receives fabricated counts or target SHA. A clea
 marker is not proof of service readiness. The GUI cannot resume, roll back or clear
 a pending native operation; it provides an explicit manual-recovery warning.
 CLI and C# regression tests cover the read-only contract. RC16 remains unchanged.
+
+### Explicit recovery of an interrupted Exim restore (development CLI)
+
+New Exim operations use schema-3 pending markers. Before the first write, the
+exact original approved review is stored durably as a separate root-only
+0600 file in the safety snapshot directory. Its SHA-256 must equal the
+original operator-approved plan. The two archive digests remain bound.
+Schema 1/2 and Sendmail package v2 markers remain manual recovery only.
+
+For a stopped Exim on a disposable test host, inspect and review:
+
+```sh
+sudo python3 linux/restore-foreign-mta-config.py --mta exim --pending-rollback-plan
+```
+
+Only after reviewing the current result, explicitly supply its
+FOREIGN_PENDING_ROLLBACK_PLAN_SHA256 and a separate confirmation:
+
+```sh
+sudo python3 linux/restore-foreign-mta-config.py --mta exim \
+  --pending-rollback-apply --approve-sha256 REVIEWED_SHA256 \
+  --confirm ROLLBACK_INTERRUPTED_EXIM_CONFIG
+```
+
+The fresh plan requires matching file sets, only original/target content,
+the original reviewed UID/GID/mode and SELinux label digest, and fresh
+offline service/process/queue/listener evidence. It refuses unknown files,
+missing files, third-party content, changed metadata, changed review or
+archive digests and stale approvals. Apply takes the exclusive lock,
+rechecks the plan and uses the existing verified atomic single-file writer.
+The original archived bytes are restored without recreating paths or
+relabeling drifted files. It rechecks the entire tree and native parser,
+then removes the marker only after verified completion. If rollback itself
+is interrupted or the parser fails, the marker remains and a new plan is
+required. The safety snapshot and review are retained. No service action,
+queue replay, automatic resume, GUI Apply or production acceptance is
+introduced. Unit tests cover partial progress, stale approvals, metadata
+and content drift, bad evidence, re-interruption and parser failure.
+Power-loss, native package/SELinux lifecycle and complete disaster recovery
+acceptance remain outstanding.

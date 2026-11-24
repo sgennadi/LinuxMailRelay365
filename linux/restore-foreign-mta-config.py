@@ -30,6 +30,9 @@ Refused = backup.Refused
 APPROVAL = "RESTORE_STOPPED_FOREIGN_MTA_CONFIG"
 LOCK = Path("/run/linuxmailrelay365-foreign-mta-restore.lock")
 PENDING = ".native-restore-pending.json"
+REVIEW_FILE = "native-restore-review.json"
+MAX_REVIEW = 8 * 1024 * 1024
+ROLLBACK_APPROVAL = "ROLLBACK_INTERRUPTED_EXIM_CONFIG"
 UNITS = {"exim": ("exim4.service", "exim.service"),
          "sendmail": ("sendmail.service",)}
 PROCESSES = {"exim": ("exim", "exim4"), "sendmail": ("sendmail",)}
@@ -141,7 +144,7 @@ def preview(mta, snapshot_id, root=backup.ROOT, base=backup.BASE, uid=0):
         evidence, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     return {"sha": approved_sha, "changed": changed, "files": len(reviewed),
             "original": originals, "target": stored, "labels": labels,
-            "snapshot_sha256": info["sha256"]}
+            "snapshot_sha256": info["sha256"], "evidence": evidence}
 
 
 def stopped(mta):
@@ -407,10 +410,10 @@ def read_pending(base, uid):
         raise Refused("invalid_pending_restore_marker")
     expected = {"version", "mta", "target", "safety", "safety_sha256", "plan_sha256"}
     if (not isinstance(record, dict) or type(record.get("version")) is not int or
-            record["version"] not in (1, 2)):
+            record["version"] not in (1, 2, 3)):
         raise Refused("invalid_pending_restore_marker")
     digest_fields = ("safety_sha256", "plan_sha256")
-    if record["version"] == 2:
+    if record["version"] >= 2:
         expected.add("target_sha256")
         digest_fields += ("target_sha256",)
     if (set(record) != expected or
@@ -442,6 +445,56 @@ def verify_durable_safety_snapshot(mta, safety_id, state, base, uid):
         if item["size"] != len(content) or item["sha256"] != digest(content):
             raise Refused("safety_snapshot_content_mismatch")
     return info["sha256"]
+
+
+def canonical_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")
+
+
+def read_saved_review(base, uid, record):
+    """The exact previously approved review, not reconstructed metadata."""
+    folder = base / record["mta"] / record["safety"]
+    backup.strict_snapshot_dir(folder, uid)
+    path = folder / REVIEW_FILE
+    backup.safe_regular(path, uid, mode=0o600, maximum=MAX_REVIEW)
+    metadata, raw = backup.stable_file(path, uid)
+    if (stat.S_IMODE(metadata.st_mode) != 0o600 or len(raw) > MAX_REVIEW or
+            digest(raw) != record["plan_sha256"]):
+        raise Refused("saved_restore_review_digest_mismatch")
+    try:
+        evidence = json.loads(raw.decode("ascii"))
+    except (ValueError, UnicodeError):
+        raise Refused("invalid_saved_restore_review")
+    if (not isinstance(evidence, dict) or canonical_json(evidence) != raw or
+            set(evidence) != {"version", "mta", "snapshot", "snapshot_sha256", "current"} or
+            evidence["version"] != 1 or evidence["mta"] != record["mta"] or
+            evidence["snapshot"] != record["target"] or
+            evidence["snapshot_sha256"] != record["target_sha256"] or
+            not isinstance(evidence["current"], list) or
+            not 1 <= len(evidence["current"]) <= backup.MAX_FILES):
+        raise Refused("invalid_saved_restore_review")
+    return evidence
+
+
+def publish_saved_review(base, uid, record, evidence):
+    folder = base / record["mta"] / record["safety"]
+    backup.strict_snapshot_dir(folder, uid)
+    raw = canonical_json(evidence)
+    if len(raw) > MAX_REVIEW or digest(raw) != record["plan_sha256"]:
+        raise Refused("saved_restore_review_digest_mismatch")
+    fd = os.open(str(folder / REVIEW_FILE), os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                 getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb", closefd=False) as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(fd)
+    sync_directory(folder)
+    if read_saved_review(base, uid, record) != evidence:
+        raise Refused("saved_restore_review_verification_failed")
 
 
 def publish_pending(base, uid, record):
@@ -582,6 +635,141 @@ def inspect_pending(root=backup.ROOT, base=backup.BASE, uid=0, lock_path=LOCK):
             os.close(lock)
 
 
+def pending_rollback_state(mta, root, base, uid, offline_check, preflight_check):
+    """Only a schema-3 Exim interruption has durable original metadata."""
+    record = pending_status(base, uid)
+    if (mta != "exim" or record is None or record["version"] != 3 or
+            record["mta"] != mta):
+        raise Refused("pending_rollback_requires_schema3_exim_review")
+    if not offline_check(mta):
+        raise Refused("primary_mta_not_stopped")
+    require_offline_preflight(mta, record["safety"], root, base, uid,
+                              preflight_check)
+    safety = pending_manifest(base, mta, record["safety"], record["safety_sha256"], uid)
+    target = pending_manifest(base, mta, record["target"], record["target_sha256"], uid)
+    reviewed = read_saved_review(base, uid, record)
+    if (safety["version"] != 1 or target["version"] != 1 or
+            set(safety["files"]) != set(target["files"])):
+        raise Refused("pending_rollback_snapshot_file_set_mismatch")
+    # Preview against the safety archive obtains the original bytes and
+    # a fresh, inode-bound description of the current configuration.
+    state = preview(mta, record["safety"], root, base, uid)
+    if state["snapshot_sha256"] != record["safety_sha256"]:
+        raise Refused("pending_rollback_safety_archive_changed")
+    original_rows = {}
+    for row in reviewed["current"]:
+        if (not isinstance(row, dict) or
+                set(row) != {"path", "sha256", "size", "mode", "uid", "gid",
+                             "device", "inode", "ctime_ns", "mtime_ns",
+                             "selinux_label_sha256"} or
+                not isinstance(row["path"], str) or row["path"] in original_rows or
+                row["path"] not in safety["files"] or
+                type(row["uid"]) is not int or row["uid"] != uid or
+                type(row["gid"]) is not int or row["gid"] < 0 or
+                type(row["mode"]) is not int or not 0 <= row["mode"] <= 0o777 or
+                row["mode"] & 0o022 or
+                type(row["size"]) is not int or
+                row["size"] != safety["files"][row["path"]]["size"] or
+                row["sha256"] != safety["files"][row["path"]]["sha256"] or
+                (row["selinux_label_sha256"] is not None and
+                 (not isinstance(row["selinux_label_sha256"], str) or
+                  not backup.SHA.fullmatch(row["selinux_label_sha256"])))):
+            raise Refused("pending_rollback_saved_metadata_invalid")
+        original_rows[row["path"]] = row
+    if set(original_rows) != set(safety["files"]):
+        raise Refused("pending_rollback_saved_inventory_mismatch")
+    for row in state["evidence"]["current"]:
+        old = original_rows[row["path"]]
+        if any(row[key] != old[key] for key in
+               ("uid", "gid", "mode", "selinux_label_sha256")):
+            raise Refused("pending_rollback_original_metadata_changed")
+        if row["sha256"] not in (old["sha256"], target["files"][row["path"]]["sha256"]):
+            raise Refused("pending_rollback_foreign_file_content")
+    expected_current = {
+        name: (metadata_key(metadata), digest(content),
+               None if state["labels"][name] is None else digest(state["labels"][name]))
+        for name, (metadata, content) in state["original"].items()
+    }
+    if (pending_manifest(base, mta, record["safety"], record["safety_sha256"], uid) != safety or
+            pending_manifest(base, mta, record["target"], record["target_sha256"], uid) != target or
+            read_saved_review(base, uid, record) != reviewed or
+            pending_current_evidence(mta, root, uid) != expected_current or
+            read_pending(base, uid) != record):
+        raise Refused("pending_rollback_state_changed_during_review")
+    if not offline_check(mta):
+        raise Refused("primary_mta_not_stopped")
+    require_offline_preflight(mta, record["safety"], root, base, uid,
+                              preflight_check)
+    approval = digest(canonical_json({"version": 1, "action": "rollback",
+                                      "marker": record, "current_sha256": state["sha"]}))
+    return {"record": record, "sha": approval, "state": state,
+            "changed": state["changed"], "files": state["files"]}
+
+
+def preview_pending_rollback(mta, root=backup.ROOT, base=backup.BASE, uid=0,
+                             offline_check=stopped, lock_path=LOCK,
+                             preflight_check=None):
+    lock = open_existing_inspection_lock(lock_path, uid)
+    try:
+        return pending_rollback_state(mta, root, base, uid, offline_check,
+                                      preflight_check)
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
+def rollback_pending(mta, approved_sha, confirm, root=backup.ROOT,
+                     base=backup.BASE, uid=0, offline_check=stopped,
+                     lock_path=LOCK, preflight_check=None, static_check=None):
+    """Explicitly reviewed Exim byte rollback. An interruption retains the marker."""
+    if confirm != ROLLBACK_APPROVAL or not backup.SHA.fullmatch(approved_sha):
+        raise Refused("pending_rollback_confirmation_and_sha_required")
+    lock = take_lock(lock_path, uid)
+    try:
+        plan = pending_rollback_state(mta, root, base, uid, offline_check,
+                                      preflight_check)
+        if plan["sha"] != approved_sha:
+            raise Refused("pending_rollback_plan_changed_reapprove")
+        record, state = plan["record"], plan["state"]
+        changed = 0
+        # No new files, deletions, service actions or automatic resume.
+        # Both archives and the approved original review remain durable.
+        for name, (metadata, content) in sorted(state["original"].items()):
+            if content == state["target"][name]:
+                continue
+            if read_pending(base, uid) != record:
+                raise Refused("pending_restore_marker_changed")
+            if not offline_check(mta):
+                raise Refused("primary_mta_restarted_during_pending_rollback")
+            if changed % 16 == 0:
+                require_offline_preflight(mta, record["safety"], root, base, uid,
+                                          preflight_check)
+            now, current, label = read_restore_file(root / name, uid)
+            if (metadata_key(now) != metadata_key(metadata) or current != content or
+                    label != state["labels"][name]):
+                raise Refused("pending_rollback_file_changed_before_replace")
+            replace_one(root / name, state["target"][name], metadata, uid,
+                        expected_label=label)
+            changed += 1
+        final = pending_rollback_state(mta, root, base, uid, offline_check,
+                                       preflight_check)
+        if final["record"] != record or final["changed"] != 0:
+            raise Refused("pending_rollback_final_verification_failed")
+        checker = native_static_config_check if static_check is None else static_check
+        if checker(mta, root, uid) is not True:
+            raise Refused("pending_rollback_native_static_check_failed")
+        final = pending_rollback_state(mta, root, base, uid, offline_check,
+                                       preflight_check)
+        if final["record"] != record or final["changed"] != 0:
+            raise Refused("pending_rollback_post_parser_verification_failed")
+        clear_verified_pending(base, uid, record)
+        return {"changed": changed, "safety": record["safety"]}
+    finally:
+        # Any error, SIGINT or interruption before verified completion leaves
+        # the marker intact. A fresh plan is needed even for remaining files.
+        os.close(lock)
+
+
 def apply(mta, snapshot_id, approved_sha, confirm,
           root=backup.ROOT, base=backup.BASE, uid=0,
           offline_check=stopped, lock_path=LOCK, preflight_check=None,
@@ -620,10 +808,13 @@ def apply(mta, snapshot_id, approved_sha, confirm,
         safety_sha = verify_durable_safety_snapshot(mta, safety_id, state, base, uid)
         if preview(mta, snapshot_id, root, base, uid)["sha"] != approved_sha:
             raise Refused("configuration_changed_before_pending_restore")
-        record = {"version": 2, "mta": mta, "target": snapshot_id,
+        record = {"version": 3 if mta == "exim" else 2,
+                  "mta": mta, "target": snapshot_id,
                   "safety": safety_id, "safety_sha256": safety_sha,
                   "target_sha256": state["snapshot_sha256"],
                   "plan_sha256": approved_sha}
+        if record["version"] == 3:
+            publish_saved_review(base, uid, record, state["evidence"])
         publish_pending(base, uid, record)
         changed = []
         try:
@@ -738,6 +929,8 @@ def main(argv=None):
     group.add_argument("--static-check", action="store_true")
     group.add_argument("--pending-status", action="store_true")
     group.add_argument("--pending-inspect", action="store_true")
+    group.add_argument("--pending-rollback-plan", action="store_true")
+    group.add_argument("--pending-rollback-apply", action="store_true")
     parser.add_argument("--approve-sha256", default="")
     parser.add_argument("--confirm", default="")
     args = parser.parse_args(argv)
@@ -745,6 +938,28 @@ def main(argv=None):
         print("FOREIGN_RESTORE_STATUS=root_required", file=sys.stderr)
         return 2
     try:
+        if args.pending_rollback_plan:
+            if args.approve_sha256 or args.confirm:
+                raise Refused("approval_not_permitted_during_pending_rollback_plan")
+            plan = preview_pending_rollback(args.mta)
+            print("FOREIGN_PENDING_ROLLBACK_STATUS=preview_only")
+            print("FOREIGN_PENDING_ROLLBACK_SAFETY_ID=" + plan["record"]["safety"])
+            print("FOREIGN_PENDING_ROLLBACK_TARGET_ID=" + plan["record"]["target"])
+            print("FOREIGN_PENDING_ROLLBACK_PLAN_SHA256=" + plan["sha"])
+            print("FOREIGN_PENDING_ROLLBACK_CHANGED_FILES=" + str(plan["changed"]))
+            print("FOREIGN_PENDING_ROLLBACK_FILE_COUNT=" + str(plan["files"]))
+            print("FOREIGN_PENDING_ROLLBACK_CONFIG_CHANGED=no")
+            print("FOREIGN_PENDING_ROLLBACK_QUEUE_CHANGED=no")
+            print("FOREIGN_PENDING_ROLLBACK_SERVICE_CHANGED=no")
+            return 0
+        if args.pending_rollback_apply:
+            result = rollback_pending(args.mta, args.approve_sha256, args.confirm)
+            print("FOREIGN_PENDING_ROLLBACK_STATUS=original_verified_service_not_started")
+            print("FOREIGN_PENDING_ROLLBACK_SAFETY_ID=" + result["safety"])
+            print("FOREIGN_PENDING_ROLLBACK_CHANGED_FILES=" + str(result["changed"]))
+            print("FOREIGN_PENDING_ROLLBACK_QUEUE_CHANGED=no")
+            print("FOREIGN_PENDING_ROLLBACK_SERVICE_CHANGED=no")
+            return 0
         if args.pending_inspect:
             if args.approve_sha256 or args.confirm:
                 raise Refused("approval_not_permitted_during_pending_inspection")
@@ -778,7 +993,7 @@ def main(argv=None):
             if record is not None:
                 for key in ("mta", "target", "safety", "safety_sha256", "plan_sha256"):
                     print("FOREIGN_PENDING_" + key.upper() + "=" + record[key])
-                if record["version"] == 2:
+                if record["version"] >= 2:
                     print("FOREIGN_PENDING_TARGET_SHA256=" + record["target_sha256"])
             print("FOREIGN_PENDING_CONFIG_CHANGED=no")
             print("FOREIGN_PENDING_QUEUE_CHANGED=no")

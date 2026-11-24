@@ -228,7 +228,7 @@ class ForeignMtaRestoreTests(unittest.TestCase):
                 restore.apply("exim", sid, fresh["sha"], restore.APPROVAL, **options)
             self.assertEqual(restore.pending_status(base, uid), marker)
             self.assertEqual(len(snapshot.listed("exim", base, uid)), 2)
-            self.assertEqual(marker["version"], 2)
+            self.assertEqual(marker["version"], 3)
             self.assertEqual(marker["target_sha256"], plan["snapshot_sha256"])
             report = restore.inspect_pending(root, base, uid, options["lock_path"])
             self.assertEqual(report["comparison"], "verified_sampled_content_only")
@@ -236,6 +236,106 @@ class ForeignMtaRestoreTests(unittest.TestCase):
             self.assertEqual(report["counts"], {"original_only": 1, "target_only": 1,
                              "both": 0, "other": 0, "missing": 0, "extra": 0})
             self.assertEqual(restore.pending_status(base, uid), marker)
+
+    def interrupted_exim(self, folder):
+        root, base, tree, sid, uid = self.fixture(folder, "exim")
+        for file in tree.iterdir():
+            file.write_text("pre-operation version\n")
+        review = restore.preview("exim", sid, root, base, uid)
+        options = self.kwargs(folder, root, base, uid)
+        replace = restore.replace_one
+        def interrupted(*args, **kwargs):
+            replace(*args, **kwargs)
+            raise KeyboardInterrupt()
+        with patch.object(restore, "replace_one", side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                restore.apply("exim", sid, review["sha"], restore.APPROVAL, **options)
+        return root, base, tree, uid, options
+
+    @staticmethod
+    def pending_plan(options):
+        return restore.preview_pending_rollback("exim", **{
+            key: value for key, value in options.items() if key != "static_check"})
+
+    def test_interrupted_exim_explicit_rollback_preserves_safety_and_clears_marker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, uid, options = self.interrupted_exim(folder)
+            marker = restore.pending_status(base, uid)
+            review = base / "exim" / marker["safety"] / restore.REVIEW_FILE
+            self.assertEqual(stat.S_IMODE(review.stat().st_mode), 0o600)
+            self.assertEqual(restore.digest(review.read_bytes()), marker["plan_sha256"])
+            plan = self.pending_plan(options)
+            self.assertEqual(plan["changed"], 1)
+            with self.assertRaisesRegex(restore.Refused, "confirmation"):
+                restore.rollback_pending("exim", plan["sha"], "WRONG", **options)
+            with self.assertRaisesRegex(restore.Refused, "plan_changed"):
+                restore.rollback_pending("exim", "0" * 64, restore.ROLLBACK_APPROVAL, **options)
+            self.assertEqual(restore.pending_status(base, uid), marker)
+            result = restore.rollback_pending("exim", plan["sha"],
+                                              restore.ROLLBACK_APPROVAL, **options)
+            self.assertEqual(result["changed"], 1)
+            self.assertTrue(all(file.read_text() == "pre-operation version\n"
+                                for file in tree.iterdir()))
+            self.assertIsNone(restore.pending_status(base, uid))
+            self.assertTrue(review.exists())
+            self.assertEqual(len(snapshot.listed("exim", base, uid)), 2)
+
+    def test_interrupted_rollback_refuses_drift_old_markers_and_running_service(self):
+        for drift in ("content", "mode", "review", "legacy", "running"):
+            with self.subTest(drift=drift), tempfile.TemporaryDirectory() as folder:
+                root, base, tree, uid, options = self.interrupted_exim(folder)
+                marker = restore.pending_status(base, uid)
+                path = sorted(tree.iterdir())[0]
+                if drift == "content":
+                    path.write_text("third version\n")
+                elif drift == "mode":
+                    path.chmod(0o600)
+                elif drift == "review":
+                    review = base / "exim" / marker["safety"] / restore.REVIEW_FILE
+                    with review.open("ab") as stream:
+                        stream.write(b" ")
+                elif drift == "legacy":
+                    marker["version"] = 2
+                    (base / restore.PENDING).write_text(restore.json.dumps(marker))
+                else:
+                    options["offline_check"] = lambda mta: False
+                with patch.object(restore, "replace_one", side_effect=AssertionError("write forbidden")):
+                    with self.assertRaises(restore.Refused):
+                        self.pending_plan(options)
+                self.assertTrue((base / restore.PENDING).exists())
+
+    def test_interrupted_rollback_parser_failure_requires_fresh_plan(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, uid, options = self.interrupted_exim(folder)
+            old = self.pending_plan(options)
+            options["static_check"] = lambda mta, root, uid: False
+            with self.assertRaisesRegex(restore.Refused, "native_static_check_failed"):
+                restore.rollback_pending("exim", old["sha"], restore.ROLLBACK_APPROVAL, **options)
+            self.assertIsNotNone(restore.pending_status(base, uid))
+            fresh = self.pending_plan(options)
+            self.assertEqual(fresh["changed"], 0)
+            self.assertNotEqual(fresh["sha"], old["sha"])
+            options["static_check"] = lambda mta, root, uid: True
+            restore.rollback_pending("exim", fresh["sha"], restore.ROLLBACK_APPROVAL, **options)
+            self.assertIsNone(restore.pending_status(base, uid))
+
+    def test_interrupted_rollback_itself_retains_marker_and_can_be_reviewed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, uid, options = self.interrupted_exim(folder)
+            first = self.pending_plan(options)
+            replace = restore.replace_one
+            def interrupted(*args, **kwargs):
+                replace(*args, **kwargs)
+                raise KeyboardInterrupt()
+            with patch.object(restore, "replace_one", side_effect=interrupted):
+                with self.assertRaises(KeyboardInterrupt):
+                    restore.rollback_pending("exim", first["sha"],
+                                             restore.ROLLBACK_APPROVAL, **options)
+            self.assertIsNotNone(restore.pending_status(base, uid))
+            fresh = self.pending_plan(options)
+            self.assertEqual(fresh["changed"], 0)
+            restore.rollback_pending("exim", fresh["sha"], restore.ROLLBACK_APPROVAL, **options)
+            self.assertIsNone(restore.pending_status(base, uid))
 
     def test_pending_inspection_classifies_drift_and_legacy_marker(self):
         with tempfile.TemporaryDirectory() as folder:
