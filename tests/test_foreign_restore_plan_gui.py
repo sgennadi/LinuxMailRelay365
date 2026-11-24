@@ -65,8 +65,10 @@ class NativeRestorePlanGui(unittest.TestCase):
         self.assertIn("EximNativeRestoreReceipt.SelfTest", (CS / "Program.cs").read_text(encoding="utf-8"))
 
     def test_stopped_mta_and_exact_plan(self):
+        # Isolate the original preflight, not the new Exim Apply helper
+        # (which independently verifies the stopped MTA a third time).
         preflight = FORM.split("private async Task PreflightForeignMtaRecoveryAsync()", 1)[1].split(
-            "private async Task PreviewExactForeignRestorePlanAsync()", 1)[0]
+            "private void RequireSelectedStoppedEximArchive(", 1)[0]
         self.assertEqual(preflight.count("ConfirmedForeignBackupMta(allowStopped: true)"), 2)
         plan = FORM.split("private async Task PreviewExactForeignRestorePlanAsync()", 1)[1].split(
             "private async Task ExportForeignMtaOfflineAsync()", 1)[0]
