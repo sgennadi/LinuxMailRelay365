@@ -250,5 +250,89 @@ class MailHostInspectorTests(unittest.TestCase):
             ("postconf", "-h"), ("postconf", "-M"))
             for call in calls if call[0] == "postconf"))
 
+    def test_map_inventory_does_not_probe_remote_dynamic_or_password_map(self):
+        observed = []
+        def metadata(path, suffix):
+            observed.append((path, suffix))
+            return True
+        for value in ("ldap:/etc/postfix/secret", "proxy:hash:/etc/postfix/map",
+                      "hash:/etc/postfix/../outside", "hash:/var/lib/map",
+                      "hash:$config_directory/map", "hash:/etc/postfix/a, mysql:/etc/postfix/b",
+                      "inline:{hidden=value}", " ".join(["hash:/etc/postfix/a"] * 9)):
+            self.assertEqual(module.postfix_map_inventory(value, metadata),
+                             "complex_or_remote")
+        self.assertEqual(observed, [])
+        self.assertEqual(module.postfix_map_inventory(None, metadata), "unverified")
+        self.assertEqual(module.postfix_map_inventory("", metadata), "empty")
+        self.assertEqual(module.postfix_map_inventory("hash:/etc/postfix/r", metadata),
+                         "local_indexed_root_metadata")
+        self.assertEqual(observed, [("/etc/postfix/r", ".db")])
+        self.assertEqual(module.postfix_map_inventory("pcre:/etc/postfix/r", metadata),
+                         "local_text_root_metadata")
+        self.assertEqual(module.postfix_map_inventory(
+            "hash:/etc/postfix/r, pcre:/etc/postfix/t", metadata),
+            "local_mixed_root_metadata")
+        self.assertEqual(module.postfix_map_inventory("hash:/etc/postfix/r",
+                         lambda *_: False), "local_metadata_unverified")
+        self.assertNotIn("smtp_sasl_password_maps", module.POSTFIX_MAP_INVENTORY_KEYS)
+
+    def test_map_metadata_refuses_symlink_writable_hardlink_and_missing_db(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            folder = root / "etc" / "postfix"
+            folder.mkdir(parents=True)
+            source = folder / "route"
+            source.write_text("NEVER READ THIS\n")
+            database = folder / "route.db"
+            database.write_bytes(b"not a real map: only stat is under test")
+            check = lambda: module.root_owned_map_metadata(
+                "/etc/postfix/route", ".db", root, os.getuid())
+            self.assertTrue(check())
+            database.unlink()
+            self.assertFalse(check())
+            database.symlink_to(source)
+            self.assertFalse(check())
+            database.unlink()
+            os.link(source, database)
+            self.assertFalse(check())
+            database.unlink()
+            database.write_bytes(b"db")
+            source.chmod(0o666)
+            self.assertFalse(check())
+            source.chmod(0o600)
+            folder.chmod(0o777)
+            self.assertFalse(check())
+            folder.chmod(0o755)
+            self.assertTrue(check())
+            actual = folder.with_name("postfix-real")
+            folder.rename(actual)
+            folder.symlink_to(actual, target_is_directory=True)
+            self.assertFalse(check())
+
+    def test_metadata_report_is_presence_only_no_map_content(self):
+        responses = {
+            ("hostname", "-f"): "mail.example.org",
+            ("hostname", "-s"): "mail",
+            ("hostname", "-d"): "example.org",
+            ("systemctl", "is-active", "postfix.service"): "active",
+            ("systemctl", "is-active", "postfix@-.service"): "inactive",
+            ("systemctl", "is-active", "exim.service"): "inactive",
+            ("systemctl", "is-active", "exim4.service"): "inactive",
+            ("systemctl", "is-active", "sendmail.service"): "inactive",
+            ("postconf", "-h", "transport_maps"): "ldap:/PRIVATE/SECRET",
+            ("postconf", "-h", "sender_dependent_relayhost_maps"): "",
+            ("postconf", "-h", "smtp_sasl_password_maps"): "hash:/PRIVATE/PASS",
+        }
+        report = module.inspect(lambda argv: responses.get(tuple(argv)))
+        self.assertEqual(report["MAIL_HOST_POSTFIX_MAP_META_TRANSPORT_MAPS"],
+                         "complex_or_remote")
+        self.assertEqual(report["MAIL_HOST_POSTFIX_MAP_META_SENDER_DEPENDENT_RELAYHOST_MAPS"],
+                         "empty")
+        self.assertNotIn("MAIL_HOST_POSTFIX_MAP_META_SMTP_SASL_PASSWORD_MAPS", report)
+        self.assertNotIn("/PRIVATE/", repr(report))
+
+
 if __name__ == "__main__":
     unittest.main()

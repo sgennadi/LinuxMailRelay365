@@ -24,6 +24,55 @@ internal sealed class MailHostInspection
             return Array.Empty<int>();
         return ConfiguredSmtpPortState.Split(',').Select(int.Parse).ToArray();
     }
+    // RC14 metadata-only observation, never a claim of manager-owned files.
+    internal static readonly string[] PostfixMapMetadataOptions =
+    [
+        "TRANSPORT_MAPS", "SENDER_DEPENDENT_RELAYHOST_MAPS",
+        "SENDER_DEPENDENT_DEFAULT_TRANSPORT_MAPS", "SMTP_TLS_POLICY_MAPS"
+    ];
+
+    internal string PostfixMapMetadataSummary(int language)
+    {
+        string Tr(string ru, string en, string he) =>
+            language == 0 ? ru : language == 2 ? he : en;
+        string Describe(string value) => value switch
+        {
+            "empty" => Tr("нет объявления", "not declared", "לא מוגדר"),
+            "local_indexed_root_metadata" => Tr(
+                "локальная индексная карта: root, метаданные",
+                "local indexed map: root metadata observed",
+                "מפה מקומית מאונדקסת: מטא-נתוני root"),
+            "local_text_root_metadata" => Tr(
+                "локальная текстовая карта: root, метаданные",
+                "local text map: root metadata observed",
+                "מפת טקסט מקומית: מטא-נתוני root"),
+            "local_mixed_root_metadata" => Tr(
+                "смешанные локальные карты: root, метаданные",
+                "mixed local maps: root metadata observed",
+                "מפות מקומיות מעורבות: מטא-נתוני root"),
+            "local_metadata_unverified" => Tr(
+                "файлы или права не подтверждены",
+                "file metadata missing or untrusted",
+                "מטא-נתוני קובץ חסרים או לא מאומתים"),
+            "complex_or_remote" => Tr(
+                "сложная/внешняя карта: требуется ручная проверка",
+                "complex/remote/out-of-scope map: manual review",
+                "מפה מורכבת או חיצונית: נדרשת בדיקה"),
+            _ => Tr("не проверено", "unverified", "לא אומת")
+        };
+        return Tr("Метаданные существующих карт Postfix (только чтение)",
+                "Existing Postfix map metadata (read only)",
+                "מטא-נתוני מפות Postfix קיימות (קריאה בלבד)") +
+            Environment.NewLine + string.Join(Environment.NewLine,
+                PostfixMapMetadataOptions.Select(key =>
+                    key.ToLowerInvariant() + ": " +
+                    Describe(Get("MAIL_HOST_POSTFIX_MAP_META_" + key)))) +
+            Environment.NewLine + Tr(
+                "Владелец root не означает принадлежность LinuxMailRelay365. Содержимое карт, ACL/SELinux и возможность изменения не проверены.",
+                "Root metadata is NOT LinuxMailRelay365 ownership. Map contents, ACL/SELinux and write eligibility are unverified.",
+                "בעלות root אינה בעלות LinuxMailRelay365. תוכן, ACL/SELinux והרשאות שינוי לא אומתו.");
+    }
+
     internal bool HasFqdn => Fqdn != "unavailable";
     internal bool HasDomain => Domain != "unavailable";
     internal string Get(string name) => values.TryGetValue(name, out var result) ? result : "unavailable";
@@ -71,6 +120,24 @@ internal sealed class MailHostInspection
                  value is not ("declared" or "not_declared" or "unverified")))
                 throw new InvalidDataException(
                     "Untrusted Postfix role/mapping declaration.");
+        }
+        const string metaPrefix = "MAIL_HOST_POSTFIX_MAP_META_";
+        foreach (var pair in values.Where(x => x.Key.StartsWith(metaPrefix,
+                     StringComparison.Ordinal)))
+        {
+            string option = pair.Key[metaPrefix.Length..];
+            if (values["MAIL_HOST_MTA"] != "postfix" ||
+                !PostfixMapMetadataOptions.Contains(option, StringComparer.Ordinal) ||
+                pair.Value is not ("empty" or "unverified" or "complex_or_remote" or
+                    "local_metadata_unverified" or "local_indexed_root_metadata" or
+                    "local_text_root_metadata" or "local_mixed_root_metadata"))
+                throw new InvalidDataException("Untrusted Postfix map metadata.");
+            string roleKey = "MAIL_HOST_POSTFIX_ROLE_" + option;
+            if (!values.TryGetValue(roleKey, out var role) ||
+                (pair.Value == "empty" ? role != "not_declared" :
+                 pair.Value == "unverified" ? role is not ("declared" or "unverified") :
+                 role != "declared"))
+                throw new InvalidDataException("Inconsistent Postfix map metadata.");
         }
         // Configuration ports are NOT an assertion of live socket ownership.
         // Optional for older read-only fixture schemas; never trusted if absent.
@@ -348,6 +415,27 @@ internal sealed class MailHostInspection
         try { Parse(valid + "MAIL_HOST_DOMAIN=evil.example.com\n"); return false; }
         catch (InvalidDataException) { }
         try { Parse(valid.Replace("MAIL_HOST_CHANGES=no", "MAIL_HOST_CHANGES=yes")); return false; }
+        catch (InvalidDataException) { }
+        const string metadata = "MAIL_HOST_POSTFIX_ROLE_TRANSPORT_MAPS=declared\n" +
+            "MAIL_HOST_POSTFIX_MAP_META_TRANSPORT_MAPS=local_indexed_root_metadata\n";
+        var mapHost = Parse(valid + metadata);
+        if (!mapHost.PostfixMapMetadataSummary(1).Contains(
+                "root metadata observed", StringComparison.Ordinal) ||
+            !mapHost.PostfixMapMetadataSummary(1).Contains(
+                "NOT LinuxMailRelay365 ownership", StringComparison.Ordinal))
+            return false;
+        foreach (string invalid in new[]
+        {
+            metadata.Replace("local_indexed_root_metadata", "manager_owned"),
+            metadata.Replace("declared\n", "not_declared\n"),
+            metadata.Replace("MAP_META_TRANSPORT_MAPS", "MAP_META_UNKNOWN_MAP"),
+            "MAIL_HOST_POSTFIX_MAP_META_TRANSPORT_MAPS=empty\n"
+        })
+        {
+            try { Parse(valid + invalid); return false; }
+            catch (InvalidDataException) { }
+        }
+        try { Parse(valid.Replace("MTA=postfix", "MTA=exim") + metadata); return false; }
         catch (InvalidDataException) { }
         const string network = "MAIL_HOST_NET_AUDIT_VERSION=1\n" +
             "MAIL_HOST_NET_STATE=ok\n" +

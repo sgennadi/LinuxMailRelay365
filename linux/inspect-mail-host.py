@@ -438,6 +438,91 @@ def sendmail_mc_flags(path):
     return "readable", listener, masquerade
 
 
+# RC14: bounded metadata-only audit of routing/TLS map declarations.
+# Never inspect SASL password maps, read map contents or contact lookup services.
+POSTFIX_MAP_INVENTORY_KEYS = (
+    "transport_maps", "sender_dependent_relayhost_maps",
+    "sender_dependent_default_transport_maps", "smtp_tls_policy_maps",
+)
+INDEXED_MAP_SUFFIX = {"hash": ".db", "btree": ".db", "lmdb": ".lmdb",
+                      "cdb": ".cdb"}
+TEXT_MAP_TYPES = frozenset(("texthash", "regexp", "pcre"))
+MAP_PATH = re.compile(r"/etc/postfix/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\Z")
+
+
+def root_owned_map_metadata(path, suffix, root=pathlib.Path("/"), uid=0):
+    """Only inspect stat metadata; never open a map or follow a symlink.
+
+    The directory handles anchor each lookup. This is a read-only observation,
+    not a lock, ACL/SELinux audit, or proof of application ownership.
+    """
+    if not MAP_PATH.fullmatch(path):
+        return False
+    parts = path.split("/")[1:]
+    if any(part in (".", "..") for part in parts):
+        return False
+    fd = None
+    try:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        fd = os.open(str(root), flags)
+        for component in parts[:-1]:
+            info = os.fstat(fd)
+            if (info.st_uid != uid or info.st_mode & 0o022 or
+                    not stat.S_ISDIR(info.st_mode)):
+                return False
+            next_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        info = os.fstat(fd)
+        if (info.st_uid != uid or info.st_mode & 0o022 or
+                not stat.S_ISDIR(info.st_mode)):
+            return False
+        names = [parts[-1]]
+        if suffix:
+            names.append(parts[-1] + suffix)
+        for name in names:
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != uid or
+                    info.st_mode & 0o022 or info.st_nlink != 1):
+                return False
+        return True
+    except (OSError, ValueError, NotImplementedError, AttributeError):
+        return False
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def postfix_map_inventory(raw, metadata=root_owned_map_metadata):
+    """Return one bounded status, not a path, map value, count or UID."""
+    if raw is None or len(raw) > 4096:
+        return "unverified"
+    if not raw.strip():
+        return "empty"
+    entries = re.split(r"[\s,]+", raw.strip())
+    if len(entries) > 8:
+        return "complex_or_remote"
+    candidates = []
+    for entry in entries:
+        backend, sep, path = entry.partition(":")
+        if (not sep or backend not in INDEXED_MAP_SUFFIX and
+                backend not in TEXT_MAP_TYPES or not MAP_PATH.fullmatch(path) or
+                any(x in (".", "..") for x in path.split("/"))):
+            # proxy, SQL/LDAP/socket, macro, inline, relative, nonstandard path:
+            # do not even probe filesystem metadata for any entry in this list.
+            return "complex_or_remote"
+        candidates.append((backend, path))
+    if not all(metadata(path, INDEXED_MAP_SUFFIX.get(backend, ""))
+               for backend, path in candidates):
+        return "local_metadata_unverified"
+    kinds = {"indexed" if backend in INDEXED_MAP_SUFFIX else "text"
+             for backend, path in candidates}
+    if len(kinds) > 1:
+        return "local_mixed_root_metadata"
+    return ("local_indexed_root_metadata" if "indexed" in kinds
+            else "local_text_root_metadata")
+
+
 def postfix_role_state(key, raw):
     """Read-only declaration state, never return a sensitive lookup value."""
     if raw is None:
@@ -480,6 +565,9 @@ def inspect(runner=call):
             # Not a configuration value: only a bounded proof of declaration.
             value = postfix_role_state(key, raw)
             result["MAIL_HOST_POSTFIX_ROLE_" + key.upper()] = value
+            if key in POSTFIX_MAP_INVENTORY_KEYS:
+                result["MAIL_HOST_POSTFIX_MAP_META_" + key.upper()] = (
+                    postfix_map_inventory(raw))
     elif mta == "exim":
         tool = "exim4" if shutil.which("exim4") else "exim"
         for key in ("primary_hostname", "qualify_domain", "local_interfaces"):

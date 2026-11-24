@@ -174,6 +174,9 @@ internal sealed partial class MainForm
                     "למפות הקיימות משמעות שונה והן אינן מוחלפות."),
                 width, warning: senderMap != "not_declared" ||
                     transport != "not_declared"));
+            if (inspectedHost is { Mta: "postfix" } mapHost)
+                AddLine(page, MailFlowText(mapHost.PostfixMapMetadataSummary(l),
+                    width, warning: true));
         }
         else
         {
