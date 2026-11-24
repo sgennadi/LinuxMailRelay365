@@ -25,6 +25,7 @@ ROTATION_CURRENT = "rotation-current.json"
 ROTATION_PENDING = "rotation-pending.json"
 EDIT_BASE = "linuxmailrelay365-transport-edit"
 EDIT_PENDING = "pending.json"
+EDIT_FORMAT = "LMR365-TRANSPORT-EDIT-V1"
 CONFIGS = ("main", "master")
 
 
@@ -177,6 +178,17 @@ def parse_rotation_overlay(raw, info, journal, receipts):
         need(maps[name] == journal["maps"][name] and current[name] == receipts[name],
              "rotation_changed_noncredential_map")
     return dict(journal, maps=maps), current
+
+
+def parse_edit_marker(raw):
+    marker = M.decode(raw)
+    need(type(marker) is dict and set(marker) ==
+         {"format", "old", "new", "old_record", "new_journal", "phase"} and
+         marker["format"] == EDIT_FORMAT and marker["phase"] in ("pending", "commit", "rollback") and
+         all(R.valid_sha(marker[key]) for key in ("old", "new", "old_record", "new_journal")) and
+         marker["old"] != marker["new"] and M.canonical(marker) == raw,
+         "edit_marker_unverified")
+    return marker
 
 
 def assert_no_edit_pending(parent, uid):

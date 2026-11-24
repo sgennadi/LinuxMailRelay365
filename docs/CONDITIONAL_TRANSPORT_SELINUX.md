@@ -136,3 +136,23 @@ user-xattr tests cover success, native rollback, both retained generations,
 policy drift and foreign equal-byte maps. This remains internal code: the
 production SELinux maintenance guard, full labeled edit integration and actual
 Enforcing acceptance are unchanged. The RC14 release branch is not modified.
+
+## Post-RC14 scoped labeled edit transaction
+
+The internal ScopedEdit coordinator now connects both labeled private stores
+with the two-generation edit protocol. It performs a native-reviewed draft
+comparison, compiles new databases, and retains only exact explicitly approved
+password rules. A shared labeled marker binds both revisions, the old effective
+ownership record and the new immutable journal before exclusive publication.
+Each normal read remains blocked while the marker exists; only an exact,
+revision-bound private observation permits recovery inspection. New destination
+labels are assigned independently of the retained database bytes. Switch
+rechecks both stores and live policy before each atomic config replacement.
+Commit or Rollback requires exact recovery review and native verification;
+cleanup direction is durable, and interrupted cleanup can resume only in that
+direction. A map without its original publication receipt is never adopted.
+Synthetic user-xattr fixtures cover successful commit/restore, rollback,
+interruption, policy drift, foreign inodes and lost receipts. These APIs are
+not wired to the production CLI/GUI, do not change the active SELinux guard,
+and do not establish real Enforcing-domain permissions. The published RC14
+remains unchanged.

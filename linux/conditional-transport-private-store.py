@@ -405,13 +405,62 @@ class PrivateStore:
             finally:
                 os.close(fd)
 
+    def observe_edit_marker(self):
+        """Private exact global edit marker, checked against its own path policy."""
+        self.check_anchor()
+        if not T.exists(self.parent, X.EDIT_BASE):
+            return None
+        fd = self.open_directory(X.EDIT_BASE)
+        relative = X.EDIT_BASE + "/" + X.EDIT_PENDING
+        try:
+            directory = self.directory(fd, X.EDIT_BASE)
+            entries = set(os.listdir(fd))
+            X.need(entries in (set(), {X.EDIT_PENDING}), "edit_marker_unverified")
+            receipt = self.observe(relative) if entries else None
+            if receipt is not None:
+                X.parse_edit_marker(receipt[0])
+            self.check_anchor()
+            X.need(self.observe_directory(X.EDIT_BASE) == directory and
+                   set(os.listdir(fd)) == entries and
+                   (receipt is None or self.observe(relative) == receipt),
+                   "edit_marker_changed")
+            return (directory, receipt) if receipt is not None else None
+        finally:
+            os.close(fd)
+
+    def _check_edit_context(self, evidence):
+        if evidence is None:
+            self.no_edit_pending()
+        else:
+            X.need(self.observe_edit_marker() == evidence, "edit_marker_changed")
+            marker = X.parse_edit_marker(evidence[1][0])
+            X.need(self.revision in (marker["old"], marker["new"]),
+                   "edit_revision_not_bound")
+
+    def remove_edit_marker(self, evidence):
+        self._check_edit_context(evidence)
+        X.need(evidence is not None, "edit_marker_unverified")
+        fd = self.open_directory(X.EDIT_BASE)
+        relative = X.EDIT_BASE + "/" + X.EDIT_PENDING
+        try:
+            self._check_edit_context(evidence)
+            X.need(self.directory(fd, X.EDIT_BASE) == evidence[0] and
+                   set(os.listdir(fd)) == {X.EDIT_PENDING} and
+                   self.metadata(fd, X.EDIT_PENDING, relative) == evidence[1],
+                   "edit_marker_changed")
+            os.unlink(X.EDIT_PENDING, dir_fd=fd)
+            os.fsync(fd)
+            self.no_edit_pending()
+        finally:
+            os.close(fd)
+
     def read_activation(self):
         """Normal read: pending rotations and edits remain blocked."""
         return self._activation_state(False)[0]
 
-    def _activation_state(self, allow_rotation_pending):
+    def _activation_state(self, allow_rotation_pending, edit_evidence=None):
         """Private exact evidence; only the rotation resolver may bypass pending."""
-        self.no_edit_pending()
+        self._check_edit_context(edit_evidence)
         info, files = self.read_snapshot(allow_activation=True)
         X.need(R.labeled(info), "private_activation_requires_v2")
         observed = self.activation_observation()
@@ -428,10 +477,10 @@ class PrivateStore:
         if X.ROTATION_CURRENT in records:
             journal, receipts = X.parse_rotation_overlay(
                 records[X.ROTATION_CURRENT][0], info, journal, receipts)
-        self.no_edit_pending()
+        self._check_edit_context(edit_evidence)
         X.need(self.read_snapshot(allow_activation=True) == (info, files) and
                self.activation_observation() == observed, "private_activation_changed")
-        self.no_edit_pending()
+        self._check_edit_context(edit_evidence)
         return (info, files, journal, receipts), observed, base
 
     def remove_rotation_marker(self, expected):
@@ -544,7 +593,7 @@ class PrivateStore:
         X.checked_map(config, name, journal, identity, self.uid)
         return identity
 
-    def live_guard(self, config, info, read_policy, prepared=None):
+    def live_guard(self, config, info, read_policy, prepared=None, edit_evidence=None):
         """Recheck the exact prospective live policy, not only stored labels.
 
         The bound host guard still must prove stopped maintenance, the
@@ -552,7 +601,7 @@ class PrivateStore:
         authorization or service-start permission is inferred from labels.
         """
         self.check_anchor()
-        self.no_edit_pending()
+        self._check_edit_context(edit_evidence)
         X.need(R.labeled(info) and callable(read_policy) and
                policy_paths(info, self.revision) == self.paths,
                "labeled_live_policy_required")

@@ -47,15 +47,7 @@ def full(record, names):
 
 def marker_read(fd, uid):
     X.need(set(os.listdir(fd)) == {X.EDIT_PENDING}, "edit_marker_unverified")
-    raw = M.read_file(fd, X.EDIT_PENDING, uid)
-    marker = M.decode(raw)
-    X.need(type(marker) is dict and set(marker) ==
-           {"format", "old", "new", "old_record", "new_journal", "phase"} and
-           marker["format"] == FORMAT and marker["phase"] in ("pending", "commit", "rollback") and
-           all(R.valid_sha(marker[key]) for key in ("old", "new", "old_record", "new_journal")) and
-           marker["old"] != marker["new"] and M.canonical(marker) == raw,
-           "edit_marker_unverified")
-    return marker
+    return X.parse_edit_marker(M.read_file(fd, X.EDIT_PENDING, uid))
 
 
 def observe(config, parent, uid, gid, guard, read_policy=None):
