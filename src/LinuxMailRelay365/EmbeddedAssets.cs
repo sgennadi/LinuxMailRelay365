@@ -67,6 +67,7 @@ internal static class EmbeddedAssets
     internal static string ConditionalTransportEditHost => Text("LinuxMailRelay365.linux.manage-conditional-transport-edit.py");
     internal static string ConditionalTransportSelinuxLabels => Text("LinuxMailRelay365.linux.inspect-conditional-transport-selinux.py");
     internal static string ConditionalTransportSelinuxReadiness => Text("LinuxMailRelay365.linux.inspect-conditional-transport-selinux-readiness.py");
+    internal static string ConditionalTransportSelinuxAvc => Text("LinuxMailRelay365.linux.inspect-conditional-transport-selinux-avc.py");
     internal static string ConditionalRecoveryManager => Text("LinuxMailRelay365.linux.inspect-conditional-postfix-recovery.py");
     internal static string MailBindInspector => Text("LinuxMailRelay365.linux.audit-mail-bindings.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");

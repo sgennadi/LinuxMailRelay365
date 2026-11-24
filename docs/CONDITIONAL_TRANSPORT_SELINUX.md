@@ -174,3 +174,24 @@ serve as an Apply approval. The CLI does not yet invoke the scoped labeled
 transaction APIs. AVC diagnostics, real SELinux domain access, private-store
 runtime acceptance and policy-preserving mutations remain outstanding. The
 published RC14 is unchanged.
+
+## Historical outbound AVC diagnostics
+
+The separate read-only GUI action uses the trusted native ausearch utility with
+AVC, recent and raw filters. Recent means the preceding ten minutes; no raw
+records are returned to Windows. The Linux parser selects the Postfix SMTP
+client SELinux domain, TCP name_connect denials and exact draft destination
+ports. It reports distinct event/port/mode counts for enforced, permissive and
+unknown event modes, not individual network connections or verified routes.
+A 15-second query deadline and 2 MiB output cap prevent unrestricted log
+collection. Missing tools, malformed/truncated records and failures are
+unverified. Ausearch exit 1 is explicitly ambiguous (no matches or errors),
+never evidence that access is allowed. Logs may be incomplete, suppressed by
+policy or include other SMTP destinations using the same port. The GUI binds
+aggregate receipts to the inspected host and exact draft. No log records,
+private contexts, paths, credentials or message content are exported; no mail,
+policy changes, audit configuration changes or service control are performed.
+This diagnoses historical outbound connection denials only; file/TLS/other
+domain denials, real runtime acceptance and scoped mutation CLI remain separate.
+See ausearch(8) for recent/raw filters and its ambiguous exit status. The RC14
+release branch and its existing write restrictions remain unchanged.
