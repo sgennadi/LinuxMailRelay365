@@ -105,12 +105,13 @@ def rotate(config, parent, revision, index, reviewed, database, gid, confirmatio
     X.need(fresh_review() == reviewed and X.load(parent, revision, uid) == reviewed,
            "installed_review_changed")
     info, files, journal, receipts = reviewed
+    X.need(not R.labeled(info), "labeled_rotation_not_yet_supported")
     name = target_name(info, index)
     X.need(journal["gid"] == gid, "postfix_group_changed")
     assert_installed(config, reviewed, uid)
     old, meta = T.config_file(config, name, uid, M.MAX_DB_BYTES)
     old_hash, new_hash = M.digest(old), M.digest(database)
-    X.need(old_hash == journal["maps"][name] and meta == X.map_meta(journal),
+    X.need(old_hash == journal["maps"][name] and meta == X.map_meta(journal, name),
            "old_credential_database_changed")
     X.need(new_hash != old_hash, "credential_database_unchanged")
     fd = X.activation_fd(parent, revision, uid)
@@ -255,6 +256,7 @@ def pending_review(config, parent, revision, uid, gid):
     """Private observation; never serialize to a client."""
     record = X.load(parent, revision, uid, allow_pending=True)
     info, _, journal, receipts = record
+    X.need(not R.labeled(info), "labeled_rotation_not_yet_supported")
     X.need(journal["gid"] == gid, "postfix_group_changed")
     fd = X.activation_fd(parent, revision, uid)
     try:
@@ -265,7 +267,7 @@ def pending_review(config, parent, revision, uid, gid):
         actual = T.file_identity(os.stat(name, dir_fd=config, follow_symlinks=False))
         data, meta = T.config_file(config, name, uid, M.MAX_DB_BYTES)
         digest = M.digest(data)
-        X.need(meta == X.map_meta(journal), "rotation_map_metadata_changed")
+        X.need(meta == X.map_meta(journal, name), "rotation_map_metadata_changed")
         map_identity(config, name, uid, meta, digest, exact=actual)
         if actual == marker["old_identity"] and digest == marker["old_hash"]:
             status = "old_retained"
@@ -312,7 +314,7 @@ def recover(config, parent, revision, reviewed, gid, confirmation, uid, guard, v
     name = marker["name"]
     data, meta = T.config_file(config, name, uid, M.MAX_DB_BYTES)
     digest = marker["new_hash"] if status == "new_retained" else marker["old_hash"]
-    X.need(M.digest(data) == digest and meta == X.map_meta(journal),
+    X.need(M.digest(data) == digest and meta == X.map_meta(journal, name),
            "rotation_recovery_candidate_changed")
     map_identity(config, name, uid, meta, digest, exact=identity)
     verify(status == "new_retained", info, name, data)

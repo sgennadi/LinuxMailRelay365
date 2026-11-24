@@ -38,6 +38,7 @@ def destination_check(config, old, new):
 
 def proposal(record, draft):
     old, files, _, _ = record
+    X.need(not R.labeled(old), "labeled_edit_requires_new_policy_review")
     # Always rebuild from the exact pre-manager snapshot. Never search for
     # comment markers in, or append a second set to, the active configuration.
     try:
@@ -141,7 +142,7 @@ def retained_database(config, directory, record, index, uid, identity, native_un
     name = Q.target_name(old, index)
     X.checked_map(config, name, journal, receipts[name], uid)
     data, meta = T.config_file(config, name, uid, M.MAX_DB_BYTES)
-    X.need(M.digest(data) == journal["maps"][name] and meta == X.map_meta(journal),
+    X.need(M.digest(data) == journal["maps"][name] and meta == X.map_meta(journal, name),
            "retained_credential_changed")
     # Exact endpoint, one-row lookup and negative lookup under the real
     # Postfix account. No credential string is returned from verification.

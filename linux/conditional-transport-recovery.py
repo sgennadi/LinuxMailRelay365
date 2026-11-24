@@ -31,6 +31,8 @@ FILES = ("main.before", "master.before", "main.after", "master.after")
 MANIFEST = "transaction.json"
 ACTIVATION = "activation"
 CONFIRM = "BACKUP_STOPPED_POSTFIX_TRANSPORTS"
+LEGACY_FORMAT = "LMR365-TRANSPORT-BACKUP-V1"
+LABELED_FORMAT = "LMR365-TRANSPORT-BACKUP-V2"
 CONFLICTS = ("transport_maps", "sender_dependent_default_transport_maps",
              "sender_dependent_relayhost_maps")
 
@@ -70,26 +72,75 @@ def proposal(main, master, rules, backend, ca):
     return rules, sha, after, maps
 
 
-def observe(config, rules, backend, ca, uid, guard):
+def labeled(info):
+    return info is not None and info.get("format") == LABELED_FORMAT
+
+
+def label_context(value):
+    raw = T.label_bytes(value).rstrip(b"\0")
+    kind = raw.decode("ascii").split(":")[2]
+    need(kind not in ("default_t", "unlabeled_t", "etc_t", "file_t"),
+         "generic_or_unsafe_postfix_policy_type")
+    return raw
+
+
+def directory_metadata(config, info=None):
+    # A legacy snapshot cannot be used on a labeled directory, and a
+    # labeled snapshot must retain the exact originally observed label.
+    if not labeled(info):
+        need(not os.listxattr(config), "extended_directory_metadata_unsupported")
+    else:
+        need(T.file_label(config) == info["directory_selinux"],
+             "transport_directory_label_changed")
+
+
+def observe(config, rules, backend, ca, uid, guard, policy_labels=None):
+    """Optional internal V2 metadata path; host CLI still refuses active SELinux.
+
+    policy_labels must originate from a trusted exact-path policy review.
+    The mandatory caller guard must recheck policy throughout publication.
+    This is not a substitute for real enforcing-domain acceptance.
+    """
     guard()
-    need(not os.listxattr(config), "extended_directory_metadata_unsupported")
+    if policy_labels is None:
+        directory_metadata(config)
     identity = T.context(config, uid)
     pair = tuple(T.config_file(config, name, uid) for name in ("main.cf", "master.cf"))
     for _, meta in pair:
-        T.valid_meta(meta, False)
+        T.valid_meta(meta, policy_labels is not None)
     original = tuple(x[0] for x in pair)
     normalized, sha, after, maps = proposal(*original, rules, backend, ca)
+    label_fields = {}
+    if policy_labels is not None:
+        names = [name + M.MAP_SUFFIX[backend] for name in maps]
+        need(type(policy_labels) is dict and set(policy_labels) ==
+             {".", "main.cf", "master.cf"} | set(names),
+             "invalid_transport_label_policy")
+        for value in policy_labels.values():
+            label_context(value)
+        directory_label = T.file_label(config)
+        need(directory_label is not None and
+             label_context(directory_label) == label_context(policy_labels["."]),
+             "transport_directory_label_mismatch")
+        for filename, (_, meta) in zip(("main.cf", "master.cf"), pair):
+            need(label_context(meta["selinux"]) == label_context(policy_labels[filename]),
+                 "transport_config_label_mismatch")
+        label_fields = {"directory_selinux": directory_label,
+                        "map_selinux": {name: policy_labels[name] for name in names}}
     for name in maps:
         need(not T.exists(config, name) and
              not T.exists(config, name + M.MAP_SUFFIX[backend]),
              "managed_map_destination_exists")
     files = dict(zip(FILES, original + after))
-    info = {"format": "LMR365-TRANSPORT-BACKUP-V1", "plan": sha,
+    info = {"format": LABELED_FORMAT if label_fields else LEGACY_FORMAT, "plan": sha,
             "rules": normalized, "backend": backend, "ca": ca,
             "identity": identity, "metadata": [x[1] for x in pair],
             "map_names": maps,
             "files": {key: M.digest(value) for key, value in files.items()}}
+    info.update(label_fields)
+    validate(info, files)
     guard()
+    directory_metadata(config, info)
     need(T.context(config, uid) == identity and
          tuple(T.config_file(config, name, uid) for name in ("main.cf", "master.cf")) == pair,
          "configuration_drift")
@@ -101,15 +152,18 @@ def observe(config, rules, backend, ca, uid, guard):
 
 
 def validate(info, files):
-    need(type(info) is dict and set(info) == {
-        "format", "plan", "rules", "backend", "ca", "identity", "metadata",
-        "map_names", "files"} and info["format"] == "LMR365-TRANSPORT-BACKUP-V1"
+    common = {"format", "plan", "rules", "backend", "ca", "identity",
+              "metadata", "map_names", "files"}
+    need(type(info) is dict and info.get("format") in (LEGACY_FORMAT, LABELED_FORMAT) and
+         set(info) == (common | {"directory_selinux", "map_selinux"} if labeled(info) else common)
         and type(info["identity"]) is list and len(info["identity"]) == 2
         and all(type(x) is int and x >= 0 for x in info["identity"])
         and type(info["metadata"]) is list and len(info["metadata"]) == 2,
         "invalid_snapshot_manifest")
     for meta in info["metadata"]:
-        T.valid_meta(meta, False)
+        T.valid_meta(meta, labeled(info))
+        if labeled(info):
+            label_context(meta["selinux"])
     need(set(files) == set(FILES) and
          info["files"] == {key: M.digest(value) for key, value in files.items()},
          "snapshot_hash_mismatch")
@@ -118,6 +172,13 @@ def validate(info, files):
     need(rules == info["rules"] and sha == info["plan"] and maps == info["map_names"]
          and after == (files["main.after"], files["master.after"]),
          "snapshot_plan_mismatch")
+    if labeled(info):
+        label_context(info["directory_selinux"])
+        need(type(info["map_selinux"]) is dict and
+             set(info["map_selinux"]) == {name + M.MAP_SUFFIX[info["backend"]] for name in maps},
+             "invalid_snapshot_map_labels")
+        for value in info["map_selinux"].values():
+            label_context(value)
 
 
 def load(parent, revision, uid, allow_activation=False):
@@ -159,6 +220,7 @@ def backup(config, parent, reviewed, confirmation, uid, guard, fresh_review):
     info, files = reviewed
     validate(info, files)
     need(T.context(config, uid) == info["identity"], "wrong_config_directory")
+    directory_metadata(config, info)
     revision = secrets.token_hex(32)
     base = M.open_base(parent, uid, create=True, name=BASE)
     try:

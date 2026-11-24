@@ -25,7 +25,7 @@ def observe(config, parent, revision, uid, gid):
         info, files = R.load(parent, revision, uid, allow_activation=True)
         if X.T.context(config, uid) != info["identity"]:
             return "different_config_directory"
-        current = X.pair(config, uid)
+        current = X.pair(config, uid, info)
         before = X.expected_pair(info, files, ".before")
         after = X.expected_pair(info, files, ".after")
         for idx, item in enumerate(current):

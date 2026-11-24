@@ -21,3 +21,21 @@ map namespaces, without mounting SELinux or modifying the shared kernel.
 Containers are not a substitute for an Enforcing VM. Existing stopped-host
 write guards remain in force; labeled snapshot/journal publication,
 label-preserving rotation/edit and real Enforcing acceptance remain necessary.
+
+## Internal labeled publication metadata (V2)
+
+An optional library-only snapshot format records the exact observed directory and
+configuration labels and the individual prospective database labels. It accepts
+only a complete exact-path policy label set; V1 remains unchanged and refuses
+labeled configurations. The corresponding V2 publication journal binds every map
+label to the snapshot. Apply and Restore preserve each file's own metadata using
+the existing atomic writer and verify it during native ownership checks. Directory
+label drift, label changes on a map, unsafe/default types and unsupported extended
+attributes refuse the operation. Synthetic user-xattr tests exercise the real
+filesystem publication/rollback mechanics without claiming kernel SELinux access.
+
+Production CLI guards remain unchanged: active SELinux is not yet allowed for
+writes. V2 rotation and replacement are deliberately refused until private
+journal-label updates and prospective replacement policy rechecks are implemented.
+The future trusted caller must recheck actual installed policy in every guard;
+passing a V2 label dictionary alone is not policy or runtime acceptance.

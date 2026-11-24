@@ -123,7 +123,7 @@ class EditHost:
             self.x.checked_map(self.config, name, journal, receipts[name], self.uid)
             data, meta = self.t.config_file(self.config, name, self.uid, self.m.MAX_DB_BYTES)
             self.need(self.m.digest(data) == journal["maps"][name] and
-                      meta == self.x.map_meta(journal), "credential_map_changed")
+                      meta == self.x.map_meta(journal, name), "credential_map_changed")
             self.q.verify_retained_native(self.config, self.h.P.CONFIG, info, name, data,
                                           self.uid, self.identity, self.i.O.native_unprivileged,
                                           None if expected is None else expected.get(index))

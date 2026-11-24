@@ -33,11 +33,12 @@ def need(condition, reason):
         raise Refused(reason)
 
 
-def pair(config, uid):
-    need(not os.listxattr(config), "extended_directory_metadata_unsupported")
+def pair(config, uid, info=None):
+    R.directory_metadata(config, info)
     result = tuple(T.config_file(config, name + ".cf", uid) for name in CONFIGS)
     for _, meta in result:
-        T.valid_meta(meta, False)
+        T.valid_meta(meta, R.labeled(info))
+    R.directory_metadata(config, info)
     return result
 
 
@@ -48,7 +49,7 @@ def expected_pair(info, files, phase):
 
 def assert_pair(config, info, files, phase, uid):
     need(T.context(config, uid) == info["identity"] and
-         pair(config, uid) == expected_pair(info, files, phase),
+         pair(config, uid, info) == expected_pair(info, files, phase),
          "transport_configuration_changed")
 
 
@@ -60,8 +61,13 @@ def source_name(info, name):
     return name[:-len(M.MAP_SUFFIX[info["backend"]])]
 
 
-def map_meta(journal):
-    return {"mode": 0o640, "gid": journal["gid"]}
+def map_meta(journal, name=None):
+    result = {"mode": 0o640, "gid": journal["gid"]}
+    if journal["format"] == "LMR365-TRANSPORT-PUBLICATION-V2":
+        need(name in journal["map_selinux"], "map_label_missing")
+        result["selinux"] = journal["map_selinux"][name]
+        T.label_bytes(result["selinux"])
+    return result
 
 
 def receipt_name(name):
@@ -102,11 +108,16 @@ def native_database_set(info, databases):
 
 def journal_for(revision, info, files, maps, gid):
     need(type(gid) is int and gid >= 0, "invalid_map_group")
-    return {"format": "LMR365-TRANSPORT-PUBLICATION-V1",
-            "revision": revision,
-            "snapshot_sha256": M.digest(M.canonical(info)),
-            "gid": gid,
-            "maps": {name: M.digest(data) for name, data in maps.items()}}
+    value = {"format": "LMR365-TRANSPORT-PUBLICATION-V2" if R.labeled(info)
+              else "LMR365-TRANSPORT-PUBLICATION-V1",
+             "revision": revision,
+             "snapshot_sha256": M.digest(M.canonical(info)),
+             "gid": gid,
+             "maps": {name: M.digest(data) for name, data in maps.items()}}
+    if R.labeled(info):
+        need(set(maps) == set(info["map_selinux"]), "invalid_labeled_map_set")
+        value["map_selinux"] = dict(info["map_selinux"])
+    return value
 
 
 def read_receipt(fd, revision, name, uid):
@@ -183,9 +194,13 @@ def load(parent, revision, uid, allow_pending=False, allow_edit_pending=False):
         raw = M.read_file(fd, JOURNAL, uid)
         journal = M.decode(raw)
         names = map_names(info)
-        need(type(journal) is dict and set(journal) ==
-             {"format", "revision", "snapshot_sha256", "gid", "maps"} and
-             journal["format"] == "LMR365-TRANSPORT-PUBLICATION-V1" and
+        fields = {"format", "revision", "snapshot_sha256", "gid", "maps"}
+        labeled = R.labeled(info)
+        need(type(journal) is dict and
+             set(journal) == (fields | {"map_selinux"} if labeled else fields) and
+             journal["format"] == ("LMR365-TRANSPORT-PUBLICATION-V2" if labeled else
+                                   "LMR365-TRANSPORT-PUBLICATION-V1") and
+             (not labeled or journal["map_selinux"] == info["map_selinux"]) and
              journal["revision"] == revision and
              journal["snapshot_sha256"] == M.digest(M.canonical(info)) and
              type(journal["gid"]) is int and journal["gid"] >= 0 and
@@ -212,7 +227,7 @@ def checked_map(config, name, journal, receipt, uid):
     need(receipt is not None, "map_publication_unproven")
     before = T.file_identity(os.stat(name, dir_fd=config, follow_symlinks=False))
     data, meta = T.config_file(config, name, uid, M.MAX_DB_BYTES)
-    need(before == receipt and meta == map_meta(journal) and
+    need(before == receipt and meta == map_meta(journal, name) and
          M.digest(data) == journal["maps"][name] and
          T.file_identity(os.stat(name, dir_fd=config, follow_symlinks=False)) == receipt,
          "map_identity_or_content_changed")
@@ -221,7 +236,7 @@ def checked_map(config, name, journal, receipt, uid):
 def publish(config, parent, revision, name, data, journal, uid):
     need(M.digest(data) == journal["maps"][name], "verified_database_changed")
     prepared = []
-    T.atomic_write(config, name, data, map_meta(journal), uid, False, prepared.append)
+    T.atomic_write(config, name, data, map_meta(journal, name), uid, False, prepared.append)
     identity = T.file_identity(os.stat(name, dir_fd=config, follow_symlinks=False))
     need(prepared == [identity[:4]], "published_map_replaced")
     checked_map(config, name, journal, identity, uid)
@@ -244,7 +259,7 @@ def check_sources(config, info):
 
 def restorable(config, info, files, journal, receipts, uid):
     need(T.context(config, uid) == info["identity"], "wrong_config_directory")
-    current = pair(config, uid)
+    current = pair(config, uid, info)
     for index, name in enumerate(CONFIGS):
         data, meta = current[index]
         need(meta == info["metadata"][index] and
@@ -271,7 +286,7 @@ def restore(config, parent, revision, confirmation, uid, guard, verify):
     state = list(current)
     for index, name in enumerate(CONFIGS):
         guard()
-        need(pair(config, uid) == tuple(state), "configuration_drift_before_restore")
+        need(pair(config, uid, info) == tuple(state), "configuration_drift_before_restore")
         data, meta = state[index]
         original = files[name + ".before"]
         if data != original:
@@ -345,7 +360,7 @@ def apply(config, parent, reviewed, databases, gid, confirmation, uid,
         T.atomic_write(config, "master.cf", files["master.after"],
                        info["metadata"][1], uid, True)
         guard()
-        need(pair(config, uid) == (expected_pair(info, files, ".before")[0],
+        need(pair(config, uid, info) == (expected_pair(info, files, ".before")[0],
                                   expected_pair(info, files, ".after")[1]),
              "configuration_changed_before_main_publication")
         check_sources(config, info)
