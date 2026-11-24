@@ -1510,6 +1510,7 @@ internal sealed partial class MainForm : Form
     private async Task CheckSshAndContinueAsync()
     {
         await CheckSshAsync();
+        RememberVerifiedSshProfile();
         // A successful reconnect may reach a reinstalled server at the same
         // address. Reinspect certificate hardware on the next certificate page.
         certificateHardwareContext = null;
@@ -1518,7 +1519,6 @@ internal sealed partial class MainForm : Form
         reviewedTpmPlanSha = null;
         reviewedTpmPlanContext = null;
         tpmPlanSummary = "";
-        RememberVerifiedSshProfile();
         EnsureSecurityLoaded();
         EnsureRoutingLoaded();
         // Read-only discovery immediately after a VERIFIED SSH login.
