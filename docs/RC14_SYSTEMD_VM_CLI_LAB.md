@@ -2,7 +2,8 @@
 
 Run only on a disposable official GitHub-hosted Ubuntu 24.04 systemd VM.
 The workflow installs native Postfix, stops it, and prepares the narrowly
-supported policy explicitly. The unmodified product CLI runs as root in a
+supported policy explicitly: the positive path uses unchrooted outbound SMTP,
+relay and trivial-rewrite services. The unmodified product CLI runs as root in a
 dedicated network namespace. Its only peer is an isolated synthetic TLS SMTP
 sink across veth on the 192.0.2.0/30 documentation subnet: no routes exist to
 the ordinary guest network, real tenants or external mailboxes. No maintenance
@@ -11,7 +12,11 @@ or TLS evidence is injected into any application code.
 The test checks the real preflight's refusal for a wrong name certificate signed
 by the trusted fixture CA and for an occupied hold queue; confirms stale
 approval and a restore with the native Postfix process active cannot change the
-approved config; verifies Stage/Compile/Review/Apply and managed map ownership;
+approved config; and independently sets explicit chroot on each of
+`smtp/unix`, `relay/unix` and `rewrite/unix`. In each case, preflight must
+return `outbound_chroot_needs_separate_acceptance`, an already reviewed Apply
+must refuse, and no protected config, route map or recovery snapshot may
+change. The positive path verifies Stage/Compile/Review/Apply and managed map ownership;
 sends synthetic TLS mail on custom port 46517 and preserves local delivery; then
 runs the actual offline Restore, confirms exact main.cf/master.cf bytes and map
 removal, and checks that the same sender is routed via its previous port 46510.

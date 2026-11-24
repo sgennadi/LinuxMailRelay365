@@ -147,6 +147,41 @@ apply() {
   offline --apply "${candidate_args[@]}" --approve-transaction-sha256 "$txn" \
     --approve-evidence-sha256 "$1" --confirm APPLY_STOPPED_POSTFIX_SENDER_MAP
 }
+# The supported policy is unchrooted outbound delivery; confirm that
+# each explicit Debian-style chroot blocks preflight AND a previously approved
+# offline Apply before it can install a map or create a recovery snapshot.
+baseline_master="$scratch/master.cf.before-chroot"
+cp -p -- /etc/postfix/master.cf "$baseline_master"
+protected_state() {
+  sha256sum /etc/postfix/main.cf /etc/postfix/master.cf
+  stat -c '%d:%i:%a:%u:%g' /etc/postfix/main.cf /etc/postfix/master.cf
+}
+for service in smtp/unix relay/unix rewrite/unix; do
+  run postconf -F "$service/chroot=y"
+  test "$(run postconf -M "$service" | awk '{print $5}')" = y
+  chroot_state="$(protected_state)"
+  if bad="$(preflight_run)"; then
+    echo "Chrooted $service unexpectedly passed offline preflight" >&2; exit 1
+  else
+    test "$?" -eq 2
+  fi
+  grep -qx CONDITIONAL_PREFLIGHT_STATUS=blocked <<<"$bad"
+  grep -qx CONDITIONAL_PREFLIGHT_REASON=outbound_chroot_needs_separate_acceptance <<<"$bad"
+  if bad="$(apply "$evidence")"; then
+    echo "Chrooted $service unexpectedly accepted old offline approval" >&2; exit 1
+  else
+    test "$?" -eq 2
+  fi
+  grep -qx CONDITIONAL_OFFLINE_STATUS=refused_or_failed <<<"$bad"
+  grep -qx CONDITIONAL_OFFLINE_SERVICE_STARTED=no <<<"$bad"
+  test "$(protected_state)" = "$chroot_state"
+  test ! -e "/var/lib/linuxmailrelay365-conditional-recovery/$txn"
+  test -z "$(find /etc/postfix -maxdepth 1 -name 'lmr365-conditional-*-sender*' -print -quit)"
+  cp -p -- "$baseline_master" /etc/postfix/master.cf
+  assert_baseline
+  echo "CHROOTED_OUTBOUND_REFUSED=$service:outbound_chroot_needs_separate_acceptance"
+done
+
 if bad="$(apply "$different")"; then echo "Changed approval accepted" >&2; exit 1; fi
 echo "$bad"
 assert_baseline
