@@ -31,3 +31,5 @@ state immediately afterward. Actual Restore still needs its separate typed
 approval, stopped-host guard, exact backup integrity and ownership checks.
 Only temporary-directory unit tests are added here; GUI integration and
 native full-maintenance acceptance are separate work.
+
+The WinForms recovery panel embeds the same read-only inventory backend. Scan requires current Postfix discovery, validates the returned bounded list and invalidates displayed observations when the SSH/discovery context changes. Only backup digests and enumerated states are shown, not original configuration. No write action is included in this panel.

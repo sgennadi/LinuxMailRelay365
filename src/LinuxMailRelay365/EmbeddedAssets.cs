@@ -52,6 +52,10 @@ internal static class EmbeddedAssets
     internal static string GooglePostfixRoute => Text("LinuxMailRelay365.linux.manage-google-relay.py");
     internal static string CustomPostfixRoute => Text("LinuxMailRelay365.linux.manage-custom-relay.py");
     internal static string ConditionalStageManager => Text("LinuxMailRelay365.linux.stage-conditional-postfix-maps.py");
+    internal static string ConditionalTransactionManager => Text("LinuxMailRelay365.linux.conditional-postfix-transaction.py");
+    internal static string ConditionalActivationPreflight => Text("LinuxMailRelay365.linux.inspect-conditional-postfix-activation.py");
+    internal static string ConditionalOfflineManager => Text("LinuxMailRelay365.linux.manage-conditional-postfix-offline.py");
+    internal static string ConditionalRecoveryManager => Text("LinuxMailRelay365.linux.inspect-conditional-postfix-recovery.py");
     internal static string MailBindInspector => Text("LinuxMailRelay365.linux.audit-mail-bindings.py");
     internal static string PlatformCompat => Text("LinuxMailRelay365.linux.platform-compat.py");
     internal static string MtaCoexistenceDoctor => Text("LinuxMailRelay365.linux.mta-coexistence-doctor.py");
