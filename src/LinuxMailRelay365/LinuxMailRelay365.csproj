@@ -73,6 +73,11 @@
     <EmbeddedResource Include="../../linux/conditional-postfix-transaction.py" LogicalName="LinuxMailRelay365.linux.conditional-postfix-transaction.py" />
     <EmbeddedResource Include="../../linux/inspect-conditional-postfix-activation.py" LogicalName="LinuxMailRelay365.linux.inspect-conditional-postfix-activation.py" />
     <EmbeddedResource Include="../../linux/manage-conditional-postfix-offline.py" LogicalName="LinuxMailRelay365.linux.manage-conditional-postfix-offline.py" />
+    <EmbeddedResource Include="../../linux/compile-conditional-transports.py" LogicalName="LinuxMailRelay365.linux.compile-conditional-transports.py" />
+    <EmbeddedResource Include="../../linux/conditional-transport-recovery.py" LogicalName="LinuxMailRelay365.linux.conditional-transport-recovery.py" />
+    <EmbeddedResource Include="../../linux/conditional-transport-transaction.py" LogicalName="LinuxMailRelay365.linux.conditional-transport-transaction.py" />
+    <EmbeddedResource Include="../../linux/manage-conditional-transports-offline.py" LogicalName="LinuxMailRelay365.linux.manage-conditional-transports-offline.py" />
+    <EmbeddedResource Include="../../linux/inspect-conditional-transport-recovery.py" LogicalName="LinuxMailRelay365.linux.inspect-conditional-transport-recovery.py" />
     <EmbeddedResource Include="../../linux/inspect-conditional-postfix-recovery.py" LogicalName="LinuxMailRelay365.linux.inspect-conditional-postfix-recovery.py" />
     <EmbeddedResource Include="../../linux/audit-mail-bindings.py" LogicalName="LinuxMailRelay365.linux.audit-mail-bindings.py" />
     <EmbeddedResource Include="../../linux/platform-compat.py" LogicalName="LinuxMailRelay365.linux.platform-compat.py" />
