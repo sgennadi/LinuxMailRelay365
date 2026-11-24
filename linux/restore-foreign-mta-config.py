@@ -140,7 +140,8 @@ def preview(mta, snapshot_id, root=backup.ROOT, base=backup.BASE, uid=0):
     approved_sha = digest(json.dumps(
         evidence, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     return {"sha": approved_sha, "changed": changed, "files": len(reviewed),
-            "original": originals, "target": stored, "labels": labels}
+            "original": originals, "target": stored, "labels": labels,
+            "snapshot_sha256": info["sha256"]}
 
 
 def stopped(mta):
@@ -405,14 +406,20 @@ def read_pending(base, uid):
     except (ValueError, UnicodeError):
         raise Refused("invalid_pending_restore_marker")
     expected = {"version", "mta", "target", "safety", "safety_sha256", "plan_sha256"}
-    if (not isinstance(record, dict) or set(record) != expected or
-            type(record["version"]) is not int or record["version"] != 1 or
+    if (not isinstance(record, dict) or type(record.get("version")) is not int or
+            record["version"] not in (1, 2)):
+        raise Refused("invalid_pending_restore_marker")
+    digest_fields = ("safety_sha256", "plan_sha256")
+    if record["version"] == 2:
+        expected.add("target_sha256")
+        digest_fields += ("target_sha256",)
+    if (set(record) != expected or
             not isinstance(record["mta"], str) or record["mta"] not in backup.ALLOWED or
             any(not isinstance(record[key], str) or not backup.ID.fullmatch(record[key])
                 for key in ("target", "safety")) or
             record["target"] == record["safety"] or
             any(not isinstance(record[key], str) or not backup.SHA.fullmatch(record[key])
-                for key in ("safety_sha256", "plan_sha256"))):
+                for key in digest_fields)):
         raise Refused("invalid_pending_restore_marker")
     return record
 
@@ -475,6 +482,106 @@ def pending_status(base=backup.BASE, uid=0):
     return record
 
 
+def open_existing_inspection_lock(path, uid):
+    """Take a shared lock if it exists, without creating or altering it."""
+    backup.safe_dir(path.parent, uid)
+    try:
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                     getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != uid or st.st_nlink != 1 or
+                stat.S_IMODE(st.st_mode) != 0o600):
+            raise Refused("untrusted_restore_lock")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Refused("restore_in_progress_inspection_refused")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def pending_manifest(base, mta, snapshot_id, expected_sha, uid):
+    """Read the verified, bounded manifest without exposing its contents."""
+    folder = base / mta / snapshot_id
+    backup.strict_snapshot_dir(folder, uid)
+    before = backup.stable_file(folder / "manifest.json", uid)[1]
+    info = backup.verify(folder, mta, uid)
+    after = backup.stable_file(folder / "manifest.json", uid)[1]
+    if before != after or info["sha256"] != expected_sha:
+        raise Refused("pending_restore_snapshot_changed")
+    manifest = json.loads(after)
+    if manifest["sha256"] != expected_sha or len(manifest["files"]) != info["files"]:
+        raise Refused("pending_restore_manifest_mismatch")
+    return manifest
+
+
+def pending_current_evidence(mta, root, uid):
+    # The existing strict inventory refuses unsafe objects, symlinks,
+    # unknown permissions, and oversized trees; do not guess around refusal.
+    files = backup.selected_files(mta, root, uid)
+    evidence = {}
+    for name in sorted(files):
+        metadata, content, label = read_restore_file(files[name], uid)
+        evidence[name] = (metadata_key(metadata), digest(content),
+                          None if label is None else digest(label))
+    return evidence
+
+
+def inspect_pending(root=backup.ROOT, base=backup.BASE, uid=0, lock_path=LOCK):
+    """Read-only byte comparison, not a resume, rollback or start approval."""
+    lock = open_existing_inspection_lock(lock_path, uid)
+    try:
+        record = pending_status(base, uid)
+        if record is None:
+            return {"status": "clear"}
+        report = {"status": "manual_recovery_required", "record": record,
+                  "comparison": "unavailable_legacy_target_unbound"}
+        if record["version"] == 1:
+            # Old markers can still be inspected for the verified safety
+            # archive, but cannot prove the approved target's identity.
+            if read_pending(base, uid) != record:
+                raise Refused("pending_restore_marker_changed")
+            return report
+        mta = record["mta"]
+        safety = pending_manifest(base, mta, record["safety"], record["safety_sha256"], uid)
+        target = pending_manifest(base, mta, record["target"], record["target_sha256"], uid)
+        if target["version"] != 1 or set(safety["files"]) != set(target["files"]):
+            raise Refused("pending_restore_snapshot_file_set_mismatch")
+        first = pending_current_evidence(mta, root, uid)
+        counts = {"original_only": 0, "target_only": 0, "both": 0,
+                  "other": 0, "missing": 0,
+                  "extra": len(set(first) - set(target["files"]))}
+        for name, item in target["files"].items():
+            if name not in first:
+                counts["missing"] += 1
+                continue
+            current_sha = first[name][1]
+            original_match = current_sha == safety["files"][name]["sha256"]
+            target_match = current_sha == item["sha256"]
+            key = ("both" if original_match and target_match else
+                   "original_only" if original_match else
+                   "target_only" if target_match else "other")
+            counts[key] += 1
+        # Recheck archives, marker and the current tree. A report is only
+        # a sampled comparison; another administrator can still change it.
+        if (pending_manifest(base, mta, record["safety"], record["safety_sha256"], uid) != safety or
+                pending_manifest(base, mta, record["target"], record["target_sha256"], uid) != target or
+                pending_current_evidence(mta, root, uid) != first or
+                read_pending(base, uid) != record):
+            raise Refused("pending_restore_state_changed_during_inspection")
+        report.update({"comparison": "verified_sampled_content_only",
+                       "files": len(target["files"]), "counts": counts})
+        return report
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
 def apply(mta, snapshot_id, approved_sha, confirm,
           root=backup.ROOT, base=backup.BASE, uid=0,
           offline_check=stopped, lock_path=LOCK, preflight_check=None,
@@ -513,8 +620,9 @@ def apply(mta, snapshot_id, approved_sha, confirm,
         safety_sha = verify_durable_safety_snapshot(mta, safety_id, state, base, uid)
         if preview(mta, snapshot_id, root, base, uid)["sha"] != approved_sha:
             raise Refused("configuration_changed_before_pending_restore")
-        record = {"version": 1, "mta": mta, "target": snapshot_id,
+        record = {"version": 2, "mta": mta, "target": snapshot_id,
                   "safety": safety_id, "safety_sha256": safety_sha,
+                  "target_sha256": state["snapshot_sha256"],
                   "plan_sha256": approved_sha}
         publish_pending(base, uid, record)
         changed = []
@@ -629,6 +737,7 @@ def main(argv=None):
     group.add_argument("--apply", metavar="SNAPSHOT_ID")
     group.add_argument("--static-check", action="store_true")
     group.add_argument("--pending-status", action="store_true")
+    group.add_argument("--pending-inspect", action="store_true")
     parser.add_argument("--approve-sha256", default="")
     parser.add_argument("--confirm", default="")
     args = parser.parse_args(argv)
@@ -636,6 +745,27 @@ def main(argv=None):
         print("FOREIGN_RESTORE_STATUS=root_required", file=sys.stderr)
         return 2
     try:
+        if args.pending_inspect:
+            if args.approve_sha256 or args.confirm:
+                raise Refused("approval_not_permitted_during_pending_inspection")
+            report = inspect_pending()
+            print("FOREIGN_PENDING_INSPECT_VERSION=1")
+            print("FOREIGN_PENDING_INSPECT_STATUS=" + report["status"])
+            if report["status"] != "clear":
+                record = report["record"]
+                print("FOREIGN_PENDING_INSPECT_MTA=" + record["mta"])
+                print("FOREIGN_PENDING_INSPECT_SAFETY_ID=" + record["safety"])
+                print("FOREIGN_PENDING_INSPECT_TARGET_ID=" + record["target"])
+                print("FOREIGN_PENDING_INSPECT_COMPARISON=" + report["comparison"])
+                if "counts" in report:
+                    print("FOREIGN_PENDING_INSPECT_FILE_COUNT=" + str(report["files"]))
+                    for key, value in sorted(report["counts"].items()):
+                        print("FOREIGN_PENDING_INSPECT_" + key.upper() + "=" + str(value))
+            print("FOREIGN_PENDING_INSPECT_CONFIG_CHANGED=no")
+            print("FOREIGN_PENDING_INSPECT_QUEUE_CHANGED=no")
+            print("FOREIGN_PENDING_INSPECT_SERVICE_CHANGED=no")
+            print("FOREIGN_PENDING_INSPECT_RESUME_AUTHORIZED=no")
+            return 0
         if args.pending_status:
             if args.approve_sha256 or args.confirm:
                 raise Refused("approval_not_permitted_during_pending_status")
@@ -646,6 +776,8 @@ def main(argv=None):
             if record is not None:
                 for key in ("mta", "target", "safety", "safety_sha256", "plan_sha256"):
                     print("FOREIGN_PENDING_" + key.upper() + "=" + record[key])
+                if record["version"] == 2:
+                    print("FOREIGN_PENDING_TARGET_SHA256=" + record["target_sha256"])
             print("FOREIGN_PENDING_CONFIG_CHANGED=no")
             print("FOREIGN_PENDING_QUEUE_CHANGED=no")
             print("FOREIGN_PENDING_SERVICE_CHANGED=no")

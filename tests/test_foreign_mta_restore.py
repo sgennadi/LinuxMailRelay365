@@ -228,6 +228,68 @@ class ForeignMtaRestoreTests(unittest.TestCase):
                 restore.apply("exim", sid, fresh["sha"], restore.APPROVAL, **options)
             self.assertEqual(restore.pending_status(base, uid), marker)
             self.assertEqual(len(snapshot.listed("exim", base, uid)), 2)
+            self.assertEqual(marker["version"], 2)
+            self.assertEqual(marker["target_sha256"], plan["snapshot_sha256"])
+            report = restore.inspect_pending(root, base, uid, options["lock_path"])
+            self.assertEqual(report["comparison"], "verified_sampled_content_only")
+            self.assertEqual(report["files"], 2)
+            self.assertEqual(report["counts"], {"original_only": 1, "target_only": 1,
+                             "both": 0, "other": 0, "missing": 0, "extra": 0})
+            self.assertEqual(restore.pending_status(base, uid), marker)
+
+    def test_pending_inspection_classifies_drift_and_legacy_marker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, sid, uid = self.fixture(folder, "exim")
+            paths = sorted(tree.iterdir())
+            paths[0].write_text("before operation\n")
+            plan = restore.preview("exim", sid, root, base, uid)
+            options = self.kwargs(folder, root, base, uid)
+            with patch.object(restore, "replace_one", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    restore.apply("exim", sid, plan["sha"], restore.APPROVAL, **options)
+            marker = restore.pending_status(base, uid)
+            paths[0].write_text("third version\n")
+            paths[1].unlink()
+            (tree / "extra.conf").write_text("extra file\n")
+            report = restore.inspect_pending(root, base, uid, options["lock_path"])
+            self.assertEqual(report["counts"], {"original_only": 0, "target_only": 0,
+                             "both": 0, "other": 1, "missing": 1, "extra": 1})
+            self.assertEqual(restore.pending_status(base, uid), marker)
+            old = dict(marker)
+            old["version"] = 1
+            del old["target_sha256"]
+            (base / restore.PENDING).write_text(restore.json.dumps(old))
+            legacy = restore.inspect_pending(root, base, uid, options["lock_path"])
+            self.assertEqual(legacy["comparison"], "unavailable_legacy_target_unbound")
+            self.assertNotIn("counts", legacy)
+
+    def test_pending_inspection_refuses_target_drift_and_active_lock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, sid, uid = self.fixture(folder, "exim")
+            next(tree.iterdir()).write_text("before operation\n")
+            plan = restore.preview("exim", sid, root, base, uid)
+            options = self.kwargs(folder, root, base, uid)
+            with patch.object(restore, "replace_one", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    restore.apply("exim", sid, plan["sha"], restore.APPROVAL, **options)
+            held = restore.take_lock(options["lock_path"], uid)
+            try:
+                with self.assertRaisesRegex(restore.Refused, "restore_in_progress"):
+                    restore.inspect_pending(root, base, uid, options["lock_path"])
+            finally:
+                os.close(held)
+            marker = restore.pending_status(base, uid)
+            marker["target_sha256"] = "0" * 64
+            (base / restore.PENDING).write_text(restore.json.dumps(marker))
+            with self.assertRaisesRegex(restore.Refused, "pending_restore_snapshot_changed"):
+                restore.inspect_pending(root, base, uid, options["lock_path"])
+
+    def test_pending_inspection_clear_does_not_create_lock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, sid, uid = self.fixture(folder, "exim")
+            lock = Path(folder) / "not-created.lock"
+            self.assertEqual(restore.inspect_pending(root, base, uid, lock), {"status": "clear"})
+            self.assertFalse(lock.exists())
 
     def test_corrupt_marker_blocks_without_creating_safety_snapshot(self):
         with tempfile.TemporaryDirectory() as folder:

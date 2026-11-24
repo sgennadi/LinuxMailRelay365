@@ -254,3 +254,24 @@ transaction or a system-wide service-start interlock. Tests simulate Python
 interruption and verify successful completion, rollback and malformed marker
 refusal; real sudden-power-loss validation remains outstanding. GUI Apply
 and Sendmail v2 restore are still not enabled.
+
+### Interrupted Restore inventory (development)
+
+New pending markers use schema 2 and bind the exact target archive SHA-256
+in addition to the safety archive and approved plan. Existing schema 1
+markers remain blocked and inspectable; their target is explicitly unbound.
+Use `sudo python3 linux/restore-foreign-mta-config.py --mta exim --pending-inspect`
+(or sendmail) to compare the current tree with both verified archives.
+The report is global to the backup base and identifies the MTA actually
+recorded in the marker. It gives counts of files matching only the original,
+only the target, both, neither, missing and extra. It exports neither file
+names nor contents. Invalid archives or unsafe inventory refuse inspection.
+A shared lock refuses comparison while the restore tool is active; no lock
+file is created. The marker, manifests and tree are rechecked before the
+sampled report is returned. Counts compare content only, not recoverability,
+metadata restoration or proof of a stopped MTA. Old markers report no counts.
+No operation clears the marker, resumes Restore, rolls back or authorizes a
+service start. Full system backups and independent administrator review remain
+mandatory. The new unit tests exercise mixed states, drift, active locks and
+legacy markers; they do not simulate real power loss or a full Sendmail v2
+restore.
