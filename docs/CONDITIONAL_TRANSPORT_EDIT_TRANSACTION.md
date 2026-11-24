@@ -28,3 +28,15 @@ resolution and reinspection. Do not remove pending markers manually. This is a
 library with synthetic fault-injection tests, not an exposed CLI or GUI workflow.
 Native two-generation acceptance, public recovery receipts and CLI/GUI integration
 remain necessary. Existing SELinux/ACL write restrictions still apply.
+
+## Native acceptance fixture
+
+The existing Ubuntu Postfix smoke now exercises actual installed Hash/LMDB map
+backends, after credential rotation. It changes a custom port/TLS/endpoint,
+retains the rotated second account at a new index, adds a no-AUTH rule and
+removes two rules. It verifies native effective services and exact positive /
+negative lookups under the Postfix account, interrupts the config switch,
+rolls back, repeats the switch, interrupts commit cleanup, resumes commit,
+and restores the original configuration. Only disposable alternate directories
+and synthetic credentials are used. Primary configuration hashes must remain
+unchanged. This is not live SMTP delivery, SELinux or CLI/GUI acceptance.

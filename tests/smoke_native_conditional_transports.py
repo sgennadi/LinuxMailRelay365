@@ -57,6 +57,7 @@ def sibling(name, filename):
 X = sibling("multi_transport_transaction", "conditional-transport-transaction.py")
 O = sibling("offline_native_reader", "manage-conditional-postfix-offline.py")
 Q = sibling("credential_rotation", "conditional-transport-rotation.py")
+S = sibling("transport_edit", "conditional-transport-edit-transaction.py")
 identity = O.mail_identity()
 
 
@@ -298,7 +299,201 @@ def native_transaction(rules, plan, backend, ca, databases, folder, fail):
             rotate({"username": "fixture-final", "password": "synthetic-final"}, "success")
             return private_candidates
 
+        def exercise_edit(revision):
+            # Retain the independently rotated second account, move it to
+            # position 1, change the first account's endpoint and TLS, add
+            # a new unauthenticated route, and remove both other old rules.
+            old = S.X.load(parent, revision, 0)
+            old_names = S.X.map_names(old[0])
+            old_bytes = {name: (folder / name).read_bytes() for name in old_names}
+            old_ids = {name: S.T.file_identity((folder / name).stat()) for name in old_names}
+            old_credentials = list(request["credentials"])
+            old_credentials[1] = {"username": "fixture-final", "password": "synthetic-final"}
+            changed = dict(rules[0], host="replacement.example.net", port=2526, tls="implicit")
+            added = dict(rules[3], pattern="new@example.org", port=2527)
+            draft = [rules[1], changed, added]
+            replacement_credential = {"username": "fixture-replacement", "password": "synthetic-new"}
+            slots = [{"mode": "retain"},
+                     {"mode": "new", "credential": replacement_credential}, None]
+            new_credentials = [old_credentials[1], replacement_credential, None]
+            _, draft_plan = S.C.plan(draft)
+            private_candidates = []
+            new_names = set()
+
+            def verify_generation(record):
+                # Native effective service configuration uses the production
+                # path grammar but every actual database read is fixture-only.
+                guard()
+                check_fixture()
+                recorded, _, _, _ = record
+                expected_credentials = (old_credentials if recorded["plan"] == plan
+                                        else new_credentials)
+                assert recorded["plan"] in (plan, draft_plan)
+                assert recorded["backend"] == backend and recorded["ca"] == ca
+                _, _, expected_routes, generated, auth = T.render(
+                    recorded["rules"], recorded["plan"], "/etc/postfix", backend, ca)
+                assert effective(T.PARAMETER) == backend + ":/etc/postfix/" + recorded["map_names"][0]
+                overrides = dict(baseline_overrides)
+                overrides.update({name + "/unix/" + key: value
+                                  for name, options in generated.items()
+                                  for key, value in options.items()})
+                assert T.parameters(native(["-P"])) == overrides
+                lines = [line.split() for line in native(["-M"]).decode("ascii").splitlines()]
+                assert len(lines) == len(generated) + 1
+                assert {line[0] for line in lines} == set(generated) | {"smtp"}
+                assert all(line[1:8] == ["unix", "-", "-", "n", "-", "-", "smtp"]
+                           for line in lines)
+                check_map(recorded["map_names"][0], expected_routes)
+                passwords = T.credentials(recorded["rules"], expected_credentials)
+                for index, name in auth.items():
+                    check_map(name, {T.endpoint(recorded["rules"][index - 1]): passwords[index - 1]})
+                S.Q.assert_installed(config, record, 0)
+                guard()
+                return True
+
+            def review():
+                checked = S.E.review(config, parent, revision, draft, 0, identity[1],
+                                     guard, verify_generation)
+                assert checked[0] == old and checked[1]["plan"] == draft_plan
+                assert checked[3] == (2, None, None)
+                new_names.update(S.X.map_names(checked[1]))
+                assert not set(old_names) & new_names
+                return checked
+
+            def begin(checked):
+                return S.begin(config, parent, str(folder), revision, checked, slots, 0,
+                               identity, guard, verify_generation, O.native_unprivileged,
+                               verify_generation, S.BEGIN)
+
+            def observe():
+                return S.observe(config, parent, 0, identity[1], guard)
+
+            def resolve(decision):
+                return S.resolve(config, parent, observe(), 0, identity[1], guard,
+                                 verify_generation, decision)
+
+            def old_preserved():
+                for name in old_names:
+                    assert (folder / name).read_bytes() == old_bytes[name]
+                    assert S.T.file_identity((folder / name).stat()) == old_ids[name]
+
+            def assert_switched(replacement):
+                state = observe()
+                assert state[0]["old"] == revision and state[0]["new"] == replacement
+                assert state[0]["phase"] == "pending" and state[1] == old
+                assert state[3] == S.X.expected_pair(state[2][0], state[2][1], ".after")
+                assert S.full(state[2], state[5])
+                old_preserved()
+                retained = S.Q.target_name(state[2][0], 1)
+                assert (folder / retained).read_bytes() == old_bytes[S.Q.target_name(old[0], 2)]
+                for name in new_names:
+                    private_candidates.append((folder / name).read_bytes())
+                assert verify_generation(state[2])
+                try:
+                    S.X.load(parent, revision, 0)
+                except S.Refused as error:
+                    assert str(error) == "transport_edit_recovery_required"
+                else:
+                    raise AssertionError("Pending edit did not block normal management")
+
+            # Fault during two-file switch: do not authorize commit of a
+            # mixed pair, and prove the old maps and rotated credentials survive.
+            checked = review()
+            real_write = S.T.atomic_write
+
+            def interrupt(fd, name, *args, **kwargs):
+                if name == "main.cf":
+                    raise KeyboardInterrupt()
+                return real_write(fd, name, *args, **kwargs)
+
+            with patch.object(S.T, "atomic_write", side_effect=interrupt):
+                try:
+                    begin(checked)
+                except KeyboardInterrupt:
+                    pass
+                else:
+                    raise AssertionError("Expected interrupted edit")
+            interrupted = observe()
+            assert interrupted[3][0] == S.X.expected_pair(old[0], old[1], ".after")[0]
+            assert interrupted[3][1] == S.X.expected_pair(
+                interrupted[2][0], interrupted[2][1], ".after")[1]
+            old_preserved()
+            for name in interrupted[5]:
+                private_candidates.append((folder / name).read_bytes())
+            try:
+                resolve(S.COMMIT)
+            except S.Refused:
+                pass
+            else:
+                raise AssertionError("Mixed configuration authorized commit")
+            assert resolve(S.ROLLBACK) == revision
+            old_preserved()
+            assert verify_generation(S.X.load(parent, revision, 0))
+            assert not any((folder / name).exists() for name in new_names)
+            print("NATIVE_MULTI_TRANSPORT_EDIT=" + backend + ":interrupted_switch:PASS", flush=True)
+
+            # Full switch and deliberate rollback, then repeat with a real
+            # commit to prove the same plan can be retried after cleanup.
+            replacement = begin(review())
+            assert_switched(replacement)
+            assert resolve(S.ROLLBACK) == revision
+            old_preserved()
+            assert verify_generation(S.X.load(parent, revision, 0))
+            assert not any((folder / name).exists() for name in new_names)
+            print("NATIVE_MULTI_TRANSPORT_EDIT=" + backend + ":rollback:PASS", flush=True)
+
+            replacement = begin(review())
+            assert_switched(replacement)
+            real_unlink = os.unlink
+            removed = []
+
+            def interrupt_cleanup(name, *args, **kwargs):
+                if name in old_names:
+                    if removed:
+                        raise KeyboardInterrupt()
+                    removed.append(name)
+                return real_unlink(name, *args, **kwargs)
+
+            with patch.object(S.os, "unlink", side_effect=interrupt_cleanup):
+                try:
+                    resolve(S.COMMIT)
+                except KeyboardInterrupt:
+                    pass
+                else:
+                    raise AssertionError("Expected interrupted obsolete-map cleanup")
+            assert observe()[0]["phase"] == "commit"
+            assert len(observe()[4]) == len(old_names) - 1
+            try:
+                resolve(S.ROLLBACK)
+            except S.Refused as error:
+                assert str(error) == "edit_resolution_direction_fixed"
+            else:
+                raise AssertionError("Irreversible cleanup permitted opposite resolution")
+            assert resolve(S.COMMIT) == replacement
+            committed = S.X.load(parent, replacement, 0)
+            assert verify_generation(committed)
+            assert not any((folder / name).exists() for name in old_names)
+            assert S.full(committed, S.checked_present(config, committed, 0))
+            print("NATIVE_MULTI_TRANSPORT_EDIT=" + backend + ":commit_resume:PASS", flush=True)
+
+            # Restore the committed generation all the way back to the
+            # original pre-manager configuration, not the previous generation.
+            def restore_verified(active, recorded):
+                assert not active and recorded == committed[0]
+                guard()
+                check_fixture()
+                assert native(["-M"]) == baseline_services
+                assert T.parameters(native(["-P"])) == baseline_overrides
+                assert effective(T.PARAMETER) == baseline_route
+
+            assert S.X.restore(config, parent, replacement, S.X.RESTORE, 0,
+                               guard, restore_verified) == replacement
+            assert not any((folder / name).exists() for name in new_names)
+            print("NATIVE_MULTI_TRANSPORT_EDIT=" + backend + ":restore:PASS", flush=True)
+            return private_candidates
+
         rotated_candidates = []
+        edited_candidates = []
         try:
             revision = X.apply(config, parent, reviewed, databases, identity[1],
                                X.APPLY, 0, guard, verify, fresh)
@@ -309,7 +504,7 @@ def native_transaction(rules, plan, backend, ca, databases, folder, fail):
         else:
             assert not fail and checked == [True]
             rotated_candidates = exercise_rotation(revision)
-            assert X.restore(config, parent, revision, X.RESTORE, 0, guard, verify) == revision
+            edited_candidates = exercise_edit(revision)
             print("NATIVE_MULTI_TRANSPORT_APPLY_RESTORE=" + backend + ":PASS", flush=True)
 
         assert (folder / "main.cf").read_bytes() == original_main
@@ -317,12 +512,12 @@ def native_transaction(rules, plan, backend, ca, databases, folder, fail):
         assert not any((folder / name).exists() for name in maps)
         assert X.load(parent, revision, 0)[:2] == reviewed
         # Ensure actual native database bytes were not duplicated in recovery.
-        recovery = folder.parent / X.R.BASE / revision
+        recovery = folder.parent / X.R.BASE
         for p in recovery.rglob("*"):
             if p.is_file():
                 assert p.stat().st_mode & 0o777 == 0o600
                 assert not any(data in p.read_bytes()
-                               for data in (*maps.values(), *rotated_candidates))
+                               for data in (*maps.values(), *rotated_candidates, *edited_candidates))
         primary_guard()
     finally:
         os.close(config)
