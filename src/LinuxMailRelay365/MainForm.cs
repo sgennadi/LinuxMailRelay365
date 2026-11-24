@@ -1509,6 +1509,14 @@ internal sealed partial class MainForm : Form
     private async Task CheckSshAndContinueAsync()
     {
         await CheckSshAsync();
+        // A successful reconnect may reach a reinstalled server at the same
+        // address. Reinspect certificate hardware on the next certificate page.
+        certificateHardwareContext = null;
+        certificateProviderSummary = "";
+        linuxSecurity = null;
+        reviewedTpmPlanSha = null;
+        reviewedTpmPlanContext = null;
+        tpmPlanSummary = "";
         RememberVerifiedSshProfile();
         EnsureSecurityLoaded();
         EnsureRoutingLoaded();
@@ -2147,9 +2155,9 @@ internal sealed partial class MainForm : Form
     {
         EnsureSecurityLoaded();
         AddLine(page, UiTheme.Text(T(
-            "Все опции выключены. Выбор сохраняется как ПЛАН — он не меняет Entra, Postfix, сертификат или Linux. Для включения потребуются отдельные подтверждённые действия.",
-            "All options are off. Your selection is saved as a PLAN only: it does not modify Entra, Postfix, certificates or Linux. Activation requires separate approved steps.",
-            "כל האפשרויות כבויות. הבחירה נשמרת כתוכנית בלבד.")));
+            "Сохранённые предпочтения — только ПЛАН. Они не меняют Entra, Postfix, сертификат или Linux. Для включения потребуются отдельные подтверждённые действия.",
+            "Saved preferences are a PLAN only: they do not modify Entra, Postfix, certificates or Linux. Activation requires separate approved steps.",
+            "העדפות שמורות הן תוכנית בלבד; הפעלה דורשת אישור נפרד.")));
         AddAction(page, T("Проверить TPM, HSM и PKCS#11 (только чтение)",
                           "Inspect TPM, HSM and PKCS#11 (read-only)",
                           "בדוק TPM/HSM לקריאה בלבד"), AutoProbeCertificateHardwareAsync, true, "shield", "linux-security");
@@ -2798,6 +2806,30 @@ internal sealed partial class MainForm : Form
                 if (deliveryPhase == DeliveryReviewPhase)
                 {
                     ShowMailPlanSummary(page);
+                    if (selectedMailScenario != MailScenarioPlanner.Keep &&
+                        selectedMailTarget == MailFlowIntent.TargetM365)
+                    {
+                        int width = Math.Max(260, pageHost.ClientSize.Width - 90);
+                        string method = mailTransport.SelectedItem?.ToString() ??
+                            T("Не выбран", "Not selected", "טרם נבחר");
+                        string tenantChoice = Guid.TryParse(tenant.Text.Trim(), out Guid tenantId) &&
+                            tenantId != Guid.Empty
+                            ? tenantId.ToString()
+                            : T("Не выбран", "Not selected", "טרם נבחר");
+                        string detail = mailTransport.SelectedIndex == 0
+                            ? T("Ящик отправителя", "Sender mailbox", "תיבת דואר שולח") +
+                                ": " + (string.IsNullOrWhiteSpace(mailbox.Text)
+                                    ? T("Не указан", "Not entered", "לא הוזן") : mailbox.Text.Trim())
+                            : T("Принятый домен и MX проверяются на этапе настройки маршрута.",
+                                "Accepted domain and MX are reviewed during route configuration.",
+                                "הדומיין ו-MX ייבדקו בעת הגדרת הניתוב.");
+                        AddLine(page, UiTheme.Emphasis(
+                            T("Выбранный способ отправки", "Selected delivery method", "שיטת השליחה שנבחרה"), width));
+                        AddLine(page, MailFlowText(method + Environment.NewLine +
+                            "Tenant ID: " + tenantChoice + Environment.NewLine + detail +
+                            Environment.NewLine + T("Это выбранные параметры, не подтверждение готовности.",
+                                "These are selected settings, not proof of readiness.", "אלו הגדרות נבחרות, לא אישור מוכנות."), width));
+                    }
                     ShowMailFlowPlanner(page, DeliveryReviewDiagramPhase);
                     AddDeliveryAdvancedAction(page);
                     break;
@@ -2846,15 +2878,15 @@ internal sealed partial class MainForm : Form
                 if (mailTransport.SelectedIndex is 1 or 2)
                 {
                     AddLine(page, UiTheme.Text(T(
-                        "Для Connector и Direct Send приложение Entra ID, OAuth-токен и почтовый ящик НЕ требуются. Перейдите Далее, укажите принятый домен и MX и проверьте полномочия Connector или ограничение внутренних получателей. Публичный IP либо TLS-сертификат проверяется отдельно.",
-                        "Connector and Direct Send do NOT require an Entra application, OAuth token or licensed mailbox. Click Next to enter the tenant-accepted domain and MX. Review Connector authority or internal-only delivery. Public IP or TLS identity is checked separately.",
+                        "Для Connector и Direct Send приложение Entra ID, OAuth-токен и почтовый ящик НЕ требуются. Перейдите к итоговой схеме, затем на этапе настройки маршрута укажите принятый домен и MX и проверьте полномочия Connector или ограничение внутренних получателей. Публичный IP либо TLS-сертификат проверяется отдельно.",
+                        "Connector and Direct Send do NOT require an Entra application, OAuth token or licensed mailbox. Click Next to review the selected flow, then enter the tenant-accepted domain and MX during route configuration. Review Connector authority or internal-only delivery. Public IP or TLS identity is checked separately.",
                         "ב-Connector ו-Direct Send אין צורך ביישום Entra או תיבת דואר. המשיכו להגדרת דומיין ו-MX.")));
                     AddLine(page, UiTheme.Text(selectedMailScenario == MailScenarioPlanner.ReplaceRelay
-                        ? T("Следующий шаг проверит замену исходящего маршрута основного Postfix. Входящий SMTP-порт не изменится; установка пока не предлагается.",
-                            "Next review an in-place outbound route change. The existing Linux SMTP port stays as-is; no installer is offered yet.",
+                        ? T("После итоговой схемы можно проверить замену исходящего маршрута основного Postfix. Входящий SMTP-порт не изменится; установка пока не предлагается.",
+                            "After the flow review, inspect the in-place outbound route change. The existing Linux SMTP port stays as-is; no installer is offered yet.",
                             "שינוי ניתוב יוצא אינו משנה את יציאת SMTP הקיימת.")
-                        : T("На следующем экране задайте порт отдельного Relay, MX, домен и отправителя.",
-                            "Next configure the separate Relay port, MX, accepted domain and sender.",
+                        : T("После итоговой схемы на этапе настройки маршрута задайте порт отдельного Relay, MX, домен и отправителя.",
+                            "After the flow review, configure the separate Relay port, MX, accepted domain and sender.",
                             "הגדירו יציאת ממסר נפרד, MX ודומיין.")));
                     break;
                 }
@@ -8360,12 +8392,27 @@ internal sealed partial class MainForm : Form
         return Task.CompletedTask;
     }
 
-    private Task OpenSecurityCenterAsync()
+    private async Task OpenSecurityCenterAsync()
     {
         EnsureSecurityLoaded();
-        step = 1;
+        // Step 1 is now the mail-planning mini wizard, not the security center.
+        // Preserve discovery gating; never offer unrelated TPM actions.
+        if (!DeliveryHasPlan())
+        {
+            step = 1;
+            mailPlanPhase = 0;
+            WriteLine("Complete read-only Linux discovery and the mail plan before opening security management.");
+        }
+        else
+        {
+            step = 2;
+            deliveryPhase = RequiresOAuthCertificate()
+                ? DeliveryCertificateToolsPhase : DeliveryAdvancedPhase;
+        }
         RenderPage();
-        return Task.CompletedTask;
+        if (!pageRenderFailed && step == 2 && deliveryPhase == DeliveryCertificateToolsPhase &&
+            !CertificateHardwareProbeCurrent())
+            await AutoProbeCertificateHardwareAsync();
     }
 
     private async Task InspectSshLoginProfileAsync()
