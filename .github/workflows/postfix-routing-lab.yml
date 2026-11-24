@@ -1,0 +1,32 @@
+name: Postfix conditional routes lab
+on:
+  push:
+    branches: [test/postfix-conditional-routing-lab]
+    paths:
+      - '.github/workflows/postfix-routing-lab.yml'
+      - 'tests/smoke_postfix_conditional_routes.py'
+      - 'tests/smoke_local_postfix_sink.py'
+permissions:
+  contents: read
+jobs:
+  isolated-routing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build disposable Postfix fixture
+        run: |
+          docker build -t lmr-postfix-routing-lab - <<'DOCKER'
+          FROM ubuntu:24.04
+          ENV DEBIAN_FRONTEND=noninteractive
+          RUN apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update \
+            && printf 'postfix postfix/main_mailer_type select Internet Site\npostfix postfix/mailname string mail.local.invalid\n' | debconf-set-selections \
+            && apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends postfix python3 \
+            && useradd --no-create-home lmrfixture \
+            && rm -rf /var/lib/apt/lists/*
+          DOCKER
+      - name: Exercise native Postfix with no external network
+        run: |
+          docker run --rm --network none --env LMR_TEST_CONTAINER=network-none \
+            --mount "type=bind,source=$GITHUB_WORKSPACE/tests,target=/fixture,readonly" \
+            lmr-postfix-routing-lab python3 -B /fixture/smoke_postfix_conditional_routes.py
