@@ -125,6 +125,32 @@ for path in ("/etc/postfix/main.cf", "/etc/postfix/master.cf",
     assert raw.endswith(b"\0")
     print("CONDITIONAL_NATIVE_FILE_POLICY_QUERY=PASS")
 PY
+# Native policy for the exact multi-provider namespace (including separate
+# credential databases); still no active kernel, file writes, or relabel.
+python3 - <<'PY'
+import importlib.util
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location(
+    "multi_label_policy", str(Path("linux/inspect-conditional-transport-selinux.py")))
+L = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(L)
+rules = [
+    dict(selector="exact-envelope-sender", pattern="one@example.org",
+         host="smtp.example.net", port=2526, tls="starttls", auth="password"),
+    dict(selector="exact-envelope-sender", pattern="two@example.org",
+         host="smtp.example.net", port=465, tls="implicit", auth="password"),
+    dict(selector="envelope-sender-domain", pattern="other.example.org",
+         host="smtp.example.net", port=25, tls="starttls", auth="none"),
+]
+for backend in ("hash", "lmdb"):
+    plan, sources, labels = L.policy_labels(rules, backend)
+    assert len(sources) == 3 and len(labels) == 6
+    for value in labels.values():
+        assert L.context(value)
+    print("MULTI_TRANSPORT_NATIVE_SELINUX_POLICY=" + backend + ":PASS")
+PY
+python3 -m unittest discover -s tests -p test_conditional_transport_selinux.py
 python3 -m unittest discover -s tests -p test_conditional_selinux_policy.py
 python3 -m unittest discover -s tests -p test_rhel_selinux_doctor.py
 python3 -m unittest discover -s tests -p test_rhel_selinux_port_manager.py
