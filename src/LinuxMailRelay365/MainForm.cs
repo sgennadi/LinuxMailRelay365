@@ -15,7 +15,7 @@ internal sealed partial class MainForm : Form
 {
     private readonly TextBox host = Field("linux.example.net");
     private readonly TextBox sshPort = Field("22");
-    private readonly TextBox sshUser = Field("admin");
+    private readonly TextBox sshUser = Field("root");
     private readonly TextBox sshKey = Field("");
     private readonly TextBox sshPassword = Field("");
     private readonly TextBox sudoPassword = Field("");
@@ -294,7 +294,7 @@ internal sealed partial class MainForm : Form
             field.TextChanged += (_, _) => ClearAutomaticSshHostKeyOnIdentityChange();
         specifyHostKeyManually.CheckedChanged += (_, _) =>
         {
-            if (step == 0 && !busy) RenderPage();
+            if (!loadingSshProfile && step == 0 && !busy) RenderPage();
         };
         activityToggle.LinkClicked += (_, _) =>
         {
@@ -462,7 +462,8 @@ internal sealed partial class MainForm : Form
                 oauthSenderAuditSummary = "";
                 oauthIngressAuditSummary = "";                oauthSignerAuditSummary = "";
 
-                // Never show evidence from the previous host as current.
+                // Never show evidence or public-certificate paths from the previous host as current.
+                publicCertificatePath = null;
                 discoveredIsolatedRelay = null;
                 discoveredMailIdentity = null;
                 inspectedHost = null;
@@ -645,7 +646,7 @@ internal sealed partial class MainForm : Form
         sshAuthMode.SelectedIndex = 0;
         sshAuthMode.SelectedIndexChanged += (_, _) =>
         {
-            if (!relabelingSshMethods && !busy && step == 0) RenderPage();
+            if (!loadingSshProfile && !relabelingSshMethods && !busy && step == 0) RenderPage();
         };
         hardwareRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
         ipRequest.CheckedChanged += (_, _) => SaveSecurityChoices();
@@ -822,6 +823,7 @@ internal sealed partial class MainForm : Form
         ClientSizeChanged += (_, _) => ResizeUi();
         FitHeaderText();
         FitFooterHeight();
+        InitializeSshProfiles();
         RenderPage();
         WriteLine("Ready. No user passwords, app secrets, or OAuth tokens are stored by this manager.");
     }
@@ -1357,6 +1359,7 @@ internal sealed partial class MainForm : Form
             "Подключение к Linux по SSH",
             "Connect to Linux using SSH",
             "חיבור ל-Linux באמצעות SSH"), true));
+        ShowSshProfiles(form, availableWidth);
         if (pairFields)
             AddConnectionPair(form,
                 T("Linux: DNS или IPv4", "Linux DNS or IPv4", "כתובת Linux"), host,
@@ -1483,6 +1486,7 @@ internal sealed partial class MainForm : Form
     private async Task CheckSshAndContinueAsync()
     {
         await CheckSshAsync();
+        RememberVerifiedSshProfile();
         EnsureSecurityLoaded();
         EnsureRoutingLoaded();
         // Read-only discovery immediately after a VERIFIED SSH login.

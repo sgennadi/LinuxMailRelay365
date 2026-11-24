@@ -106,6 +106,7 @@ internal static class Program
                 !EmbeddedAssets.MailSubmissionInspector.Contains("postconf -e",
                     StringComparison.Ordinal)),
             ("English-first UI preference persistence", UiLanguagePreference.SelfTest),
+            ("SSH profiles store only endpoint metadata", SshProfileStore.SelfTest),
             ("Read-only MTA discovery recommendations", MailServerDiscoveryDecision.SelfTest),
             ("Read-only hostname/domain and MTA settings report", MailHostInspection.SelfTest),
             ("SSH mail-host inspection embedded resource", () =>
