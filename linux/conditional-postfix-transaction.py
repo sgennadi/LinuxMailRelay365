@@ -308,7 +308,7 @@ def checked_published_map(config, target, uid, expected, meta, identity):
 
 
 def atomic_write(fd, name, data, meta, uid, replace, published=None,
-                 before_replace=None):
+                 before_replace=None, before_publish=None):
     temp = ".lmr365-txn-" + uuid.uuid4().hex
     handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW |
                      os.O_CLOEXEC, 0o600, dir_fd=fd)
@@ -326,6 +326,8 @@ def atomic_write(fd, name, data, meta, uid, replace, published=None,
                 before_replace(prepared[:4])
             os.replace(temp, name, src_dir_fd=fd, dst_dir_fd=fd)
         else:
+            if before_publish is not None:
+                before_publish(prepared[:4])
             os.link(temp, name, src_dir_fd=fd, dst_dir_fd=fd,
                     follow_symlinks=False)
             # Remember successful exclusive publication before any later

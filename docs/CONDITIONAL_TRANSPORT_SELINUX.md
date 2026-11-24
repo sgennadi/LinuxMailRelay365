@@ -74,3 +74,15 @@ fixtures test these filesystem mechanics. The library does not create/relabel
 private directories or replace the live workflow's unlabeled-store restriction;
 trusted policy adapters, durable directory/snapshot creation and integration in
 rotation/edit recovery remain necessary. Enforcing writes remain disabled.
+
+The scoped store now also supports exclusive creation of its own private
+policy-labeled directories and immutable V2 snapshots. The manifest is written
+last, and the complete labeled snapshot is re-read with content hashes and
+per-file metadata. Snapshot configuration files retain the existing 2 MiB
+limit; small journals remain bounded separately. Partial revisions are retained
+and refused rather than overwritten. The underlying atomic writer has an
+optional pre-link check for exclusive publication, so policy or path changes
+between scratch preparation and publication can block the link. The new
+primitives remain isolated from the production CLI: activation-journal and
+receipt creation, full recovery integration and Enforcing VM acceptance are
+still required.
