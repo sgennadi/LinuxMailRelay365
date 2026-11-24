@@ -198,7 +198,8 @@ internal sealed partial class MainForm : Form
     private bool localizingAdvancedChoices;
     private sealed class WizardScrollPanel : Panel
     {
-        internal bool Rebuilding { get; set; }
+        // Runtime state only, not a designer-serialized property.
+        internal bool Rebuilding;
         protected override Point ScrollToControl(Control activeControl) =>
             Rebuilding ? DisplayRectangle.Location : base.ScrollToControl(activeControl);
     }
@@ -2395,33 +2396,28 @@ internal sealed partial class MainForm : Form
                 ShowMailPlanProgress(page);
                 if (mailPlanPhase != MailPlanSecurityPhase)
                 {
-                    switch (mailPlanPhase)
+                    if (mailPlanPhase == 0)
                     {
-                        case 0:
-                            ShowMailDiscovery(page, true);
-                            if (!HasMailDiscovery())
-                            {
-                                // Preserve the old skip/diagnostics path, but
-                                // do not invent discovery evidence or a plan.
-                                var skipPlan = UiTheme.Action(T("Продолжить без плана (диагностика)",
-                                    "Continue without a plan (diagnostics)", "המשך ללא תוכנית (אבחון)"));
-                                skipPlan.Enabled = !busy;
-                                skipPlan.Click += (_, _) => { step = 2; RenderPage(); };
-                                AddLine(page, skipPlan);
-                            }
-                            break;
-                        case 1:
-                        case 2:
-                        case 4:
-                            ShowMailFlowPlanner(page, mailPlanPhase);
-                            break;
-                        case 3:
-                            ShowRecipientAdvice(page);
-                            break;
-                        case MailPlanReviewPhase:
-                            ShowMailPlanSummary(page);
-                            ShowMailFlowPlanner(page, MailPlanReviewPhase);
-                            break;
+                        ShowMailDiscovery(page, true);
+                        if (!HasMailDiscovery())
+                        {
+                            // Preserve the old skip/diagnostics path, but
+                            // do not invent discovery evidence or a plan.
+                            var skipPlan = UiTheme.Action(T("Продолжить без плана (диагностика)",
+                                "Continue without a plan (diagnostics)", "המשך ללא תוכנית (אבחון)"));
+                            skipPlan.Enabled = !busy;
+                            skipPlan.Click += (_, _) => { step = 2; RenderPage(); };
+                            AddLine(page, skipPlan);
+                        }
+                    }
+                    else if (mailPlanPhase is 1 or 2 or 4)
+                        ShowMailFlowPlanner(page, mailPlanPhase);
+                    else if (mailPlanPhase == 3)
+                        ShowRecipientAdvice(page);
+                    else if (mailPlanPhase == MailPlanReviewPhase)
+                    {
+                        ShowMailPlanSummary(page);
+                        ShowMailFlowPlanner(page, MailPlanReviewPhase);
                     }
                     if (mailPlanPhase is 0 or MailPlanReviewPhase)
                     {
