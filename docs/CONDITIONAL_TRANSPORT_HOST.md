@@ -40,3 +40,7 @@ not force changes to a working configuration to satisfy that gate. Only
 default-class sender-dependent delivery is covered. CLI unit tests use
 mocked host/network interfaces; prior native isolated transaction tests
 do not prove real stopped-host CLI or multi-provider mail delivery.
+
+## Windows wizard
+
+The separate experimental Multi-provider panel supports review, first-install apply, recovery scan and restore. It binds review to the discovered SSH/configuration context and exact ordered sender plan. Each password is entered in a separate masked dialog for its specific transport; no Windows settings or activity log contain the credentials. The stdin payload is not written to a request file. SSH/sudo auditing can record input; the operator must use an approved channel that does not record secrets. Working Linux SASL databases contain readable credentials. Apply invalidates all discovery evidence, including on an uncertain result; after reinspection the independent read-only recovery scan can find random recovery revisions even if the SSH reply was lost. Selecting an observed record never authorizes restore. No active-set editing or service control is added. Automated GUI compilation/self-tests and real delivery acceptance are separate.

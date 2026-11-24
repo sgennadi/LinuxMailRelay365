@@ -363,6 +363,7 @@ internal sealed partial class MainForm
         ShowAdvancedConditionalRoutingPlanner(page, width, languageIndex);
         ShowConditionalRecovery(page, width, languageIndex);
         ShowConditionalOfflineActions(page, width, languageIndex);
+        ShowMultiTransportActions(page, width, languageIndex);
         if (selectedMailScenario == MailScenarioPlanner.Choose)
         {
             AddLine(page, MailFlowText(TranslateMailFlow(languageIndex,

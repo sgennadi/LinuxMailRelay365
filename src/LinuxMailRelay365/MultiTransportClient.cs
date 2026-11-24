@@ -56,7 +56,7 @@ internal static class MultiTransportClient
                      ConditionalOfflineClient.IsSha(review.Evidence) &&
                      review.Backend is "hash" or "lmdb" &&
                      review.Destinations == Destinations(items) &&
-                     confirmation == ApplyPhrase && credentials?.Count == items.Count)
+                     confirmation == ApplyPhrase && credentials is not null && credentials.Count == items.Count)
             {
                 var slots = new object?[items.Count];
                 for (int i = 0; i < items.Count; i++)

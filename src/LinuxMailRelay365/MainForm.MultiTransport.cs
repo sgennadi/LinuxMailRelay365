@@ -1,0 +1,281 @@
+using System.Drawing;
+using System.Windows.Forms;
+
+namespace LinuxMailRelay365;
+
+internal sealed partial class MainForm
+{
+    private string? multiHostIdentity;
+    private string? multiReviewContext;
+    private MultiTransportReview? multiReview;
+    private string? multiInventoryContext;
+    private IReadOnlyList<MultiTransportRecovery>? multiInventory;
+    private readonly TextBox multiRevision = new()
+    {
+        Font = new Font("Consolas", 10f), MaxLength = 64,
+        AccessibleName = "Multi-provider recovery revision"
+    };
+
+    private string? MultiCandidateContext()
+    {
+        if (OfflineHostContext() is not { } hostContext ||
+            advancedRoutingIdentity != TryCurrentIdentity())
+            return null;
+        try
+        {
+            var rules = MultiTransportClient.Eligible(advancedRoutingRules);
+            return hostContext + "|" + AdvancedRoutePlanner.PlanSha256(rules);
+        }
+        catch (ArgumentException) { return null; }
+    }
+
+    private void ShowMultiTransportActions(TableLayoutPanel page, int width, int l)
+    {
+        string? hostContext = RecoveryInventoryContext();
+        if (hostContext is null)
+        {
+            multiReview = null;
+            multiReviewContext = null;
+            multiInventory = null;
+            multiInventoryContext = null;
+            return;
+        }
+        string? identity = TryCurrentIdentity();
+        if (identity != multiHostIdentity)
+        {
+            multiHostIdentity = identity;
+            multiRevision.Clear();
+            multiReview = null;
+            multiReviewContext = null;
+            multiInventory = null;
+            multiInventoryContext = null;
+        }
+        if (multiInventoryContext != hostContext) multiInventory = null;
+        string? context = MultiCandidateContext();
+        if (context is null || context != multiReviewContext)
+        {
+            multiReview = null;
+            multiReviewContext = null;
+        }
+        AddLine(page, UiTheme.Text(TranslateMailFlow(l,
+            "Multi-provider SMTP — экспериментально",
+            "Multi-provider SMTP — experimental",
+            "מספר ספקי SMTP — ניסיוני"), true));
+        AddLine(page, MailFlowText(TranslateMailFlow(l,
+            "До 8 отдельных транспортов по отправителю. STARTTLS/Implicit TLS, собственный порт и отдельный пароль. Только первый набор на остановленном Postfix; изменение активного набора, SELinux/ACL и OAuth2 ещё не поддерживаются. Нужен полный backup. Входящие порты не меняются.",
+            "Up to 8 independent sender transports. STARTTLS/implicit TLS, individual ports and passwords. First installation on stopped Postfix only; active-set editing, SELinux/ACL and OAuth2 are not yet supported. Full backup required. Inbound ports are unchanged.",
+            "עד 8 נתיבי שולח עם TLS ופרטי התחברות נפרדים. התקנה ראשונה בלבד ב-Postfix כבוי. נדרש גיבוי מלא."), width, warning: true));
+        AddAction(page, TranslateMailFlow(l, "Найти ревизии Multi-provider",
+            "Scan multi-provider recovery revisions", "סרוק גרסאות שחזור"),
+            ScanMultiTransportRecoveryAsync, false, "search", "multi-recovery");
+        if (multiInventory is { } records)
+        {
+            if (records.Count == 0)
+                AddLine(page, MailFlowText(TranslateMailFlow(l, "Ревизий нет.",
+                    "No recovery revisions.", "אין גרסאות שחזור."), width));
+            else
+            {
+                var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList,
+                    Width = Math.Max(230, width - 25), AccessibleName = "Select observed recovery revision" };
+                foreach (var item in records)
+                    combo.Items.Add(item.Revision + " : " + item.State);
+                combo.SelectedIndexChanged += (_, _) =>
+                {
+                    int index = combo.SelectedIndex;
+                    if (index >= 0 && index < records.Count &&
+                        RecoveryInventoryContext() == hostContext)
+                        multiRevision.Text = records[index].Revision;
+                };
+                AddLine(page, combo);
+                AddLine(page, MailFlowText(TranslateMailFlow(l,
+                    "Выбор ревизии не разрешает восстановление или запуск службы.",
+                    "Selecting a revision never authorizes restore or starting Postfix.",
+                    "בחירת גרסה אינה מאשרת שחזור או הפעלה."), width));
+            }
+        }
+        if (OfflineHostContext() is null)
+        {
+            AddLine(page, MailFlowText(TranslateMailFlow(l,
+                "Для Review/Apply/Restore остановите Postfix в окно обслуживания и повторите обнаружение.",
+                "For Review/Apply/Restore, arrange maintenance, stop Postfix yourself and reinspect.",
+                "יש לעצור את Postfix בחלון תחזוקה ולבדוק שוב."), width));
+            return;
+        }
+        if (context is null)
+            AddLine(page, MailFlowText(TranslateMailFlow(l,
+                "Составьте 1–8 непересекающихся правил отправителя в мастере выше. TLS обязателен.",
+                "Create 1–8 disjoint sender rules in the planner above. TLS is required.",
+                "יש ליצור 1–8 כללי שולח ללא חפיפה ועם TLS."), width));
+        else
+        {
+            var rules = MultiTransportClient.Eligible(advancedRoutingRules);
+            AddLine(page, MailFlowText(string.Join(Environment.NewLine,
+                rules.Select((r,i) => $"{i+1}. {r.Pattern} → {r.Endpoint} · {r.TlsMode} · {r.AuthMode}")), width));
+            AddAction(page, "Multi-provider Review", () => RunMultiTransportAsync("review"),
+                false, "check", "multi-review");
+            if (multiReview is { } reviewed && multiReviewContext == context)
+            {
+                AddLine(page, MailFlowText("Plan: " + reviewed.Plan + Environment.NewLine +
+                    "Review: " + reviewed.Evidence + Environment.NewLine +
+                    "Backend: " + reviewed.Backend + " · TLS destinations: " + reviewed.Destinations +
+                    Environment.NewLine + "No provider AUTH or live delivery verified.", width));
+                AddAction(page, "Multi-provider Apply...", () => RunMultiTransportAsync("apply"),
+                    false, "shield", "multi-apply");
+            }
+        }
+        multiRevision.Width = Math.Max(230, width - 25);
+        AddField(page, TranslateMailFlow(l, "Ревизия восстановления",
+            "Recovery revision", "גרסת שחזור"), multiRevision);
+        AddAction(page, "Multi-provider Restore...", () => RunMultiTransportAsync("restore"),
+            false, "shield", "multi-restore");
+    }
+
+    private async Task ScanMultiTransportRecoveryAsync()
+    {
+        string context = RecoveryInventoryContext() ??
+            throw new InvalidOperationException("Reinspect Postfix.");
+        multiInventory = null;
+        multiInventoryContext = null;
+        try
+        {
+            var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+                MultiTransportClient.Build("scan"), TimeSpan.FromMinutes(4));
+            if (result.ExitCode != 0 || RecoveryInventoryContext() != context)
+                throw new InvalidOperationException();
+            multiInventory = MultiTransportClient.ParseInventory(result.StdOut);
+            multiInventoryContext = context;
+            WriteLine("Multi-provider recovery inventory: " + multiInventory.Count +
+                " record(s). Read-only observations.");
+        }
+        catch
+        {
+            throw new InvalidOperationException("Multi-provider recovery scan failed or became stale.");
+        }
+    }
+
+    private async Task RunMultiTransportAsync(string operation)
+    {
+        string hostContext = OfflineHostContext() ??
+            throw new InvalidOperationException("Reinspect the stopped Postfix host.");
+        string? context = null, revision = null;
+        IReadOnlyList<AdvancedRouteRule>? rules = null;
+        MultiTransportReview? reviewed = null;
+        if (operation == "restore")
+        {
+            revision = multiRevision.Text.Trim().ToLowerInvariant();
+            if (!ConditionalOfflineClient.IsSha(revision))
+                throw new ArgumentException("Select or enter an exact recovery revision.");
+        }
+        else if (operation is "review" or "apply")
+        {
+            context = MultiCandidateContext() ??
+                throw new InvalidOperationException("Prepare a valid sender plan first.");
+            rules = MultiTransportClient.Eligible(advancedRoutingRules);
+            if (operation == "apply")
+            {
+                reviewed = multiReview;
+                if (reviewed is null || multiReviewContext != context ||
+                    reviewed.Plan != AdvancedRoutePlanner.PlanSha256(rules))
+                    throw new InvalidOperationException("Fresh Multi-provider Review required.");
+            }
+        }
+        else throw new ArgumentException("Unknown operation.");
+        int l = language.SelectedIndex;
+        if (!ConfirmDestructive("LinuxMailRelay365 | Exclusive maintenance",
+            TranslateMailFlow(l,
+                "Подтвердите остановленный Postfix, пустую очередь и отсутствие параллельной отправки, запуска службы и изменений конфигурации.",
+                "Confirm stopped Postfix, empty queues and prevention of concurrent submissions, service starts and edits.",
+                "אשר ש-Postfix כבוי, התורים ריקים ואין פעולות מקבילות.") +
+            Environment.NewLine + "Host: " + inspectedHost!.Fqdn,
+            ConditionalOfflineClient.MaintenancePhrase))
+            throw new OperationCanceledException();
+        string? phrase = operation == "apply" ? MultiTransportClient.ApplyPhrase :
+            operation == "restore" ? MultiTransportClient.RestorePhrase : null;
+        if (phrase is not null && !ConfirmDestructive("LinuxMailRelay365 | Multi-provider write",
+            TranslateMailFlow(l,
+                "Будут изменены файлы Postfix. Служба останется остановленной. При Apply пароли сохраняются в читаемых SASL-базах на Linux. SSH/sudo-аудит может записывать stdin; используйте только утверждённый канал без записи секретов. При неопределённом результате проверьте ревизии до запуска службы.",
+                "Postfix files will change; service stays stopped. Apply stores readable SASL credentials on Linux. SSH/sudo input auditing can record stdin; use only an approved channel that does not record secrets. On an uncertain result scan recovery before starting Postfix.",
+                "קבצי Postfix ישתנו. סיסמאות יישמרו במפות SASL קריאות. יש להשתמש בערוץ שאינו מקליט סודות.") +
+            Environment.NewLine + (revision ?? reviewed?.Plan), phrase))
+            throw new OperationCanceledException();
+
+        var credentials = operation == "apply" ? new (string User, string Secret)?[rules!.Count] : null;
+        string? script = null;
+        bool attempted = false;
+        try
+        {
+            if (credentials is not null)
+                for (int i = 0; i < credentials.Length; i++)
+                {
+                    if (rules![i].AuthMode != "password") continue;
+                    credentials[i] = PromptRouteCredential(rules[i], forApply: true);
+                    if (credentials[i] is null) throw new OperationCanceledException();
+                }
+            if (OfflineHostContext() != hostContext ||
+                (context is not null && MultiCandidateContext() != context))
+                throw new InvalidOperationException("Host or plan changed after approval.");
+            script = MultiTransportClient.Build(operation, ConditionalOfflineClient.MaintenancePhrase,
+                rules, reviewed, credentials, revision, phrase);
+            var endpoint = Endpoint();
+            multiReview = null;
+            multiReviewContext = null;
+            attempted = operation != "review";
+            if (attempted)
+            {
+                multiInventory = null;
+                multiInventoryContext = null;
+                offlineReview = null;
+                offlineReviewContext = null;
+                conditionalStageReceipt = null;
+                conditionalStageContext = null;
+                conditionalRecoveryEntries = null;
+                conditionalRecoveryContext = null;
+                conditionalRouteAudits.Clear();
+                conditionalRouteAuditContext = null;
+                WriteLine("Multi-provider write requested. Keep Postfix stopped until verified.");
+            }
+            var result = await SshRemote.RunRootScriptAsync(endpoint, script, TimeSpan.FromMinutes(6));
+            if (OfflineHostContext() != hostContext)
+                throw new InvalidOperationException("Host context changed.");
+            if (!attempted)
+            {
+                if (result.ExitCode != 0 || MultiCandidateContext() != context)
+                    throw new InvalidOperationException("Review failed or became stale.");
+                multiReview = MultiTransportClient.ParseReview(result.StdOut,
+                    AdvancedRoutePlanner.PlanSha256(rules!), MultiTransportClient.Destinations(rules!));
+                multiReviewContext = context;
+                WriteLine("Multi-provider Review verified; no mail or changes.");
+            }
+            else
+            {
+                var mutation = MultiTransportClient.ParseMutation(result.StdOut, operation, revision);
+                multiRevision.Text = mutation.Revision;
+                WriteLine("Multi-provider " + mutation.Status + ". Recovery revision: " + mutation.Revision);
+                if (result.ExitCode != 0 || mutation.Status is "rolled_back" or "manual_recovery_required")
+                    throw new InvalidOperationException("Write failed; inspect recovery.");
+                WriteLine("Service not started. Reinspect Postfix before proceeding.");
+            }
+        }
+        catch (OperationCanceledException) when (!attempted) { throw; }
+        catch
+        {
+            // Never include the command, payload, native output or exception
+            // chain in the GUI log: any may include private input.
+            throw new InvalidOperationException(attempted
+                ? "Multi-provider write failed or outcome uncertain. Keep Postfix stopped; reinspect and scan recovery revisions."
+                : "Multi-provider Review or preparation failed; no write requested.");
+        }
+        finally
+        {
+            script = null;
+            if (credentials is not null) Array.Clear(credentials);
+            if (attempted)
+            {
+                discoveredMailIdentity = null;
+                inspectedServerIdentity = null;
+                existingSmtpAuditIdentity = null;
+                inspectedHostIdentity = null;
+            }
+        }
+    }
+}

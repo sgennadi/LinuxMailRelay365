@@ -59,7 +59,7 @@ internal sealed partial class MainForm
         }
     }
 
-    private (string User, string Secret)? PromptRouteCredential(AdvancedRouteRule rule)
+    private (string User, string Secret)? PromptRouteCredential(AdvancedRouteRule rule, bool forApply = false)
     {
         int l = language.SelectedIndex;
         using var dialog = new Form
@@ -91,13 +91,19 @@ internal sealed partial class MainForm
         int width = Math.Max(240, dialog.ClientSize.Width - 65);
         AddLine(fields, MailFlowText(rule.Pattern + " → " + rule.Endpoint +
             Environment.NewLine + rule.TlsMode.ToUpperInvariant() + Environment.NewLine +
-            TranslateMailFlow(l,
+            (forApply ? TranslateMailFlow(l,
+                "Учётные данные этого транспорта будут записаны в читаемую SASL-базу на Linux. Windows не сохраняет пароль. Проверка AUTH и отправка письма сейчас не выполняются.",
+                "This transport's credentials will be installed in a readable SASL database on Linux. Windows does not save the password. No AUTH attempt or mail submission now.",
+                "פרטי ההתחברות יישמרו במפת SASL קריאה ב-Linux, לא ב-Windows. אין שליחת דואר כעת.")
+                : TranslateMailFlow(l,
                 "Одна попытка AUTH только после проверки TLS-сертификата. Неудачный вход может привести к блокировке аккаунта. Письмо не отправляется.",
                 "ONE AUTH attempt, only after certificate verification. Failed authentication may trigger account lockout. No mail is sent.",
-                "ניסיון אימות יחיד לאחר אימות תעודה. אין שליחת דואר."), width, warning: true));
+                "ניסיון אימות יחיד לאחר אימות תעודה. אין שליחת דואר.")), width, warning: true));
         AddField(fields, TranslateMailFlow(l, "Логин SMTP", "SMTP username", "שם משתמש SMTP"), user);
-        AddField(fields, TranslateMailFlow(l, "Пароль (не сохраняется)",
-            "One-use SMTP password (not saved)", "סיסמה חד-פעמית"), secret);
+        AddField(fields, forApply
+            ? TranslateMailFlow(l, "Пароль для SASL на Linux", "SMTP password for Linux SASL", "סיסמת SMTP עבור Linux")
+            : TranslateMailFlow(l, "Пароль (не сохраняется)",
+                "One-use SMTP password (not saved)", "סיסמה חד-פעמית"), secret);
         scroll.Controls.Add(fields);
         var actions = new FlowLayoutPanel
         {
@@ -106,10 +112,14 @@ internal sealed partial class MainForm
         };
         var cancel = new Button { Text = TranslateMailFlow(l, "Отмена", "Cancel", "ביטול"),
             AutoSize = true, DialogResult = DialogResult.Cancel };
-        var test = new Button { Text = TranslateMailFlow(l, "Проверить один раз",
-            "Test once", "בדוק פעם אחת"), AutoSize = true, Enabled = false,
+        var test = new Button { Text = forApply
+            ? TranslateMailFlow(l, "Использовать для транспорта", "Use for this transport", "השתמש עבור נתיב זה")
+            : TranslateMailFlow(l, "Проверить один раз", "Test once", "בדוק פעם אחת"),
+            AutoSize = true, Enabled = false,
             DialogResult = DialogResult.OK };
-        void UpdateButton() => test.Enabled = user.Text.Length > 0 && secret.Text.Length > 0;
+        void UpdateButton() => test.Enabled = forApply
+            ? MultiTransportClient.ValidCredential(user.Text, secret.Text)
+            : user.Text.Length > 0 && secret.Text.Length > 0;
         user.TextChanged += (_, _) => UpdateButton();
         secret.TextChanged += (_, _) => UpdateButton();
         actions.Controls.Add(cancel);
