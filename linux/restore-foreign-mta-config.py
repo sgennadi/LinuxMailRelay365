@@ -625,7 +625,8 @@ def inspect_pending(root=backup.ROOT, base=backup.BASE, uid=0, lock_path=LOCK):
         safety = pending_manifest(base, mta, record["safety"], record["safety_sha256"], uid)
         target = pending_manifest(base, mta, record["target"], record["target_sha256"], uid)
         if (target["version"] != (2 if record["version"] == 4 else 1) or
-                safety["version"] != target["version"] or set(safety["files"]) != set(target["files"])):
+                (record["version"] == 4 and safety["version"] != 2) or
+                set(safety["files"]) != set(target["files"])):
             raise Refused("pending_restore_snapshot_file_set_mismatch")
         def inventory():
             if record["version"] == 4:
@@ -1234,13 +1235,13 @@ def sendmail_v2_pending_state(root, base, uid, offline_check, preflight_check):
             "changed": changed, "sha": approval}
 
 
-def sendmail_v2_finish(root, base, uid, record, direction, offline_check,
+def sendmail_v2_finish(root, base, uid, record, direction, approved_current, offline_check,
                        preflight_check, static_check):
     """Recheck full scope before and after parsing; retain marker on any error."""
     count = 0
     initial = sendmail_v2_pending_state(root, base, uid, offline_check, preflight_check)
-    if initial["record"] != record:
-        raise Refused("sendmail_v2_pending_marker_changed")
+    if initial["record"] != record or initial["current"] != approved_current:
+        raise Refused("sendmail_v2_state_changed_after_approval")
     wanted = sendmail_v2_compiled_bytes(base, uid, record[direction], initial[direction])
     # Every single-file replacement is independently checked against the
     # exact last sampled state. No automatic writes occur on a failure.
@@ -1321,7 +1322,7 @@ def apply_sendmail_v2(snapshot_id, approved_sha, confirm, root=backup.ROOT,
             raise Refused("sendmail_v2_state_changed_before_pending_marker")
         publish_pending(base, uid, record)
         print("SENDMAIL_V2_RECOVERY_SAFETY_ID=" + safety_id, flush=True)
-        return sendmail_v2_finish(root, base, uid, record, "target", offline_check,
+        return sendmail_v2_finish(root, base, uid, record, "target", original, offline_check,
                                   preflight_check, static_check)
     finally:
         os.close(lock)
@@ -1347,8 +1348,10 @@ def rollback_sendmail_v2(approved_sha, confirm, root=backup.ROOT, base=backup.BA
         plan = sendmail_v2_pending_state(root, base, uid, offline_check, preflight_check)
         if plan["sha"] != approved_sha:
             raise Refused("sendmail_v2_rollback_plan_changed_reapprove")
-        return sendmail_v2_finish(root, base, uid, plan["record"], "safety",
-                                  offline_check, preflight_check, static_check)
+        result = sendmail_v2_finish(root, base, uid, plan["record"], "safety",
+                                    plan["current"], offline_check, preflight_check, static_check)
+        result["rollback_plan_sha256"] = approved_sha
+        return result
     finally:
         os.close(lock)
 
@@ -1413,6 +1416,7 @@ def main(argv=None):
                 result = rollback_sendmail_v2(args.approve_sha256, args.confirm)
                 record = result["record"]
                 print("SENDMAIL_V2_RECOVERY_STATUS=original_verified_service_not_started")
+                print("SENDMAIL_V2_ROLLBACK_APPROVED_SHA256=" + result["rollback_plan_sha256"])
                 print("SENDMAIL_V2_RECOVERY_CHANGED_FILES=" + str(result["changed"]))
                 print("SENDMAIL_V2_RECOVERY_NATIVE_STATIC_CHECK=passed_partial_parse_only")
                 print("SENDMAIL_V2_RECOVERY_MARKER_CLEARED=yes")

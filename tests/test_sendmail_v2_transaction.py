@@ -152,6 +152,33 @@ class SendmailV2Transaction(unittest.TestCase):
             self.rollback(plan)
         self.assertEqual(r.read_pending(self.base, self.uid), marker)
 
+    def test_edit_after_durable_marker_invalidates_initial_approval(self):
+        publish = r.publish_pending
+        def changed_after_marker(*args):
+            publish(*args)
+            # Same bytes but a new ctime: the fresh plan must not silently
+            # become authorization for a later, different file identity.
+            self.a.write_bytes(b"original a\n")
+        with patch.object(r, "publish_pending", side_effect=changed_after_marker):
+            with self.assertRaisesRegex(r.Refused, "state_changed_after_approval"):
+                self.apply()
+        self.assertEqual(self.a.read_bytes(), b"original a\n")
+        self.assertEqual(self.b.read_bytes(), b"original b\n")
+        self.assertIsNotNone(r.read_pending(self.base, self.uid))
+
+    def test_edit_after_rollback_review_invalidates_initial_approval(self):
+        self.interrupt()
+        plan = self.rollback_plan()
+        finish = r.sendmail_v2_finish
+        def changed_before_finish(*args):
+            self.b.write_bytes(b"original b\n")
+            return finish(*args)
+        with patch.object(r, "sendmail_v2_finish", side_effect=changed_before_finish):
+            with self.assertRaisesRegex(r.Refused, "state_changed_after_approval"):
+                self.rollback(plan)
+        self.assertEqual(self.a.read_bytes(), b"target a\n")
+        self.assertIsNotNone(r.read_pending(self.base, self.uid))
+
     def test_running_or_wrong_confirmation_never_mutates(self):
         plan = self.review()
         with self.assertRaisesRegex(r.Refused, "confirmation"):
