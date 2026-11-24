@@ -202,6 +202,85 @@ class ForeignMtaRestoreTests(unittest.TestCase):
                 if drift == "new_file":
                     self.assertTrue((tree / "new.conf").is_file())
 
+    def test_pending_restore_blocks_retry_after_interruption(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, sid, uid = self.fixture(folder, "exim")
+            for file in tree.iterdir():
+                file.write_text("pre-operation version\n")
+            plan = restore.preview("exim", sid, root, base, uid)
+            options = self.kwargs(folder, root, base, uid)
+            replace = restore.replace_one
+            def interrupted(*args, **kwargs):
+                marker = restore.pending_status(base, uid)
+                self.assertEqual(marker["target"], sid)
+                self.assertEqual(marker["plan_sha256"], plan["sha"])
+                replace(*args, **kwargs)
+                raise KeyboardInterrupt()
+            with patch.object(restore, "replace_one", side_effect=interrupted):
+                with self.assertRaises(KeyboardInterrupt):
+                    restore.apply("exim", sid, plan["sha"], restore.APPROVAL, **options)
+            marker = restore.pending_status(base, uid)
+            self.assertIsNotNone(marker)
+            self.assertEqual(stat.S_IMODE((base / restore.PENDING).stat().st_mode), 0o600)
+            self.assertEqual(len(snapshot.listed("exim", base, uid)), 2)
+            fresh = restore.preview("exim", sid, root, base, uid)
+            with self.assertRaisesRegex(restore.Refused, "pending_restore_requires_manual_recovery"):
+                restore.apply("exim", sid, fresh["sha"], restore.APPROVAL, **options)
+            self.assertEqual(restore.pending_status(base, uid), marker)
+            self.assertEqual(len(snapshot.listed("exim", base, uid)), 2)
+
+    def test_corrupt_marker_blocks_without_creating_safety_snapshot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, sid, uid = self.fixture(folder, "exim")
+            target = next(tree.iterdir())
+            target.write_text("live\n")
+            plan = restore.preview("exim", sid, root, base, uid)
+            marker = base / restore.PENDING
+            marker.write_text('{"version":')
+            marker.chmod(0o600)
+            with self.assertRaisesRegex(restore.Refused, "invalid_pending_restore_marker"):
+                restore.apply("exim", sid, plan["sha"], restore.APPROVAL,
+                              **self.kwargs(folder, root, base, uid))
+            self.assertEqual(target.read_text(), "live\n")
+            self.assertEqual(snapshot.listed("exim", base, uid), [sid])
+            self.assertTrue(marker.exists())
+
+    def test_success_and_verified_rollback_clear_pending_marker(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as folder:
+                root, base, tree, sid, uid = self.fixture(folder, "exim")
+                target = next(tree.iterdir())
+                target.write_text("live\n")
+                plan = restore.preview("exim", sid, root, base, uid)
+                options = self.kwargs(folder, root, base, uid)
+                def parser(mta, root, uid):
+                    self.assertIsNotNone(restore.pending_status(base, uid))
+                    return not fail
+                options["static_check"] = parser
+                if fail:
+                    with self.assertRaisesRegex(restore.Refused, "rollback_verified"):
+                        restore.apply("exim", sid, plan["sha"], restore.APPROVAL, **options)
+                    self.assertEqual(target.read_text(), "live\n")
+                else:
+                    restore.apply("exim", sid, plan["sha"], restore.APPROVAL, **options)
+                self.assertIsNone(restore.pending_status(base, uid))
+                self.assertEqual(len(snapshot.listed("exim", base, uid)), 2)
+
+    def test_mismatched_safety_archive_refused_before_first_write(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, sid, uid = self.fixture(folder, "exim")
+            target = next(tree.iterdir())
+            target.write_text("live\n")
+            plan = restore.preview("exim", sid, root, base, uid)
+            wrong = snapshot.verify(base / "exim" / sid, "exim", uid)
+            with patch.object(snapshot, "backup", return_value=(sid, wrong)), \
+                 patch.object(restore, "replace_one", side_effect=AssertionError("write forbidden")):
+                with self.assertRaisesRegex(restore.Refused, "safety_snapshot_content_mismatch"):
+                    restore.apply("exim", sid, plan["sha"], restore.APPROVAL,
+                                  **self.kwargs(folder, root, base, uid))
+            self.assertEqual(target.read_text(), "live\n")
+            self.assertIsNone(restore.pending_status(base, uid))
+
     def test_same_bytes_new_inode_invalidates_approval(self):
         with tempfile.TemporaryDirectory() as folder:
             root, base, tree, snap_id, uid = self.fixture(folder, "sendmail")

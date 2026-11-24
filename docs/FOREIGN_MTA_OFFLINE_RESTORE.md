@@ -228,3 +228,29 @@ new files or label drift prevent a verified-rollback claim; preserve the
 pre-operation safety snapshot and inspect manually. Synthetic xattr/label
 unit tests are not proof of real SELinux Enforcing acceptance. No native GUI
 Apply is enabled by this change.
+
+### Durable interruption marker (development)
+
+Before the first configuration replacement, the native v1 Restore verifies
+that the safety archive contains the reviewed original file bytes, fsyncs
+the snapshot directory and its parents, and exclusively publishes a private
+0600 marker under the protected backup base. The marker identifies the MTA,
+requested and safety snapshot IDs, archive digest and approved plan digest.
+It does not contain mail contents, raw configuration or passwords. A fresh
+Restore refuses any existing marker, including one left by interruption or
+incomplete rollback; malformed and changed markers also refuse. A verified
+completed operation or verified in-process rollback removes the marker and
+syncs the directory. For read-only inspection use:
+
+`sudo python3 linux/restore-foreign-mta-config.py --mta exim --pending-status`
+
+The marker is global to the backup base, not limited to the requested MTA.
+The status verifies the safety archive; it never resumes, clears or rolls
+back an interrupted operation. If manual_recovery_required or a refusal is
+reported, keep the MTA stopped and retain the marker and safety archive for
+review. There is deliberately no automatic recovery/clear command yet.
+This is a durable warning and retry guard, not a crash-atomic multi-file
+transaction or a system-wide service-start interlock. Tests simulate Python
+interruption and verify successful completion, rollback and malformed marker
+refusal; real sudden-power-loss validation remains outstanding. GUI Apply
+and Sendmail v2 restore are still not enabled.

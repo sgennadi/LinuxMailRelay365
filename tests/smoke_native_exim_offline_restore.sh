@@ -39,6 +39,8 @@ backup_id="$(printf "%s\n" "$backup_report" | sed -n 's/^FOREIGN_BACKUP_ID=//p')
 sudo python3 linux/foreign-mta-config-backup.py --mta exim --verify "$backup_id" |
   grep -Fxq "FOREIGN_BACKUP_STATUS=verified"
 echo "EXIM_RESTORE_LAB_ARCHIVE=verified"
+sudo python3 linux/restore-foreign-mta-config.py --mta exim --pending-status |
+  grep -Fxq "FOREIGN_PENDING_STATUS=clear"
 
 # Only append a harmless comment; deliberately avoid routing changes.
 printf "\n# LMR365 temporary offline restore acceptance comment\n" | sudo tee -a "$config" >/dev/null
@@ -81,6 +83,9 @@ done
 ! sudo pgrep -x exim4 >/dev/null || exit 1
 ! sudo pgrep -x exim >/dev/null || exit 1
 ! sudo ss -H -lnt | grep -Eq ":(25|465|587|2525)[[:space:]]" || exit 1
+sudo python3 linux/restore-foreign-mta-config.py --mta exim --pending-status |
+  grep -Fxq "FOREIGN_PENDING_STATUS=clear"
+echo "EXIM_RESTORE_LAB_PENDING_MARKER=cleared_after_verified_restore"
 echo "EXIM_RESTORE_LAB_PRIMARY_CONFIG=restored_verified"
 echo "EXIM_RESTORE_LAB_NATIVE_STATIC_PARSE=passed"
 echo "EXIM_RESTORE_LAB_QUEUE=unchanged_empty"

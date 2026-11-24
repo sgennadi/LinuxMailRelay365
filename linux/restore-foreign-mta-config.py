@@ -29,6 +29,7 @@ _spec.loader.exec_module(backup)
 Refused = backup.Refused
 APPROVAL = "RESTORE_STOPPED_FOREIGN_MTA_CONFIG"
 LOCK = Path("/run/linuxmailrelay365-foreign-mta-restore.lock")
+PENDING = ".native-restore-pending.json"
 UNITS = {"exim": ("exim4.service", "exim.service"),
          "sendmail": ("sendmail.service",)}
 PROCESSES = {"exim": ("exim", "exim4"), "sendmail": ("sendmail",)}
@@ -366,6 +367,114 @@ def require_offline_preflight(mta, snapshot_id, root, base, uid, inspector=None)
     return proof
 
 
+def sync_directory(path):
+    fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+                 getattr(os, "O_NOFOLLOW", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def read_pending(base, uid):
+    """A global durable marker; corrupt or partial markers block writes too."""
+    if base == backup.BASE:
+        backup.safe_dir(Path("/var"), uid)
+        if not os.path.lexists("/var/backups"):
+            return None
+        backup.safe_dir(Path("/var/backups"), uid)
+    if not os.path.lexists(str(base)):
+        return None
+    backup.safe_dir(base, uid)
+    path = base / PENDING
+    if not os.path.lexists(str(path)):
+        return None
+    backup.safe_regular(path, uid, mode=0o600, maximum=4096)
+    metadata, raw = backup.stable_file(path, uid)
+    if stat.S_IMODE(metadata.st_mode) != 0o600 or len(raw) > 4096:
+        raise Refused("invalid_pending_restore_marker")
+    def unique_pairs(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise Refused("duplicate_pending_restore_marker_field")
+            value[key] = item
+        return value
+    try:
+        record = json.loads(raw.decode("ascii"), object_pairs_hook=unique_pairs)
+    except (ValueError, UnicodeError):
+        raise Refused("invalid_pending_restore_marker")
+    expected = {"version", "mta", "target", "safety", "safety_sha256", "plan_sha256"}
+    if (not isinstance(record, dict) or set(record) != expected or
+            type(record["version"]) is not int or record["version"] != 1 or
+            not isinstance(record["mta"], str) or record["mta"] not in backup.ALLOWED or
+            any(not isinstance(record[key], str) or not backup.ID.fullmatch(record[key])
+                for key in ("target", "safety")) or
+            record["target"] == record["safety"] or
+            any(not isinstance(record[key], str) or not backup.SHA.fullmatch(record[key])
+                for key in ("safety_sha256", "plan_sha256"))):
+        raise Refused("invalid_pending_restore_marker")
+    return record
+
+
+def verify_durable_safety_snapshot(mta, safety_id, state, base, uid):
+    """Ensure the safety archive contains the reviewed pre-operation bytes."""
+    folder = base / mta / safety_id
+    # Backup's file writes are fsynced. Also persist the directory rename
+    # and its ancestors before any active configuration can change.
+    backup.strict_snapshot_dir(folder, uid)
+    for path in (folder, folder.parent, base, base.parent):
+        sync_directory(path)
+    info = backup.verify(folder, mta, uid)
+    manifest = json.loads(backup.stable_file(folder / "manifest.json", uid)[1])
+    if (manifest["sha256"] != info["sha256"] or
+            set(manifest["files"]) != set(state["original"])):
+        raise Refused("safety_snapshot_inventory_mismatch")
+    for name, (_, content) in state["original"].items():
+        item = manifest["files"][name]
+        if item["size"] != len(content) or item["sha256"] != digest(content):
+            raise Refused("safety_snapshot_content_mismatch")
+    return info["sha256"]
+
+
+def publish_pending(base, uid, record):
+    backup.safe_dir(base, uid)
+    raw = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("ascii")
+    # Never replace an existing marker, including a partial one left by
+    # SIGKILL or a power loss. A partial marker requires manual review.
+    fd = os.open(str(base / PENDING), os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                 getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb", closefd=False) as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(fd)
+    sync_directory(base)
+    if read_pending(base, uid) != record:
+        raise Refused("pending_restore_marker_verification_failed")
+
+
+def clear_verified_pending(base, uid, record):
+    if read_pending(base, uid) != record:
+        raise Refused("pending_restore_marker_changed")
+    (base / PENDING).unlink()
+    sync_directory(base)
+
+
+def pending_status(base=backup.BASE, uid=0):
+    record = read_pending(base, uid)
+    if record is None:
+        return None
+    evidence = backup.verify(base / record["mta"] / record["safety"],
+                             record["mta"], uid)
+    if evidence["sha256"] != record["safety_sha256"]:
+        raise Refused("pending_restore_safety_snapshot_changed")
+    return record
+
+
 def apply(mta, snapshot_id, approved_sha, confirm,
           root=backup.ROOT, base=backup.BASE, uid=0,
           offline_check=stopped, lock_path=LOCK, preflight_check=None,
@@ -376,6 +485,8 @@ def apply(mta, snapshot_id, approved_sha, confirm,
         raise Refused("primary_mta_not_stopped")
     lock_handle = take_lock(lock_path, uid)
     try:
+        if read_pending(base, uid) is not None:
+            raise Refused("pending_restore_requires_manual_recovery")
         # Backup may read the distro's smmta-owned /etc/mail directory,
         # but automatic Restore must NOT write inside a non-root-owned path.
         # A packaged Sendmail installation therefore remains read-only
@@ -399,6 +510,13 @@ def apply(mta, snapshot_id, approved_sha, confirm,
             raise Refused("configuration_changed_during_safety_backup")
         require_offline_preflight(mta, snapshot_id, root, base, uid,
                                   preflight_check)
+        safety_sha = verify_durable_safety_snapshot(mta, safety_id, state, base, uid)
+        if preview(mta, snapshot_id, root, base, uid)["sha"] != approved_sha:
+            raise Refused("configuration_changed_before_pending_restore")
+        record = {"version": 1, "mta": mta, "target": snapshot_id,
+                  "safety": safety_id, "safety_sha256": safety_sha,
+                  "plan_sha256": approved_sha}
+        publish_pending(base, uid, record)
         changed = []
         try:
             for name in sorted(state["original"]):
@@ -490,9 +608,13 @@ def apply(mta, snapshot_id, approved_sha, confirm,
                     except Exception:
                         safe_rollback = False
                         break
+            if safe_rollback:
+                clear_verified_pending(base, uid, record)
+            # Incomplete rollback and abrupt interruption retain the marker.
             raise Refused("restore_failed_rollback_" +
                           ("verified" if safe_rollback
                            else "incomplete_use_safety_backup"))
+        clear_verified_pending(base, uid, record)
         return {"changed": len(changed), "safety_id": safety_id,
                 "static_config": "passed_partial_parse_only"}
     finally:
@@ -506,6 +628,7 @@ def main(argv=None):
     group.add_argument("--plan", metavar="SNAPSHOT_ID")
     group.add_argument("--apply", metavar="SNAPSHOT_ID")
     group.add_argument("--static-check", action="store_true")
+    group.add_argument("--pending-status", action="store_true")
     parser.add_argument("--approve-sha256", default="")
     parser.add_argument("--confirm", default="")
     args = parser.parse_args(argv)
@@ -513,6 +636,20 @@ def main(argv=None):
         print("FOREIGN_RESTORE_STATUS=root_required", file=sys.stderr)
         return 2
     try:
+        if args.pending_status:
+            if args.approve_sha256 or args.confirm:
+                raise Refused("approval_not_permitted_during_pending_status")
+            record = pending_status()
+            print("FOREIGN_PENDING_VERSION=1")
+            print("FOREIGN_PENDING_STATUS=" +
+                  ("clear" if record is None else "manual_recovery_required"))
+            if record is not None:
+                for key in ("mta", "target", "safety", "safety_sha256", "plan_sha256"):
+                    print("FOREIGN_PENDING_" + key.upper() + "=" + record[key])
+            print("FOREIGN_PENDING_CONFIG_CHANGED=no")
+            print("FOREIGN_PENDING_QUEUE_CHANGED=no")
+            print("FOREIGN_PENDING_SERVICE_CHANGED=no")
+            return 0
         if args.static_check:
             # This operation does not use a backup, change a configuration,
             # inspect mail contents, or authorize a Restore.
