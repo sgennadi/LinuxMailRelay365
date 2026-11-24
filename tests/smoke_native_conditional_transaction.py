@@ -105,10 +105,26 @@ def check_case(root, failure):
 
         def policy():
             observed = P.postconf_values(fixture_postconf)
-            assert observed["config_directory"] == str(folder)
-            assert observed["queue_directory"] == str(folder / "queue")
-            # Only these two location fields are translated to the logical
-            # primary-instance values; every other effective value is native.
+            # config_directory is the compiled/default installation parameter;
+            # -c selects the file to read but must not be inferred solely from
+            # the value printed by postconf. Verify the actual selected config
+            # with independent fixture-only values, not by trusting -c alone.
+            code, marker = fixture_postconf("postconf",
+                ["-c", P.CONFIG, "-h", "myhostname"])
+            assert code == 0 and marker.strip() == b"lmr365-transaction.example.invalid", (
+                "fixture_hostname_mismatch", code, marker)
+            code, data_dir = fixture_postconf("postconf",
+                ["-c", P.CONFIG, "-h", "data_directory"])
+            assert code == 0 and data_dir.strip() == str(folder / "data").encode("ascii"), (
+                "fixture_data_directory_mismatch", code, data_dir)
+            assert observed["queue_directory"] == str(folder / "queue"), (
+                "fixture_queue_directory_mismatch", observed["queue_directory"])
+            assert observed["config_directory"] in (str(folder), P.CONFIG), (
+                "unexpected_native_config_directory", observed["config_directory"])
+            print("CI_FIXTURE_CONFIG_DIRECTORY=" + observed["config_directory"], flush=True)
+            # These two location fields alone are translated to the logical
+            # primary-instance values. Every other effective field is native.
+            # The real host guard still requires /etc/postfix exactly.
             observed["config_directory"] = P.CONFIG
             observed["queue_directory"] = P.QUEUE
             return observed
