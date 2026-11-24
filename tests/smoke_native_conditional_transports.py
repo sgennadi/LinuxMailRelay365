@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import os
 import pathlib
+from unittest.mock import patch
 
 if os.geteuid() != 0 or os.environ.get("GITHUB_ACTIONS") != "true":
     raise SystemExit("Disposable root CI only")
@@ -55,6 +56,7 @@ def sibling(name, filename):
 
 X = sibling("multi_transport_transaction", "conditional-transport-transaction.py")
 O = sibling("offline_native_reader", "manage-conditional-postfix-offline.py")
+Q = sibling("credential_rotation", "conditional-transport-rotation.py")
 identity = O.mail_identity()
 
 
@@ -173,6 +175,130 @@ def native_transaction(rules, plan, backend, ca, databases, folder, fail):
             if fail:
                 raise X.Refused("fixture_injected_native_failure")
 
+        def exercise_rotation(revision):
+            # Account 2 shares an endpoint with account 1, but its private
+            # map must be the only file changed throughout credential rotation.
+            index = 2
+            target = Q.target_name(info, index)
+            first_record = Q.X.load(parent, revision, 0)
+            preserved = {name: ((folder / name).read_bytes(),
+                                Q.T.file_identity((folder / name).stat()))
+                         for name in ("main.cf", "master.cf", *maps)
+                         if name != target}
+            current = request["credentials"][index - 1]
+            private_candidates = []
+
+            def review():
+                return Q.X.load(parent, revision, 0)
+
+            def unchanged():
+                guard()
+                for name, (data, file_id) in preserved.items():
+                    path = folder / name
+                    assert path.read_bytes() == data
+                    assert Q.T.file_identity(path.stat()) == file_id
+                check_fixture()
+
+            def native_target(data, credential):
+                Q.verify_retained_native(config, str(folder), info, target, data,
+                                         0, identity, O.native_unprivileged, credential)
+                unchanged()
+
+            def rotate(new_credential, mode):
+                nonlocal current
+                record = review()
+                old = (folder / target).read_bytes()
+                native_target(old, current)
+                candidate = Q.compile_rotation_candidate(info, index, new_credential)
+                assert candidate != old
+                private_candidates.append(candidate)
+
+                def verify_rotation(active, recorded, name, data):
+                    assert recorded == info and name == target
+                    assert data == (candidate if active else old)
+                    native_target(data, new_credential if active else current)
+                    if active and mode == "rollback":
+                        raise Q.Refused("fixture_injected_rotation_verification_failure")
+
+                def apply_rotation():
+                    return Q.rotate(config, parent, revision, index, record, candidate,
+                                    identity[1], Q.CONFIRM, 0, guard, verify_rotation, review)
+
+                if mode == "success":
+                    assert Q.R.valid_sha(apply_rotation())
+                    current = new_credential
+                    expected = candidate
+                elif mode == "rollback":
+                    try:
+                        apply_rotation()
+                    except Q.RotationFailed as error:
+                        assert error.rolled_back
+                    else:
+                        raise AssertionError("Expected native rotation rollback")
+                    expected = old
+                else:
+                    if mode == "new_retained":
+                        # Simulate an interrupted ownership-overlay commit
+                        # after publication of the replacement map.
+                        with patch.object(Q, "commit_overlay", side_effect=OSError("fixture interruption")):
+                            try:
+                                apply_rotation()
+                            except Q.RotationFailed as error:
+                                assert not error.rolled_back
+                            else:
+                                raise AssertionError("Expected pending rotation")
+                    else:
+                        assert mode == "old_retained"
+                        original_write = Q.T.atomic_write
+
+                        def interrupt(fd, name, *args, **kwargs):
+                            if name == target:
+                                raise KeyboardInterrupt()
+                            return original_write(fd, name, *args, **kwargs)
+
+                        with patch.object(Q.T, "atomic_write", side_effect=interrupt):
+                            try:
+                                apply_rotation()
+                            except KeyboardInterrupt:
+                                pass
+                            else:
+                                raise AssertionError("Expected interrupted rotation")
+                    try:
+                        review()
+                    except Q.Refused as error:
+                        assert str(error) == "credential_rotation_recovery_required"
+                    else:
+                        raise AssertionError("Pending rotation was not blocked")
+                    pending = Q.pending_review(config, parent, revision, 0, identity[1])
+                    assert pending[3] == mode
+                    assert Q.recover(config, parent, revision, pending, identity[1],
+                                     Q.RECOVER, 0, guard, verify_rotation) == mode
+                    if mode == "new_retained":
+                        current = new_credential
+                        expected = candidate
+                    else:
+                        expected = old
+
+                actual = review()
+                assert actual[:2] == first_record[:2]
+                assert (folder / target).read_bytes() == expected
+                assert actual[2]["maps"][target] == hashlib.sha256(expected).hexdigest()
+                assert actual[3][target] == Q.T.file_identity((folder / target).stat())
+                for name in maps:
+                    if name != target:
+                        assert actual[2]["maps"][name] == first_record[2]["maps"][name]
+                        assert actual[3][name] == first_record[3][name]
+                native_target(expected, current)
+                print("NATIVE_MULTI_TRANSPORT_ROTATION=" + backend + ":" + mode + ":PASS",
+                      flush=True)
+
+            for mode in ("success", "rollback", "new_retained", "old_retained"):
+                rotate({"username": "fixture-rotated", "password": "synthetic-" + mode}, mode)
+            # Another normal rotation after recovery must still work.
+            rotate({"username": "fixture-final", "password": "synthetic-final"}, "success")
+            return private_candidates
+
+        rotated_candidates = []
         try:
             revision = X.apply(config, parent, reviewed, databases, identity[1],
                                X.APPLY, 0, guard, verify, fresh)
@@ -182,6 +308,7 @@ def native_transaction(rules, plan, backend, ca, databases, folder, fail):
             print("NATIVE_MULTI_TRANSPORT_ROLLBACK=" + backend + ":PASS", flush=True)
         else:
             assert not fail and checked == [True]
+            rotated_candidates = exercise_rotation(revision)
             assert X.restore(config, parent, revision, X.RESTORE, 0, guard, verify) == revision
             print("NATIVE_MULTI_TRANSPORT_APPLY_RESTORE=" + backend + ":PASS", flush=True)
 
@@ -194,7 +321,8 @@ def native_transaction(rules, plan, backend, ca, databases, folder, fail):
         for p in recovery.rglob("*"):
             if p.is_file():
                 assert p.stat().st_mode & 0o777 == 0o600
-                assert not any(data in p.read_bytes() for data in maps.values())
+                assert not any(data in p.read_bytes()
+                               for data in (*maps.values(), *rotated_candidates))
         primary_guard()
     finally:
         os.close(config)
