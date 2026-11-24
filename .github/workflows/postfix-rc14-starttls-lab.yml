@@ -1,0 +1,33 @@
+name: RC14 Postfix STARTTLS transaction lab
+on:
+  push:
+    branches: [test/postfix-rc14-starttls-transaction-lab]
+    paths:
+      - '.github/workflows/postfix-rc14-starttls-lab.yml'
+      - 'tests/smoke_rc14_starttls_transaction.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated-starttls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build disposable Postfix and OpenSSL fixture
+        run: |
+          docker build -t lmr-postfix-rc14-starttls-lab - <<'DOCKER'
+          FROM ubuntu:24.04
+          ENV DEBIAN_FRONTEND=noninteractive
+          RUN apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update \
+            && printf 'postfix postfix/main_mailer_type select Internet Site\npostfix postfix/mailname string mail.local.invalid\n' | debconf-set-selections \
+            && apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends postfix openssl python3 \
+            && useradd --no-create-home lmrfixture \
+            && rm -rf /var/lib/apt/lists/*
+          DOCKER
+      - name: Stage/compile and exercise TLS plus stopped Postfix rollback
+        run: |
+          docker run --rm --network none --env LMR_TEST_CONTAINER=network-none \
+            --mount "type=bind,source=$GITHUB_WORKSPACE/tests,target=/fixture/tests,readonly" \
+            --mount "type=bind,source=$GITHUB_WORKSPACE/linux,target=/fixture/linux,readonly" \
+            lmr-postfix-rc14-starttls-lab python3 -B /fixture/tests/smoke_rc14_starttls_transaction.py
