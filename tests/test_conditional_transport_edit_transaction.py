@@ -69,7 +69,7 @@ class MultiTransportSwitchTests(unittest.TestCase):
         self.assert_maps(dict(self.f.maps, **self.maps), [])
         with self.assertRaisesRegex(S.Refused, "transport_edit_recovery_required"):
             S.X.load(self.f.parent, revision, self.f.uid)
-        with self.assertRaisesRegex(S.Refused, "transport_edit_recovery_required"):
+        with self.assertRaisesRegex(F.X.Refused, "transport_edit_recovery_required"):
             self.f.restore(self.old)
         self.assertEqual(self.resolve(S.COMMIT), revision)
         self.assert_maps(self.maps, self.f.maps)

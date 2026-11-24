@@ -170,7 +170,8 @@ class SwitchFailed(Refused):
 
 
 def begin(config, parent, directory, revision, reviewed, slots, uid, identity,
-          guard, native_review, native_unprivileged, verify, confirmation):
+          guard, native_review, native_unprivileged, verify, confirmation,
+          prepublish=None):
     """Prepare and switch, retaining old maps until separate resolution.
 
     If any post-marker operation fails, leave the durable pending state and
@@ -206,6 +207,9 @@ def begin(config, parent, directory, revision, reviewed, slots, uid, identity,
     X.need(X.load(parent, replacement, uid) ==
            (new, files, journal, dict.fromkeys(maps)), "edit_journal_unverified")
     fresh()
+    if prepublish is not None:
+        prepublish()
+        fresh()
     marker = {"format": FORMAT, "old": revision, "new": replacement,
               "old_record": X.record_digest(old[2], old[3]),
               "new_journal": M.digest(M.canonical(journal)), "phase": "pending"}

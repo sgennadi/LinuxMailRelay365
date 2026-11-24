@@ -40,9 +40,13 @@ def proposal(record, draft):
     old, files, _, _ = record
     # Always rebuild from the exact pre-manager snapshot. Never search for
     # comment markers in, or append a second set to, the active configuration.
-    rules, plan, after, names = R.proposal(
-        files["main.before"], files["master.before"], draft,
-        old["backend"], old["ca"])
+    try:
+        rules, plan, after, names = R.proposal(
+            files["main.before"], files["master.before"], draft,
+            old["backend"], old["ca"])
+    except C.Refused:
+        # The compiler is loaded separately and owns its exception class.
+        raise Refused("invalid_replacement_plan") from None
     X.need(plan != old["plan"], "replacement_plan_unchanged")
     values = dict(files, **{"main.after": after[0], "master.after": after[1]})
     new = dict(old, plan=plan, rules=rules, map_names=names,
