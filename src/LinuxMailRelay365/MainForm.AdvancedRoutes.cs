@@ -132,6 +132,8 @@ internal sealed partial class MainForm
         if (!string.Equals(advancedRoutingIdentity, identity, StringComparison.Ordinal))
         {
             advancedRoutingRules.Clear();
+            conditionalRouteAudits.Clear();
+            conditionalRouteAuditContext = null;
             conditionalStageReceipt = null;
             conditionalStageContext = null;
             advancedRoutingSimulation = null;
@@ -336,6 +338,7 @@ internal sealed partial class MainForm
                         advancedRoutingSimulation = null;
                     }, true);
                 AddLine(line, controls);
+                ShowConditionalRouteDiagnostics(line, width - 75, l, at, rule);
                 AddLine(page, line);
             }
             AddLine(page, MailFlowText(

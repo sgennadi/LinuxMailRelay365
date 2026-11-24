@@ -93,6 +93,7 @@ internal static class Program
             ("Local submission read-only evidence", MailSubmissionEvidence.SelfTest),
             ("Google SMTP port and one-shot AUTH strict validation", GoogleSmtpAudit.SelfTest),
             ("Custom SMTP destination and one-shot TLS AUTH safety", CustomSmtpAudit.SelfTest),
+            ("Independent conditional-route SMTP audit identity and receipt", ConditionalRouteAudit.SelfTest),
             ("Google upstream Postfix preview/apply fingerprint contract", GooglePostfixRoute.SelfTest),
             ("Custom Postfix SMTP route preview/apply, auth and backup contract", CustomPostfixRoute.SelfTest),
             ("Embedded local submission probe is read-only", () =>
