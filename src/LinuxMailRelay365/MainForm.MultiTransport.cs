@@ -37,6 +37,7 @@ internal sealed partial class MainForm
         if (hostContext is null)
         {
             ResetCredentialRotationReview();
+            ResetTransportEditReview();
             multiReview = null;
             multiReviewContext = null;
             multiInventory = null;
@@ -49,6 +50,7 @@ internal sealed partial class MainForm
         if (identity != multiHostIdentity)
         {
             ResetCredentialRotationReview();
+            ResetTransportEditReview();
             multiHostIdentity = identity;
             multiRevision.Clear();
             multiReview = null;
@@ -69,9 +71,9 @@ internal sealed partial class MainForm
             "Multi-provider SMTP — experimental",
             "מספר ספקי SMTP — ניסיוני"), true));
         AddLine(page, MailFlowText(TranslateMailFlow(l,
-            "До 8 отдельных транспортов по отправителю. STARTTLS/Implicit TLS, собственный порт и отдельный пароль. Только первый набор на остановленном Postfix; изменение активного набора, SELinux/ACL и OAuth2 ещё не поддерживаются. Нужен полный backup. Входящие порты не меняются.",
-            "Up to 8 independent sender transports. STARTTLS/implicit TLS, individual ports and passwords. First installation on stopped Postfix only; active-set editing, SELinux/ACL and OAuth2 are not yet supported. Full backup required. Inbound ports are unchanged.",
-            "עד 8 נתיבי שולח עם TLS ופרטי התחברות נפרדים. התקנה ראשונה בלבד ב-Postfix כבוי. נדרש גיבוי מלא."), width, warning: true));
+            "До 8 отдельных транспортов по отправителю. STARTTLS/Implicit TLS, собственный порт и отдельный пароль. Установка и редактирование принадлежащего менеджеру набора только на остановленном Postfix. SELinux/ACL и OAuth2 ещё не поддерживаются. Нужен полный backup. Входящие порты не меняются.",
+            "Up to 8 independent sender transports. STARTTLS/implicit TLS, individual ports and passwords. Install or edit a manager-owned set on stopped Postfix only. SELinux/ACL and OAuth2 are not yet supported. Full backup required. Inbound ports are unchanged.",
+            "עד 8 נתיבי שולח עם TLS ופרטי התחברות נפרדים. התקנה ועריכה של תצורה מנוהלת ב-Postfix כבוי בלבד. נדרש גיבוי מלא."), width, warning: true));
         ShowInstalledMultiTransport(page, width, l, hostContext);
         AddAction(page, TranslateMailFlow(l, "Найти ревизии Multi-provider",
             "Scan multi-provider recovery revisions", "סרוק גרסאות שחזור"),
@@ -109,6 +111,7 @@ internal sealed partial class MainForm
                 "יש לעצור את Postfix בחלון תחזוקה ולבדוק שוב."), width));
             return;
         }
+        if (ShowTransportEditActions(page, width, l)) return;
         if (context is null)
             AddLine(page, MailFlowText(TranslateMailFlow(l,
                 "Составьте 1–8 непересекающихся правил отправителя в мастере выше. TLS обязателен.",
@@ -116,8 +119,8 @@ internal sealed partial class MainForm
                 "יש ליצור 1–8 כללי שולח ללא חפיפה ועם TLS."), width));
         else if (multiInstalled?.Status is "installed_owned" or "external_or_unverified")
             AddLine(page, MailFlowText(TranslateMailFlow(l,
-                "Первичная установка заблокирована: уже обнаружена конфигурация. Изменение установленного набора пока не поддерживается.",
-                "First installation is blocked: an existing configuration was discovered. Installed-set editing is not yet supported.",
+                "Первичная установка заблокирована: обнаружена конфигурация. Используйте Edit для подтверждённого управляемого набора.",
+                "First installation is blocked: existing configuration detected. Use Edit for a verified manager-owned set.",
                 "התקנה ראשונה חסומה: זוהתה תצורה קיימת."), width, warning: true));
         else
         {
@@ -196,6 +199,7 @@ internal sealed partial class MainForm
             offlineReviewContext = null;
             multiReview = null;
             multiReviewContext = null;
+            ResetTransportEditReview();
             advancedRoutingToggleUpdating = true;
             try { advancedRoutingToggle.Checked = true; }
             finally { advancedRoutingToggleUpdating = false; }
@@ -263,14 +267,15 @@ internal sealed partial class MainForm
                 "An empty draft cannot authorize removal of the installed set. Restore is a separate operation.",
                 "טיוטה ריקה אינה מאשרת הסרת התצורה. שחזור הוא פעולה נפרדת."), width, warning: true));
         AddLine(page, MailFlowText(TranslateMailFlow(l,
-            "Никакие пароли не читаются или копируются. Это только сравнение; запись изменений ещё не поддерживается.",
-            "No credentials are read or copied. Comparison only; applying these changes is not yet supported.",
-            "לא נקראים או מועתקים פרטי התחברות. השוואה בלבד; החלת שינויים עדיין אינה נתמכת."), width));
+            "При сравнении пароли не читаются. Для записи нужен отдельный Edit Review, Switch и Commit.",
+            "Comparison reads no passwords. Changes require separate Edit Review, Switch and Commit.",
+            "בהשוואה לא נקראות סיסמאות. החלת שינויים דורשת בדיקה, החלפה ואישור נפרדים."), width));
     }
 
     private async Task DiscoverMultiTransportAsync()
     {
         ResetCredentialRotationReview();
+        ResetTransportEditReview();
         string context = RecoveryInventoryContext() ??
             throw new InvalidOperationException("Reinspect Postfix.");
         multiInstalled = null;
@@ -299,6 +304,7 @@ internal sealed partial class MainForm
     private async Task ScanMultiTransportRecoveryAsync()
     {
         ResetCredentialRotationReview();
+        ResetTransportEditReview();
         string context = RecoveryInventoryContext() ??
             throw new InvalidOperationException("Reinspect Postfix.");
         multiInventory = null;
@@ -393,6 +399,7 @@ internal sealed partial class MainForm
             if (attempted)
             {
                 ResetCredentialRotationReview();
+                ResetTransportEditReview();
                 multiInventory = null;
                 multiInventoryContext = null;
                 multiInstalled = null;

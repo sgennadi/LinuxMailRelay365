@@ -91,6 +91,7 @@ internal static class Program
             ("Experimental offline routing approvals and strict receipts", ConditionalOfflineClient.SelfTest),
             ("Multi-provider routing approvals and recovery receipts", MultiTransportClient.SelfTest),
             ("Credential rotation approval and strict SSH receipts", CredentialRotationClient.SelfTest),
+            ("Transport edit approvals and recovery receipts", TransportEditClient.SelfTest),
             ("Discovered MTA and custom SMTP TLS live topology", MailScenarioPlanner.SelfTest),
             ("Local submission read-only evidence", MailSubmissionEvidence.SelfTest),
             ("Google SMTP port and one-shot AUTH strict validation", GoogleSmtpAudit.SelfTest),

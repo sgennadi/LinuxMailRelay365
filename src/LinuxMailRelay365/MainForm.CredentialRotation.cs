@@ -116,6 +116,7 @@ internal sealed partial class MainForm
     private void InvalidateAfterCredentialRotation()
     {
         ResetCredentialRotationReview();
+        ResetTransportEditReview();
         multiInventory = null;
         multiInventoryContext = null;
         multiInstalled = null;
