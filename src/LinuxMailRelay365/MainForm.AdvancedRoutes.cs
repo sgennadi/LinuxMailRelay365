@@ -152,7 +152,7 @@ internal sealed partial class MainForm
 
         AddLine(page, MailFlowText(TranslateMailFlow(l,
             "Модель не является активной маршрутизацией. Изменения карточек остаются локальными. Отдельные Stage/Compile создают только неактивные карты после проверки и подтверждения. Пересечения не получают вымышленного приоритета.",
-            "This model is NOT active SMTP routing. Editing cards is local only. Separate reviewed Stage/Compile prepares disconnected candidates; no actual route precedence is assumed.",
+            "This model is NOT active SMTP routing. Editing cards is local only. Separate reviewed Stage/Compile prepares disconnected candidates; Overlaps have NO assumed precedence.",
             "עריכת כללים מקומית בלבד; הכנת מפות אינה מפעילה ניתוב או משלוח דואר."),
             width, warning: true));
 
@@ -383,7 +383,7 @@ internal sealed partial class MainForm
         }
         AddLine(page, MailFlowText(TranslateMailFlow(l,
             "Подключение карт к рабочему Postfix пока заблокировано: нужны проверка приоритетов, сохранение локальной доставки, DNS/TLS, Backup/Restore и откат. Stage/Compile не являются Apply.",
-            "Attaching maps to active Postfix is blocked pending real precedence, local delivery, DNS/TLS and backup/rollback checks. Stage/Compile are NOT Apply.",
+            "Attaching maps to active Postfix is blocked pending real precedence, local delivery, DNS/TLS and backup/rollback checks. Stage/Compile are NOT Apply. There is NO Apply button.",
             "אין הרשאה לשינוי מפות Postfix; נדרש אימות נוסף לפני הפעלה."),
             width, warning: true));
     }
