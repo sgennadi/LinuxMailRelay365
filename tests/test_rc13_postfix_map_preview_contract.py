@@ -1,5 +1,6 @@
 """RC13 source safety gates for read-only Postfix candidate preview."""
 from pathlib import Path
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,13 +56,21 @@ class PostfixCandidatePreviewTests(unittest.TestCase):
         self.assertIn('("sendmail.cf", "submit.cf")', native)
 
     def test_exact_version_and_release_gates(self):
-        for file in ("LinuxMailRelay365.csproj", "UpdateCheck.cs",
-                     "UpdateCheck.Fallback.cs"):
-            self.assertIn("0.1.1-rc.13",
-                          (CS / file).read_text(encoding="utf-8"))
+        project = (CS / "LinuxMailRelay365.csproj").read_text(encoding="utf-8")
+        versions = re.findall(r"<Version>(0\.1\.1-rc\.([1-9][0-9]*))</Version>", project)
+        self.assertEqual(len(versions), 1)
+        version, rc = versions[0]
+        self.assertGreaterEqual(int(rc), 13)
+        for file in ("UpdateCheck.cs", "UpdateCheck.Fallback.cs"):
+            constants = re.findall(r'internal const string Version = "([^"]+)";',
+                                   (CS / file).read_text(encoding="utf-8"))
+            self.assertEqual(constants, [version])
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn("-ExpectedCandidateVersion '0.1.1-rc.13'", ci)
+        self.assertIn("-ExpectedCandidateVersion '" + version + "'", ci)
+        # Keep the historical RC13 publishing contract immutable even when
+        # the current candidate version advances.
         job = ci.split("  rc13-prerelease-publish:", 1)[1]
+        job = re.split(r"\n  [a-z0-9-]+:\n", job, maxsplit=1)[0]
         for requirement in ("- linux-tests", "- ubuntu-real-proof-timer-systemd",
                             "- windows-build", "- rhel-family-readonly-smoke",
                             "- rhel-selinux-offline-policy-smoke",
