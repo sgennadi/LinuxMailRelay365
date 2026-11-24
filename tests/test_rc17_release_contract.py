@@ -10,6 +10,7 @@ CI = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 class RC17ReleaseContract(unittest.TestCase):
     def test_full_exact_branch_release_gate(self):
         before, job = CI.split("\n  rc17-prerelease-publish:\n", 1)
+        job = job.split("\n  rc18-prerelease-publish:\n", 1)[0]
         prior = before.split("\n  rc16-prerelease-publish:\n", 1)[1]
         def dependencies(value):
             return value.split("    needs:\n", 1)[1].split("    runs-on:", 1)[0]
@@ -32,12 +33,13 @@ class RC17ReleaseContract(unittest.TestCase):
         self.assertIn("bash tests/smoke_native_exim_offline_restore.sh", before)
 
     def test_version_and_recovery_acceptance_are_wired(self):
-        self.assertIn("<Version>0.1.1-rc.17</Version>",
-                      (CS / "LinuxMailRelay365.csproj").read_text(encoding="utf-8"))
-        for filename in ("UpdateCheck.cs", "UpdateCheck.Fallback.cs"):
-            self.assertIn('internal const string Version = "0.1.1-rc.17";',
-                          (CS / filename).read_text(encoding="utf-8"))
-        self.assertIn("-ExpectedCandidateVersion '0.1.1-rc.17'", CI)
+        # Historical publication requirements stay frozen after version bumps.
+        job = CI.split("\n  rc17-prerelease-publish:\n", 1)[1].split(
+            "\n  rc18-prerelease-publish:\n", 1)[0]
+        self.assertIn("<Version>0.1.1-rc.17</Version>", job)
+        self.assertEqual(job.count('internal const string Version = "0.1.1-rc.17";'), 2)
+        self.assertIn("tag='v0.1.1-rc.17'", job)
+        self.assertNotIn("tag='v0.1.1-rc.18'", job)
         program = (CS / "Program.cs").read_text(encoding="utf-8")
         for marker in ("ForeignRestorePlan.SelfTest", "EximNativeRestoreReceipt.SelfTest",
                        "ForeignPendingInspection.SelfTest", "EximPendingRollbackPlan.SelfTest",

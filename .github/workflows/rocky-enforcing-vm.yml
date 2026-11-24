@@ -1,12 +1,13 @@
 name: Rocky Linux SELinux VM acceptance (experimental)
 
-# Independent of the Preview release gate; nested KVM on GitHub runners is
-# experimental and not guaranteed to be available.
+# Standalone for the private SMTP branch and manual diagnosis. The main CI
+# invokes this exact workflow for feature/post-rc17-sendmail-v2, so RC18
+# publication depends on the same commit's VM result without duplicate jobs.
+# Nested KVM availability is not guaranteed; unavailable KVM must fail.
 on:
   push:
     branches:
       - feature/private-smtp-auth-tls
-      - feature/post-rc17-sendmail-v2
     paths:
       - .github/workflows/rocky-enforcing-vm.yml
       - tests/rocky_vm_*.sh
@@ -19,12 +20,13 @@ on:
       - linux/manage-rhel-selinux-sidecar-context.py
       - linux/manage-rhel-selinux-port.py
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: rocky-selinux-vm-${{ github.ref }}
+  group: rocky-selinux-vm-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

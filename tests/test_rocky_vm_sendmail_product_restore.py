@@ -92,8 +92,13 @@ class ProductRestoreFixtureTests(unittest.TestCase):
         self.assertIn("linux/restore-foreign-mta-config.py", boot)
         self.assertIn("/home/ci/rocky_vm_sendmail_product_restore.py", boot)
         workflow = (ROOT / ".github/workflows/rocky-enforcing-vm.yml").read_text()
-        self.assertIn("feature/post-rc17-sendmail-v2", workflow)
+        self.assertIn("workflow_call:", workflow)
         self.assertIn("linux/restore-foreign-mta-config.py", workflow)
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = ci.split("\n  rc18-rocky-enforcing-vm:\n", 1)[1].split(
+            "\n  rc17-prerelease-publish:\n", 1)[0]
+        self.assertIn("feature/post-rc17-sendmail-v2", job)
+        self.assertIn("uses: ./.github/workflows/rocky-enforcing-vm.yml", job)
 
 
 if __name__ == "__main__":
