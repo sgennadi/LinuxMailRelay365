@@ -46,10 +46,175 @@ with tempfile.TemporaryDirectory(prefix="lmr365-types-", dir=T.tmpfs_parent()) a
     finally:
         os.close(fd)
 assert supported
+def sibling(name, filename):
+    spec = importlib.util.spec_from_file_location(name, str(ROOT / "linux" / filename))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+X = sibling("multi_transport_transaction", "conditional-transport-transaction.py")
+O = sibling("offline_native_reader", "manage-conditional-postfix-offline.py")
+identity = O.mail_identity()
+
+
+def primary_guard():
+    assert before == [hashlib.sha256(x.read_bytes()).hexdigest() for x in protected]
+
+
+def native_transaction(rules, plan, backend, ca, databases, folder, fail):
+    """Only a disposable alternate config and synthetic credentials.
+
+    This tests file transactions and native lookup as postfix, not actual
+    queue manager sender selection, daemon maintenance or SMTP delivery.
+    """
+    folder.mkdir(mode=0o755)
+    folder.chmod(0o755)
+    for name in ("queue", "data"):
+        (folder / name).mkdir(mode=0o700)
+    original_main = (
+        "myhostname = lmr365-multi-transaction.example.invalid\n"
+        "mydomain = example.invalid\n"
+        "mydestination = localhost, $myhostname\n"
+        "inet_interfaces = loopback-only\n"
+        "inet_protocols = ipv4\n"
+        "meta_directory = /etc/postfix\n"
+        "queue_directory = " + str(folder / "queue") + "\n"
+        "data_directory = " + str(folder / "data") + "\n"
+        "relayhost = [fallback.example.net]:25\n").encode("ascii")
+    original_master = b"smtp unix - - n - - smtp\n"
+    for name, content in (("main.cf", original_main), ("master.cf", original_master)):
+        p = folder / name
+        p.write_bytes(content)
+        p.chmod(0o644)
+    parent = os.open(str(folder.parent), X.M.DIR_FLAGS)
+    config = os.open(str(folder), X.M.DIR_FLAGS)
+    try:
+        def guard():
+            assert folder.is_dir() and folder.parent.parent == pathlib.Path("/var/lib")
+            primary_guard()
+
+        def native(args):
+            code, value = T.M.native_command("postconf", ["-c", str(folder)] + args)
+            assert code == 0, "native fixture postconf failed"
+            return value
+
+        def effective(name):
+            return native(["-x", name]).decode("ascii").strip().partition("=")[2].strip()
+
+        def check_fixture():
+            assert effective("myhostname") == "lmr365-multi-transaction.example.invalid"
+            assert effective("queue_directory") == str(folder / "queue")
+            assert effective("data_directory") == str(folder / "data")
+            assert effective("inet_interfaces") == "loopback-only"
+            assert effective("relayhost") == "[fallback.example.net]:25"
+
+        check_fixture()
+        baseline_services = native(["-M"])
+        baseline_overrides = T.parameters(native(["-P"]))
+        baseline_route = effective(T.PARAMETER)
+        assert not baseline_route
+        _, _, routes, services, auth_maps = T.render(rules, plan, "/etc/postfix", backend, ca)
+        secrets = T.credentials(rules, request["credentials"])
+
+        def fresh():
+            guard()
+            return X.R.observe(config, rules, backend, ca, 0, guard)
+
+        reviewed = fresh()
+        info, files = reviewed
+        maps = X.native_database_set(info, databases)
+        route_name = info["map_names"][0]
+        checked = []
+
+        def check_map(name, expected):
+            target = folder / (name + T.M.MAP_SUFFIX[backend])
+            st = target.stat()
+            assert st.st_uid == 0 and st.st_gid == identity[1]
+            assert st.st_mode & 0o777 == 0o640
+            spec = backend + ":" + str(folder / name)
+            # Use packaged primary config only as a read-only postmap
+            # context; the map path itself is exclusively in the fixture.
+            prefix = ["-c", "/etc/postfix"]
+            code, result = O.native_unprivileged(prefix + ["-s", spec], identity)
+            assert code == 0 and T.M.native_rows(result) == expected
+            keys = ("\n".join(sorted(expected)) + "\n").encode("ascii")
+            code, result = O.native_unprivileged(prefix + ["-q", "-", spec], identity, keys)
+            assert code == 0 and T.M.native_rows(result) == expected
+            code, result = O.native_unprivileged(
+                prefix + ["-q", T.M.NEGATIVE_KEY, spec], identity)
+            assert code == 1 and not result.strip()
+
+        def verify(active, recorded):
+            assert recorded == info
+            guard()
+            check_fixture()
+            if not active:
+                assert native(["-M"]) == baseline_services
+                assert T.parameters(native(["-P"])) == baseline_overrides
+                assert effective(T.PARAMETER) == baseline_route
+                return
+            assert effective(T.PARAMETER) == backend + ":/etc/postfix/" + route_name
+            actual = T.parameters(native(["-P"]))
+            expected = dict(baseline_overrides)
+            expected.update({service + "/unix/" + key: value
+                             for service, options in services.items()
+                             for key, value in options.items()})
+            assert actual == expected
+            lines = [line.split() for line in native(["-M"]).decode("ascii").splitlines()]
+            assert len(lines) == len(services) + 1
+            assert {line[0] for line in lines} == set(services) | {"smtp"}
+            for line in lines:
+                assert line[1:8] == ["unix", "-", "-", "n", "-", "-", "smtp"]
+            check_map(route_name, routes)
+            for index, name in auth_maps.items():
+                check_map(name, {T.endpoint(rules[index - 1]): secrets[index - 1]})
+            checked.append(True)
+            if fail:
+                raise X.Refused("fixture_injected_native_failure")
+
+        try:
+            revision = X.apply(config, parent, reviewed, databases, identity[1],
+                               X.APPLY, 0, guard, verify, fresh)
+        except X.ApplyFailed as error:
+            assert fail and error.rolled_back and checked == [True]
+            revision = error.revision
+            print("NATIVE_MULTI_TRANSPORT_ROLLBACK=" + backend + ":PASS", flush=True)
+        else:
+            assert not fail and checked == [True]
+            assert X.restore(config, parent, revision, X.RESTORE, 0, guard, verify) == revision
+            print("NATIVE_MULTI_TRANSPORT_APPLY_RESTORE=" + backend + ":PASS", flush=True)
+
+        assert (folder / "main.cf").read_bytes() == original_main
+        assert (folder / "master.cf").read_bytes() == original_master
+        assert not any((folder / name).exists() for name in maps)
+        assert X.load(parent, revision, 0)[:2] == reviewed
+        # Ensure actual native database bytes were not duplicated in recovery.
+        recovery = folder.parent / X.R.BASE / revision
+        for p in recovery.rglob("*"):
+            if p.is_file():
+                assert p.stat().st_mode & 0o777 == 0o600
+                assert not any(data in p.read_bytes() for data in maps.values())
+        primary_guard()
+    finally:
+        os.close(config)
+        os.close(parent)
+
+
+def exercise_transaction(rules, plan, backend, ca, databases):
+    with tempfile.TemporaryDirectory(prefix="lmr365-multi-transaction-", dir="/var/lib") as work:
+        root = pathlib.Path(work)
+        root.chmod(0o755)
+        for fail in (False, True):
+            native_transaction(rules, plan, backend, ca, databases,
+                               root / ("rollback" if fail else "restore"), fail)
+
+
 for backend in supported:
     result = T.compile_profiles(request, sha, T.CONFIRM, 0,
                                 T.tmpfs_parent(), T.installed_ca(),
-                                forced_backend=backend)
+                                forced_backend=backend,
+                                verified_consumer=exercise_transaction)
     assert result == (sha, backend, 4, 3)
     print("NATIVE_DEDICATED_TRANSPORT_BACKEND=" + backend + ":PASS", flush=True)
 assert before == [hashlib.sha256(x.read_bytes()).hexdigest() for x in protected]

@@ -35,3 +35,5 @@ idempotent restore, foreign-map collisions and unknown publication identity.
 Actual native runtime maintenance, end-to-end SMTP routing/AUTH isolation,
 credential rotation, replacement of existing sets, recipient routing,
 SELinux and GUI integration remain separate gates.
+
+The Ubuntu native smoke now uses the internal compiler callback to test the actual multi-file Apply and Restore transaction for each installed hash/LMDB backend. It reads the alternate main.cf/master.cf with native postconf, checks the complete service/override set, and queries each independently compiled SASL map as the unprivileged Postfix account. A second transaction injects a failure after native verification and checks exact restoration, no duplicate database bytes in recovery, and unchanged primary configuration. Credentials are synthetic. This remains an isolated native file/lookup test, not a running multi-provider delivery or maintenance acceptance test.
