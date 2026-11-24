@@ -208,6 +208,8 @@ jobs:
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" python3 tests/smoke_native_conditional_maps.py
       - name: Native isolated sender-map transaction, restore and rollback
         run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" python3 tests/smoke_native_conditional_transaction.py
+      - name: Native dedicated SMTP services and separate private AUTH maps
+        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" python3 tests/smoke_native_conditional_transports.py
 
   ubuntu-fresh-direct-send-smoke:
     # Clean system: no Entra app or OAuth cert; one synthetic DATA goes to local sink only.
