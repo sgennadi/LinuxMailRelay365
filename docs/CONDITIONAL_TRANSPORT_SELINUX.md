@@ -58,3 +58,19 @@ parent and activation/marker files, and does not change the production SELinux
 maintenance gate. Synthetic user-xattr tests cover retained maps with distinct
 new labels, commit, rollback, interrupted switch and policy drift. They do not
 prove SELinux runtime permissions, and are not a release acceptance claim.
+
+## Private recovery-store metadata primitives
+
+A separate internal library derives the exact snapshot, activation, receipt,
+rotation and edit marker paths from validated rules and a revision. It checks
+root-owned private directories, exact file mode/group, link identity and the
+individual path's policy context. The read-only policy adapter queries the
+installed matchpathcon policy under /var/lib. A scoped writer supports exclusive
+creation and exact reviewed replacement of mutable JSON markers and rotation
+overlays only, retaining the old label on replacement and applying the target
+policy label to new files. It refuses immutable journal rewrites, unknown paths,
+foreign xattrs, symlinks, stale observations and policy drift. Real user-xattr
+fixtures test these filesystem mechanics. The library does not create/relabel
+private directories or replace the live workflow's unlabeled-store restriction;
+trusted policy adapters, durable directory/snapshot creation and integration in
+rotation/edit recovery remain necessary. Enforcing writes remain disabled.

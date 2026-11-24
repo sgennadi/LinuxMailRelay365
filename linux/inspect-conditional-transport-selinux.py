@@ -78,6 +78,23 @@ def policy_labels(rules, backend, command=P.system_command):
     return plan, sources, result
 
 
+def private_policy_labels(info, revision, command=P.system_command):
+    """Read packaged policy for exact derived recovery paths, without writes."""
+    private = sibling("private_store_policy", "conditional-transport-private-store.py")
+    result = {}
+    for relative, mode in private.policy_paths(info, revision).items():
+        # Private storage may legitimately use var_lib_t; do not impose
+        # the mail-specific label or infer access from a type name.
+        raw = command("matchpathcon", ["-N", "-n", "-m", mode, "/var/lib/" + relative])
+        lines = raw.splitlines()
+        need(len(lines) == 1 and lines[0] == lines[0].strip(),
+             "private_policy_label_unverified")
+        value = T.checked_label(lines[0].encode("ascii") + b"\0")
+        private.raw_context(value)
+        result[relative] = value
+    return result
+
+
 def identity(info):
     # Ignore atime; include ctime, permissions and group to detect relabel
     # or replacement. Only metadata is inspected, never database bytes.
