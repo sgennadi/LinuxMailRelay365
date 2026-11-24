@@ -48,3 +48,5 @@ After the stage manifest is verified, use --compile PLAN_SHA --approve-manifest-
 ## Windows wizard
 
 After discovery of an active Postfix, create supported rules and select Validate plan on Linux. Stage and Compile require separate typed confirmations; Verify actions can re-open an existing candidate for the exact validated plan. Receipts are bound locally to SSH identity, discovered config/inventory fingerprint and the plan SHA. A changed host or rule set invalidates the displayed receipt. Only fixed status and digests are logged. No activation operation exists.
+
+Native command-only scratch config uses separate queue/data directories, an empty-service master.cf, and the package metadata directory /etc/postfix. The disposable CI fixture captures bounded native diagnostics on failures; production still suppresses output that may contain routing identifiers.

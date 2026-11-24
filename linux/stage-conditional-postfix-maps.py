@@ -22,8 +22,9 @@ COMPILED_BASE = "linuxmailrelay365-conditional-compiled"
 COMPILED_MANIFEST = "compiled-manifest.json"
 NATIVE_CONFIG = (b"myhostname = lmr365-map-stage.example.invalid\n"
                  b"mydomain = example.invalid\n"
-                 b"queue_directory = $config_directory\n"
-                 b"data_directory = $config_directory\n")
+                 b"meta_directory = /etc/postfix\n"
+                 b"queue_directory = $config_directory/queue\n"
+                 b"data_directory = $config_directory/data\n")
 MAP_SUFFIX = {"hash": ".db", "lmdb": ".lmdb"}
 MAX_DB_BYTES = 4 * 1024 * 1024
 NEGATIVE_KEY = "__lmr365_stage_missing_key__"
@@ -436,7 +437,13 @@ def native_check(stage_files, scratch_parent, uid, backend=None,
         fd = os.open(work, DIR_FLAGS)
         try:
             check_directory(fd, uid, True)
+            # Keep configuration, queue and data paths distinct. A packaged
+            # Postfix may require master.cf even for a command-only instance.
+            # No services are defined or launched in this fixture.
+            os.mkdir("queue", 0o700, dir_fd=fd)
+            os.mkdir("data", 0o700, dir_fd=fd)
             write_file(fd, "main.cf", NATIVE_CONFIG)
+            write_file(fd, "master.cf", b"# command-only candidate instance\n")
             result, supported = runner("postconf", ["-c", work, "-m"])
             if result:
                 raise Refused("native_backend_inventory_failed")

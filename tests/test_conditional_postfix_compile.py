@@ -23,6 +23,8 @@ class FakePostfix:
         assert args[0] == "-c"
         work = pathlib.Path(args[1])
         assert (work / "main.cf").read_bytes() == M.NATIVE_CONFIG
+        assert (work / "master.cf").is_file()
+        assert (work / "queue").is_dir() and (work / "data").is_dir()
         if tool == "postconf":
             assert args[2:] == ["-m"]
             return 0, self.backends

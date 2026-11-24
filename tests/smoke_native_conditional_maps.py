@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import os
 import pathlib
+import subprocess
 import tempfile
 
 if os.geteuid() != 0 or os.environ.get("GITHUB_ACTIONS") != "true":
@@ -14,6 +15,23 @@ spec = importlib.util.spec_from_file_location(
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 os.umask(0o077)
+
+
+def ci_native(tool, args, data=None):
+    # Real tool output can contain only generated fixture keys/paths here.
+    # Never add this verbose runner to production.
+    result = subprocess.run([m.trusted_postfix_tool(tool)] + args,
+                            input=data if data is not None else b"",
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                                 "LC_ALL": "C"}, timeout=15, check=False)
+    if result.returncode and not (tool == "postmap" and
+            "-q" in args and m.NEGATIVE_KEY in args and result.returncode == 1):
+        print("CI_NATIVE_MAP_TOOL_FAILURE=" + tool, flush=True)
+        print(result.stderr.decode("utf-8", "replace")[:4000], flush=True)
+    return result.returncode, result.stdout
+
+
 protected = [pathlib.Path("/etc/postfix/main.cf"), pathlib.Path("/etc/postfix/master.cf")]
 before = [hashlib.sha256(path.read_bytes()).hexdigest() for path in protected]
 
@@ -31,9 +49,9 @@ with tempfile.TemporaryDirectory(prefix="lmr365-native-map-smoke-", dir="/var/li
             sha, _ = m.build(rules)
             _, stage_sha = m.stage(fd, rules, sha, "STAGE_CONDITIONAL_MAPS_ONLY", 0)
             receipt = m.compile_stage(fd, sha, stage_sha,
-                                      "COMPILE_CONDITIONAL_MAPS_ONLY", 0, temp)
+                                      "COMPILE_CONDITIONAL_MAPS_ONLY", 0, temp, ci_native)
             assert receipt[2] in ("hash", "lmdb") and receipt[3] == 2
-            assert m.verify_compiled(fd, sha, 0, temp) == receipt
+            assert m.verify_compiled(fd, sha, 0, temp, ci_native) == receipt
             print("NATIVE_CONDITIONAL_MAP=" + kind + "; backend=" + receipt[2] + "; PASS")
     finally:
         os.close(fd)
