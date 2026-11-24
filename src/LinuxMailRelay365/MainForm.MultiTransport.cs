@@ -36,6 +36,7 @@ internal sealed partial class MainForm
         string? hostContext = RecoveryInventoryContext();
         if (hostContext is null)
         {
+            ResetCredentialRotationReview();
             multiReview = null;
             multiReviewContext = null;
             multiInventory = null;
@@ -47,6 +48,7 @@ internal sealed partial class MainForm
         string? identity = TryCurrentIdentity();
         if (identity != multiHostIdentity)
         {
+            ResetCredentialRotationReview();
             multiHostIdentity = identity;
             multiRevision.Clear();
             multiReview = null;
@@ -139,6 +141,7 @@ internal sealed partial class MainForm
             "Recovery revision", "גרסת שחזור"), multiRevision);
         AddAction(page, "Multi-provider Restore...", () => RunMultiTransportAsync("restore"),
             false, "shield", "multi-restore");
+        ShowCredentialRotationActions(page, width, l);
     }
 
     private void ShowInstalledMultiTransport(TableLayoutPanel page, int width, int l, string hostContext)
@@ -203,6 +206,7 @@ internal sealed partial class MainForm
 
     private async Task DiscoverMultiTransportAsync()
     {
+        ResetCredentialRotationReview();
         string context = RecoveryInventoryContext() ??
             throw new InvalidOperationException("Reinspect Postfix.");
         multiInstalled = null;
@@ -230,6 +234,7 @@ internal sealed partial class MainForm
 
     private async Task ScanMultiTransportRecoveryAsync()
     {
+        ResetCredentialRotationReview();
         string context = RecoveryInventoryContext() ??
             throw new InvalidOperationException("Reinspect Postfix.");
         multiInventory = null;
@@ -323,6 +328,7 @@ internal sealed partial class MainForm
             attempted = operation != "review";
             if (attempted)
             {
+                ResetCredentialRotationReview();
                 multiInventory = null;
                 multiInventoryContext = null;
                 multiInstalled = null;

@@ -40,7 +40,11 @@ def observe(config, parent, revision, uid, gid):
             return ("snapshot_only" if current == before and not present
                     else "publication_unverified")
         else:
-            os.close(fd)
+            try:
+                if X.T.exists(fd, X.ROTATION_PENDING):
+                    return "credential_rotation_pending"
+            finally:
+                os.close(fd)
         record = X.load(parent, revision, uid)
         if record[:2] != (info, files) or record[2]["gid"] != gid:
             return "publication_unverified"
@@ -86,6 +90,11 @@ def installed_record(config, parent, uid, gid, revision, baseline, lookup):
     for name in X.map_names(info):
         X.checked_map(config, name, journal, receipts[name], uid)
 
+    return verify_installed_policy(record, baseline, lookup)
+
+
+def verify_installed_policy(record, baseline, lookup):
+    info, files, journal, receipts = record
     values, extra, explicit, services, overrides = baseline
     backend, rules, plan = info["backend"], info["rules"], info["plan"]
     spec = backend + ":" + P.CONFIG + "/" + info["map_names"][0]

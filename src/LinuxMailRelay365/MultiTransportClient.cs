@@ -195,7 +195,8 @@ internal static class MultiTransportClient
                 parts[1] is not ("snapshot_only" or "publication_unverified" or
                     "different_config_directory" or "configuration_drift" or
                     "original_owned_maps" or "original_no_maps" or "configured_owned_maps" or
-                    "configured_maps_missing" or "partial_configuration" or "unverified" or "unstable"))
+                    "configured_maps_missing" or "partial_configuration" or "credential_rotation_pending" or
+                    "unverified" or "unstable"))
                 throw new InvalidDataException("Invalid recovery entry.");
             entries.Add(new(parts[0], parts[1]));
         }

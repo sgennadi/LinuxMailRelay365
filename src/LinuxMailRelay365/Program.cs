@@ -90,6 +90,7 @@ internal static class Program
             ("Read-only conditional recovery SSH inventory and strict receipts", ConditionalRecoveryClient.SelfTest),
             ("Experimental offline routing approvals and strict receipts", ConditionalOfflineClient.SelfTest),
             ("Multi-provider routing approvals and recovery receipts", MultiTransportClient.SelfTest),
+            ("Credential rotation approval and strict SSH receipts", CredentialRotationClient.SelfTest),
             ("Discovered MTA and custom SMTP TLS live topology", MailScenarioPlanner.SelfTest),
             ("Local submission read-only evidence", MailSubmissionEvidence.SelfTest),
             ("Google SMTP port and one-shot AUTH strict validation", GoogleSmtpAudit.SelfTest),
