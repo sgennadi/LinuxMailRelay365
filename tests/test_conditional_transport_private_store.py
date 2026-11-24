@@ -212,7 +212,7 @@ class PrivateStoreTests(unittest.TestCase):
         self.assertFalse(any(p.name.startswith(".lmr365-txn-")
                              for p in (self.root / self.activation).iterdir()))
 
-    def activation_fixture(self):
+    def config_fixture(self):
         self.remove_empty_snapshot()
         info, files = self.snapshot_fixture()
         config = self.root / "postfix"
@@ -229,6 +229,10 @@ class PrivateStoreTests(unittest.TestCase):
         databases = {P.X.C.ROUTE_MAP: b"synthetic routing database",
                      P.X.C.profile_name(info["plan"], 1) + "-sasl":
                          b"synthetic private database"}
+        return fd, config, info, files, databases
+
+    def activation_fixture(self):
+        fd, config, info, files, databases = self.config_fixture()
         self.store.create_snapshot(info, files)
         journal = self.store.create_activation(databases, self.gid)
         maps = P.X.native_database_set(info, databases)
@@ -306,6 +310,124 @@ class PrivateStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(P.Refused, "private_activation_review_changed"):
             self.store.publish_map(fd, second, maps[second], original)
         self.assertFalse((config / second).exists())
+
+    def live_fixture(self):
+        fd, config, info, files, databases = self.config_fixture()
+        labels = dict(info["map_selinux"])
+        labels["."] = info["directory_selinux"]
+        for name, meta in zip(P.X.CONFIGS, info["metadata"]):
+            labels[name + ".cf"] = meta["selinux"]
+        maps = P.X.native_database_set(info, databases)
+        verified = []
+
+        def policy(rules, backend):
+            self.assertEqual(rules, info["rules"])
+            self.assertEqual(backend, info["backend"])
+            return dict(labels)
+
+        def fresh():
+            return P.R.observe(fd, info["rules"], info["backend"], info["ca"],
+                               self.uid, lambda: None, policy_labels=policy(
+                                   info["rules"], info["backend"]))
+
+        def verify(active, reviewed):
+            self.assertEqual(reviewed, info)
+            P.X.assert_pair(fd, info, files, ".after" if active else ".before", self.uid)
+            verified.append(active)
+            return True
+
+        def apply(check=verify):
+            return self.store.apply_reviewed(fd, (info, files), databases, self.gid,
+                                            policy, check, fresh, P.X.APPLY)
+
+        def restore(check=verify):
+            return self.store.restore_reviewed(fd, self.store.read_activation(),
+                                              policy, check, P.X.RESTORE)
+
+        return fd, config, info, files, maps, labels, verified, apply, restore
+
+    def test_scoped_labeled_apply_and_restore(self):
+        fd, config, info, files, maps, labels, verified, apply, restore = self.live_fixture()
+        self.assertEqual(apply(), REV)
+        record = self.store.read_activation()
+        self.assertTrue(all(record[3].values()))
+        self.assertEqual(verified, [True])
+        for name, data in maps.items():
+            path = config / name
+            self.assertEqual(path.read_bytes(), data)
+            self.assertEqual(os.getxattr(str(path), ATTRIBUTE).hex(), labels[name])
+            P.X.checked_map(fd, name, record[2], record[3][name], self.uid)
+        self.assertEqual(restore(), REV)
+        self.assertEqual(verified, [True, False, False])
+        self.assertFalse(any((config / name).exists() for name in maps))
+        for name in P.X.CONFIGS:
+            path = config / (name + ".cf")
+            self.assertEqual(path.read_bytes(), files[name + ".before"])
+            self.assertEqual(os.getxattr(str(path), ATTRIBUTE).hex(), labels[name + ".cf"])
+
+    def test_scoped_labeled_native_failure_rolls_back(self):
+        fd, config, info, files, maps, labels, verified, apply, restore = self.live_fixture()
+
+        def reject_active(active, reviewed):
+            return not active
+
+        with self.assertRaises(P.X.ApplyFailed) as result:
+            apply(reject_active)
+        self.assertTrue(result.exception.rolled_back)
+        P.X.assert_pair(fd, info, files, ".before", self.uid)
+        self.assertFalse(any((config / name).exists() for name in maps))
+
+    def test_scoped_labeled_interrupted_switch_recovers(self):
+        fd, config, info, files, maps, labels, verified, apply, restore = self.live_fixture()
+        original = P.T.atomic_write
+
+        def interrupt(target, name, *args, **kwargs):
+            if target == fd and name == "main.cf":
+                raise KeyboardInterrupt()
+            return original(target, name, *args, **kwargs)
+
+        with patch.object(P.T, "atomic_write", side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                apply()
+        self.assertEqual((config / "main.cf").read_bytes(), files["main.before"])
+        self.assertEqual((config / "master.cf").read_bytes(), files["master.after"])
+        self.assertEqual(restore(), REV)
+        P.X.assert_pair(fd, info, files, ".before", self.uid)
+        self.assertFalse(any((config / name).exists() for name in maps))
+
+    def test_scoped_labeled_live_policy_drift_prevents_restore(self):
+        fd, config, info, files, maps, labels, verified, apply, restore = self.live_fixture()
+        apply()
+        name = next(iter(maps))
+        original = labels[name]
+        labels[name] = label("other_map_t")
+        with self.assertRaisesRegex(P.Refused, "live_selinux_policy_changed"):
+            restore()
+        P.X.assert_pair(fd, info, files, ".after", self.uid)
+        self.assertTrue(all((config / n).exists() for n in maps))
+        labels[name] = original
+        self.assertEqual(restore(), REV)
+
+    def test_scoped_labeled_lost_receipt_fails_closed(self):
+        fd, config, info, files, maps, labels, verified, apply, restore = self.live_fixture()
+        original = self.store._write
+
+        def fail_receipt(relative, data, previous=None):
+            if relative.endswith(".published.json"):
+                raise OSError("fixture lost receipt")
+            return original(relative, data, previous)
+
+        with patch.object(self.store, "_write", side_effect=fail_receipt):
+            with self.assertRaises(P.X.ApplyFailed) as result:
+                apply()
+        self.assertFalse(result.exception.rolled_back)
+        P.X.assert_pair(fd, info, files, ".before", self.uid)
+        remaining = [name for name in maps if (config / name).exists()]
+        self.assertEqual(len(remaining), 1)
+        self.assertIsNone(self.store.read_activation()[3][remaining[0]])
+        with self.assertRaises(P.Refused):
+            restore()
+        self.assertTrue((config / remaining[0]).exists())
 
 
 if __name__ == "__main__":

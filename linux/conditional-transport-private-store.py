@@ -451,7 +451,7 @@ class PrivateStore:
                "private_activation_publication_unverified")
         return journal
 
-    def publish_map(self, config, name, data, reviewed):
+    def publish_map(self, config, name, data, reviewed, live_guard=None):
         """Exclusive first-install map publication and exact ownership receipt.
 
         Caller must still enforce stopped maintenance, native plan and
@@ -482,6 +482,8 @@ class PrivateStore:
 
         def before_link(identity):
             self.check_anchor()
+            if live_guard is not None:
+                live_guard(identity)
             X.need(self.read_activation() == record and
                    not T.exists(config, name), "private_map_publication_context_changed")
             X.assert_pair(config, info, files, ".before", self.uid)
@@ -498,6 +500,8 @@ class PrivateStore:
         identity = T.file_identity(os.stat(name, dir_fd=config, follow_symlinks=False))
         X.need(prepared == published == [identity[:4]], "private_map_publication_unproven")
         self.check_anchor()
+        if live_guard is not None:
+            live_guard()
         X.need(self.read_activation() == record, "private_activation_review_changed")
         X.assert_pair(config, info, files, ".before", self.uid)
         X.check_sources(config, info)
@@ -509,6 +513,172 @@ class PrivateStore:
         X.need(self.read_activation() == expected, "private_map_receipt_unverified")
         X.checked_map(config, name, journal, identity, self.uid)
         return identity
+
+    def live_guard(self, config, info, read_policy, prepared=None):
+        """Recheck the exact prospective live policy, not only stored labels.
+
+        The bound host guard still must prove stopped maintenance, the
+        directory binding, empty queues and exclusive access. No kernel
+        authorization or service-start permission is inferred from labels.
+        """
+        self.check_anchor()
+        self.no_edit_pending()
+        X.need(R.labeled(info) and callable(read_policy) and
+               policy_paths(info, self.revision) == self.paths,
+               "labeled_live_policy_required")
+        X.need(T.context(config, self.uid) == info["identity"],
+               "wrong_config_directory")
+        R.directory_metadata(config, info)
+        expected = dict(info["map_selinux"])
+        expected["."] = info["directory_selinux"]
+        for name, meta in zip(X.CONFIGS, info["metadata"]):
+            expected[name + ".cf"] = meta["selinux"]
+        current = read_policy(info["rules"], info["backend"])
+        X.need(type(current) is dict and set(current) == set(expected) and
+               all(R.label_context(current[name]) == R.label_context(value)
+                   for name, value in expected.items()), "live_selinux_policy_changed")
+        scratch = [name for name in os.listdir(config)
+                   if name.startswith(".lmr365-txn-")]
+        if prepared is None:
+            X.need(not scratch, "orphan_live_transaction_scratch")
+        else:
+            X.need(len(scratch) == 1 and
+                   T.file_identity(os.stat(scratch[0], dir_fd=config,
+                                           follow_symlinks=False))[:4] == prepared,
+                   "unexpected_live_transaction_scratch")
+        self.check_anchor()
+
+    def live_record(self, config, reviewed, read_policy, prepared=None):
+        self.live_guard(config, reviewed[0], read_policy, prepared)
+        X.need(self.read_activation() == reviewed, "private_activation_review_changed")
+        state = X.restorable(config, *reviewed, self.uid)
+        self.live_guard(config, reviewed[0], read_policy, prepared)
+        return state
+
+    def replace_configuration(self, config, reviewed, state, index, data,
+                              read_policy, require_all_maps=False):
+        """One atomic configuration replacement with fresh policy/readback."""
+        info, files, journal, receipts = reviewed
+
+        def check(prepared=None):
+            X.need(self.live_record(config, reviewed, read_policy, prepared) == state,
+                   "live_configuration_changed")
+            if require_all_maps:
+                for name in X.map_names(info):
+                    X.checked_map(config, name, journal, receipts[name], self.uid)
+
+        check()
+        name = X.CONFIGS[index] + ".cf"
+        meta = state[index][1]
+        if state[index][0] != data:
+            T.atomic_write(config, name, data, meta, self.uid, True,
+                           before_replace=check)
+        result = list(state)
+        result[index] = (data, meta)
+        result = tuple(result)
+        X.need(self.live_record(config, reviewed, read_policy) == result,
+               "live_configuration_publication_unverified")
+        return result
+
+    def restore_reviewed(self, config, reviewed, read_policy, verify, confirmation):
+        """Offline restore using labeled private journal and map receipts.
+
+        Only an exact reviewed record may be restored. Refuses unknown maps
+        before modifying configuration. Disconnect routes before removing
+        services/maps. Failed or interrupted cleanup can be reviewed again.
+        """
+        X.need(confirmation == X.RESTORE and callable(verify),
+               "typed_restore_confirmation_required")
+        info, files, journal, receipts = reviewed
+        state = self.live_record(config, reviewed, read_policy)
+        for index, name in enumerate(X.CONFIGS):
+            state = self.replace_configuration(
+                config, reviewed, state, index, files[name + ".before"], read_policy)
+        expected = X.expected_pair(info, files, ".before")
+        X.need(state == expected and verify(False, info) is True,
+               "restored_native_policy_unverified")
+        X.need(self.live_record(config, reviewed, read_policy) == expected,
+               "restored_configuration_changed")
+        for name in X.map_names(info):
+            X.need(self.live_record(config, reviewed, read_policy) == expected,
+                   "recovery_drift_before_cleanup")
+            if T.exists(config, name):
+                X.checked_map(config, name, journal, receipts[name], self.uid)
+                os.unlink(name, dir_fd=config)
+                os.fsync(config)
+        X.need(self.live_record(config, reviewed, read_policy) == expected and
+               not any(T.exists(config, name) for name in X.map_names(info)) and
+               verify(False, info) is True, "restored_generation_unverified")
+        X.need(self.live_record(config, reviewed, read_policy) == expected and
+               not any(T.exists(config, name) for name in X.map_names(info)),
+               "restored_generation_changed")
+        return self.revision
+
+    def apply_reviewed(self, config, reviewed, databases, map_gid, read_policy,
+                       verify, fresh_review, confirmation):
+        """First-install labeled transaction; deliberately library-only.
+
+        Native-verified candidate DBs, real policy readers and maintenance
+        guard must be supplied by a trusted caller. No daemon control,
+        package install, SMTP delivery or policy modification occurs.
+        """
+        X.need(confirmation == X.APPLY and callable(verify) and callable(fresh_review),
+               "typed_apply_confirmation_required")
+        info, files = reviewed
+        R.validate(info, files)
+        maps = X.native_database_set(info, databases)
+        X.need(type(map_gid) is int and map_gid >= 0, "invalid_map_group")
+
+        def fresh():
+            self.live_guard(config, info, read_policy)
+            X.need(fresh_review() == reviewed, "review_changed")
+            X.assert_pair(config, info, files, ".before", self.uid)
+            X.check_sources(config, info)
+            X.need(not any(T.exists(config, name) for name in maps),
+                   "managed_map_destination_exists")
+
+        fresh()
+        self.create_snapshot(info, files)
+        journal = self.create_activation(databases, map_gid)
+        record = self.read_activation()
+        X.need(record == (info, files, journal, dict.fromkeys(maps)),
+               "private_activation_publication_unverified")
+        try:
+            fresh()
+            for name, data in sorted(maps.items()):
+                self.live_guard(config, info, read_policy)
+                identity = self.publish_map(
+                    config, name, data, record,
+                    live_guard=lambda prepared=None: self.live_guard(
+                        config, info, read_policy, prepared))
+                record = (info, files, journal, dict(record[3], **{name: identity}))
+                X.need(self.read_activation() == record,
+                       "private_map_receipt_unverified")
+            state = self.live_record(config, record, read_policy)
+            X.need(state == X.expected_pair(info, files, ".before"),
+                   "live_configuration_changed")
+            for index in (1, 0):
+                name = X.CONFIGS[index]
+                state = self.replace_configuration(
+                    config, record, state, index, files[name + ".after"],
+                    read_policy, require_all_maps=True)
+            expected = X.expected_pair(info, files, ".after")
+            X.need(state == expected and verify(True, info) is True,
+                   "installed_native_policy_unverified")
+            X.need(self.live_record(config, record, read_policy) == expected,
+                   "installed_generation_changed")
+            for name in maps:
+                X.checked_map(config, name, journal, record[3][name], self.uid)
+        except Exception:
+            try:
+                self.restore_reviewed(config, self.read_activation(), read_policy,
+                                      verify, X.RESTORE)
+            except Exception:
+                # Never log private configuration, database bytes or policy
+                # diagnostics in an exception returned to a future host CLI.
+                raise X.ApplyFailed(self.revision, False) from None
+            raise X.ApplyFailed(self.revision, True) from None
+        return self.revision
 
 
 if __name__ == "__main__":

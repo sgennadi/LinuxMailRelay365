@@ -102,3 +102,21 @@ adopts or removes such a file. No database is stored in the recovery directory.
 These are isolated library APIs, not a production Apply/Restore replacement.
 The stopped-host CLI/GUI remains unchanged and active SELinux writes remain
 blocked until full transaction integration and real Enforcing acceptance.
+
+## Post-RC14 integration: labeled first-install Apply/Restore
+
+The scoped private store now coordinates a complete first-install transaction
+and explicit offline restore, using its own labeled snapshot, activation
+journal and exact map publication receipts. A trusted fresh live policy reader
+and maintenance guard are mandatory. Every configuration replacement checks
+both the reviewed private record and current live policy, including before
+atomic rename. New maps are checked before exclusive publication and after
+publication. Unknown live scratch files, unproven maps, changed policy or
+pending edits/rotations block the operation. Native verification must return
+explicit success; ordinary failure attempts a guarded restore, while an
+interrupted or unproven state remains for explicit recovery. Synthetic user-xattr
+fixtures cover successful apply/restore, native rejection, interruption between
+config writes, policy drift and a lost publication receipt. This is a library
+integration milestone on the post-RC14 development branch, not a change to
+production CLI or the frozen RC14 release. Rotation/edit with labeled private
+stores and real SELinux Enforcing acceptance are still outstanding.
