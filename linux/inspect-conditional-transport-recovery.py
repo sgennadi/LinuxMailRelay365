@@ -60,6 +60,7 @@ def observe(config, parent, revision, uid, gid):
 
 
 def inventory(config, parent, uid, gid):
+    X.assert_no_edit_pending(parent, uid)
     try:
         base = M.open_base(parent, uid, name=R.BASE)
     except FileNotFoundError:
@@ -145,6 +146,7 @@ def route_lookup(spec, expected, identity):
 
 def installed(config, parent, uid, identity, read_state=H.state, lookup=None):
     """Discover a single exact manager-owned installed set, not runtime health."""
+    X.assert_no_edit_pending(parent, uid)
     if lookup is None:
         def lookup(spec, rows):
             return route_lookup(spec, rows, identity)

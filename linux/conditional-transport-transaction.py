@@ -23,6 +23,8 @@ RESTORE = "RESTORE_STOPPED_POSTFIX_TRANSPORTS"
 JOURNAL = "maps.json"
 ROTATION_CURRENT = "rotation-current.json"
 ROTATION_PENDING = "rotation-pending.json"
+EDIT_BASE = "linuxmailrelay365-transport-edit"
+EDIT_PENDING = "pending.json"
 CONFIGS = ("main", "master")
 
 
@@ -159,7 +161,22 @@ def rotation_overlay(fd, info, journal, receipts, uid):
     return dict(journal, maps=maps), current
 
 
-def load(parent, revision, uid, allow_pending=False):
+def assert_no_edit_pending(parent, uid):
+    # Fail closed even on an unexpected scratch file or malformed marker.
+    # Only the explicit edit recovery library may bypass this gate.
+    try:
+        fd = M.open_base(parent, uid, name=EDIT_BASE)
+    except FileNotFoundError:
+        return
+    try:
+        need(not os.listdir(fd), "transport_edit_recovery_required")
+    finally:
+        os.close(fd)
+
+
+def load(parent, revision, uid, allow_pending=False, allow_edit_pending=False):
+    if not allow_edit_pending:
+        assert_no_edit_pending(parent, uid)
     info, files = R.load(parent, revision, uid, allow_activation=True)
     fd = activation_fd(parent, revision, uid)
     try:
@@ -184,6 +201,8 @@ def load(parent, revision, uid, allow_pending=False):
         receipts = {name: read_receipt(fd, revision, name, uid) for name in names}
         journal, receipts = rotation_overlay(fd, info, journal, receipts, uid)
         need(set(os.listdir(fd)) == entries, "journal_changed")
+        if not allow_edit_pending:
+            assert_no_edit_pending(parent, uid)
         return info, files, journal, receipts
     finally:
         os.close(fd)
@@ -291,6 +310,7 @@ def apply(config, parent, reviewed, databases, gid, confirmation, uid,
     """
     need(confirmation == APPLY, "typed_apply_confirmation_required")
     guard()
+    assert_no_edit_pending(parent, uid)
     need(fresh_review() == reviewed, "review_changed")
     info, files = reviewed
     R.validate(info, files)
