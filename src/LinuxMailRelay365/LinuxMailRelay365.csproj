@@ -69,6 +69,7 @@
     <EmbeddedResource Include="../../linux/check-custom-smtp.py" LogicalName="LinuxMailRelay365.linux.check-custom-smtp.py" />
     <EmbeddedResource Include="../../linux/manage-google-relay.py" LogicalName="LinuxMailRelay365.linux.manage-google-relay.py" />
     <EmbeddedResource Include="../../linux/manage-custom-relay.py" LogicalName="LinuxMailRelay365.linux.manage-custom-relay.py" />
+    <EmbeddedResource Include="../../linux/stage-conditional-postfix-maps.py" LogicalName="LinuxMailRelay365.linux.stage-conditional-postfix-maps.py" />
     <EmbeddedResource Include="../../linux/audit-mail-bindings.py" LogicalName="LinuxMailRelay365.linux.audit-mail-bindings.py" />
     <EmbeddedResource Include="../../linux/platform-compat.py" LogicalName="LinuxMailRelay365.linux.platform-compat.py" />
     <EmbeddedResource Include="../../linux/mta-coexistence-doctor.py" LogicalName="LinuxMailRelay365.linux.mta-coexistence-doctor.py" />
