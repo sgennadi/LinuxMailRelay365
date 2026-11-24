@@ -2,7 +2,7 @@
 
 The CLI implements the first narrow actual configuration-write path, for
 disjoint sender rules with STARTTLS/no AUTH only. It is not a Stable feature
-and is not exposed by the Windows wizard. It never stops, starts, restarts,
+and is exposed through a separate experimental Windows maintenance panel. It never stops, starts, restarts,
 or reloads a service. It never changes a listener, deletes queued mail,
 configures credentials, or sends a message. Do not run on a production host
 before real maintenance, package-specific acceptance and full system backup.
@@ -68,3 +68,7 @@ maintenance and remote TLS evidence are injected; this is NOT end-to-end
 acceptance of the real host maintenance CLI, address-class routing or delivery.
 SELinux labels/ACLs, GUI integration, provider authorization and real mail
 delivery remain separate gates. Test execution must pass in CI.
+
+## Windows wizard (experimental)
+
+Discover the manually stopped Postfix host, recreate or keep the exact proposal, validate it on Linux, and run Verify compiled maps. Offline Review requires explicit exclusive maintenance confirmation. Apply requires a matching reviewed transaction/evidence receipt and a second typed write confirmation. Restore accepts an exact recovery SHA without a proposal. The recovery scan is observational only. After any write attempt all candidate and discovery evidence is invalidated, and the recovery SHA is retained in the current session and activity log. Reinspect before further operations. The backend never stops or starts Postfix. Native fixture acceptance is not end-to-end maintenance or delivery acceptance; SELinux/ACL writes remain unsupported.

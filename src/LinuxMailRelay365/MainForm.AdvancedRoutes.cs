@@ -382,8 +382,8 @@ internal sealed partial class MainForm
             }
         }
         AddLine(page, MailFlowText(TranslateMailFlow(l,
-            "Подключение карт к рабочему Postfix пока заблокировано: нужны проверка приоритетов, сохранение локальной доставки, DNS/TLS, Backup/Restore и откат. Stage/Compile не являются Apply.",
-            "Attaching maps to active Postfix is blocked pending real precedence, local delivery, DNS/TLS and backup/rollback checks. Stage/Compile are NOT Apply. There is NO Apply button.",
+            "Online Apply заблокирован. Экспериментальное подключение только на остановленном Postfix выполняется отдельно после проверки TLS и резервного копирования. Stage/Compile не являются Apply.",
+            "Attaching maps to active Postfix is blocked pending real precedence, local delivery, DNS/TLS and backup/rollback checks. Stage/Compile are NOT Apply. There is NO Apply button in this planner; experimental stopped-host maintenance is separate.",
             "אין הרשאה לשינוי מפות Postfix; נדרש אימות נוסף לפני הפעלה."),
             width, warning: true));
     }

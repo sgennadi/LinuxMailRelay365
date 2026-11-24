@@ -10,7 +10,7 @@ internal sealed partial class MainForm
     private string? CurrentConditionalStageContext()
     {
         if (!HasMailDiscovery() || inspectedMail?.Mta != "postfix" ||
-            inspectedHost is not { Mta: "postfix", MtaState: "active" } ||
+            inspectedHost is not { Mta: "postfix", MtaState: "active" or "installed_inactive" } ||
             advancedRoutingIdentity != TryCurrentIdentity() ||
             advancedRoutingRules.Count == 0)
             return null;
@@ -55,7 +55,7 @@ internal sealed partial class MainForm
                 "Compiled manifest: " + receipt.CompiledSha +
                 Environment.NewLine + "Backend: " + receipt.Backend +
                 " · checked raw keys: " + receipt.LookupCount) +
-            Environment.NewLine + "ACTIVE: NO · Apply unavailable", width));
+            Environment.NewLine + "Candidate inactive · activation is separate", width));
         if (receipt.ManifestSha is null)
             AddAction(page, TranslateMailFlow(l, "Stage — сохранить карты-кандидаты...",
                 "Stage private candidate maps...", "שמור מפות מועמדות..."),
@@ -75,7 +75,7 @@ internal sealed partial class MainForm
     private async Task RunConditionalStageAsync(string operation)
     {
         string context = CurrentConditionalStageContext() ??
-            throw new InvalidOperationException("Reinspect the active Postfix host.");
+            throw new InvalidOperationException("Reinspect this Postfix host.");
         var rules = ConditionalStageClient.Eligible(advancedRoutingRules).ToArray();
         string sha = AdvancedRoutePlanner.PlanSha256(rules);
         string? manifest = null;
