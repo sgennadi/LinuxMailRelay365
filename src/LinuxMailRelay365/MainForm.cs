@@ -204,6 +204,7 @@ internal sealed partial class MainForm : Form
     };
     private readonly Panel activityPanel = new() { Dock = DockStyle.Fill, Height = 124, Visible = false };
     private readonly Button clearActivityButton = UiTheme.Action("Clear log", glyph: "trash");
+    private readonly Button copyActivityButton = UiTheme.Action("Copy log");
     private readonly LinkLabel activityToggle = new()
     {
         AutoSize = true, LinkColor = UiTheme.Navy,
@@ -721,6 +722,12 @@ internal sealed partial class MainForm : Form
             "Clear visible activity only. Privacy-safe diagnostic report history is retained.";
         clearActivityButton.Click += (_, _) => ClearActivityWindow();
         activityActions.Controls.Add(clearActivityButton);
+        copyActivityButton.AutoSize = true;
+        copyActivityButton.Enabled = activity.TextLength > 0;
+        copyActivityButton.AccessibleDescription = "Copy the complete visible activity log to the clipboard.";
+        copyActivityButton.Click += (_, _) => CopyActivityWindow();
+        activityActions.Controls.Add(copyActivityButton);
+        activity.TextChanged += (_, _) => copyActivityButton.Enabled = activity.TextLength > 0;
         activityLayout.Controls.Add(activityActions, 0, 0);
         activityLayout.Controls.Add(activity, 0, 1);
         activityPanel.Controls.Add(activityLayout);
@@ -3542,6 +3549,7 @@ internal sealed partial class MainForm : Form
             ? T("Скрыть журнал", "Hide activity", "הסתר יומן")
             : T("Показать журнал", "Show activity", "הצג יומן");
         clearActivityButton.Text = T("Очистить лог", "Clear log", "נקה יומן");
+        copyActivityButton.Text = T("Копировать лог", "Copy log", "העתק יומן");
         headerUpdateButton.Text = T("Проверить обновления ▾",
             "Check for updates ▾", "בדיקת עדכונים ▾");
         headerUpdateButton.Enabled = !busy;
@@ -3781,6 +3789,23 @@ internal sealed partial class MainForm : Form
         if (InvokeRequired) { BeginInvoke(() => ClearActivityWindow()); return; }
         ClearVisibleActivityText(activity);
         clearActivityButton.Enabled = false;
+    }
+
+    private void CopyActivityWindow()
+    {
+        if (InvokeRequired) { BeginInvoke(() => CopyActivityWindow()); return; }
+        string snapshot = activity.Text;
+        if (string.IsNullOrEmpty(snapshot)) return;
+        try
+        {
+            Clipboard.SetText(snapshot);
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            MessageBox.Show(this, T("Буфер обмена занят. Повторите копирование.",
+                "Clipboard unavailable. Please retry.", "הלוח אינו זמין. נסו שוב."),
+                "LinuxMailRelay365", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private static void ClearVisibleActivityText(TextBox textbox) => textbox.Clear();
