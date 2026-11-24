@@ -3,10 +3,9 @@ using System.Windows.Forms;
 
 namespace LinuxMailRelay365;
 
-// All conditional rules in RC11 are LOCAL, UNSAVED, READ-ONLY "what if" data.
-// This UI never installs maps, runs postmap, changes MTA services or submits
-// a message. It also never claims that Postfix, Exim or Sendmail would route
-// a real message according to the simulated match list.
+// Editing and simulation remain local. Separate reviewed Stage/Compile
+// actions prepare disconnected candidates only. No active map installation,
+// MTA service changes or mail submission are authorized by this planner.
 internal sealed partial class MainForm
 {
     private readonly CheckBox advancedRoutingToggle = new()
@@ -133,6 +132,8 @@ internal sealed partial class MainForm
         if (!string.Equals(advancedRoutingIdentity, identity, StringComparison.Ordinal))
         {
             advancedRoutingRules.Clear();
+            conditionalStageReceipt = null;
+            conditionalStageContext = null;
             advancedRoutingSimulation = null;
             advancedRoutingEditIndex = -1;
             advancedRoutingIdentity = identity;
@@ -143,16 +144,16 @@ internal sealed partial class MainForm
         PrepareAdvancedRoutingControls(width);
         advancedRoutingToggle.Text = TranslateMailFlow(l,
             "Расширенная маршрутизация по отправителям и доменам — только план",
-            "Advanced sender/domain routing — read-only what-if planner",
+            "Advanced sender/domain routing — plan and offline preparation",
             "תכנון מתקדם לפי שולח ודומיין — ללא שינויים");
         AddLine(page, advancedRoutingToggle);
         if (!advancedRoutingToggle.Checked)
             return;
 
         AddLine(page, MailFlowText(TranslateMailFlow(l,
-            "RC11: это локальная модель, НЕ настройка SMTP и НЕ фактическая таблица Postfix. Правила действуют только в текущем окне, не сохраняются, не меняют Linux и не отправляют письма. Пересечения не получают придуманного приоритета.",
-            "RC11: this is a local what-if model, NOT an active Postfix map or actual SMTP routing. Rules stay in this window, are not saved, cannot modify Linux or send mail. Overlaps have NO assumed precedence.",
-            "תכנון בלבד ללא כתיבה, שמירה או משלוח דואר; אין קדימות משוערת לכללים חופפים."),
+            "Модель не является активной маршрутизацией. Изменения карточек остаются локальными. Отдельные Stage/Compile создают только неактивные карты после проверки и подтверждения. Пересечения не получают вымышленного приоритета.",
+            "This model is NOT active SMTP routing. Editing cards is local only. Separate reviewed Stage/Compile prepares disconnected candidates; no actual route precedence is assumed.",
+            "עריכת כללים מקומית בלבד; הכנת מפות אינה מפעילה ניתוב או משלוח דואר."),
             width, warning: true));
 
         string mta = inspectedMail?.Mta ?? "unknown";
@@ -343,6 +344,8 @@ internal sealed partial class MainForm
                 AdvancedRoutePlanner.PlanSha256(advancedRoutingRules)[..16] + "…",
                 width));
 
+            ShowConditionalStageActions(page, width, l);
+
             AddLine(page, UiTheme.Text(TranslateMailFlow(l,
                 "Проверка предполагаемого пути — без сети и письма",
                 "What-if message matching (offline, no email sent)",
@@ -379,8 +382,8 @@ internal sealed partial class MainForm
             }
         }
         AddLine(page, MailFlowText(TranslateMailFlow(l,
-            "Предпросмотр не позволяет безопасно создать реальные sender_dependent_relayhost_maps / transport_maps: сначала нужен отдельный анализ precedence, локальной доставки, DNS/TLS, сертификатов и защита от пересечений. В RC11 кнопки Apply нет.",
-            "Generating real sender_dependent_relayhost_maps / transport_maps is NOT yet authorized: first verify true Postfix precedence, local delivery, DNS/TLS, certificate and overlap behavior. There is NO Apply button in RC11.",
+            "Подключение карт к рабочему Postfix пока заблокировано: нужны проверка приоритетов, сохранение локальной доставки, DNS/TLS, Backup/Restore и откат. Stage/Compile не являются Apply.",
+            "Attaching maps to active Postfix is blocked pending real precedence, local delivery, DNS/TLS and backup/rollback checks. Stage/Compile are NOT Apply.",
             "אין הרשאה לשינוי מפות Postfix; נדרש אימות נוסף לפני הפעלה."),
             width, warning: true));
     }
