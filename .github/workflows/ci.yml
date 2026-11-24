@@ -180,7 +180,13 @@ jobs:
 
   rc14-native-transaction-fast:
     # Independent fresh package fixture; does not replace the full sidecar smoke.
-    if: contains(github.ref, 'rc14-postfix-map-inventory') || github.event.pull_request.head.ref == 'feature/rc14-postfix-map-inventory'
+    if: >-
+      contains(github.ref, 'rc14-postfix-map-inventory') ||
+      github.event.pull_request.head.ref == 'feature/rc14-postfix-map-inventory' ||
+      github.ref == 'refs/heads/feature/rc14-transport-transaction' ||
+      github.event.pull_request.head.ref == 'feature/rc14-transport-transaction' ||
+      github.ref == 'refs/heads/feature/post-rc14-selinux-integration' ||
+      github.event.pull_request.head.ref == 'feature/post-rc14-selinux-integration'
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
