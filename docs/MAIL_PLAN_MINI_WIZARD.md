@@ -19,3 +19,20 @@ and resets to the top on subpage changes. Windows screenshot capture includes
 actual viewport and reentrancy checks on every main page and the mini-page
 missing-discovery states. Physical 200% DPI and real discovered-server
 acceptance still require operator testing. The published RC14 is unchanged.
+
+## Post-RC15 refinement
+
+The second step no longer exposes certificate or TPM controls. The third step
+is an adaptive mini-wizard: method, provider settings, certificate and cloud
+setup when XOAUTH2 is selected, and review. Non-OAuth providers skip the
+certificate and Entra setup pages; advanced routing remains available on its
+own page. Certificate renewal, TPM/HSM provisioning and cutover actions are
+retained in certificate management. A read-only hardware probe runs on
+entering the XOAUTH2 certificate page; on RHEL-family hosts it also attempts
+provider diagnostics and package planning when TPM2 is detected. This is not
+proof of signing, access, non-exportability or real delivery. Installation and
+key creation still require explicit review and approval. PEM creation is
+explicitly labeled. Connection profiles remember server, port, username and
+auth method after verified SSH; passwords, key paths and host trust are not
+persisted. Blue/amber/green visual cues have text labels and respect Windows
+high-contrast mode. Physical DPI and real tenant acceptance remain unverified.

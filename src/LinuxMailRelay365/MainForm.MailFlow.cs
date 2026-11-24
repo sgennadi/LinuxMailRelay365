@@ -37,8 +37,10 @@ internal sealed partial class MainForm
             MaximumSize = new Size(Math.Max(240, width), 0),
             Padding = new Padding(10, 8, 10, 8),
             Margin = new Padding(0, 5, 0, 7),
-            BackColor = Color.White,
-            ForeColor = warning ? Color.FromArgb(151, 82, 23) : UiTheme.Navy,
+            BackColor = SystemInformation.HighContrast ? SystemColors.Window :
+                warning ? UiTheme.WarningSurface : bold ? UiTheme.InfoSurface : Color.White,
+            ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText :
+                warning ? UiTheme.WarningInk : UiTheme.Navy,
             Font = new Font("Segoe UI", bold ? 11.5f : 10.5f,
                 bold ? FontStyle.Bold : FontStyle.Regular),
             Text = text
@@ -221,12 +223,6 @@ internal sealed partial class MainForm
             T("Итоговая схема", "Review", "סיכום")
         ];
         int width = Math.Max(260, pageHost.ClientSize.Width - 90);
-        if (mailPlanPhase == MailPlanSecurityPhase)
-        {
-            AddLine(page, MailFlowText(T("Дополнительная защита — необязательно",
-                "Optional security tools", "כלי אבטחה אופציונליים"), width, bold: true));
-            return;
-        }
         int phase = Math.Clamp(mailPlanPhase, 0, names.Length - 1);
         AddLine(page, MailFlowText(T("План почты", "Mail plan", "תוכנית דואר") +
             " · " + (phase + 1) + "/" + names.Length + " · " + names[phase], width, bold: true));
@@ -279,7 +275,8 @@ internal sealed partial class MainForm
 
     // -1 is provider/advanced configuration on the delivery step.
     // Mini-wizard pages expose only their own decision and never apply.
-    private void ShowMailFlowPlanner(TableLayoutPanel page, int phase = -1)
+    private void ShowMailFlowPlanner(TableLayoutPanel page, int phase = -1,
+        bool providerChecksOnly = false, bool advancedOnly = false)
     {
         int languageIndex = language.SelectedIndex;
         int width = Math.Max(300, pageHost.ClientSize.Width - 90);
@@ -417,9 +414,9 @@ internal sealed partial class MainForm
             }));
         }
         if (phase == 2) return;
-        if (phase == -1 && IsGoogleTarget)
+        if (phase == -1 && IsGoogleTarget && !advancedOnly)
             ShowGoogleSmtpChecks(page);
-        if (phase == -1 && selectedMailTarget == MailFlowIntent.TargetCustom)
+        if (phase == -1 && selectedMailTarget == MailFlowIntent.TargetCustom && !advancedOnly)
         {
             AddField(page, TranslateMailFlow(languageIndex,
                 "Исходящий SMTP-сервер (FQDN / IPv4)",
@@ -436,6 +433,7 @@ internal sealed partial class MainForm
                 "בדיקות זמינות, אך שינוי אוטומטי של Postfix אינו נתמך עדיין."),
                 width, warning: true));
         }
+        if (providerChecksOnly) return;
         if (phase == 4)
         {
             AddLine(page, UiTheme.Text(TranslateMailFlow(languageIndex,

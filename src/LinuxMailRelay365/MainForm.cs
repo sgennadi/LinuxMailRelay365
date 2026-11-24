@@ -213,10 +213,15 @@ internal sealed partial class MainForm : Form
     private int queuedMailPlanPhase = -1;
     private int renderedMailPlanPhase = -1;
     private int mailPlanPhase;
-    private int returnFromSecurityPhase;
     private bool mailPlanProviderConfirmed;
     private const int MailPlanReviewPhase = 5;
-    private const int MailPlanSecurityPhase = 6;
+    private int deliveryPhase;
+    private int renderedDeliveryPhase = -1;
+    private int queuedDeliveryPhase = -1;
+    private const int DeliveryReviewPhase = 4;
+    private const int DeliveryAdvancedPhase = 5;
+    private const int DeliveryCertificateToolsPhase = 6;
+    private const int DeliveryReviewDiagramPhase = 7;
     private readonly FlowLayoutPanel navigation = new()
     {
         Dock = DockStyle.Fill, AutoSize = true,
@@ -311,7 +316,7 @@ internal sealed partial class MainForm : Form
         sshFingerprint.AccessibleDescription = "Optional SHA256 fingerprint. Leave blank to review the server key before sending the SSH password.";
         advancedSecurityTools.CheckedChanged += (_, _) =>
         {
-            if (step == 1 && !busy && !securityLoading) RenderPage();
+            if (step == 2 && deliveryPhase == DeliveryCertificateToolsPhase && !busy && !securityLoading) RenderPage();
         };
         sshAuthMode.Items.AddRange(["SSH key / ssh-agent", "SSH username + password"]);
         postfixBasicsInterfaces.Items.AddRange([
@@ -361,7 +366,7 @@ internal sealed partial class MainForm : Form
             reviewedHardwareStageSha = null;
             reviewedHardwareStageContext = null;
             hardwareStageSummary = "";
-            if (step == 1 && !busy) RenderPage();
+            if (step == 2 && deliveryPhase == DeliveryCertificateToolsPhase && !busy) RenderPage();
         };
         hardwareStageKeyRef.TextChanged += (_, _) =>
         {
@@ -411,7 +416,7 @@ internal sealed partial class MainForm : Form
             reviewedEntraCertContext = null;
             reviewedEntraCertObjectId = null;
             entraCertificateSummary = "";
-            if (step == 1 && !busy) RenderPage();
+            if (step == 2 && deliveryPhase == DeliveryCertificateToolsPhase && !busy) RenderPage();
         };
         tpmDependencyProfile.SelectedIndexChanged += (_, _) =>
         {
@@ -419,7 +424,7 @@ internal sealed partial class MainForm : Form
             reviewedTpmPlanSha = null;
             reviewedTpmPlanContext = null;
             tpmPlanSummary = "";
-            if (step == 1 && !busy) RenderPage();
+            if (step == 2 && deliveryPhase == DeliveryCertificateToolsPhase && !busy) RenderPage();
         };
         smtpAccountOperation.Items.AddRange(["Add", "Rotate", "Revoke"]);
         smtpAccountOperation.SelectedIndex = 0;
@@ -464,6 +469,8 @@ internal sealed partial class MainForm : Form
 
                 // Never show evidence or public-certificate paths from the previous host as current.
                 publicCertificatePath = null;
+                certificateHardwareContext = null;
+                certificateProviderSummary = "";
                 discoveredIsolatedRelay = null;
                 discoveredMailIdentity = null;
                 inspectedHost = null;
@@ -564,7 +571,7 @@ internal sealed partial class MainForm : Form
         wizardRefreshTimer.Tick += (_, _) =>
         {
             if (IsDisposed || Disposing || queuedWizardStep != step ||
-                queuedMailPlanPhase != mailPlanPhase || busy)
+                queuedMailPlanPhase != mailPlanPhase || queuedDeliveryPhase != deliveryPhase || busy)
             {
                 wizardRefreshTimer.Stop();
                 return;
@@ -1228,7 +1235,18 @@ internal sealed partial class MainForm : Form
 
     private void AddField(TableLayoutPanel table, string caption, TextBox input)
     {
-        AddLine(table, UiTheme.Text(caption));
+        bool key = input == tenant || input == mailbox || input == certificateDays ||
+            input == acceptedDomain || input == outboundMxHost || input == outboundFixedSender ||
+            input == isolatedSmtpPort || input == alternateUpstreamHost || input == alternateUpstreamPort ||
+            input == googleOutboundPort;
+        if (key)
+        {
+            UiTheme.HighlightInput(input);
+            var label = UiTheme.Text(caption);
+            label.ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText : UiTheme.Navy;
+            AddLine(table, label);
+        }
+        else AddLine(table, UiTheme.Text(caption));
         AddLine(table, input);
     }
 
@@ -1266,6 +1284,8 @@ internal sealed partial class MainForm : Form
         label.ForeColor = UiTheme.Navy;
         label.Margin = new Padding(0, 5, 0, 4);
         input.AccessibleName = caption;
+        if (input == host || input == sshPort || input == sshUser || input == sshAuthMode)
+            UiTheme.HighlightInput(input);
         // Do not let global 690px TextBox preferred widths force the card
         // beyond its table column. Dock=Fill will stretch to available space.
         input.Width = 180;
@@ -1296,6 +1316,9 @@ internal sealed partial class MainForm : Form
         leftLabel.Margin = rightLabel.Margin = new Padding(0, 5, 0, 4);
         left.AccessibleName = leftCaption;
         right.AccessibleName = rightCaption;
+        foreach (var input in new[] { left, right })
+            if (input == host || input == sshPort || input == sshUser || input == sshAuthMode)
+                UiTheme.HighlightInput(input);
         // WinForms AutoSize TableLayoutPanel uses child preferred widths;
         // shrink old fixed-width fields BEFORE docking so percent columns
         // (server + port; username + auth mode) remain responsive.
@@ -2120,6 +2143,302 @@ internal sealed partial class MainForm : Form
         });
     }
 
+    private void ShowCertificateSecurityTools(TableLayoutPanel page)
+    {
+        EnsureSecurityLoaded();
+        AddLine(page, UiTheme.Text(T(
+            "Все опции выключены. Выбор сохраняется как ПЛАН — он не меняет Entra, Postfix, сертификат или Linux. Для включения потребуются отдельные подтверждённые действия.",
+            "All options are off. Your selection is saved as a PLAN only: it does not modify Entra, Postfix, certificates or Linux. Activation requires separate approved steps.",
+            "כל האפשרויות כבויות. הבחירה נשמרת כתוכנית בלבד.")));
+        AddAction(page, T("Проверить TPM, HSM и PKCS#11 (только чтение)",
+                          "Inspect TPM, HSM and PKCS#11 (read-only)",
+                          "בדוק TPM/HSM לקריאה בלבד"), AutoProbeCertificateHardwareAsync, true, "shield", "linux-security");
+        if (!string.IsNullOrEmpty(certificateProviderSummary))
+            AddLine(page, MailFlowText(certificateProviderSummary, Math.Max(260, pageHost.ClientSize.Width - 90)));
+        AddLine(page, UiTheme.Text(linuxSecurity?.SummaryRu() ??
+            T("Linux: проверка ещё не запускалась.", "Linux: not inspected yet.", "Linux: טרם נבדק.")));
+        advancedSecurityTools.Text = T(
+            "Показать расширенные действия TPM/HSM, сертификаты и Entra",
+            "Show advanced TPM/HSM, certificate and Entra actions",
+            "הצגת פעולות מתקדמות עבור TPM/HSM ו-Entra");
+        AddLine(page, advancedSecurityTools);
+        if (!advancedSecurityTools.Checked)
+        {
+            AddLine(page, UiTheme.Text(T(
+                "Дополнительные действия скрыты. Разверните их для управления сертификатами и аппаратными ключами.",
+                "Advanced certificate and hardware actions are hidden until expanded.",
+                "אפשר להמשיך; הגדרות TPM ו-Entra מתקדמות הן אופציונליות.")));
+            return;
+        }
+        AddLine(page, UiTheme.Text(T(
+            "OAuth сертификат основного Postfix: безопасная ротация программного PEM-ключа. Потребуется действующая конфигурация и отдельное разрешение для каждого шага. Доставка писем во время проверок не выполняется.",
+            "Primary Postfix OAuth certificate: guarded software PEM renewal. The installed active identity must already exist. Every change needs an explicit approval. SMTP tests send NO mail.",
+            "חידוש אישור OAuth ב-Postfix: החלפה מאושרת עם אפשרות שחזור, ללא שליחת הודעות בבדיקה.")));
+        AddField(page, T("Срок действия нового OAuth-сертификата (дней, 1–365)",
+            "New OAuth certificate validity (days, 1–365)",
+            "תוקף אישור OAuth החדש בימים (1–365)"), certificateDays);
+        AddAction(page, T("1. Проверить план ротации (только чтение)",
+                          "1. Review primary OAuth rotation (read-only)",
+                          "1. בדיקת תוכנית לחידוש אישור"),
+            PreviewPrimaryOAuthRotationAsync, false, "check", "primary-rotation-plan");
+        if (!string.IsNullOrEmpty(primaryRotationSummary))
+            AddLine(page, UiTheme.Text(primaryRotationSummary));
+        if (reviewedPrimaryRotationPlanSha is not null)
+            AddAction(page, T("2. Подготовить новый сертификат (старый остаётся активным)...",
+                              "2. Stage new certificate (old remains active)...",
+                              "2. הכנת אישור חדש ללא הפעלה"),
+                StagePrimaryOAuthRotationAsync, false, "shield", "primary-rotation-stage");
+        AddAction(page, T("3. Проверить подготовленный сертификат и SHA-256",
+                          "3. Inspect staged certificate and SHA-256",
+                          "3. בדיקת האישור המוכן"),
+            InspectPrimaryOAuthRotationAsync, false, "check", "primary-rotation-status");
+        if (reviewedPrimaryRotationStageSha is not null)
+        {
+            AddAction(page, T("4. Проверить регистрацию PUBLIC сертификата в Entra...",
+                              "4. Review PUBLIC certificate in Entra...",
+                              "4. בדיקת רישום אישור ציבורי ב-Entra"),
+                () => PreviewEntraCertificateForTargetAsync("primary-rotation"),
+                false, "check", "primary-rotation-entra-preview");
+            useLegacyEntraCertPowerShell.Text = T(
+                "Использовать прежний Graph PowerShell 7 вместо C# (ручной резервный способ)",
+                "Use legacy Graph PowerShell 7 instead of C# (manual fallback)",
+                "PowerShell ישן (חלופה ידנית)");
+            useLegacyEntraCertPowerShell.Enabled = !busy;
+            AddLine(page, useLegacyEntraCertPowerShell);
+            if (reviewedEntraCertTarget == "primary-rotation" &&
+                reviewedEntraCertPlanSha is not null)
+                AddAction(page, T("5. Подтвердить добавление PUBLIC сертификата в Entra...",
+                                  "5. Approve PUBLIC certificate registration in Entra...",
+                                  "5. אישור רישום האישור הציבורי"),
+                    () => AddEntraCertificateForTargetAsync("primary-rotation"),
+                    false, "shield", "primary-rotation-entra-apply");
+        }
+        if (primaryRotationGraphCertificateSha is not null &&
+            reviewedPrimaryRotationStageSha is not null)
+            AddAction(page, T("6. Проверить XOAUTH2 SMTP AUTH новым ключом (без письма)...",
+                              "6. Verify staged XOAUTH2 SMTP AUTH (no message sent)...",
+                              "6. בדיקת SMTP AUTH עם המפתח החדש ללא שליחת דואר"),
+                VerifyPrimaryOAuthRotationSmtpAsync, false, "shield", "primary-rotation-smtp");
+        if (verifiedPrimaryRotationSmtpSha is not null &&
+            reviewedPrimaryRotationStageSha == verifiedPrimaryRotationSmtpSha)
+            AddAction(page, T("7. Активировать новый ключ с резервной копией и откатом...",
+                              "7. Activate with backup and automatic rollback...",
+                              "7. הפעלה עם גיבוי ושחזור אוטומטי"),
+                ActivatePrimaryOAuthRotationAsync, false, "shield", "primary-rotation-activate");
+        AddLine(page, UiTheme.Text(T(
+            "НЕ удаляйте предыдущий ключ или сертификат Entra до подтверждения реальной доставки. TPM/HSM использует отдельный безопасный процесс переключения.",
+            "Keep the previous PEM and Entra credentials until actual mail delivery is independently verified. Hardware TPM/HSM uses the separate guarded cutover.",
+            "יש לשמור את המפתחות הישנים עד לאימות מסירת הדואר. ל-TPM/HSM יש תהליך נפרד.")));
+        if (linuxSecurity?.HasTpm2 == true)
+        {
+            AddLine(page, UiTheme.Text(T(
+                "TPM 2.0 обнаружен. Проверьте зависимости RHEL-совместимой ОС перед отдельной установкой; установка не включает аппаратное подписание ключей.",
+                "TPM 2.0 detected. Review RHEL-family dependencies before a separate approved installation; packages do not activate hardware signing.",
+                "זוהה TPM 2.0. יש לבדוק חבילות לפני התקנה מאושרת. ההתקנה אינה מפעילה חתימה חומרתית.")));
+            AddLine(page, UiTheme.Text(T("Профиль TPM2", "TPM2 dependency profile", "פרופיל TPM2")));
+            AddLine(page, tpmDependencyProfile);
+            AddAction(page, T("Проверить необходимые RPM (без изменений)",
+                              "Preview required RPM packages (read-only)",
+                              "בדיקת חבילות RPM ללא שינויים"),
+                              PreviewTpmDependenciesAsync, false, "check", "tpm-deps-preview");
+            AddAction(page, T("Проверить OpenSSL 3 и доступ m365mailer к TPM (без изменений)",
+                              "Inspect OpenSSL 3 and m365mailer TPM access (read-only)",
+                              "בדיקת גישת TPM וספק OpenSSL ללא שינוי"),
+                              InspectTpmProviderAsync, false, "check", "tpm-provider-diagnostic");
+            AddLine(page, UiTheme.Text(tpmPlanSummary));
+            if (reviewedTpmPlanSha is not null)
+                AddAction(page, T("Установить недостающие TPM2 пакеты...",
+                                  "Install reviewed missing TPM2 packages...",
+                                  "התקנת חבילות TPM2 לאחר אישור"),
+                                  InstallTpmDependenciesAsync, false, "shield", "tpm-deps-apply");
+        }
+        if (linuxSecurity is not null)
+        {
+            AddLine(page, UiTheme.Text(T(
+                "OAuth: проверка конфигурации и отдельная офлайн-подпись уже установленным TPM/HSM-ключом. Никаких писем и запросов в Entra.",
+                "OAuth: inspect installed identity, then optionally test offline signing with an existing TPM/HSM key. No mail or Entra requests.",
+                "בדיקת זהות OAuth וחתימה מקומית במפתח קיים ללא שליחת דואר.")));
+            AddAction(page, T("Проверить аппаратную конфигурацию OAuth",
+                              "Inspect hardware OAuth configuration (read-only)",
+                              "בדיקת תצורת OAuth ללא שינוי"),
+                              InspectHardwareOAuthAsync, false, "check", "hardware-oauth-inventory");
+            AddAction(page, T("Проверить PS256-подпись существующим TPM/HSM...",
+                              "Verify existing TPM/HSM PS256 signing offline...",
+                              "בדיקת חתימת TPM/HSM מקומית"),
+                              VerifyOfflineHardwareOAuthAsync, false, "shield", "hardware-oauth-signing");
+            if (!string.IsNullOrEmpty(hardwareOAuthSummary))
+                AddLine(page, UiTheme.Text(hardwareOAuthSummary));
+            AddLine(page, hardwareCutoverTarget);
+            if (linuxSecurity.HasTpm2)
+            {
+                AddLine(page, UiTheme.Text(T(
+                    "TPM2 RSA-ключ: необратимое создание нового persistent key (без автоматического удаления). Только свободный 0x8101xxxx; требуется OpenSSL 3 + tpm2 provider, доступ m365mailer к TPM. Предварительная проверка ничего не изменяет.",
+                    "TPM2 RSA key: creates a new persistent key and NEVER evicts it automatically. Only a free 0x8101xxxx handle; requires OpenSSL 3, tpm2 provider and TPM access for m365mailer. Preview is read-only.",
+                    "יצירת מפתח TPM2 קבוע ללא מחיקה אוטומטית; נדרשת בדיקה ואישור.")));
+                AddField(page, T("Новый TPM2 persistent handle (0x8101xxxx)",
+                                 "New TPM2 persistent handle (0x8101xxxx)",
+                                 "מזהה TPM2 קבוע חדש"), tpmKeyHandle);
+                AddAction(page, T("Проверить создание TPM2 RSA-ключа (без изменений)",
+                                  "Review TPM2 key provisioning (read-only)",
+                                  "בדיקת יצירת מפתח TPM2"),
+                                  PreviewTpmKeyAsync, false, "check", "tpm-key-plan");
+                if (!string.IsNullOrEmpty(tpmKeySummary))
+                    AddLine(page, UiTheme.Text(tpmKeySummary));
+                if (reviewedTpmKeyPlanSha is not null)
+                    AddAction(page, T("Подтвердить создание TPM2-ключа и сертификата...",
+                                      "Approve TPM2 key and certificate creation...",
+                                      "אישור יצירת מפתח TPM2 ואישור ציבורי"),
+                                      ApplyTpmKeyAsync, false, "shield", "tpm-key-apply");
+            }
+            AddLine(page, UiTheme.Text(T(
+                "Подготовка hardware-staged.json: на Linux должны уже существовать защищённый TPM2/PKCS#11 провайдер (tpm2.cnf или pkcs11.cnf) и открытый сертификат hardware-app.crt. Ключ не создаётся, программный PEM-ключ не копируется. Для TPM2 введите handle:0x81...... или путь к tpm2-app.key; для PKCS#11 — URI без PIN.",
+                "Prepare hardware-staged.json: the Linux host must already have a protected provider configuration (tpm2.cnf or pkcs11.cnf) and matching public hardware-app.crt. No key is created or copied. Enter a TPM2 persistent handle/TSS2 blob path, or a PIN-free PKCS#11 URI.",
+                "להכנת זהות חומרה דרושים אישור ציבורי והגדרות ספק מאובטחות בשרת. לא נוצר מפתח חדש.")));
+            AddLine(page, hardwareStageProvider);
+            AddField(page, T("Ссылка на аппаратный ключ (без PIN и секретов)",
+                             "Existing hardware key reference (never enter PIN/secrets)",
+                             "הפניה למפתח חומרה קיים"), hardwareStageKeyRef);
+            AddAction(page, T("Проверить подготовку аппаратного OAuth (без изменений)",
+                              "Preview hardware OAuth candidate (read-only)",
+                              "תצוגה מקדימה של זהות חומרה"),
+                              PreviewHardwareStageAsync, false, "check", "hardware-stage-preview");
+            if (!string.IsNullOrEmpty(hardwareStageSummary))
+                AddLine(page, UiTheme.Text(hardwareStageSummary));
+            if (reviewedHardwareStageSha is not null)
+                AddAction(page, T("Подготовить и проверить hardware-staged.json...",
+                                  "Create and verify hardware-staged.json...",
+                                  "יצירה ואימות של זהות חומרה"),
+                                  ApplyHardwareStageAsync, false, "shield", "hardware-stage-apply");
+            AddLine(page, UiTheme.Text(T(
+                "Активация TPM/HSM — только для заранее подготовленного hardware-staged.json. Требует успешной подписи и получения токена Entra до переключения; выполняет резервное копирование и откат при ошибке.",
+                "TPM/HSM cutover requires an existing hardware-staged.json, successful offline signature and Entra token BEFORE activation, with backup and automatic rollback on failure.",
+                "הפעלה דורשת זהות חומרה מוכנה, חתימה תקינה, אימות Entra וגיבוי עם שחזור במקרה כשל.")));
+            useLegacyEntraCertPowerShell.Text = T(
+                "Использовать прежний Graph PowerShell 7 вместо C# (ручной резервный способ)",
+                "Use legacy Graph PowerShell 7 instead of C# (manual fallback)",
+                "השתמש ב-PowerShell הישן במקום C# (חלופה ידנית)");
+            useLegacyEntraCertPowerShell.Enabled = !busy;
+            AddLine(page, useLegacyEntraCertPowerShell);
+            AddLine(page, UiTheme.Text(T(
+                "Entra OAuth certificate: новый PUBLIC X.509 добавляется через Microsoft Graph addKey, без удаления существующих ключей. Preview требует Application.Read.All, Apply — Application.ReadWrite.All + подтверждение и подпись действующим Linux-ключом. Сначала подготовьте hardware-staged.json.",
+                "Register the NEW PUBLIC X.509 certificate via Microsoft Graph addKey only. Existing credentials stay untouched. Preview needs Application.Read.All; Apply needs Application.ReadWrite.All and fresh proof from the EXISTING Linux key. Stage the hardware identity first.",
+                "רישום אישור ציבורי חדש בלבד ב-Entra; אישורים קיימים נשמרים.")));
+            AddAction(page, T("Проверить сертификат TPM/HSM в Entra (без изменений)",
+                              "Preview TPM/HSM certificate registration in Entra",
+                              "בדיקת אישור Entra ללא שינוי"),
+                              PreviewEntraCertificateAsync, false, "check", "entra-cert-preview");
+            if (!string.IsNullOrEmpty(entraCertificateSummary))
+                AddLine(page, UiTheme.Text(entraCertificateSummary));
+            if (reviewedEntraCertPlanSha is not null)
+                AddAction(page, T("Подтвердить добавление публичного сертификата в Entra...",
+                                  "Approve adding public certificate to Entra...",
+                                  "אישור הוספת אישור ציבורי ל-Entra"),
+                                  AddEntraCertificateAsync, false, "shield", "entra-cert-add");
+            AddAction(page, T("Предпросмотр переключения TPM/HSM (без изменений)",
+                              "Review hardware OAuth cutover (read-only)",
+                              "תצוגה מקדימה של מעבר חומרה"),
+                              PreviewHardwareCutoverAsync, false, "check", "hardware-cutover-preview");
+            if (!string.IsNullOrEmpty(hardwareCutoverSummary))
+                AddLine(page, UiTheme.Text(hardwareCutoverSummary));
+            if (reviewedHardwareCutoverSha is not null)
+            {
+                if (verifiedHardwarePreflightSha == reviewedHardwareCutoverSha &&
+                    verifiedHardwarePreflightContext == SecurityOptionsStore.Identity(Endpoint()) + "|" + SelectedHardwareCutoverTarget())
+                    AddLine(page, UiTheme.Text(T(
+                        "Последняя проверка токена Entra с подготовленным TPM/HSM прошла. Токен не сохранён; перед активацией будет выполнена новая проверка.",
+                        "Staged TPM/HSM Entra token check passed. The token was not stored; activation always performs a fresh check.",
+                        "בדיקת אסימון Entra הצליחה. האסימון לא נשמר, וההפעלה דורשת בדיקה נוספת.")));
+                if (verifiedHardwareSmtpAuthSha == reviewedHardwareCutoverSha &&
+                    verifiedHardwareSmtpAuthContext == SecurityOptionsStore.Identity(Endpoint()) + "|" + SelectedHardwareCutoverTarget())
+                    AddLine(page, UiTheme.Text(T(
+                        "Exchange Online: проверка STARTTLS и AUTH XOAUTH2 прошла без MAIL/RCPT/DATA. Реальная доставка ещё не проверена.",
+                        "Exchange Online STARTTLS and AUTH XOAUTH2 passed without MAIL/RCPT/DATA. Recipient delivery is still unverified.",
+                        "אימות SMTP AUTH XOAUTH2 הצליח ללא שליחת דואר.")));
+                AddAction(page, T("Проверить SMTP AUTH XOAUTH2 без отправки письма...",
+                                  "Test Exchange SMTP AUTH XOAUTH2 (no mail sent)...",
+                                  "בדיקת SMTP AUTH ללא שליחת דואר"),
+                                  VerifyStagedExchangeSmtpAuthAsync, false, "shield", "hardware-staged-smtp-auth");
+                AddAction(page, T("Проверить получение токена Entra новым TPM/HSM (без смены OAuth)...",
+                                  "Verify staged TPM/HSM Entra token without switching...",
+                                  "בדיקת אסימון Entra ללא שינוי זהות OAuth"),
+                                  VerifyStagedHardwareEntraTokenAsync, false, "shield", "hardware-staged-entra-token");
+                AddAction(page, T("Подтвердить и активировать аппаратный OAuth...",
+                                  "Approve and activate hardware OAuth...",
+                                  "אישור והפעלת OAuth חומרה"),
+                                  ApplyHardwareCutoverAsync, false, "shield", "hardware-cutover-apply");
+            }
+            AddAction(page, T("Показать доступные резервные копии OAuth",
+                              "List hardware OAuth rollback snapshots",
+                              "רשימת גיבויי OAuth"),
+                              ListHardwareCutoverBackupsAsync, false, "check", "hardware-cutover-list");
+            if (hardwareCutoverBackup.Items.Count > 0)
+            {
+                AddLine(page, hardwareCutoverBackup);
+                AddAction(page, T("Откатить OAuth на выбранную резервную копию...",
+                                  "Restore selected OAuth backup...",
+                                  "שחזור מגיבוי OAuth"),
+                                  RollbackHardwareCutoverAsync, false, "shield", "hardware-cutover-rollback");
+            }
+            AddLine(page, UiTheme.Text(T(
+                "Проверка РЕАЛЬНОЙ отправки после активации TPM/HSM. Введите два согласованных тестовых адреса: внутренний — в домене активного отправителя, внешний — в другом домене. Preview ничего не отправляет. Отправка создаёт максимум два письма и отмечает SMTP-приём; наличие письма в почтовом ящике подтверждается отдельно.",
+                "REAL post-cutover SMTP delivery acceptance. Enter two consented test inboxes: internal in the active sender domain, external in a different domain. Preview sends nothing. Apply submits at most two fixed short messages. Inbox receipt must be verified independently.",
+                "בדיקת משלוח אמיתי לאחר הפעלת TPM: שתי כתובות מורשות, פנימית וחיצונית. תצוגה מקדימה אינה שולחת דואר. קבלה בתיבה דורשת אימות נפרד.")));
+            AddField(page, T("Внутренний тестовый получатель (тот же домен)",
+                             "Internal test recipient (same sender domain)",
+                             "נמען פנימי לבדיקה"), acceptanceInternalRecipient);
+            AddField(page, T("Внешний тестовый получатель (другой домен)",
+                             "External test recipient (different domain)",
+                             "נמען חיצוני לבדיקה"), acceptanceExternalRecipient);
+            AddAction(page, T("Проверить план отправки двух тестовых писем...",
+                              "Preview two test deliveries (no mail sent)",
+                              "תצוגה מקדימה למשלוח שתי הודעות"),
+                              PreviewDeliveryAcceptanceAsync, false, "check", "delivery-acceptance-preview");
+            if (!string.IsNullOrEmpty(acceptanceSummary))
+                AddLine(page, UiTheme.Text(acceptanceSummary));
+            if (reviewedAcceptanceSha is not null)
+                AddAction(page, T("Подтвердить отправку двух РЕАЛЬНЫХ тестовых писем...",
+                                  "Confirm sending TWO real test messages...",
+                                  "אישור שליחת שתי הודעות בדיקה אמיתיות"),
+                                  ApplyDeliveryAcceptanceAsync, false, "shield", "delivery-acceptance-apply");
+
+        }
+        hardwareRequest.Text = T("Запланировать аппаратную защиту ключа (TPM/HSM) — не активировано",
+                                 "Plan TPM/HSM-backed key — NOT active",
+                                 "תכנון מפתח חומרה - לא פעיל");
+        if (linuxSecurity?.HasTpm2 == true || linuxSecurity?.HasPkcs11TokenHint == true || hardwareRequest.Checked)
+            AddLine(page, hardwareRequest);
+    }
+
+    private void ShowDeliveryCloudSecurityTools(TableLayoutPanel page)
+    {
+        EnsureSecurityLoaded();
+        ipRequest.Text = T("Запланировать ограничение по IP (Entra Conditional Access) — не активировано",
+                           "Plan Entra IP restriction — NOT active",
+                           "תכנון הגבלת IP - לא פעיל");
+        monitoringRequest.Text = T("Запланировать мониторинг входов приложения Entra — не активировано",
+                                   "Plan Entra application sign-in monitoring — NOT active",
+                                   "תכנון ניטור כניסות - לא פעיל");
+        AddLine(page, ipRequest);
+        AddLine(page, monitoringRequest);
+        AddField(page, T("Tenant ID для необязательной проверки Entra", "Tenant ID for optional Entra check", "Tenant ID לבדיקה"), tenant);
+        useLegacyEntraSecurityPowerShell.Text = T(
+            "Использовать старый Graph PowerShell для проверки Entra (ручной резервный способ)",
+            "Use legacy Graph PowerShell for Entra security check (manual fallback)",
+            "Graph PowerShell הישן עבור בדיקת Entra (חלופה ידנית)");
+        useLegacyEntraSecurityPowerShell.Enabled = !busy;
+        AddLine(page, useLegacyEntraSecurityPowerShell);
+        AddAction(page, T("Проверить возможности Entra (вход администратора, только чтение)",
+                          "Check Entra security APIs (read-only admin sign-in)",
+                          "בדוק Entra לקריאה בלבד"), CheckCloudSecurityAsync, false, "shield", "entra");
+        AddLine(page, UiTheme.Text(cloudSecuritySummary));
+        AddAction(page, T("Как включить защиту вручную сейчас или позже",
+                          "How to enable protection manually now or later",
+                          "כיצד להפעיל הגנה באופן ידני"), ShowSecurityHelpAsync, false, "shield");
+        AddAction(page, T("Открыть Microsoft Entra — настройка вручную",
+                          "Open Microsoft Entra — configure manually",
+                          "פתח את Microsoft Entra"), () => OpenSecurityUrlAsync("https://entra.microsoft.com/"), false, "cloud");
+    }
+
     private void ShowCloudTenantSelection(TableLayoutPanel page)
     {
         AddLine(page, UiTheme.Text(T(
@@ -2212,6 +2531,7 @@ internal sealed partial class MainForm : Form
             return;
         queuedWizardStep = step;
         queuedMailPlanPhase = mailPlanPhase;
+        queuedDeliveryPhase = deliveryPhase;
         wizardRefreshTimer.Stop();
         wizardRefreshTimer.Start();
     }
@@ -2235,7 +2555,8 @@ internal sealed partial class MainForm : Form
         wizardRefreshTimer.Stop();
         queuedWizardStep = -1;
         bool samePage = renderedWizardStep == step &&
-            (step != 1 || renderedMailPlanPhase == mailPlanPhase);
+            (step != 1 || renderedMailPlanPhase == mailPlanPhase) &&
+            (step != 2 || renderedDeliveryPhase == deliveryPhase);
         int previousOffset = samePage ? Math.Max(0, -pageHost.AutoScrollPosition.Y) : 0;
         renderingPage = true;
         pageHost.Rebuilding = true;
@@ -2246,6 +2567,7 @@ internal sealed partial class MainForm : Form
             RenderPageCore();
             renderedWizardStep = step;
             renderedMailPlanPhase = mailPlanPhase;
+            renderedDeliveryPhase = deliveryPhase;
         }
         catch (Exception ex)
         {
@@ -2277,6 +2599,7 @@ internal sealed partial class MainForm : Form
                 ex.GetType().Name + ").");
             renderedWizardStep = step;
             renderedMailPlanPhase = mailPlanPhase;
+            renderedDeliveryPhase = deliveryPhase;
             previousOffset = 0;
         }
         finally
@@ -2300,12 +2623,15 @@ internal sealed partial class MainForm : Form
 
     private void MoveWizardBack()
     {
-        if (step == 1 && mailPlanPhase == MailPlanSecurityPhase)
-            mailPlanPhase = returnFromSecurityPhase;
-        else if (step == 1 && mailPlanPhase > 0)
+        if (step == 1 && mailPlanPhase > 0)
             mailPlanPhase--;
+        else if (step == 2 && deliveryPhase > 0)
+            deliveryPhase = PreviousDeliveryPhase();
         else if (step > 0)
+        {
             step--;
+            if (step == 2) deliveryPhase = DeliveryReviewPhase;
+        }
     }
 
     private bool CanAdvanceWizard() => step < 4 && !busy &&
@@ -2318,16 +2644,24 @@ internal sealed partial class MainForm : Form
             3 => HasMailDiscovery(),
             4 or MailPlanReviewPhase => MailPlanScenarioAvailable(),
             _ => false
-        });
+        }) && (step != 2 || deliveryPhase <= DeliveryReviewPhase);
 
-    private void MoveWizardNext()
+    private async Task MoveWizardNextAsync()
     {
         if (!CanAdvanceWizard()) return;
         if (step == 1 && mailPlanPhase < MailPlanReviewPhase)
             mailPlanPhase++;
+        else if (step == 2 && deliveryPhase < DeliveryReviewPhase && DeliveryHasPlan())
+            deliveryPhase = NextDeliveryPhase();
         else
+        {
             step++;
+            if (step == 2) deliveryPhase = 0;
+        }
         RenderPage();
+        if (!pageRenderFailed && step == 2 && deliveryPhase == 2 &&
+            RequiresOAuthCertificate() && !CertificateHardwareProbeCurrent())
+            await RunBusyAsync("linux-security", AutoProbeCertificateHardwareAsync);
     }
 
     private void RenderPageCore()
@@ -2343,7 +2677,7 @@ internal sealed partial class MainForm : Form
         var titles = new[]
         {
             T("1 · Подключение к Linux", "1 · Linux connection", "1 · חיבור ל-Linux"),
-            T("2 · Почтовый сервер и защита", "2 · Mail server discovery and security", "2 · גילוי שרת הדואר ואבטחה"),
+            T("2 · План почтового сервера", "2 · Mail server plan", "2 · תוכנית שרת הדואר"),
             T("3 · Способ отправки", "3 · Choose delivery method", "3 · בחירת שיטת שליחה"),
             T("4 · Настройка SMTP-маршрута", "4 · Configure SMTP delivery", "4 · הגדרת נתיב SMTP"),
             T("5 · Проверка и обслуживание", "5 · Diagnostics and updates", "5 · אבחון ועדכונים")
@@ -2354,9 +2688,9 @@ internal sealed partial class MainForm : Form
             0 => T("Любой Linux с SSH и правами sudo. Пароль Microsoft 365 не нужен.",
                    "Any Linux with SSH and sudo access. No Microsoft 365 mailbox password.",
                    "כל שרת Linux עם SSH ו-sudo. ללא סיסמת Microsoft 365."),
-            1 => T("После успешного SSH мастер определяет активный MTA и состояние SMTP без изменений. TPM — отдельно, по желанию.",
-                   "After SSH, read-only discovery checks the active MTA and SMTP. TPM checks are optional.",
-                   "לאחר SSH מתבצעת בדיקת MTA ו-SMTP ללא שינויים. TPM אופציונלי."),
+            1 => T("Выберите источник, провайдера и сценарий на основе обнаруженных настроек.",
+                   "Choose source, provider and scenario using the discovered configuration.",
+                   "בחרו מקור, ספק ותרחיש לפי ההגדרות שהתגלו."),
             2 => mailTransport.SelectedIndex is 1 or 2
                 ? T("Для Connector/Direct Send не нужен OAuth или почтовый ящик; укажите домен и MX на следующем шаге.",
                     "Connector / Direct Send requires no OAuth or mailbox; enter the accepted domain and MX next.",
@@ -2398,346 +2732,45 @@ internal sealed partial class MainForm : Form
                 EnsureRoutingLoaded();
                 LocalizeDeliveryChoices();
                 ShowMailPlanProgress(page);
-                if (mailPlanPhase != MailPlanSecurityPhase)
+                if (mailPlanPhase == 0)
                 {
-                    if (mailPlanPhase == 0)
+                    ShowMailDiscovery(page, true);
+                    if (!HasMailDiscovery())
                     {
-                        ShowMailDiscovery(page, true);
-                        if (!HasMailDiscovery())
-                        {
-                            // Preserve the old skip/diagnostics path, but
-                            // do not invent discovery evidence or a plan.
-                            var skipPlan = UiTheme.Action(T("Продолжить без плана (диагностика)",
-                                "Continue without a plan (diagnostics)", "המשך ללא תוכנית (אבחון)"));
-                            skipPlan.Enabled = !busy;
-                            skipPlan.Click += (_, _) => { step = 2; RenderPage(); };
-                            AddLine(page, skipPlan);
-                        }
+                        // Preserve the old skip/diagnostics path, but
+                        // do not invent discovery evidence or a plan.
+                        var skipPlan = UiTheme.Action(T("Продолжить без плана (диагностика)",
+                            "Continue without a plan (diagnostics)", "המשך ללא תוכנית (אבחון)"));
+                        skipPlan.Enabled = !busy;
+                        skipPlan.Click += (_, _) => { step = 2; RenderPage(); };
+                        AddLine(page, skipPlan);
                     }
-                    else if (mailPlanPhase is 1 or 2 or 4)
-                        ShowMailFlowPlanner(page, mailPlanPhase);
-                    else if (mailPlanPhase == 3)
-                        ShowRecipientAdvice(page);
-                    else if (mailPlanPhase == MailPlanReviewPhase)
-                    {
-                        ShowMailPlanSummary(page);
-                        ShowMailFlowPlanner(page, MailPlanReviewPhase);
-                    }
-                    if (mailPlanPhase is 0 or MailPlanReviewPhase)
-                    {
-                        var security = UiTheme.Action(T("Дополнительно: TPM/HSM и защита",
-                            "Optional: TPM/HSM and security", "אופציונלי: TPM/HSM ואבטחה"), glyph: "shield");
-                        security.Enabled = !busy;
-                        security.Click += (_, _) =>
-                        {
-                            returnFromSecurityPhase = mailPlanPhase;
-                            mailPlanPhase = MailPlanSecurityPhase;
-                            RenderPage();
-                        };
-                        AddLine(page, security);
-                    }
-                    break;
                 }
-                AddLine(page, UiTheme.Text(T(
-                    "Все опции выключены. Выбор сохраняется как ПЛАН — он не меняет Entra, Postfix, сертификат или Linux. Для включения потребуются отдельные подтверждённые действия.",
-                    "All options are off. Your selection is saved as a PLAN only: it does not modify Entra, Postfix, certificates or Linux. Activation requires separate approved steps.",
-                    "כל האפשרויות כבויות. הבחירה נשמרת כתוכנית בלבד.")));
-                AddAction(page, T("Проверить TPM, HSM и PKCS#11 (только чтение)",
-                                  "Inspect TPM, HSM and PKCS#11 (read-only)",
-                                  "בדוק TPM/HSM לקריאה בלבד"), CheckLinuxSecurityAsync, true, "shield", "linux-security");
-                AddLine(page, UiTheme.Text(linuxSecurity?.SummaryRu() ??
-                    T("Linux: проверка ещё не запускалась.", "Linux: not inspected yet.", "Linux: טרם נבדק.")));
-                advancedSecurityTools.Text = T(
-                    "Показать расширенные действия TPM/HSM, сертификаты и Entra",
-                    "Show advanced TPM/HSM, certificate and Entra actions",
-                    "הצגת פעולות מתקדמות עבור TPM/HSM ו-Entra");
-                AddLine(page, advancedSecurityTools);
-                if (!advancedSecurityTools.Checked)
+                else if (mailPlanPhase is 1 or 2 or 4)
+                    ShowMailFlowPlanner(page, mailPlanPhase);
+                else if (mailPlanPhase == 3)
+                    ShowRecipientAdvice(page);
+                else if (mailPlanPhase == MailPlanReviewPhase)
                 {
-                    AddLine(page, UiTheme.Text(T(
-                        "Дополнительные действия скрыты. Можно перейти далее: TPM и настройка Entra необязательны на этом шаге.",
-                        "Advanced actions are hidden. Continue when ready: TPM and Entra security work is optional at this step.",
-                        "אפשר להמשיך; הגדרות TPM ו-Entra מתקדמות הן אופציונליות.")));
-                    break;
+                    ShowMailPlanSummary(page);
+                    ShowMailFlowPlanner(page, MailPlanReviewPhase);
                 }
-                AddLine(page, UiTheme.Text(T(
-                    "OAuth сертификат основного Postfix: безопасная ротация программного PEM-ключа. Потребуется действующая конфигурация и отдельное разрешение для каждого шага. Доставка писем во время проверок не выполняется.",
-                    "Primary Postfix OAuth certificate: guarded software PEM renewal. The installed active identity must already exist. Every change needs an explicit approval. SMTP tests send NO mail.",
-                    "חידוש אישור OAuth ב-Postfix: החלפה מאושרת עם אפשרות שחזור, ללא שליחת הודעות בבדיקה.")));
-                AddField(page, T("Срок действия нового OAuth-сертификата (дней, 1–365)",
-                    "New OAuth certificate validity (days, 1–365)",
-                    "תוקף אישור OAuth החדש בימים (1–365)"), certificateDays);
-                AddAction(page, T("1. Проверить план ротации (только чтение)",
-                                  "1. Review primary OAuth rotation (read-only)",
-                                  "1. בדיקת תוכנית לחידוש אישור"),
-                    PreviewPrimaryOAuthRotationAsync, false, "check", "primary-rotation-plan");
-                if (!string.IsNullOrEmpty(primaryRotationSummary))
-                    AddLine(page, UiTheme.Text(primaryRotationSummary));
-                if (reviewedPrimaryRotationPlanSha is not null)
-                    AddAction(page, T("2. Подготовить новый сертификат (старый остаётся активным)...",
-                                      "2. Stage new certificate (old remains active)...",
-                                      "2. הכנת אישור חדש ללא הפעלה"),
-                        StagePrimaryOAuthRotationAsync, false, "shield", "primary-rotation-stage");
-                AddAction(page, T("3. Проверить подготовленный сертификат и SHA-256",
-                                  "3. Inspect staged certificate and SHA-256",
-                                  "3. בדיקת האישור המוכן"),
-                    InspectPrimaryOAuthRotationAsync, false, "check", "primary-rotation-status");
-                if (reviewedPrimaryRotationStageSha is not null)
-                {
-                    AddAction(page, T("4. Проверить регистрацию PUBLIC сертификата в Entra...",
-                                      "4. Review PUBLIC certificate in Entra...",
-                                      "4. בדיקת רישום אישור ציבורי ב-Entra"),
-                        () => PreviewEntraCertificateForTargetAsync("primary-rotation"),
-                        false, "check", "primary-rotation-entra-preview");
-                    useLegacyEntraCertPowerShell.Text = T(
-                        "Использовать прежний Graph PowerShell 7 вместо C# (ручной резервный способ)",
-                        "Use legacy Graph PowerShell 7 instead of C# (manual fallback)",
-                        "PowerShell ישן (חלופה ידנית)");
-                    useLegacyEntraCertPowerShell.Enabled = !busy;
-                    AddLine(page, useLegacyEntraCertPowerShell);
-                    if (reviewedEntraCertTarget == "primary-rotation" &&
-                        reviewedEntraCertPlanSha is not null)
-                        AddAction(page, T("5. Подтвердить добавление PUBLIC сертификата в Entra...",
-                                          "5. Approve PUBLIC certificate registration in Entra...",
-                                          "5. אישור רישום האישור הציבורי"),
-                            () => AddEntraCertificateForTargetAsync("primary-rotation"),
-                            false, "shield", "primary-rotation-entra-apply");
-                }
-                if (primaryRotationGraphCertificateSha is not null &&
-                    reviewedPrimaryRotationStageSha is not null)
-                    AddAction(page, T("6. Проверить XOAUTH2 SMTP AUTH новым ключом (без письма)...",
-                                      "6. Verify staged XOAUTH2 SMTP AUTH (no message sent)...",
-                                      "6. בדיקת SMTP AUTH עם המפתח החדש ללא שליחת דואר"),
-                        VerifyPrimaryOAuthRotationSmtpAsync, false, "shield", "primary-rotation-smtp");
-                if (verifiedPrimaryRotationSmtpSha is not null &&
-                    reviewedPrimaryRotationStageSha == verifiedPrimaryRotationSmtpSha)
-                    AddAction(page, T("7. Активировать новый ключ с резервной копией и откатом...",
-                                      "7. Activate with backup and automatic rollback...",
-                                      "7. הפעלה עם גיבוי ושחזור אוטומטי"),
-                        ActivatePrimaryOAuthRotationAsync, false, "shield", "primary-rotation-activate");
-                AddLine(page, UiTheme.Text(T(
-                    "НЕ удаляйте предыдущий ключ или сертификат Entra до подтверждения реальной доставки. TPM/HSM использует отдельный безопасный процесс переключения.",
-                    "Keep the previous PEM and Entra credentials until actual mail delivery is independently verified. Hardware TPM/HSM uses the separate guarded cutover.",
-                    "יש לשמור את המפתחות הישנים עד לאימות מסירת הדואר. ל-TPM/HSM יש תהליך נפרד.")));
-                if (linuxSecurity?.HasTpm2 == true)
-                {
-                    AddLine(page, UiTheme.Text(T(
-                        "TPM 2.0 обнаружен. Проверьте зависимости RHEL-совместимой ОС перед отдельной установкой; установка не включает аппаратное подписание ключей.",
-                        "TPM 2.0 detected. Review RHEL-family dependencies before a separate approved installation; packages do not activate hardware signing.",
-                        "זוהה TPM 2.0. יש לבדוק חבילות לפני התקנה מאושרת. ההתקנה אינה מפעילה חתימה חומרתית.")));
-                    AddLine(page, UiTheme.Text(T("Профиль TPM2", "TPM2 dependency profile", "פרופיל TPM2")));
-                    AddLine(page, tpmDependencyProfile);
-                    AddAction(page, T("Проверить необходимые RPM (без изменений)",
-                                      "Preview required RPM packages (read-only)",
-                                      "בדיקת חבילות RPM ללא שינויים"),
-                                      PreviewTpmDependenciesAsync, false, "check", "tpm-deps-preview");
-                    AddAction(page, T("Проверить OpenSSL 3 и доступ m365mailer к TPM (без изменений)",
-                                      "Inspect OpenSSL 3 and m365mailer TPM access (read-only)",
-                                      "בדיקת גישת TPM וספק OpenSSL ללא שינוי"),
-                                      InspectTpmProviderAsync, false, "check", "tpm-provider-diagnostic");
-                    AddLine(page, UiTheme.Text(tpmPlanSummary));
-                    if (reviewedTpmPlanSha is not null)
-                        AddAction(page, T("Установить недостающие TPM2 пакеты...",
-                                          "Install reviewed missing TPM2 packages...",
-                                          "התקנת חבילות TPM2 לאחר אישור"),
-                                          InstallTpmDependenciesAsync, false, "shield", "tpm-deps-apply");
-                }
-                if (linuxSecurity is not null)
-                {
-                    AddLine(page, UiTheme.Text(T(
-                        "OAuth: проверка конфигурации и отдельная офлайн-подпись уже установленным TPM/HSM-ключом. Никаких писем и запросов в Entra.",
-                        "OAuth: inspect installed identity, then optionally test offline signing with an existing TPM/HSM key. No mail or Entra requests.",
-                        "בדיקת זהות OAuth וחתימה מקומית במפתח קיים ללא שליחת דואר.")));
-                    AddAction(page, T("Проверить аппаратную конфигурацию OAuth",
-                                      "Inspect hardware OAuth configuration (read-only)",
-                                      "בדיקת תצורת OAuth ללא שינוי"),
-                                      InspectHardwareOAuthAsync, false, "check", "hardware-oauth-inventory");
-                    AddAction(page, T("Проверить PS256-подпись существующим TPM/HSM...",
-                                      "Verify existing TPM/HSM PS256 signing offline...",
-                                      "בדיקת חתימת TPM/HSM מקומית"),
-                                      VerifyOfflineHardwareOAuthAsync, false, "shield", "hardware-oauth-signing");
-                    if (!string.IsNullOrEmpty(hardwareOAuthSummary))
-                        AddLine(page, UiTheme.Text(hardwareOAuthSummary));
-                    AddLine(page, hardwareCutoverTarget);
-                    if (linuxSecurity.HasTpm2)
-                    {
-                        AddLine(page, UiTheme.Text(T(
-                            "TPM2 RSA-ключ: необратимое создание нового persistent key (без автоматического удаления). Только свободный 0x8101xxxx; требуется OpenSSL 3 + tpm2 provider, доступ m365mailer к TPM. Предварительная проверка ничего не изменяет.",
-                            "TPM2 RSA key: creates a new persistent key and NEVER evicts it automatically. Only a free 0x8101xxxx handle; requires OpenSSL 3, tpm2 provider and TPM access for m365mailer. Preview is read-only.",
-                            "יצירת מפתח TPM2 קבוע ללא מחיקה אוטומטית; נדרשת בדיקה ואישור.")));
-                        AddField(page, T("Новый TPM2 persistent handle (0x8101xxxx)",
-                                         "New TPM2 persistent handle (0x8101xxxx)",
-                                         "מזהה TPM2 קבוע חדש"), tpmKeyHandle);
-                        AddAction(page, T("Проверить создание TPM2 RSA-ключа (без изменений)",
-                                          "Review TPM2 key provisioning (read-only)",
-                                          "בדיקת יצירת מפתח TPM2"),
-                                          PreviewTpmKeyAsync, false, "check", "tpm-key-plan");
-                        if (!string.IsNullOrEmpty(tpmKeySummary))
-                            AddLine(page, UiTheme.Text(tpmKeySummary));
-                        if (reviewedTpmKeyPlanSha is not null)
-                            AddAction(page, T("Подтвердить создание TPM2-ключа и сертификата...",
-                                              "Approve TPM2 key and certificate creation...",
-                                              "אישור יצירת מפתח TPM2 ואישור ציבורי"),
-                                              ApplyTpmKeyAsync, false, "shield", "tpm-key-apply");
-                    }
-                    AddLine(page, UiTheme.Text(T(
-                        "Подготовка hardware-staged.json: на Linux должны уже существовать защищённый TPM2/PKCS#11 провайдер (tpm2.cnf или pkcs11.cnf) и открытый сертификат hardware-app.crt. Ключ не создаётся, программный PEM-ключ не копируется. Для TPM2 введите handle:0x81...... или путь к tpm2-app.key; для PKCS#11 — URI без PIN.",
-                        "Prepare hardware-staged.json: the Linux host must already have a protected provider configuration (tpm2.cnf or pkcs11.cnf) and matching public hardware-app.crt. No key is created or copied. Enter a TPM2 persistent handle/TSS2 blob path, or a PIN-free PKCS#11 URI.",
-                        "להכנת זהות חומרה דרושים אישור ציבורי והגדרות ספק מאובטחות בשרת. לא נוצר מפתח חדש.")));
-                    AddLine(page, hardwareStageProvider);
-                    AddField(page, T("Ссылка на аппаратный ключ (без PIN и секретов)",
-                                     "Existing hardware key reference (never enter PIN/secrets)",
-                                     "הפניה למפתח חומרה קיים"), hardwareStageKeyRef);
-                    AddAction(page, T("Проверить подготовку аппаратного OAuth (без изменений)",
-                                      "Preview hardware OAuth candidate (read-only)",
-                                      "תצוגה מקדימה של זהות חומרה"),
-                                      PreviewHardwareStageAsync, false, "check", "hardware-stage-preview");
-                    if (!string.IsNullOrEmpty(hardwareStageSummary))
-                        AddLine(page, UiTheme.Text(hardwareStageSummary));
-                    if (reviewedHardwareStageSha is not null)
-                        AddAction(page, T("Подготовить и проверить hardware-staged.json...",
-                                          "Create and verify hardware-staged.json...",
-                                          "יצירה ואימות של זהות חומרה"),
-                                          ApplyHardwareStageAsync, false, "shield", "hardware-stage-apply");
-                    AddLine(page, UiTheme.Text(T(
-                        "Активация TPM/HSM — только для заранее подготовленного hardware-staged.json. Требует успешной подписи и получения токена Entra до переключения; выполняет резервное копирование и откат при ошибке.",
-                        "TPM/HSM cutover requires an existing hardware-staged.json, successful offline signature and Entra token BEFORE activation, with backup and automatic rollback on failure.",
-                        "הפעלה דורשת זהות חומרה מוכנה, חתימה תקינה, אימות Entra וגיבוי עם שחזור במקרה כשל.")));
-                    useLegacyEntraCertPowerShell.Text = T(
-                        "Использовать прежний Graph PowerShell 7 вместо C# (ручной резервный способ)",
-                        "Use legacy Graph PowerShell 7 instead of C# (manual fallback)",
-                        "השתמש ב-PowerShell הישן במקום C# (חלופה ידנית)");
-                    useLegacyEntraCertPowerShell.Enabled = !busy;
-                    AddLine(page, useLegacyEntraCertPowerShell);
-                    AddLine(page, UiTheme.Text(T(
-                        "Entra OAuth certificate: новый PUBLIC X.509 добавляется через Microsoft Graph addKey, без удаления существующих ключей. Preview требует Application.Read.All, Apply — Application.ReadWrite.All + подтверждение и подпись действующим Linux-ключом. Сначала подготовьте hardware-staged.json.",
-                        "Register the NEW PUBLIC X.509 certificate via Microsoft Graph addKey only. Existing credentials stay untouched. Preview needs Application.Read.All; Apply needs Application.ReadWrite.All and fresh proof from the EXISTING Linux key. Stage the hardware identity first.",
-                        "רישום אישור ציבורי חדש בלבד ב-Entra; אישורים קיימים נשמרים.")));
-                    AddAction(page, T("Проверить сертификат TPM/HSM в Entra (без изменений)",
-                                      "Preview TPM/HSM certificate registration in Entra",
-                                      "בדיקת אישור Entra ללא שינוי"),
-                                      PreviewEntraCertificateAsync, false, "check", "entra-cert-preview");
-                    if (!string.IsNullOrEmpty(entraCertificateSummary))
-                        AddLine(page, UiTheme.Text(entraCertificateSummary));
-                    if (reviewedEntraCertPlanSha is not null)
-                        AddAction(page, T("Подтвердить добавление публичного сертификата в Entra...",
-                                          "Approve adding public certificate to Entra...",
-                                          "אישור הוספת אישור ציבורי ל-Entra"),
-                                          AddEntraCertificateAsync, false, "shield", "entra-cert-add");
-                    AddAction(page, T("Предпросмотр переключения TPM/HSM (без изменений)",
-                                      "Review hardware OAuth cutover (read-only)",
-                                      "תצוגה מקדימה של מעבר חומרה"),
-                                      PreviewHardwareCutoverAsync, false, "check", "hardware-cutover-preview");
-                    if (!string.IsNullOrEmpty(hardwareCutoverSummary))
-                        AddLine(page, UiTheme.Text(hardwareCutoverSummary));
-                    if (reviewedHardwareCutoverSha is not null)
-                    {
-                        if (verifiedHardwarePreflightSha == reviewedHardwareCutoverSha &&
-                            verifiedHardwarePreflightContext == SecurityOptionsStore.Identity(Endpoint()) + "|" + SelectedHardwareCutoverTarget())
-                            AddLine(page, UiTheme.Text(T(
-                                "Последняя проверка токена Entra с подготовленным TPM/HSM прошла. Токен не сохранён; перед активацией будет выполнена новая проверка.",
-                                "Staged TPM/HSM Entra token check passed. The token was not stored; activation always performs a fresh check.",
-                                "בדיקת אסימון Entra הצליחה. האסימון לא נשמר, וההפעלה דורשת בדיקה נוספת.")));
-                        if (verifiedHardwareSmtpAuthSha == reviewedHardwareCutoverSha &&
-                            verifiedHardwareSmtpAuthContext == SecurityOptionsStore.Identity(Endpoint()) + "|" + SelectedHardwareCutoverTarget())
-                            AddLine(page, UiTheme.Text(T(
-                                "Exchange Online: проверка STARTTLS и AUTH XOAUTH2 прошла без MAIL/RCPT/DATA. Реальная доставка ещё не проверена.",
-                                "Exchange Online STARTTLS and AUTH XOAUTH2 passed without MAIL/RCPT/DATA. Recipient delivery is still unverified.",
-                                "אימות SMTP AUTH XOAUTH2 הצליח ללא שליחת דואר.")));
-                        AddAction(page, T("Проверить SMTP AUTH XOAUTH2 без отправки письма...",
-                                          "Test Exchange SMTP AUTH XOAUTH2 (no mail sent)...",
-                                          "בדיקת SMTP AUTH ללא שליחת דואר"),
-                                          VerifyStagedExchangeSmtpAuthAsync, false, "shield", "hardware-staged-smtp-auth");
-                        AddAction(page, T("Проверить получение токена Entra новым TPM/HSM (без смены OAuth)...",
-                                          "Verify staged TPM/HSM Entra token without switching...",
-                                          "בדיקת אסימון Entra ללא שינוי זהות OAuth"),
-                                          VerifyStagedHardwareEntraTokenAsync, false, "shield", "hardware-staged-entra-token");
-                        AddAction(page, T("Подтвердить и активировать аппаратный OAuth...",
-                                          "Approve and activate hardware OAuth...",
-                                          "אישור והפעלת OAuth חומרה"),
-                                          ApplyHardwareCutoverAsync, false, "shield", "hardware-cutover-apply");
-                    }
-                    AddAction(page, T("Показать доступные резервные копии OAuth",
-                                      "List hardware OAuth rollback snapshots",
-                                      "רשימת גיבויי OAuth"),
-                                      ListHardwareCutoverBackupsAsync, false, "check", "hardware-cutover-list");
-                    if (hardwareCutoverBackup.Items.Count > 0)
-                    {
-                        AddLine(page, hardwareCutoverBackup);
-                        AddAction(page, T("Откатить OAuth на выбранную резервную копию...",
-                                          "Restore selected OAuth backup...",
-                                          "שחזור מגיבוי OAuth"),
-                                          RollbackHardwareCutoverAsync, false, "shield", "hardware-cutover-rollback");
-                    }
-                    AddLine(page, UiTheme.Text(T(
-                        "Проверка РЕАЛЬНОЙ отправки после активации TPM/HSM. Введите два согласованных тестовых адреса: внутренний — в домене активного отправителя, внешний — в другом домене. Preview ничего не отправляет. Отправка создаёт максимум два письма и отмечает SMTP-приём; наличие письма в почтовом ящике подтверждается отдельно.",
-                        "REAL post-cutover SMTP delivery acceptance. Enter two consented test inboxes: internal in the active sender domain, external in a different domain. Preview sends nothing. Apply submits at most two fixed short messages. Inbox receipt must be verified independently.",
-                        "בדיקת משלוח אמיתי לאחר הפעלת TPM: שתי כתובות מורשות, פנימית וחיצונית. תצוגה מקדימה אינה שולחת דואר. קבלה בתיבה דורשת אימות נפרד.")));
-                    AddField(page, T("Внутренний тестовый получатель (тот же домен)",
-                                     "Internal test recipient (same sender domain)",
-                                     "נמען פנימי לבדיקה"), acceptanceInternalRecipient);
-                    AddField(page, T("Внешний тестовый получатель (другой домен)",
-                                     "External test recipient (different domain)",
-                                     "נמען חיצוני לבדיקה"), acceptanceExternalRecipient);
-                    AddAction(page, T("Проверить план отправки двух тестовых писем...",
-                                      "Preview two test deliveries (no mail sent)",
-                                      "תצוגה מקדימה למשלוח שתי הודעות"),
-                                      PreviewDeliveryAcceptanceAsync, false, "check", "delivery-acceptance-preview");
-                    if (!string.IsNullOrEmpty(acceptanceSummary))
-                        AddLine(page, UiTheme.Text(acceptanceSummary));
-                    if (reviewedAcceptanceSha is not null)
-                        AddAction(page, T("Подтвердить отправку двух РЕАЛЬНЫХ тестовых писем...",
-                                          "Confirm sending TWO real test messages...",
-                                          "אישור שליחת שתי הודעות בדיקה אמיתיות"),
-                                          ApplyDeliveryAcceptanceAsync, false, "shield", "delivery-acceptance-apply");
-
-                }
-                hardwareRequest.Text = T("Запланировать аппаратную защиту ключа (TPM/HSM) — не активировано",
-                                         "Plan TPM/HSM-backed key — NOT active",
-                                         "תכנון מפתח חומרה - לא פעיל");
-                ipRequest.Text = T("Запланировать ограничение по IP (Entra Conditional Access) — не активировано",
-                                   "Plan Entra IP restriction — NOT active",
-                                   "תכנון הגבלת IP - לא פעיל");
-                monitoringRequest.Text = T("Запланировать мониторинг входов приложения Entra — не активировано",
-                                           "Plan Entra application sign-in monitoring — NOT active",
-                                           "תכנון ניטור כניסות - לא פעיל");
-                AddLine(page, hardwareRequest);
-                AddLine(page, ipRequest);
-                AddLine(page, monitoringRequest);
-                AddField(page, T("Tenant ID для необязательной проверки Entra", "Tenant ID for optional Entra check", "Tenant ID לבדיקה"), tenant);
-                useLegacyEntraSecurityPowerShell.Text = T(
-                    "Использовать старый Graph PowerShell для проверки Entra (ручной резервный способ)",
-                    "Use legacy Graph PowerShell for Entra security check (manual fallback)",
-                    "Graph PowerShell הישן עבור בדיקת Entra (חלופה ידנית)");
-                useLegacyEntraSecurityPowerShell.Enabled = !busy;
-                AddLine(page, useLegacyEntraSecurityPowerShell);
-                AddAction(page, T("Проверить возможности Entra (вход администратора, только чтение)",
-                                  "Check Entra security APIs (read-only admin sign-in)",
-                                  "בדוק Entra לקריאה בלבד"), CheckCloudSecurityAsync, false, "shield", "entra");
-                AddLine(page, UiTheme.Text(cloudSecuritySummary));
-                AddAction(page, T("Как включить защиту вручную сейчас или позже",
-                                  "How to enable protection manually now or later",
-                                  "כיצד להפעיל הגנה באופן ידני"), ShowSecurityHelpAsync, false, "shield");
-                AddAction(page, T("Открыть Microsoft Entra — настройка вручную",
-                                  "Open Microsoft Entra — configure manually",
-                                  "פתח את Microsoft Entra"), () => OpenSecurityUrlAsync("https://entra.microsoft.com/"), false, "cloud");
                 break;
             case 2:
                 EnsureRoutingLoaded();
                 LocalizeDeliveryChoices();
-                ShowMailDiscovery(page, false);
-                if (HasMailDiscovery()) ShowMailPlanSummary(page);
+                ShowDeliveryProgress(page);
                 var editPlan = UiTheme.Action(T("Изменить план почты",
                     "Edit mail plan", "עריכת תוכנית הדואר"), glyph: "back");
                 editPlan.Enabled = !busy;
                 editPlan.Click += (_, _) =>
                 {
                     mailPlanPhase = HasMailDiscovery() ? 1 : 0;
+                    deliveryPhase = 0;
                     step = 1;
                     RenderPage();
                 };
-                AddLine(page, editPlan);
-                ShowMailFlowPlanner(page);
+                if (deliveryPhase is 0 or DeliveryReviewPhase) AddLine(page, editPlan);
                 if (!HasMailDiscovery() || selectedMailSource == MailFlowIntent.Unknown ||
                     selectedMailScenario == MailScenarioPlanner.Choose)
                 {
@@ -2746,6 +2779,27 @@ internal sealed partial class MainForm : Form
                         "Complete Linux discovery, then choose the mail source and topology. M365 configuration remains hidden until then.",
                         "יש לבדוק תחילה את Linux ולבחור מסלול דואר."),
                         Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
+                    break;
+                }
+                if (deliveryPhase == DeliveryAdvancedPhase)
+                {
+                    ShowMailDiscovery(page, false);
+                    ShowMailFlowPlanner(page, advancedOnly: true);
+                    if (selectedMailTarget == MailFlowIntent.TargetM365)
+                        ShowDeliveryCloudSecurityTools(page);
+                    break;
+                }
+                if (deliveryPhase == DeliveryCertificateToolsPhase)
+                {
+                    if (RequiresOAuthCertificate()) ShowCertificateSecurityTools(page);
+                    else AddLine(page, UiTheme.Text(T("Сертификат OAuth не требуется.", "No OAuth certificate required.", "אין צורך באישור OAuth.")));
+                    break;
+                }
+                if (deliveryPhase == DeliveryReviewPhase)
+                {
+                    ShowMailPlanSummary(page);
+                    ShowMailFlowPlanner(page, DeliveryReviewDiagramPhase);
+                    AddDeliveryAdvancedAction(page);
                     break;
                 }
                 if (selectedMailScenario == MailScenarioPlanner.Keep)
@@ -2764,17 +2818,18 @@ internal sealed partial class MainForm : Form
                         "No Microsoft 365 Tenant ID or Entra sign-in is required for this SMTP provider.",
                         "עבור ספק SMTP זה אין צורך ב-Tenant ID או בכניסה ל-Entra."),
                         Math.Max(300, pageHost.ClientSize.Width - 90)));
-                    // Destination checks are already shown by ShowMailFlowPlanner
-                    // on this step; do not duplicate password fields and controls.
-                    if (!IsGoogleTarget)
-                        AddUnverifiedM365Capabilities(page);
+                    // Provider checks are on their own page; never duplicate credentials.
+                    if (deliveryPhase == 1)
+                        ShowMailFlowPlanner(page, providerChecksOnly: true);
                     AddLine(page, MailFlowText(T(
-                        "Настройка исходящего Relay пока не включена. Проверка портов/пароля ничего не меняет на Linux.",
-                        "Changing the upstream relay is not yet enabled. Port/auth checks never change Linux.",
+                        "Проверка портов и авторизации не изменяет Linux. Изменения Postfix требуют отдельного Preview и подтверждения.",
+                        "Port/auth checks never change Linux. Postfix changes require separate Preview and approval.",
                         "בדיקות SMTP אינן משנות את Linux."),
                         Math.Max(300, pageHost.ClientSize.Width - 90), warning: true));
                     break;
                 }
+                if (deliveryPhase == 0)
+                {
                 AddUnverifiedM365Capabilities(page);
                 AddLine(page, UiTheme.Text(T(
                     "Выберите, КАК Linux будет отправлять почту через Microsoft 365",
@@ -2782,6 +2837,10 @@ internal sealed partial class MainForm : Form
                     "בחרו כיצד Linux ישלח דואר דרך Microsoft 365")));
                 AddLine(page, BuildDeliveryModeChoices());
                 AddLine(page, BuildDeliveryModeOverview());
+                    break;
+                }
+                if (deliveryPhase == 1)
+                {
                 ShowCloudTenantSelection(page);
                 AddCloudInventoryAction(page);
                 if (mailTransport.SelectedIndex is 1 or 2)
@@ -2801,15 +2860,27 @@ internal sealed partial class MainForm : Form
                 }
                 AddField(page, T("Почтовый ящик отправителя", "Sender mailbox", "תיבת דואר שולח"), mailbox);
                 AddField(page, T("Имя приложения Entra (можно изменить)", "Entra application display name", "שם האפליקציה"), applicationName);
+                    break;
+                }
+                if (deliveryPhase == 2)
+                {
+                    ShowCertificateProtection(page);
                 AddField(page, T("Срок действия нового сертификата, дней (1–365)",
                                  "New certificate validity (days, 1–365)", "תוקף האישור בימים"), certificateDays);
-                AddAction(page, T("1. Создать сертификат на Linux", "1. Create certificate on Linux", "1. יצירת אישור בלינוקס"), PrepareAsync, true, "shield", "certificate");
+                AddAction(page, T("Создать программный PEM-сертификат на Linux", "Create software PEM certificate on Linux", "יצירת אישור PEM בלינוקס"), PrepareAsync, true, "shield", "certificate");
+                    break;
+                }
+                if (deliveryPhase == 3)
+                {
                 AddAction(page, T("2. Настроить Entra и Exchange Online", "2. Configure Entra and Exchange Online", "2. הגדרת Entra ו-Exchange"), SetupM365Async, false, "cloud", "entra");
                 AddAction(page, T("3. Проверить готовность Microsoft 365", "3. Verify Microsoft 365 state", "3. בדיקת מצב Microsoft 365"), VerifyM365Async, false, "check", "entra");
                 AddLine(page, UiTheme.Text(T(
                     "Сначала C# / Microsoft Graph: создание App Registration и добавление только публичного сертификата. Затем Exchange Online PowerShell: отдельный Device Code и ограниченный SMTP.SendAsApp. Административное согласие и проверка Tenant обязательны.",
                     "C# / Microsoft Graph first: create an App Registration or append only a public certificate. Then Exchange Online PowerShell: separate Device Code + scoped SMTP.SendAsApp. Admin consent and exact tenant checks are required.",
                     "אימות מנהל חד-פעמי; הרשאה מוגבלת לתיבת דואר אחת.")));
+                    break;
+                }
+                AddLine(page, UiTheme.Text(T("Вернитесь к выбору метода.", "Return to method selection.", "חזרו לבחירת שיטה.")));
                 break;
             case 3:
                 EnsureRoutingLoaded();
@@ -3799,7 +3870,7 @@ internal sealed partial class MainForm : Form
                 ? T("К способу отправки", "Continue to delivery", "המשך לשיטת שליחה")
                 : T("Далее", "Next", "הבא"), primary: step < 4, glyph: "next");
             next.Enabled = CanAdvanceWizard();
-            next.Click += (_, _) => MoveWizardNext();
+            next.Click += async (_, _) => await MoveWizardNextAsync();
             navigation.Controls.Add(next);
             navigation.Controls.Add(back);
         }
@@ -3877,7 +3948,7 @@ internal sealed partial class MainForm : Form
         // Exercise every mini-page and the optional security page with no
         // discovered host. The missing-discovery state must remain visible.
         step = 1;
-        for (int phase = 0; phase <= MailPlanSecurityPhase; phase++)
+        for (int phase = 0; phase <= MailPlanReviewPhase; phase++)
         {
             mailPlanPhase = phase;
             RenderPage();
@@ -3886,6 +3957,16 @@ internal sealed partial class MainForm : Form
                 throw new InvalidOperationException("Mini wizard did not reset scroll.");
         }
         mailPlanPhase = 0;
+        step = 2;
+        for (int phase = 0; phase <= DeliveryCertificateToolsPhase; phase++)
+        {
+            deliveryPhase = phase;
+            RenderPage();
+            AssertWizardViewport();
+            if (pageHost.AutoScrollPosition.Y != 0)
+                throw new InvalidOperationException("Delivery mini wizard did not reset scroll.");
+        }
+        deliveryPhase = 0;
 
         void Screenshot(string filename, bool scrollToBottom = false)
         {
@@ -4303,6 +4384,7 @@ internal sealed partial class MainForm : Form
         catch (ArgumentException) { return; }
         if (routingIdentity == identity) return;
         mailPlanPhase = 0;
+        deliveryPhase = 0;
         mailPlanProviderConfirmed = false;
         routingLoading = true;
         try

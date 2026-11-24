@@ -13,6 +13,30 @@ internal static class UiTheme
     internal static readonly Color Muted = Color.FromArgb(80, 94, 112);
     internal static readonly Color Accent = Color.FromArgb(15, 118, 92);
     internal static readonly Color Border = Color.FromArgb(214, 221, 230);
+    internal static readonly Color InfoSurface = Color.FromArgb(230, 241, 255);
+    internal static readonly Color WarningSurface = Color.FromArgb(255, 244, 216);
+    internal static readonly Color WarningInk = Color.FromArgb(121, 67, 11);
+    internal static readonly Color SuccessSurface = Color.FromArgb(224, 247, 235);
+
+    // Color supplements words; never convey state with color alone.
+    internal static Label Emphasis(string caption, int width, bool warning = false, bool success = false)
+    {
+        var label = Text(caption, heading: true);
+        label.MaximumSize = new Size(Math.Max(240, width), 0);
+        label.Padding = new Padding(10, 8, 10, 8);
+        label.BackColor = SystemInformation.HighContrast ? SystemColors.Window :
+            warning ? WarningSurface : success ? SuccessSurface : InfoSurface;
+        label.ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText :
+            warning ? WarningInk : success ? Accent : Navy;
+        return label;
+    }
+
+    internal static void HighlightInput(Control input)
+    {
+        if (SystemInformation.HighContrast || input is not (TextBox or ComboBox)) return;
+        input.BackColor = InfoSurface;
+        input.ForeColor = Navy;
+    }
 
     internal static Button Action(string label, bool primary = false, string glyph = "") =>
         new ModernActionButton(label, primary, glyph);
