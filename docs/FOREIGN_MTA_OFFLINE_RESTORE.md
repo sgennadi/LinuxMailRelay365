@@ -362,3 +362,7 @@ it invalidates discovery even after a failed or lost response. No automatic
 retry, service start, queue modification or Sendmail v2 Apply is introduced.
 Experimental disposable-test-host operation only; CI and live GUI acceptance
 are required. RC16 is unchanged.
+
+### Post-RC17: Sendmail v2 scoped compiled-config review
+
+The separate read-only `--mta sendmail --sendmail-v2-plan SNAPSHOT_ID` checks the verified archive and the exact raw manifest digest (including inert directory/link metadata). It compares a sampled complete package inventory, file bytes/UID/GID/modes, the two compiled files' current labels, and fresh stopped/queue/process/listener evidence. It reports changed compiled files, differences outside that scope, missing/extra files and metadata/object drift. A candidate requires both compiled files, unchanged remaining data and objects, original matching file metadata and a root-managed /etc/mail; a nonroot package directory can still be inspected but cannot qualify for writes. It refuses a pending restore, changes during inspection and supplied write approvals. The SHA binds a sampled review only; no Apply, symlink recreation, database restore, service action or queue change exists. Older v1/v2 write gates remain unchanged. Unit tests and a native disposable Sendmail smoke check the new report. RC17 release branch is kept separate.

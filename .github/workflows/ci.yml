@@ -192,7 +192,9 @@ jobs:
       github.ref == 'refs/heads/feature/post-rc15-wizard-refinement' ||
       github.event.pull_request.head.ref == 'feature/post-rc15-wizard-refinement' ||
       github.ref == 'refs/heads/feature/post-rc16-native-recovery' ||
-      github.event.pull_request.head.ref == 'feature/post-rc16-native-recovery'
+      github.event.pull_request.head.ref == 'feature/post-rc16-native-recovery' ||
+      github.ref == 'refs/heads/feature/post-rc17-sendmail-v2' ||
+      github.event.pull_request.head.ref == 'feature/post-rc17-sendmail-v2'
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:

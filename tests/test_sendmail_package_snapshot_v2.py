@@ -60,6 +60,8 @@ class V2SnapshotTests(unittest.TestCase):
         (self.root / "etc" / "mail" / "smrsh").mkdir(parents=True)
         (self.root / "etc" / "mail" / "sendmail.cf").write_text(
             "O DaemonPortOptions=Addr=127.0.0.1\n", encoding="utf-8")
+        (self.root / "etc" / "mail" / "submit.cf").write_text(
+            "O QueueDirectory=/var/spool/clientmqueue\n", encoding="utf-8")
         self.large_name = "etc/mail/access.db"
         (self.root / self.large_name).write_bytes(b"Q" * (m.MAX_MANIFEST + 1024))
         (self.root / "etc" / "mail" / "smrsh" / "procmail").symlink_to(
@@ -239,6 +241,96 @@ class V2SnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(m.Refused, "snapshot_archive_digest_mismatch"):
             m.extract_offline("sendmail", self.folder.name, self.base, self.uid)
         self.assertFalse(any(self.folder.parent.glob(".offline-recovery-*")))
+
+    def review_module(self):
+        spec = importlib.util.spec_from_file_location(
+            "lmr365_sendmail_v2_review",
+            str(ROOT / "linux" / "restore-foreign-mta-config.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def review_options(self):
+        def preflight(mta, sid, root, base, uid):
+            return {"mta": mta, "snapshot_id": sid, "archive_sha256": self.manifest["sha256"],
+                    "current": "different", "service": "stopped_declared",
+                    "processes": "none_observed", "queue": "empty_reported",
+                    "listener": "none_observed", "gate": "offline_candidate_manual_recovery_only"}
+        return {"root": self.root, "base": self.base, "uid": self.uid,
+                "lock_path": self.root.parent / "native.lock", "preflight_check": preflight}
+
+    def test_v2_exact_review_of_compiled_files_only(self):
+        restore = self.review_module()
+        options = self.review_options()
+        first = restore.preview_sendmail_v2(self.folder.name, **options)
+        self.assertEqual(first["gate"], "compiled_files_review_candidate_only")
+        self.assertEqual(first["counts"]["compiled_targets"], 2)
+        self.assertEqual(first["counts"]["compiled_changed"], 0)
+        target = self.root / "etc/mail/sendmail.cf"
+        target.write_text("changed config\n")
+        second = restore.preview_sendmail_v2(self.folder.name, **options)
+        self.assertEqual(second["gate"], first["gate"])
+        self.assertEqual(second["counts"]["compiled_changed"], 1)
+        self.assertNotEqual(first["plan_sha256"], second["plan_sha256"])
+        self.assertEqual(target.read_text(), "changed config\n")
+        self.assertFalse(options["lock_path"].exists())
+        self.assertFalse((self.base / restore.PENDING).exists())
+
+    def test_v2_review_detects_other_data_metadata_and_symlink_drift(self):
+        restore = self.review_module()
+        options = self.review_options()
+        (self.root / self.large_name).write_bytes(b"new DB bytes")
+        (self.root / "etc/mail/submit.cf").chmod(0o600)
+        link = self.root / "etc/mail/smrsh/procmail"
+        link.unlink()
+        link.symlink_to("/different/path")
+        plan = restore.preview_sendmail_v2(self.folder.name, **options)
+        self.assertEqual(plan["gate"], "blocked_inventory_drift")
+        self.assertEqual(plan["counts"]["other_changed"], 1)
+        self.assertEqual(plan["counts"]["metadata_changed"], 1)
+        self.assertEqual(plan["counts"]["object_drift"], 1)
+        self.assertEqual(os.readlink(str(link)), "/different/path")
+
+    def test_v2_review_binds_inert_manifest_and_blocks_missing_targets(self):
+        restore = self.review_module()
+        options = self.review_options()
+        plan = restore.preview_sendmail_v2(self.folder.name, **options)
+        # Directory/link metadata are not part of the compressed TAR digest.
+        self.manifest["objects"]["etc/mail/smrsh/procmail"]["target"] = "/other"
+        self.save()
+        changed = restore.preview_sendmail_v2(self.folder.name, **options)
+        self.assertEqual(plan["archive_sha256"], changed["archive_sha256"])
+        self.assertNotEqual(plan["manifest_sha256"], changed["manifest_sha256"])
+        self.assertNotEqual(plan["plan_sha256"], changed["plan_sha256"])
+        (self.root / "etc/mail/submit.cf").unlink()
+        changed = restore.preview_sendmail_v2(self.folder.name, **options)
+        self.assertEqual(changed["counts"]["missing"], 1)
+        self.assertEqual(changed["gate"], "blocked_inventory_drift")
+
+    def test_v2_review_never_authorizes_writes_or_ignores_running_service(self):
+        restore = self.review_module()
+        options = self.review_options()
+        previous = options["preflight_check"]
+        def running(*args):
+            result = previous(*args)
+            result.update(service="running", gate="blocked_running")
+            return result
+        options["preflight_check"] = running
+        report = restore.preview_sendmail_v2(self.folder.name, **options)
+        self.assertEqual(report["gate"], "blocked_offline_preflight")
+        output = io.StringIO()
+        with patch.object(restore.os, "geteuid", return_value=0), \
+             patch.object(restore, "preview_sendmail_v2", return_value=report), \
+             patch.object(restore, "apply", side_effect=AssertionError("write forbidden")), \
+             redirect_stdout(output):
+            self.assertEqual(restore.main(["--mta", "sendmail",
+                                           "--sendmail-v2-plan", self.folder.name]), 0)
+        self.assertIn("SENDMAIL_V2_PLAN_APPLY_AUTHORIZED=no\n", output.getvalue())
+        self.assertIn("SENDMAIL_V2_PLAN_CONFIG_CHANGED=no\n", output.getvalue())
+        with patch.object(restore.os, "geteuid", return_value=0), \
+             patch.object(restore, "preview_sendmail_v2", side_effect=AssertionError("approval forbidden")):
+            self.assertEqual(restore.main(["--mta", "sendmail", "--sendmail-v2-plan",
+                                           self.folder.name, "--confirm", "anything"]), 2)
 
     def test_package_restore_never_applies(self):
         spec = importlib.util.spec_from_file_location(

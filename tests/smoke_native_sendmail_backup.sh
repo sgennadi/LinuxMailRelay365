@@ -71,6 +71,13 @@ sudo -E env GITHUB_ACTIONS=true python3 tests/assert_sendmail_v2_export.py "$exp
 # Rebuild package metadata in a disposable root-private tree only; never /etc.
 sudo -E env GITHUB_ACTIONS=true python3 tests/rehearse_sendmail_v2_metadata.py "$export_dir" "$id"
 echo "SENDMAIL_BACKUP_LAB_V2_RESTORE=blocked_as_designed"
+v2_review="$(sudo python3 linux/restore-foreign-mta-config.py --mta sendmail --sendmail-v2-plan "$id")"
+printf "%s\n" "$v2_review" | grep -Fxq "SENDMAIL_V2_PLAN_STATUS=review_only"
+printf "%s\n" "$v2_review" | grep -Fxq "SENDMAIL_V2_PLAN_CONFIG_CHANGED=no"
+printf "%s\n" "$v2_review" | grep -Fxq "SENDMAIL_V2_PLAN_APPLY_AUTHORIZED=no"
+printf "%s\n" "$v2_review" | grep -Fxq "SENDMAIL_V2_PLAN_COMPILED_CHANGED=0"
+printf "%s\n" "$v2_review" | grep -Eq "^SENDMAIL_V2_PLAN_MANIFEST_SHA256=[a-f0-9]{64}$"
+echo "SENDMAIL_BACKUP_LAB_V2_EXACT_COMPILED_REVIEW=verified_read_only"
 test "$(sudo find /etc/mail -xdev -type f -exec sha256sum {} + | sha256sum | cut -d " " -f 1)" = "$before" || {
   echo "SENDMAIL_BACKUP_LAB_SOURCE_MUTATED"; exit 1;
 }
