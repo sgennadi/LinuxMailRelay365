@@ -756,8 +756,10 @@ def main(argv=None):
                 print("FOREIGN_PENDING_INSPECT_MTA=" + record["mta"])
                 print("FOREIGN_PENDING_INSPECT_SAFETY_ID=" + record["safety"])
                 print("FOREIGN_PENDING_INSPECT_TARGET_ID=" + record["target"])
+                print("FOREIGN_PENDING_INSPECT_SAFETY_SHA256=" + record["safety_sha256"])
                 print("FOREIGN_PENDING_INSPECT_COMPARISON=" + report["comparison"])
                 if "counts" in report:
+                    print("FOREIGN_PENDING_INSPECT_TARGET_SHA256=" + record["target_sha256"])
                     print("FOREIGN_PENDING_INSPECT_FILE_COUNT=" + str(report["files"]))
                     for key, value in sorted(report["counts"].items()):
                         print("FOREIGN_PENDING_INSPECT_" + key.upper() + "=" + str(value))

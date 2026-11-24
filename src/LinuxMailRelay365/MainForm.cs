@@ -6839,6 +6839,66 @@ internal sealed partial class MainForm : Form
             ". No Restore, service action, SMTP send or queue change. Manual recovery only.");
     }
 
+    private async Task InspectForeignPendingRestoreAsync()
+    {
+        var endpoint = Endpoint();
+        string identity = SecurityOptionsStore.Identity(endpoint);
+        // Do not use the selected mail provider or discovered MTA as a
+        // filter: an older interrupted native Restore may still exist.
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaPendingInspectBundle(), TimeSpan.FromMinutes(4));
+        result.EnsureSuccess();
+        var report = ForeignPendingInspection.Parse(result.StdOut);
+        if (identity != TryCurrentIdentity())
+            throw new InvalidOperationException("SSH identity changed during pending Restore inspection.");
+        if (report.IsClear)
+        {
+            WriteLine("Native Restore inspection: no pending marker observed. This is not service-start approval.");
+            MessageBox.Show(this, T(
+                "Аварийный маркер не обнаружен. Это не подтверждение готовности MTA или разрешение на запуск служб.",
+                "No pending native Restore marker was observed. This does not establish MTA readiness or authorize service startup.",
+                "לא נמצא יומן שחזור פתוח. אין בכך אישור להפעלת שירותים."),
+                "LinuxMailRelay365 | Restore status", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        string summary = T("ТРЕБУЕТСЯ РУЧНОЕ ВОССТАНОВЛЕНИЕ",
+                "MANUAL RECOVERY REQUIRED", "נדרש שחזור ידני") +
+            "\n\nMTA: " + report.Mta +
+            "\n" + T("Аварийный архив", "Safety snapshot", "גיבוי חירום") + ": " + report.SafetyId +
+            "\nSHA-256: " + report.SafetySha +
+            "\n" + T("Целевой архив", "Target snapshot", "גיבוי יעד") + ": " + report.TargetId;
+        if (report.Counts is { } counts)
+        {
+            summary += "\nSHA-256: " + report.TargetSha + "\n\n" +
+                T("Файлов в архиве", "Archived files", "קבצים בגיבוי") + ": " + counts.Total +
+                "\n" + T("Исходные", "Original only", "מקור בלבד") + ": " + counts.Original +
+                "\n" + T("Восстановленные", "Target only", "יעד בלבד") + ": " + counts.Target +
+                "\n" + T("Совпадают с обоими", "Both", "שניהם") + ": " + counts.Both +
+                "\n" + T("Посторонние изменения", "Other content", "תוכן אחר") + ": " + counts.Other +
+                "\n" + T("Отсутствуют", "Missing", "חסרים") + ": " + counts.Missing +
+                "\n" + T("Дополнительные", "Extra", "נוספים") + ": " + counts.Extra +
+                "\n\n" + T("Сравнивается только содержимое файлов, не готовность к запуску.",
+                    "Sampled file content only; not metadata recovery or service readiness.",
+                    "השוואת תוכן בלבד, לא אישור תקינות השירות.");
+            WriteLine("Native Restore pending: " + report.Mta + ", original=" + counts.Original +
+                ", target=" + counts.Target + ", both=" + counts.Both + ", other=" + counts.Other +
+                ", missing=" + counts.Missing + ", extra=" + counts.Extra + ". Manual recovery required.");
+        }
+        else
+        {
+            summary += "\n\n" + T("Старый формат журнала: целевой SHA-256 не был сохранён. Сравнение недоступно.",
+                "Legacy marker: target SHA-256 was not recorded. Content comparison is unavailable.",
+                "יומן ישן ללא SHA-256 של היעד; אין אפשרות להשוות.");
+            WriteLine("Native Restore pending: legacy marker, verified safety archive only. Manual recovery required.");
+        }
+        summary += "\n\n" + T(
+            "Не запускайте MTA до отдельной проверки администратором. Сохраните журнал и аварийный архив. Продолжение Restore недоступно.",
+            "Keep the MTA stopped pending independent administrator review. Retain the marker and safety archive. Resume is unavailable.",
+            "השאירו את השירות עצור עד לבדיקה ושמרו את הגיבוי והיומן.");
+        MessageBox.Show(this, summary, "LinuxMailRelay365 | Interrupted Restore",
+            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
     private async Task PreviewExactForeignRestorePlanAsync()
     {
         var endpoint = Endpoint();
@@ -6987,6 +7047,17 @@ internal sealed partial class MainForm : Form
 
     private void ShowBackupMaintenance(TableLayoutPanel page, bool includeSidecar)
     {
+        AddLine(page, UiTheme.Text(T("Незавершённое восстановление Exim/Sendmail",
+            "Interrupted Exim/Sendmail recovery", "שחזור Exim/Sendmail שלא הושלם"), true));
+        AddAction(page, T("Проверить аварийный журнал Restore (только чтение)",
+            "Inspect interrupted native Restore (read-only)",
+            "בדיקת שחזור שנקטע ללא שינוי"),
+            InspectForeignPendingRestoreAsync, false, "check", "foreign-pending-inspect");
+        AddLine(page, MailFlowText(T(
+            "Проверка относится ко всему Linux-серверу, независимо от текущего MTA. Она не возобновляет Restore и не разрешает запуск служб.",
+            "Checks the entire Linux host, independently of the selected MTA. It never resumes Restore or authorizes starting services.",
+            "בדיקה כללית בשרת; ללא המשך שחזור או אישור הפעלת שירותים."),
+            Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
         string? identity = TryCurrentIdentity();
         bool verifiedPrimary = identity is not null && inspectedServerIdentity == identity;
         if (verifiedPrimary && inspectedMail?.Mta == "postfix")

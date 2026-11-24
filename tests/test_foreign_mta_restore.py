@@ -284,6 +284,36 @@ class ForeignMtaRestoreTests(unittest.TestCase):
             with self.assertRaisesRegex(restore.Refused, "pending_restore_snapshot_changed"):
                 restore.inspect_pending(root, base, uid, options["lock_path"])
 
+    def test_pending_inspection_cli_emits_bounded_readonly_receipt(self):
+        record = {"version": 2, "mta": "sendmail",
+                  "safety": "20261121T005501Z-abcdef012345",
+                  "target": "20261121T005502Z-012345abcdef",
+                  "safety_sha256": "a" * 64, "target_sha256": "b" * 64}
+        report = {"status": "manual_recovery_required", "record": record,
+                  "comparison": "verified_sampled_content_only", "files": 2,
+                  "counts": {"original_only": 1, "target_only": 1, "both": 0,
+                             "other": 0, "missing": 0, "extra": 0}}
+        output = io.StringIO()
+        with patch.object(restore.os, "geteuid", return_value=0), \
+             patch.object(restore, "inspect_pending", return_value=report) as inspect, \
+             patch.object(restore, "apply", side_effect=AssertionError("write forbidden")), \
+             redirect_stdout(output):
+            self.assertEqual(restore.main(["--mta", "exim", "--pending-inspect"]), 0)
+        inspect.assert_called_once()
+        lines = dict(line.split("=", 1) for line in output.getvalue().splitlines())
+        prefix = "FOREIGN_PENDING_INSPECT_"
+        for key, expected in (("MTA", "sendmail"), ("SAFETY_SHA256", "a" * 64),
+                              ("TARGET_SHA256", "b" * 64), ("FILE_COUNT", "2"),
+                              ("ORIGINAL_ONLY", "1"), ("TARGET_ONLY", "1"),
+                              ("CONFIG_CHANGED", "no"), ("QUEUE_CHANGED", "no"),
+                              ("SERVICE_CHANGED", "no"), ("RESUME_AUTHORIZED", "no")):
+            self.assertEqual(lines[prefix + key], expected)
+        with patch.object(restore.os, "geteuid", return_value=0), \
+             patch.object(restore, "inspect_pending", side_effect=AssertionError("approval forbidden")), \
+             redirect_stderr(io.StringIO()):
+            self.assertEqual(restore.main(["--mta", "exim", "--pending-inspect",
+                                           "--approve-sha256", "0" * 64]), 2)
+
     def test_pending_inspection_clear_does_not_create_lock(self):
         with tempfile.TemporaryDirectory() as folder:
             root, base, tree, sid, uid = self.fixture(folder, "exim")

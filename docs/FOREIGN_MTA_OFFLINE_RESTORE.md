@@ -275,3 +275,17 @@ service start. Full system backups and independent administrator review remain
 mandatory. The new unit tests exercise mixed states, drift, active locks and
 legacy markers; they do not simulate real power loss or a full Sendmail v2
 restore.
+
+### Windows interrupted Restore inspection (development)
+
+Backup & Restore now offers a global **Inspect interrupted native Restore (read-only)**
+action independent of the current MTA or selected provider. The bundled command
+accepts no caller-provided action, confirmation or archive path. It reports the
+MTA recorded in the marker, verified safety archive ID/SHA-256, target ID and
+(where bound in schema 2) target SHA-256 and the six sampled file counts. The
+Windows parser requires exact non-mutating status fields, rejects extra or duplicate
+fields and impossible totals, and rechecks the current SSH identity before showing
+a report. A legacy marker never receives fabricated counts or target SHA. A clear
+marker is not proof of service readiness. The GUI cannot resume, roll back or clear
+a pending native operation; it provides an explicit manual-recovery warning.
+CLI and C# regression tests cover the read-only contract. RC16 remains unchanged.

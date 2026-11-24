@@ -319,6 +319,7 @@ internal static class Program
                 return true;
             }),
             ("Exact native MTA read-only Restore Plan", ForeignRestorePlan.SelfTest),
+            ("Global interrupted native Restore receipt and read-only bundle", ForeignPendingInspection.SelfTest),
             ("Embedded backup / restore", () =>
             {
                 var listing = EmbeddedAssets.BuildRecoveryBundle("--list");

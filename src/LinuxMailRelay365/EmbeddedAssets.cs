@@ -1504,6 +1504,21 @@ internal static class EmbeddedAssets
             " --static-check\n";
     }
 
+    internal static string BuildForeignMtaPendingInspectBundle()
+    {
+        // The CLI requires an MTA argument for compatibility. Pending
+        // inspection is global and takes the real MTA from the marker.
+        // There is deliberately no caller-controlled command or selector.
+        return "set -Eeuo pipefail\numask 077\n" +
+            "work=$(mktemp -d /tmp/lmr365-foreign-pending.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n" +
+            "base64 -d > \"$work/foreign-mta-config-backup.py\" <<'LMR365_PENDING_BACKUP'\n" +
+            Encode(ForeignMtaBackup) + "\nLMR365_PENDING_BACKUP\n" +
+            "base64 -d > \"$work/restore-foreign-mta-config.py\" <<'LMR365_PENDING_NATIVE'\n" +
+            Encode(ForeignMtaRestore) + "\nLMR365_PENDING_NATIVE\n" +
+            "python3 \"$work/restore-foreign-mta-config.py\" --mta exim --pending-inspect\n";
+    }
+
     internal static string BuildForeignMtaRestorePlanBundle(string mta, string backupId)
     {
         if (mta is not ("exim" or "sendmail") ||
