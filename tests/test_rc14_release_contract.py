@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class RC14ReleaseContract(unittest.TestCase):
     def test_exact_branch_and_native_acceptance(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job = ci.split("\n  rc14-prerelease-publish:\n", 1)[1]
+        job = ci.split("\n  rc14-prerelease-publish:\n", 1)[1].split("\n  rc15-prerelease-publish:\n", 1)[0]
         self.assertIn("github.event_name == 'push'", job)
         self.assertIn("github.ref == 'refs/heads/feature/rc14-transport-transaction'", job)
         for dependency in (
