@@ -123,6 +123,7 @@ def main():
                      "mail_spool_directory = /var/mail", "home_mailbox =",
                      "maillog_file = " + str(LOG))
             baseline = CONFIG.read_bytes()
+            print("POSTFIX_VERSION=" + command("postconf", "-h", "mail_version").strip(), flush=True)
             require(master_original == MASTER.read_bytes(), "master.cf changed")
             command("postfix", "check")
             started = True
@@ -155,6 +156,10 @@ def main():
                 path.with_suffix(".db").unlink()
             require(CONFIG.read_bytes() == baseline and MASTER.read_bytes() == master_original,
                     "baseline config bytes not restored")
+            require(command("postconf", "-h", "relayhost").strip() == "[127.0.0.1]:46510"
+                    and not command("postconf", "-h", "transport_maps").strip()
+                    and not command("postconf", "-h", "sender_dependent_relayhost_maps").strip(),
+                    "baseline effective Postfix controls not restored")
             command("postfix", "check")
             command("postfix", "start")
             wait_for(smtp_ready, "restored SMTP listener")
