@@ -5,7 +5,7 @@ namespace LinuxMailRelay365;
 
 // Read-only receipt; this type never grants permission to restore.
 internal sealed record ForeignRestorePlan(string Sha, int Changed, int Total,
-    string Service, string Processes, string Queue, string Listener, string Gate)
+    string Service, string Processes, string Queue, string Listener, string Gate, string SnapshotSha)
 {
     internal static ForeignRestorePlan Parse(string text, string mta, string id)
     {
@@ -37,6 +37,7 @@ internal sealed record ForeignRestorePlan(string Sha, int Changed, int Total,
         Exact("FOREIGN_RESTORE_QUEUE_CHANGED", "no");
         Exact("FOREIGN_RESTORE_SERVICE_CHANGED", "no");
         string sha = Take("FOREIGN_RESTORE_PLAN_SHA256", "[a-f0-9]{64}");
+        string snapshotSha = Take("FOREIGN_RESTORE_PLAN_SNAPSHOT_SHA256", "[a-f0-9]{64}");
         int changed = int.Parse(Take("FOREIGN_RESTORE_CHANGED_FILES", "[0-9]{1,4}"), CultureInfo.InvariantCulture);
         int total = int.Parse(Take("FOREIGN_RESTORE_FILE_COUNT", "[0-9]{1,4}"), CultureInfo.InvariantCulture);
         string service = Take("FOREIGN_RESTORE_PREFLIGHT_SERVICE", "running|stopped_declared|unverified");
@@ -53,7 +54,7 @@ internal sealed record ForeignRestorePlan(string Sha, int Changed, int Total,
         if (total is < 1 or > 4096 || changed > total || fields.Count != 0 ||
             (gate != expected && !(expected == "offline_candidate_manual_recovery_only" && gate == "blocked_unverified")))
             throw new InvalidDataException("Inconsistent native Restore Plan receipt.");
-        return new(sha, changed, total, service, processes, queue, listener, gate);
+        return new(sha, changed, total, service, processes, queue, listener, gate, snapshotSha);
     }
 
     internal static bool SelfTest()
@@ -62,6 +63,7 @@ internal sealed record ForeignRestorePlan(string Sha, int Changed, int Total,
         string sample = "FOREIGN_RESTORE_PLAN_VERSION=1\nFOREIGN_RESTORE_PLAN_MTA=exim\n" +
             "FOREIGN_RESTORE_PLAN_SNAPSHOT=" + id + "\nFOREIGN_RESTORE_PLAN_CONFIG_CHANGED=no\n" +
             "FOREIGN_RESTORE_PLAN_SHA256=" + new string('a', 64) + "\n" +
+            "FOREIGN_RESTORE_PLAN_SNAPSHOT_SHA256=" + new string('b', 64) + "\n" +
             "FOREIGN_RESTORE_CHANGED_FILES=1\nFOREIGN_RESTORE_FILE_COUNT=3\n" +
             "FOREIGN_RESTORE_PREFLIGHT_SERVICE=stopped_declared\nFOREIGN_RESTORE_PREFLIGHT_PROCESSES=none_observed\n" +
             "FOREIGN_RESTORE_PREFLIGHT_QUEUE=empty_reported\nFOREIGN_RESTORE_PREFLIGHT_LISTENER=none_observed\n" +

@@ -1504,6 +1504,25 @@ internal static class EmbeddedAssets
             " --static-check\n";
     }
 
+    internal static string BuildEximNativeRestoreApplyBundle(string backupId, string reviewedSha256)
+    {
+        if (backupId is null ||
+            !Regex.IsMatch(backupId, @"\A[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\z", RegexOptions.CultureInvariant) ||
+            reviewedSha256 is null ||
+            !Regex.IsMatch(reviewedSha256, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("A verified Exim archive and exact reviewed SHA-256 are required.");
+        return "set -Eeuo pipefail\numask 077\n" +
+            "work=$(mktemp -d /tmp/lmr365-exim-restore.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n" +
+            "base64 -d > \"$work/foreign-mta-config-backup.py\" <<'LMR365_EXIM_RESTORE_BACKUP'\n" +
+            Encode(ForeignMtaBackup) + "\nLMR365_EXIM_RESTORE_BACKUP\n" +
+            "base64 -d > \"$work/restore-foreign-mta-config.py\" <<'LMR365_EXIM_RESTORE_NATIVE'\n" +
+            Encode(ForeignMtaRestore) + "\nLMR365_EXIM_RESTORE_NATIVE\n" +
+            "python3 \"$work/restore-foreign-mta-config.py\" --mta exim --apply " + backupId +
+            " --approve-sha256 " + reviewedSha256 +
+            " --confirm RESTORE_STOPPED_FOREIGN_MTA_CONFIG\n";
+    }
+
     internal static string BuildEximPendingRollbackPlanBundle() =>
         BuildEximPendingRollbackBundle(null);
 

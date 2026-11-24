@@ -915,8 +915,16 @@ def apply(mta, snapshot_id, approved_sha, confirm,
             raise Refused("restore_failed_rollback_" +
                           ("verified" if safe_rollback
                            else "incomplete_use_safety_backup"))
+        # Keep the durable marker if recovery evidence is no longer valid.
+        if pending_status(base, uid) != record:
+            raise Refused("post_restore_pending_evidence_changed")
+        if record["version"] == 3:
+            read_saved_review(base, uid, record)
+        pending_manifest(base, mta, snapshot_id, record["target_sha256"], uid)
         clear_verified_pending(base, uid, record)
         return {"changed": len(changed), "safety_id": safety_id,
+                "safety_sha256": safety_sha, "target_sha256": record["target_sha256"],
+                "files": state["files"], "plan_sha256": approved_sha,
                 "static_config": "passed_partial_parse_only"}
     finally:
         os.close(lock_handle)
@@ -1037,6 +1045,7 @@ def main(argv=None):
             print("FOREIGN_RESTORE_PLAN_SNAPSHOT=" + snapshot_id)
             print("FOREIGN_RESTORE_PLAN_CONFIG_CHANGED=no")
             print("FOREIGN_RESTORE_PLAN_SHA256=" + review["sha"])
+            print("FOREIGN_RESTORE_PLAN_SNAPSHOT_SHA256=" + review["snapshot_sha256"])
             print("FOREIGN_RESTORE_CHANGED_FILES=" + str(review["changed"]))
             print("FOREIGN_RESTORE_FILE_COUNT=" + str(review["files"]))
             gate = backup.offline_recovery_preflight(args.mta, snapshot_id)
@@ -1046,6 +1055,14 @@ def main(argv=None):
         else:
             result = apply(args.mta, snapshot_id,
                            args.approve_sha256, args.confirm)
+            print("FOREIGN_RESTORE_APPLY_VERSION=1")
+            print("FOREIGN_RESTORE_APPLY_MTA=" + args.mta)
+            print("FOREIGN_RESTORE_APPLY_SNAPSHOT=" + snapshot_id)
+            print("FOREIGN_RESTORE_APPLY_PLAN_SHA256=" + result["plan_sha256"])
+            print("FOREIGN_RESTORE_APPLY_SNAPSHOT_SHA256=" + result["target_sha256"])
+            print("FOREIGN_RESTORE_SAFETY_SHA256=" + result["safety_sha256"])
+            print("FOREIGN_RESTORE_FILE_COUNT=" + str(result["files"]))
+            print("FOREIGN_RESTORE_MARKER_CLEARED=yes")
             print("FOREIGN_RESTORE_CHANGED_FILES=" + str(result["changed"]))
             print("FOREIGN_RESTORE_NATIVE_STATIC_CHECK=" + result["static_config"])
             print("FOREIGN_RESTORE_STATUS=config_replaced_service_not_started")

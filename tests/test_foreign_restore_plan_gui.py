@@ -47,6 +47,23 @@ class NativeRestorePlanGui(unittest.TestCase):
                         body.index("ConfirmDestructive("))
         self.assertIn("EximPendingRollbackPlan.SelfTest", (CS / "Program.cs").read_text(encoding="utf-8"))
 
+    def test_exim_restore_requires_fresh_confirmed_plan(self):
+        body = FORM.split("private async Task ApplyEximNativeRestoreAsync()", 1)[1].split(
+            "private static bool SameRollbackConnection", 1)[0]
+        for token in ("RequireSelectedStoppedEximArchive(identity, id)",
+                      "BuildForeignMtaPendingInspectBundle()", "ForeignRestorePlan.Parse(response.StdOut",
+                      "EximNativeRestoreReceipt.CanApply(plan)", "ConfirmDestructive(",
+                      "EximNativeRestoreReceipt.Confirmation",
+                      "BuildEximNativeRestoreApplyBundle(id, plan.Sha)",
+                      "EximNativeRestoreReceipt.Parse(result.StdOut, id, plan)",
+                      "ForeignPendingInspection.Parse(inspection.StdOut).IsClear",
+                      "finally", "inspectedServerIdentity = null"):
+            self.assertIn(token, body)
+        self.assertLess(body.index("ConfirmDestructive("),
+                        body.index("BuildEximNativeRestoreApplyBundle(id, plan.Sha)"))
+        self.assertLess(body.index("EximNativeRestoreReceipt.CanApply(plan)"), body.index("ConfirmDestructive("))
+        self.assertIn("EximNativeRestoreReceipt.SelfTest", (CS / "Program.cs").read_text(encoding="utf-8"))
+
     def test_stopped_mta_and_exact_plan(self):
         preflight = FORM.split("private async Task PreflightForeignMtaRecoveryAsync()", 1)[1].split(
             "private async Task PreviewExactForeignRestorePlanAsync()", 1)[0]
@@ -54,7 +71,7 @@ class NativeRestorePlanGui(unittest.TestCase):
         plan = FORM.split("private async Task PreviewExactForeignRestorePlanAsync()", 1)[1].split(
             "private async Task ExportForeignMtaOfflineAsync()", 1)[0]
         for text in ("ForeignRestorePlan.Parse(result.StdOut, mta, id)", "identity != TryCurrentIdentity()",
-                     "foreignBackupListContext != identity", "current != id", "Apply unavailable"):
+                     "foreignBackupListContext != identity", "current != id", "Preview does not authorize Apply"):
             self.assertIn(text, plan)
         bundle = ASSETS.split("internal static string BuildForeignMtaRestorePlanBundle", 1)[1].split(
             "internal static string BuildRecoveryBundle", 1)[0]

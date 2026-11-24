@@ -280,6 +280,38 @@ class ForeignMtaRestoreTests(unittest.TestCase):
             self.assertTrue(review.exists())
             self.assertEqual(len(snapshot.listed("exim", base, uid)), 2)
 
+    def test_normal_restore_cli_receipt_binds_review_and_safety_archive(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, sid, uid = self.fixture(folder, "exim")
+            next(tree.iterdir()).write_text("pre-restore version\n")
+            options = self.kwargs(folder, root, base, uid)
+            review = restore.preview("exim", sid, root, base, uid)
+            actual = restore.apply
+            output = io.StringIO()
+            with patch.object(restore.os, "geteuid", return_value=0), \
+                 patch.object(restore, "apply",
+                              side_effect=lambda mta, sid, sha, confirm:
+                              actual(mta, sid, sha, confirm, **options)), \
+                 redirect_stdout(output):
+                self.assertEqual(restore.main(["--mta", "exim", "--apply", sid,
+                                               "--approve-sha256", review["sha"],
+                                               "--confirm", restore.APPROVAL]), 0)
+            receipt = dict(line.split("=", 1) for line in output.getvalue().splitlines())
+            prefix = "FOREIGN_RESTORE_"
+            for key, expected in (("APPLY_VERSION", "1"), ("APPLY_MTA", "exim"),
+                                  ("APPLY_SNAPSHOT", sid), ("APPLY_PLAN_SHA256", review["sha"]),
+                                  ("APPLY_SNAPSHOT_SHA256", review["snapshot_sha256"]),
+                                  ("FILE_COUNT", str(review["files"])),
+                                  ("CHANGED_FILES", str(review["changed"])),
+                                  ("MARKER_CLEARED", "yes"),
+                                  ("SERVICE_CHANGED", "no"), ("QUEUE_CHANGED", "no")):
+                self.assertEqual(receipt[prefix + key], expected)
+            safety = receipt[prefix + "SAFETY_BACKUP_ID"]
+            self.assertNotEqual(safety, sid)
+            self.assertEqual(receipt[prefix + "SAFETY_SHA256"],
+                             snapshot.verify(base / "exim" / safety, "exim", uid)["sha256"])
+            self.assertIsNone(restore.pending_status(base, uid))
+
     def test_pending_rollback_cli_receipts_bind_plan_and_result(self):
         with tempfile.TemporaryDirectory() as folder:
             root, base, tree, uid, options = self.interrupted_exim(folder)

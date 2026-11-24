@@ -347,3 +347,18 @@ process immediately after a verified configuration file replacement, reviews
 and performs the interrupted rollback, and verifies original bytes, stopped
 services and the unchanged empty queue. It is not a physical power-loss test.
 No new public release or successful acceptance is claimed until CI completes.
+
+### Experimental normal Exim Restore from Windows
+
+Backup & Restore offers Restore selected Exim configuration only for an
+installed-inactive Exim and selected verified archive. It checks the pending
+marker, reviews a fresh plan with archive and plan SHA-256, requires stopped
+service/no process/empty queue/no listener and typed confirmation, then checks
+SSH settings and selected archive again. The fixed Exim-only write command
+retains all Linux safety archive, schema-3 interruption and stale-plan checks.
+The durable recovery evidence is revalidated before clearing the marker.
+The GUI verifies a matching apply receipt and separately inspects the marker;
+it invalidates discovery even after a failed or lost response. No automatic
+retry, service start, queue modification or Sendmail v2 Apply is introduced.
+Experimental disposable-test-host operation only; CI and live GUI acceptance
+are required. RC16 is unchanged.

@@ -6729,7 +6729,7 @@ internal sealed partial class MainForm : Form
             foreignBackupSelector.SelectedIndex = 0;
         foreignBackupListContext = SecurityOptionsStore.Identity(endpoint) + "|" + mta;
         WriteLine("Verified primary " + mta + " config archives: " + matches.Count +
-            ". Contents stay on Linux and Restore is not available.");
+            ". Contents stay on Linux. Only separately confirmed experimental offline Exim Restore is available.");
         RenderPage();
     }
 
@@ -6837,6 +6837,106 @@ internal sealed partial class MainForm : Form
             ", listener=" + listener + ", config=" + config + ", gate=" + gate +
             ", snapshot SHA256=" + archiveSha + ", evidence SHA256=" + planSha +
             ". No Restore, service action, SMTP send or queue change. Manual recovery only.");
+    }
+
+    private void RequireSelectedStoppedEximArchive(string identity, string id)
+    {
+        if (identity != TryCurrentIdentity() ||
+            ConfirmedForeignBackupMta(allowStopped: true) != "exim" ||
+            inspectedHost?.MtaState != "installed_inactive" ||
+            foreignBackupListContext != identity + "|exim" ||
+            foreignBackupSelector.SelectedItem is not string selected || selected != id)
+            throw new InvalidOperationException(
+                "Reinspect stopped Exim and re-list/select the exact archive before Restore.");
+    }
+
+    private async Task ApplyEximNativeRestoreAsync()
+    {
+        var endpoint = Endpoint();
+        string identity = SecurityOptionsStore.Identity(endpoint);
+        if (foreignBackupSelector.SelectedItem is not string id)
+            throw new InvalidOperationException("Select a verified Exim backup first.");
+        RequireSelectedStoppedEximArchive(identity, id);
+        var pending = await SshRemote.RunRootScriptAsync(endpoint,
+            EmbeddedAssets.BuildForeignMtaPendingInspectBundle(), TimeSpan.FromMinutes(4));
+        pending.EnsureSuccess();
+        if (!ForeignPendingInspection.Parse(pending.StdOut).IsClear)
+            throw new InvalidOperationException("An interrupted native Restore exists. Inspect and recover it before a new Restore.");
+        var reviewed = Endpoint();
+        if (!SameRollbackConnection(endpoint, reviewed) ||
+            (endpoint.HostKeySha256.Length > 0 && endpoint.HostKeySha256 != reviewed.HostKeySha256) ||
+            (reviewed.Password.Length > 0 && reviewed.HostKeySha256.Length == 0))
+            throw new InvalidOperationException("SSH connection or trusted host key changed during Restore preflight.");
+        RequireSelectedStoppedEximArchive(identity, id);
+        var response = await SshRemote.RunRootScriptAsync(reviewed,
+            EmbeddedAssets.BuildForeignMtaRestorePlanBundle("exim", id), TimeSpan.FromMinutes(5));
+        response.EnsureSuccess();
+        var plan = ForeignRestorePlan.Parse(response.StdOut, "exim", id);
+        if (!EximNativeRestoreReceipt.CanApply(plan))
+            throw new InvalidOperationException("The fresh Exim Restore Plan is blocked: " + plan.Gate);
+        RequireSelectedStoppedEximArchive(identity, id);
+        var current = Endpoint();
+        if (!SameRollbackConnection(reviewed, current) || current.HostKeySha256 != reviewed.HostKeySha256)
+            throw new InvalidOperationException("SSH connection changed during Restore review.");
+        string details = "Host: " + current.Host + ":" + current.Port +
+            "\nMTA: Exim\nSnapshot: " + id + "\nArchive SHA-256: " + plan.SnapshotSha +
+            "\n" + T("Файлов для восстановления", "Files to restore", "קבצים לשחזור") +
+            ": " + plan.Changed + "/" + plan.Total +
+            "\nService: " + plan.Service + "\nProcesses: " + plan.Processes +
+            "\nQueue: " + plan.Queue + "\nListener: " + plan.Listener +
+            "\nPlan SHA-256: " + plan.Sha + "\n\n" +
+            T("Экспериментально, только на тестовом сервере. Exim остановлен, очередь пуста. Заменяются только байты существующих файлов; сохраняются права, владельцы и метки. До записи создаётся проверенный аварийный архив и журнал. При прерывании используйте аварийный Rollback. Службы не запускаются, очередь и внешние сертификаты не восстанавливаются.",
+                "Experimental, disposable test hosts only. Exim must be stopped with an empty queue. Replaces existing file bytes only; preserves permissions, owners and labels. Creates a verified safety archive and interruption marker before writes. Use emergency Rollback after interruption. No service start, queue restore or external certificate recovery.",
+                "ניסיוני לשרת בדיקה בלבד. Exim עצור ותור ריק. גיבוי חירום לפני שינוי; ללא הפעלת שירותים.");
+        if (!ConfirmDestructive("LinuxMailRelay365 | EXPERIMENTAL offline Exim Restore",
+                details, EximNativeRestoreReceipt.Confirmation))
+            return;
+        RequireSelectedStoppedEximArchive(identity, id);
+        var confirmed = Endpoint();
+        if (!SameRollbackConnection(current, confirmed) || current.HostKeySha256 != confirmed.HostKeySha256)
+            throw new InvalidOperationException("SSH connection changed after Restore confirmation.");
+        try
+        {
+            WriteLine("Applying exact reviewed Exim Restore. No service or queue changes requested.");
+            var result = await SshRemote.RunRootScriptAsync(confirmed,
+                EmbeddedAssets.BuildEximNativeRestoreApplyBundle(id, plan.Sha), TimeSpan.FromMinutes(10));
+            result.EnsureSuccess();
+            var applied = EximNativeRestoreReceipt.Parse(result.StdOut, id, plan);
+            var inspection = await SshRemote.RunRootScriptAsync(confirmed,
+                EmbeddedAssets.BuildForeignMtaPendingInspectBundle(), TimeSpan.FromMinutes(4));
+            inspection.EnsureSuccess();
+            var after = Endpoint();
+            if (!ForeignPendingInspection.Parse(inspection.StdOut).IsClear ||
+                !SameRollbackConnection(confirmed, after) ||
+                after.HostKeySha256 != confirmed.HostKeySha256)
+                throw new InvalidDataException("Post-restore marker or SSH identity could not be confirmed.");
+            WriteLine("Exim Restore verified; safety archive=" + applied.SafetyId +
+                "; SHA256=" + applied.SafetySha + ". No services started.");
+            MessageBox.Show(this, T(
+                "Восстановление подтверждено. Exim не запускался. Повторно проверьте MTA. Аварийный архив: ",
+                "Offline Restore verified. Exim was not started. Reinspect MTA. Safety archive: ",
+                "השחזור אומת. Exim לא הופעל. גיבוי חירום: ") +
+                applied.SafetyId + "\nSHA-256: " + applied.SafetySha,
+                "LinuxMailRelay365 | Exim Restore", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        finally
+        {
+            // Lost replies can still mean configuration has changed.
+            inspectedMail = null;
+            inspectedServerIdentity = null;
+            inspectedHost = null;
+            inspectedHostIdentity = null;
+            existingSmtpAudit = null;
+            existingSmtpAuditIdentity = null;
+            discoveredMailIdentity = null;
+            discoveredIsolatedRelay = null;
+            mailSubmissionEvidence = null;
+            mailSubmissionIdentity = null;
+            foreignBackupListContext = null;
+            foreignBackupSelector.Items.Clear();
+            allowExisting.Checked = false;
+            ResetMultiMailboxRouteReview();
+        }
     }
 
     private static bool SameRollbackConnection(SshEndpoint a, SshEndpoint b) =>
@@ -7008,13 +7108,14 @@ internal sealed partial class MainForm : Form
             ": " + plan.Changed + "/" + plan.Total +
             "\nService: " + plan.Service + "\nProcesses: " + plan.Processes +
             "\nQueue: " + plan.Queue + "\nListener: " + plan.Listener +
-            "\nGate: " + plan.Gate + "\nSHA-256: " + plan.Sha + "\n\n" +
-            T("Только отчёт. Конфигурация, очередь и службы не менялись. Автоматическое восстановление запрещено.",
-                "Read-only report. Configuration, queue and services unchanged. Automated Restore is unavailable.",
-                "דוח בלבד; ללא שינוי בתצורה, בתור או בשירות.");
+            "\nGate: " + plan.Gate + "\nArchive SHA-256: " + plan.SnapshotSha +
+            "\nPlan SHA-256: " + plan.Sha + "\n\n" +
+            T("Только отчёт. Для экспериментального Exim Restore нужен отдельный свежий план и подтверждение.",
+                "Read-only report. Experimental Exim Restore requires a separate fresh plan and confirmation.",
+                "דוח בלבד; לשחזור Exim נדרש אישור נפרד.");
         WriteLine("Exact native Restore Plan: " + mta + ", " + plan.Changed + "/" +
             plan.Total + " changed files, " + plan.Gate + ", SHA256=" + plan.Sha +
-            ". Read-only. Apply unavailable.");
+            ". Read-only. Preview does not authorize Apply.");
         MessageBox.Show(this, summary, "LinuxMailRelay365 | Native Restore Plan",
             MessageBoxButtons.OK, plan.Gate == "offline_candidate_manual_recovery_only"
                 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
@@ -7187,9 +7288,9 @@ internal sealed partial class MainForm : Form
                 "Primary Exim/Sendmail configuration archive",
                 "גיבוי תצורת Exim או Sendmail"), true));
             AddLine(page, UiTheme.Text(T(
-                "Закрытый архив остаётся на Linux: /var/backups/linuxmailrelay365-foreign-mta. Может содержать пароли; не включает очереди, внешние сертификаты и состояние службы. Восстановление автоматически запрещено.",
-                "Root-only archive stays on Linux under /var/backups/linuxmailrelay365-foreign-mta. May contain passwords. Excludes mail queues, external certs and service state. Automatic Restore is DISABLED.",
-                "הגיבוי נשמר בלינוקס בלבד, ללא תור דואר או מצב שירות. השחזור האוטומטי מושבת.")));
+                "Закрытый архив остаётся на Linux: /var/backups/linuxmailrelay365-foreign-mta. Может содержать пароли; не включает очереди, внешние сертификаты и состояние службы. Только Exim допускает отдельное экспериментальное Restore.",
+                "Root-only archive stays on Linux under /var/backups/linuxmailrelay365-foreign-mta. May contain passwords. Excludes mail queues, external certs and service state. Only Exim offers explicitly confirmed experimental offline Restore.",
+                "הגיבוי נשמר בלינוקס בלבד. שחזור Exim ניסיוני דורש אישור נפרד.")));
             AddAction(page, T(
                 "Проверить синтаксис Exim/Sendmail (без изменений)",
                 "Validate Exim/Sendmail native configuration (read-only)",
@@ -7235,9 +7336,19 @@ internal sealed partial class MainForm : Form
                     "בדיקת תוכנית שחזור מדויקת ללא שינוי"),
                     PreviewExactForeignRestorePlanAsync, false, "check", "foreign-restore-plan");
                 AddLine(page, MailFlowText(T(
-                    "План проверяет архив v1 и точный набор файлов. Sendmail v2 требует ручного восстановления. Apply недоступен.",
-                    "The exact plan checks v1 archives and matching file sets. Sendmail v2 requires manual recovery. Apply is unavailable.",
+                    "План проверяет архив v1 и точный набор файлов. Sendmail v2 требует ручного восстановления. Preview не разрешает запись.",
+                    "The exact plan checks v1 archives and matching file sets. Sendmail v2 requires manual recovery. Preview alone never authorizes writes.",
                     "תוכנית v1 בלבד. שחזור v2 ידני."), Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
+                if (inspectedMail?.Mta == "exim" && inspectedHostIdentity == identity &&
+                    inspectedHost?.MtaState == "installed_inactive")
+                    AddAction(page, T("Восстановить выбранный Exim (экспериментально)...",
+                        "Restore selected Exim configuration (experimental)...", "שחזור תצורת Exim ניסיוני..."),
+                        ApplyEximNativeRestoreAsync, false, "back", "restore");
+                else if (inspectedMail?.Mta == "exim")
+                    AddLine(page, MailFlowText(T("Остановите Exim вручную на тестовом сервере и обновите диагностику.",
+                        "Manually stop Exim on a disposable test host and refresh discovery.",
+                        "יש לעצור את Exim ולרענן את הבדיקה."),
+                        Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
                 AddAction(page, T("Извлечь архив в отдельный защищённый каталог на Linux...",
                     "Extract verified files to separate protected Linux directory...",
                     "חלץ גיבוי לתיקייה מוגנת ונפרדת בלינוקס"),
