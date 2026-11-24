@@ -307,7 +307,8 @@ def checked_published_map(config, target, uid, expected, meta, identity):
             "published_map_identity_or_content_changed")
 
 
-def atomic_write(fd, name, data, meta, uid, replace, published=None):
+def atomic_write(fd, name, data, meta, uid, replace, published=None,
+                 before_replace=None):
     temp = ".lmr365-txn-" + uuid.uuid4().hex
     handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW |
                      os.O_CLOEXEC, 0o600, dir_fd=fd)
@@ -321,6 +322,8 @@ def atomic_write(fd, name, data, meta, uid, replace, published=None):
             os.fsync(stream.fileno())
             prepared = file_identity(os.fstat(stream.fileno()))
         if replace:
+            if before_replace is not None:
+                before_replace(prepared[:4])
             os.replace(temp, name, src_dir_fd=fd, dst_dir_fd=fd)
         else:
             os.link(temp, name, src_dir_fd=fd, dst_dir_fd=fd,

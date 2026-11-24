@@ -21,6 +21,8 @@ Refused = M.Refused
 APPLY = "APPLY_NEW_STOPPED_POSTFIX_TRANSPORTS"
 RESTORE = "RESTORE_STOPPED_POSTFIX_TRANSPORTS"
 JOURNAL = "maps.json"
+ROTATION_CURRENT = "rotation-current.json"
+ROTATION_PENDING = "rotation-pending.json"
 CONFIGS = ("main", "master")
 
 
@@ -119,7 +121,45 @@ def read_receipt(fd, revision, name, uid):
     return value["identity"]
 
 
-def load(parent, revision, uid):
+def auth_names(info):
+    return {name + M.MAP_SUFFIX[info["backend"]] for name in info["map_names"][1:]}
+
+
+def record_digest(journal, receipts):
+    # Private metadata only, never a public plan/approval ID.
+    return M.digest(M.canonical({"journal": journal, "receipts": receipts}))
+
+
+def valid_identity(value):
+    return (type(value) is list and len(value) == 5 and
+            all(type(x) is int and x >= 0 for x in value))
+
+
+def rotation_overlay(fd, info, journal, receipts, uid):
+    if not T.exists(fd, ROTATION_CURRENT):
+        return journal, receipts
+    raw = M.read_file(fd, ROTATION_CURRENT, uid)
+    overlay = M.decode(raw)
+    need(type(overlay) is dict and set(overlay) ==
+         {"format", "revision", "base", "generation", "maps", "receipts"} and
+         overlay["format"] == "LMR365-CREDENTIAL-CURRENT-V1" and
+         overlay["revision"] == journal["revision"] and
+         overlay["base"] == record_digest(journal, receipts) and
+         R.valid_sha(overlay["generation"]) and M.canonical(overlay) == raw,
+         "invalid_rotation_overlay")
+    maps, current = overlay["maps"], overlay["receipts"]
+    need(type(maps) is dict and type(current) is dict and
+         set(maps) == set(journal["maps"]) == set(current) == set(receipts) and
+         all(R.valid_sha(v) for v in maps.values()) and
+         all(valid_identity(v) for v in current.values()) and
+         all(valid_identity(v) for v in receipts.values()), "invalid_rotation_map_set")
+    for name in set(maps) - auth_names(info):
+        need(maps[name] == journal["maps"][name] and current[name] == receipts[name],
+             "rotation_changed_noncredential_map")
+    return dict(journal, maps=maps), current
+
+
+def load(parent, revision, uid, allow_pending=False):
     info, files = R.load(parent, revision, uid, allow_activation=True)
     fd = activation_fd(parent, revision, uid)
     try:
@@ -136,9 +176,13 @@ def load(parent, revision, uid):
              all(R.valid_sha(v) for v in journal["maps"].values()) and
              M.canonical(journal) == raw, "invalid_transport_journal")
         entries = set(os.listdir(fd))
-        need(JOURNAL in entries and entries <= {JOURNAL} |
-             {receipt_name(name) for name in names}, "unexpected_journal_files")
+        allowed = {JOURNAL, ROTATION_CURRENT, ROTATION_PENDING} | {
+            receipt_name(name) for name in names}
+        need(JOURNAL in entries and entries <= allowed, "unexpected_journal_files")
+        need(allow_pending or ROTATION_PENDING not in entries,
+             "credential_rotation_recovery_required")
         receipts = {name: read_receipt(fd, revision, name, uid) for name in names}
+        journal, receipts = rotation_overlay(fd, info, journal, receipts, uid)
         need(set(os.listdir(fd)) == entries, "journal_changed")
         return info, files, journal, receipts
     finally:
