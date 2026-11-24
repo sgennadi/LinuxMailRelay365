@@ -24,6 +24,9 @@ jobs:
           bash -n tests/rocky_vm_sendmail_systemd_enforcing.sh tests/rocky_vm_boot_enforcing.sh tests/rocky_vm_tls_auth_enforcing.sh tests/rocky_vm_isolated_postfix_enforcing.sh tests/rocky_vm_multi_proof_timer_enforcing.sh
           python3 -m py_compile tests/rocky_vm_sendmail_stopped_config_restore.py
           python3 -m py_compile tests/rocky_vm_sendmail_stopped_dual_config_restore.py
+          python3 -m py_compile linux/foreign-mta-config-backup.py linux/restore-foreign-mta-config.py tests/rocky_vm_sendmail_product_restore.py
+          python3 -m unittest discover -v -s tests -p test_sendmail_v2_transaction.py
+          python3 -m unittest discover -v -s tests -p test_rocky_vm_sendmail_product_restore.py
           python3 -m py_compile tests/rocky_vm_sendmail_post_reboot_check.py
           bash -n tests/rocky_vm_isolated_postfix_enforcing.sh tests/rocky_vm_sidecar_installer_guard.sh tests/smoke_rhel_selinux_offline_policy.sh tests/smoke_rhel_native_foreign_mta.sh tests/smoke_native_foreign_mta.sh tests/smoke_authenticated_from_guard_loopback.sh tests/smoke_local_postfix_delivery.sh tests/smoke_fresh_direct_send.sh tests/smoke_fresh_connector.sh tests/smoke_scoped_recovery.sh tests/smoke_scoped_auth_recovery.sh tests/smoke_from_owner_milter.sh linux/install-sidecar-from-guard.sh
           bash -n linux/inspect-mail-submission.sh

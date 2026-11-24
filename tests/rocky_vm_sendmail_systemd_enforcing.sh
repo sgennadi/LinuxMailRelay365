@@ -269,6 +269,11 @@ grep -Fxq "LMR365_SENDMAIL_VM_DUAL_CONFIG_RESTORE=verified_two_files" "$work/sen
 grep -Fxq "LMR365_SENDMAIL_VM_DUAL_CONFIG_SELINUX=unchanged" "$work/sendmail-dual-restore"
 grep -Fxq "LMR365_SENDMAIL_VM_DUAL_CONFIG_PRIMARY_MTA_RESTORE_ENABLED=no" "$work/sendmail-dual-restore"
 echo "LMR365_SENDMAIL_VM_DUAL_OFFLINE_CONFIG_RECOVERY=verified_disposable_only"
+# Exercise the actual application CLI and abruptly terminate its child after
+# the first atomic write. On any refusal, do not reach Sendmail startup.
+sudo env GITHUB_ACTIONS=true python3 \
+  /usr/local/libexec/lmr365-kvm-sendmail-recovery/rocky_vm_sendmail_product_restore.py \
+  "$backup_id"
 sudo systemctl start sendmail.service
 smoke
 echo "LMR365_SENDMAIL_VM_RESTORED_SERVICE_START=passed"
