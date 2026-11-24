@@ -7116,6 +7116,12 @@ internal sealed partial class MainForm : Form
         if (foreignBackupListContext != identity + "|" + mta ||
             foreignBackupSelector.SelectedItem is not string id)
             throw new InvalidOperationException("Re-list and select the verified native MTA archive.");
+        if (mta == "sendmail")
+        {
+            if (await TryPreviewSendmailV2Async(endpoint, identity, id))
+                return;
+            endpoint = Endpoint();
+        }
         var result = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildForeignMtaRestorePlanBundle(mta, id),
             TimeSpan.FromMinutes(4));
@@ -7359,9 +7365,9 @@ internal sealed partial class MainForm : Form
                     "בדיקת תוכנית שחזור מדויקת ללא שינוי"),
                     PreviewExactForeignRestorePlanAsync, false, "check", "foreign-restore-plan");
                 AddLine(page, MailFlowText(T(
-                    "План проверяет архив v1 и точный набор файлов. Sendmail v2 требует ручного восстановления. Preview не разрешает запись.",
-                    "The exact plan checks v1 archives and matching file sets. Sendmail v2 requires manual recovery. Preview alone never authorizes writes.",
-                    "תוכנית v1 בלבד. שחזור v2 ידני."), Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
+                    "Формат архива определяется автоматически. Sendmail v2 проверяет два файла конфигурации и изменения остальных данных. Восстановление v2 пока только вручную.",
+                    "Archive format is detected automatically. Sendmail v2 reviews two compiled files and drift in other data. V2 recovery remains manual; preview never authorizes writes.",
+                    "פורמט הגיבוי מזוהה אוטומטית. בדיקת v2 כוללת שני קובצי תצורה ושינויים בנתונים אחרים; שחזור ידני בלבד."), Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
                 if (inspectedMail?.Mta == "exim" && inspectedHostIdentity == identity &&
                     inspectedHost?.MtaState == "installed_inactive")
                     AddAction(page, T("Восстановить выбранный Exim (экспериментально)...",

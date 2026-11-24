@@ -1504,6 +1504,20 @@ internal static class EmbeddedAssets
             " --static-check\n";
     }
 
+    internal static string BuildSendmailV2ReviewBundle(string backupId)
+    {
+        if (!Regex.IsMatch(backupId ?? "", @"\A[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("A verified Sendmail v2 backup ID is required.");
+        return "set -Eeuo pipefail\numask 077\n" +
+            "work=$(mktemp -d /tmp/lmr365-sendmail-v2.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n" +
+            "base64 -d > \"$work/foreign-mta-config-backup.py\" <<'LMR365_V2_BACKUP'\n" +
+            Encode(ForeignMtaBackup) + "\nLMR365_V2_BACKUP\n" +
+            "base64 -d > \"$work/restore-foreign-mta-config.py\" <<'LMR365_V2_NATIVE'\n" +
+            Encode(ForeignMtaRestore) + "\nLMR365_V2_NATIVE\n" +
+            "python3 \"$work/restore-foreign-mta-config.py\" --mta sendmail --sendmail-v2-plan " + backupId + "\n";
+    }
+
     internal static string BuildEximNativeRestoreApplyBundle(string backupId, string reviewedSha256)
     {
         if (backupId is null ||

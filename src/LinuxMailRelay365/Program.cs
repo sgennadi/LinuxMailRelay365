@@ -319,6 +319,7 @@ internal static class Program
                 return true;
             }),
             ("Exact native MTA read-only Restore Plan", ForeignRestorePlan.SelfTest),
+            ("Sendmail v2 strict read-only compiled configuration review", SendmailV2Review.SelfTest),
             ("Experimental offline Exim Restore receipt and bounded apply bundle", EximNativeRestoreReceipt.SelfTest),
             ("Global interrupted native Restore receipt and read-only bundle", ForeignPendingInspection.SelfTest),
             ("Experimental Exim pending rollback reviewed plan and applied receipt", EximPendingRollbackPlan.SelfTest),
