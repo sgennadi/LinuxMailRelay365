@@ -7280,6 +7280,17 @@ internal sealed partial class MainForm : Form
             "Experimental: stopped Exim with schema-3 journal, empty queue and matching original metadata only. A fresh plan and typed confirmation are required before writes. Disposable test hosts only.",
             "ניסיוני: Exim עצור, יומן גרסה 3 ותור ריק. נדרש אישור מפורש; לשרת בדיקה בלבד."),
             Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
+        AddAction(page, T("Предварительный план аварийного отката Sendmail v2",
+            "Preview interrupted Sendmail v2 rollback (read-only)", "בדיקת תוכנית שחזור Sendmail v2"),
+            () => ReviewSendmailV2RollbackAsync(false), false, "check", "restore");
+        AddAction(page, T("Аварийный откат Sendmail v2 (экспериментальный)...",
+            "Roll back interrupted Sendmail v2 (experimental)...", "שחזור Sendmail v2 ניסיוני..."),
+            () => ReviewSendmailV2RollbackAsync(true), false, "back", "restore");
+        AddLine(page, MailFlowText(T(
+            "Sendmail v2: только два файла конфигурации, журнал версии 4. Остановленный MTA, пустые очереди и отдельное подтверждение; только тестовый сервер.",
+            "Sendmail v2: two compiled files only, schema-4 journal. Stopped MTA, empty queues and separate confirmation; disposable test hosts only.",
+            "Sendmail v2: שני קובצי תצורה בלבד, יומן גרסה 4, שירות עצור ואישור נפרד."),
+            Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
         AddLine(page, MailFlowText(T(
             "Проверка относится ко всему Linux-серверу, независимо от текущего MTA. Она не возобновляет Restore и не разрешает запуск служб.",
             "Checks the entire Linux host, independently of the selected MTA. It never resumes Restore or authorizes starting services.",
@@ -7317,9 +7328,9 @@ internal sealed partial class MainForm : Form
                 "Primary Exim/Sendmail configuration archive",
                 "גיבוי תצורת Exim או Sendmail"), true));
             AddLine(page, UiTheme.Text(T(
-                "Закрытый архив остаётся на Linux: /var/backups/linuxmailrelay365-foreign-mta. Может содержать пароли; не включает очереди, внешние сертификаты и состояние службы. Только Exim допускает отдельное экспериментальное Restore.",
-                "Root-only archive stays on Linux under /var/backups/linuxmailrelay365-foreign-mta. May contain passwords. Excludes mail queues, external certs and service state. Only Exim offers explicitly confirmed experimental offline Restore.",
-                "הגיבוי נשמר בלינוקס בלבד. שחזור Exim ניסיוני דורש אישור נפרד.")));
+                "Закрытый архив остаётся на Linux: /var/backups/linuxmailrelay365-foreign-mta. Может содержать пароли; не включает очереди, внешние сертификаты и состояние службы. Exim и Sendmail v2 допускают отдельное экспериментальное восстановление ограниченной конфигурации.",
+                "Root-only archive stays on Linux under /var/backups/linuxmailrelay365-foreign-mta. May contain passwords. Excludes mail queues, external certs and service state. Exim and Sendmail v2 offer separately confirmed experimental offline configuration Restore.",
+                "הגיבוי נשמר בלינוקס בלבד. שחזור Exim או Sendmail v2 ניסיוני דורש אישור נפרד.")));
             AddAction(page, T(
                 "Проверить синтаксис Exim/Sendmail (без изменений)",
                 "Validate Exim/Sendmail native configuration (read-only)",
@@ -7365,9 +7376,9 @@ internal sealed partial class MainForm : Form
                     "בדיקת תוכנית שחזור מדויקת ללא שינוי"),
                     PreviewExactForeignRestorePlanAsync, false, "check", "foreign-restore-plan");
                 AddLine(page, MailFlowText(T(
-                    "Формат архива определяется автоматически. Sendmail v2 проверяет два файла конфигурации и изменения остальных данных. Восстановление v2 пока только вручную.",
-                    "Archive format is detected automatically. Sendmail v2 reviews two compiled files and drift in other data. V2 recovery remains manual; preview never authorizes writes.",
-                    "פורמט הגיבוי מזוהה אוטומטית. בדיקת v2 כוללת שני קובצי תצורה ושינויים בנתונים אחרים; שחזור ידני בלבד."), Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
+                    "Формат архива определяется автоматически. Sendmail v2 проверяет два файла конфигурации и изменения остальных данных. Запись v2 доступна отдельно только на остановленном тестовом сервере.",
+                    "Archive format is detected automatically. Sendmail v2 reviews two compiled files and drift in other data. V2 writes require a separate experimental operation on a stopped test host; preview never authorizes writes.",
+                    "פורמט הגיבוי מזוהה אוטומטית. בדיקת v2 כוללת שני קובצי תצורה ושינויים בנתונים אחרים; שחזור ניסיוני נפרד בשרת בדיקה עצור בלבד."), Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
                 if (inspectedMail?.Mta == "exim" && inspectedHostIdentity == identity &&
                     inspectedHost?.MtaState == "installed_inactive")
                     AddAction(page, T("Восстановить выбранный Exim (экспериментально)...",
@@ -7377,6 +7388,16 @@ internal sealed partial class MainForm : Form
                     AddLine(page, MailFlowText(T("Остановите Exim вручную на тестовом сервере и обновите диагностику.",
                         "Manually stop Exim on a disposable test host and refresh discovery.",
                         "יש לעצור את Exim ולרענן את הבדיקה."),
+                        Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
+                if (inspectedMail?.Mta == "sendmail" && inspectedHostIdentity == identity &&
+                    inspectedHost?.MtaState == "installed_inactive")
+                    AddAction(page, T("Восстановить два файла Sendmail v2 (экспериментально)...",
+                        "Restore two Sendmail v2 compiled files (experimental)...", "שחזור שני קובצי Sendmail v2 ניסיוני..."),
+                        ApplySendmailV2RestoreAsync, false, "back", "restore");
+                else if (inspectedMail?.Mta == "sendmail")
+                    AddLine(page, MailFlowText(T("Остановите Sendmail вручную на тестовом сервере и обновите диагностику.",
+                        "Manually stop Sendmail on a disposable test host and refresh discovery.",
+                        "יש לעצור את Sendmail בשרת בדיקה ולרענן את הבדיקה."),
                         Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
                 AddAction(page, T("Извлечь архив в отдельный защищённый каталог на Linux...",
                     "Extract verified files to separate protected Linux directory...",

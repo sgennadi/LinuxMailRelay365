@@ -1420,6 +1420,8 @@ def main(argv=None):
                 print("SENDMAIL_V2_RECOVERY_CHANGED_FILES=" + str(result["changed"]))
                 print("SENDMAIL_V2_RECOVERY_NATIVE_STATIC_CHECK=passed_partial_parse_only")
                 print("SENDMAIL_V2_RECOVERY_MARKER_CLEARED=yes")
+            print("SENDMAIL_V2_EVIDENCE_VERSION=4")
+            print("SENDMAIL_V2_EVIDENCE_MTA=sendmail")
             for key in ("target", "safety", "target_sha256", "safety_sha256",
                         "target_manifest_sha256", "safety_manifest_sha256", "plan_sha256"):
                 print("SENDMAIL_V2_EVIDENCE_" + key.upper() + "=" + record[key])

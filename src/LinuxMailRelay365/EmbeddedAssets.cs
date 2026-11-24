@@ -1504,6 +1504,42 @@ internal static class EmbeddedAssets
             " --static-check\n";
     }
 
+    internal static string BuildSendmailV2RestoreApplyBundle(string backupId, string sha)
+    {
+        if (!Regex.IsMatch(backupId ?? "", @"\A[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("A verified Sendmail v2 archive is required.");
+        RequireSendmailV2Sha(sha);
+        return BuildSendmailV2RecoveryBundle(" --sendmail-v2-apply " + backupId +
+            " --approve-sha256 " + sha + " --confirm " + SendmailV2RecoveryReceipt.RestoreConfirmation);
+    }
+
+    internal static string BuildSendmailV2RollbackPlanBundle() =>
+        BuildSendmailV2RecoveryBundle(" --sendmail-v2-rollback-plan");
+
+    internal static string BuildSendmailV2RollbackApplyBundle(string sha)
+    {
+        RequireSendmailV2Sha(sha);
+        return BuildSendmailV2RecoveryBundle(" --sendmail-v2-rollback-apply --approve-sha256 " + sha +
+            " --confirm " + SendmailV2RecoveryReceipt.RollbackConfirmation);
+    }
+
+    private static void RequireSendmailV2Sha(string sha)
+    {
+        if (!Regex.IsMatch(sha ?? "", @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant))
+            throw new ArgumentException("An exact reviewed Sendmail v2 SHA-256 is required.");
+    }
+
+    // Callers can use only the three validated fixed-action builders above.
+    private static string BuildSendmailV2RecoveryBundle(string command) =>
+        "set -Eeuo pipefail\numask 077\n" +
+        "work=$(mktemp -d /tmp/lmr365-sendmail-v2-recovery.XXXXXXXX)\n" +
+        "trap 'rm -rf -- \"$work\"' EXIT\n" +
+        "base64 -d > \"$work/foreign-mta-config-backup.py\" <<'LMR365_V2_RECOVERY_BACKUP'\n" +
+        Encode(ForeignMtaBackup) + "\nLMR365_V2_RECOVERY_BACKUP\n" +
+        "base64 -d > \"$work/restore-foreign-mta-config.py\" <<'LMR365_V2_RECOVERY_NATIVE'\n" +
+        Encode(ForeignMtaRestore) + "\nLMR365_V2_RECOVERY_NATIVE\n" +
+        "python3 \"$work/restore-foreign-mta-config.py\" --mta sendmail" + command + "\n";
+
     internal static string BuildSendmailV2ReviewBundle(string backupId)
     {
         if (!Regex.IsMatch(backupId ?? "", @"\A[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}\z", RegexOptions.CultureInvariant))
