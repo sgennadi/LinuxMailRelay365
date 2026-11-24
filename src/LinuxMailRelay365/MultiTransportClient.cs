@@ -11,6 +11,12 @@ internal sealed record MultiTransportMutation(string Revision, string Status);
 internal sealed record MultiTransportInstalled(string Status, string? Revision, string? Plan,
     string? Backend, IReadOnlyList<AdvancedRouteRule> Rules);
 
+// Read-only comparison; these records are never a Linux write authorization.
+internal sealed record MultiTransportEditItem(string Change, int? OldIndex, int? NewIndex,
+    AdvancedRouteRule? Before, AdvancedRouteRule? After, string CredentialIntent);
+internal sealed record MultiTransportEditPreview(string Revision, string CurrentPlan,
+    string DraftPlan, IReadOnlyList<MultiTransportEditItem> Items);
+
 internal static class MultiTransportClient
 {
     internal const string ApplyPhrase = "APPLY_NEW_STOPPED_POSTFIX_TRANSPORTS";
@@ -24,6 +30,57 @@ internal static class MultiTransportClient
             AdvancedRoutePlanner.PossibleOverlaps(items).Count != 0)
             throw new ArgumentException("Use 1–8 non-overlapping sender rules with verified TLS.");
         return items;
+    }
+
+    internal static MultiTransportEditPreview PreviewEdit(MultiTransportInstalled installed,
+        IEnumerable<AdvancedRouteRule> draft)
+    {
+        if (installed.Status != "installed_owned" ||
+            !ConditionalOfflineClient.IsSha(installed.Revision) ||
+            !ConditionalOfflineClient.IsSha(installed.Plan) ||
+            installed.Backend is not ("hash" or "lmdb"))
+            throw new ArgumentException("An owned installed set is required.");
+        var current = Eligible(installed.Rules);
+        if (!current.SequenceEqual(installed.Rules) ||
+            AdvancedRoutePlanner.PlanSha256(current) != installed.Plan)
+            throw new ArgumentException("Installed plan no longer matches.");
+        // Empty drafts are useful to review removal of all rules, but are
+        // never eligible for the first-install Apply or an edit transaction.
+        var requested = AdvancedRoutePlanner.ValidatePlan(draft);
+        var next = requested.Count == 0 ? requested : Eligible(requested);
+        var oldByKey = current.Select((rule, i) => (Rule: rule, Index: i + 1))
+            .ToDictionary(x => (x.Rule.Kind, x.Rule.Pattern));
+        var newKeys = new HashSet<(AdvancedRouteMatchKind, string)>();
+        var items = new List<MultiTransportEditItem>();
+        for (int i = 0; i < next.Count; i++)
+        {
+            var rule = next[i];
+            var key = (rule.Kind, rule.Pattern);
+            newKeys.Add(key);
+            if (oldByKey.TryGetValue(key, out var old))
+            {
+                bool same = old.Rule == rule;
+                // Never infer that a credential is appropriate for a new
+                // endpoint, changed TLS, different selector or new auth mode.
+                // Even an unchanged candidate is NOT read, copied or approved.
+                string intent = rule.AuthMode == "none" ? "none" :
+                    same ? "existing_candidate_only" : "new_credential_required";
+                items.Add(new(same ? (old.Index == i + 1 ? "unchanged" : "moved") : "modified",
+                    old.Index, i + 1, old.Rule, rule, intent));
+            }
+            else
+                items.Add(new("added", null, i + 1, null, rule,
+                    rule.AuthMode == "password" ? "new_credential_required" : "none"));
+        }
+        for (int i = 0; i < current.Count; i++)
+        {
+            var rule = current[i];
+            if (!newKeys.Contains((rule.Kind, rule.Pattern)))
+                items.Add(new("removed", i + 1, null, rule, null,
+                    rule.AuthMode == "password" ? "remove_reference_only" : "none"));
+        }
+        return new(installed.Revision!, installed.Plan!,
+            AdvancedRoutePlanner.PlanSha256(next), items.AsReadOnly());
     }
 
     internal static int Destinations(IEnumerable<AdvancedRouteRule> rules) =>
@@ -300,6 +357,44 @@ internal static class MultiTransportClient
         catch (InvalidDataException) {}
         try { ParseInstalled(installed.Replace("\"auth\":", "\"secret\":\"x\",\"auth\":")); return false; }
         catch (InvalidDataException) {}
+        var observation = ParseInstalled(installed);
+        var noAuth = rule with { Pattern = "other@example.org", AuthMode = "none", Port = 25 };
+        var password = rule with { Pattern = "third@example.org" };
+        var modified = rule with { Port = 465, TlsMode = "implicit" };
+        var originalRules = new[] { rule, noAuth };
+        var original = observation with { Rules = originalRules,
+            Plan = AdvancedRoutePlanner.PlanSha256(originalRules) };
+        var unchanged = PreviewEdit(original, originalRules);
+        if (unchanged.CurrentPlan != unchanged.DraftPlan ||
+            unchanged.Items.Any(x => x.Change != "unchanged") ||
+            unchanged.Items[0].CredentialIntent != "existing_candidate_only") return false;
+        var moved = PreviewEdit(original, new[] { noAuth, rule });
+        if (moved.CurrentPlan == moved.DraftPlan || moved.Items.Any(x => x.Change != "moved") ||
+            moved.Items[1].OldIndex != 1 || moved.Items[1].NewIndex != 2 ||
+            moved.Items[1].CredentialIntent != "existing_candidate_only") return false;
+        var changed = PreviewEdit(original, new[] { modified, password });
+        if (changed.Items.Select(x => x.Change).SequenceEqual(new[] { "modified", "added", "removed" }) == false ||
+            changed.Items[0].CredentialIntent != "new_credential_required" ||
+            changed.Items[1].CredentialIntent != "new_credential_required" ||
+            changed.Items[2].CredentialIntent != "none") return false;
+        var empty = PreviewEdit(original, Array.Empty<AdvancedRouteRule>());
+        if (empty.Items.Count != 2 || empty.Items.Any(x => x.Change != "removed") ||
+            empty.Items[0].CredentialIntent != "remove_reference_only") return false;
+        var renamed = PreviewEdit(observation, new[] { password });
+        if (renamed.Items.Count != 2 || renamed.Items[0].Change != "added" ||
+            renamed.Items[0].CredentialIntent != "new_credential_required" ||
+            renamed.Items[1].Change != "removed") return false;
+        var disabled = PreviewEdit(observation, new[] { rule with { AuthMode = "none" } });
+        if (disabled.Items.Single().CredentialIntent != "none") return false;
+        try { PreviewEdit(original with { Plan = b }, originalRules); return false; }
+        catch (ArgumentException) {}
+        try { PreviewEdit(original with { Status = "external_or_unverified" }, originalRules); return false; }
+        catch (ArgumentException) {}
+        try { PreviewEdit(original, new[] { rule, rule }); return false; }
+        catch (ArgumentException) {}
+        try { PreviewEdit(original, new[] { rule with { Kind = AdvancedRouteMatchKind.RecipientDomain,
+            Pattern = "example.org" } }); return false; }
+        catch (ArgumentException) {}
         return Build("scan").Contains("inspect-conditional-transport-recovery.py",StringComparison.Ordinal)
             && Build("installed").Contains("inspect-conditional-transport-recovery.py\" --installed",StringComparison.Ordinal);
     }

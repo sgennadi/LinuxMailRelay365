@@ -168,6 +168,7 @@ internal sealed partial class MainForm
                 "Это конфигурация на диске, не подтверждение доставки. Пароли не извлекаются.",
                 "Disk configuration only; runtime delivery is unverified. No passwords retrieved.",
                 "תצורה בדיסק בלבד, ללא קריאת סיסמאות."), width));
+        ShowMultiTransportEditPreview(page, width, l, hostContext, installed);
         AddAction(page, TranslateMailFlow(l, "Импортировать в локальный редактор...",
             "Import into local draft editor...", "ייבא לעורך המקומי..."), () =>
         {
@@ -202,6 +203,69 @@ internal sealed partial class MainForm
             WriteLine("Installed transport rules copied into local draft only.");
             return Task.CompletedTask;
         }, false, "check", "multi-import");
+    }
+
+    private void ShowMultiTransportEditPreview(TableLayoutPanel page, int width, int l,
+        string hostContext, MultiTransportInstalled installed)
+    {
+        if (multiInstalledContext != hostContext || RecoveryInventoryContext() != hostContext ||
+            advancedRoutingIdentity != TryCurrentIdentity()) return;
+        MultiTransportEditPreview preview;
+        try { preview = MultiTransportClient.PreviewEdit(installed, advancedRoutingRules); }
+        catch (ArgumentException)
+        {
+            AddLine(page, MailFlowText(TranslateMailFlow(l,
+                "Локальный проект несовместим с Multi-provider: исправьте правила перед сравнением.",
+                "The local draft is not a valid multi-provider plan; correct the rules before comparison.",
+                "הטיוטה אינה תואמת לתוכנית הנתיבים; יש לתקן את הכללים."), width, warning: true));
+            return;
+        }
+        AddLine(page, UiTheme.Text(TranslateMailFlow(l,
+            "Сравнение с локальным проектом (только просмотр)",
+            "Installed vs draft (read-only preview)",
+            "השוואת תצורה מותקנת לטיוטה (קריאה בלבד)"), true));
+        if (preview.CurrentPlan == preview.DraftPlan)
+            AddLine(page, MailFlowText(TranslateMailFlow(l, "Правила совпадают.",
+                "The route plans match.", "התוכניות זהות."), width));
+        foreach (var item in preview.Items)
+        {
+            string change = item.Change switch
+            {
+                "unchanged" => TranslateMailFlow(l, "Без изменений", "Unchanged", "ללא שינוי"),
+                "moved" => TranslateMailFlow(l, "Порядок изменён", "Order changed", "הסדר השתנה"),
+                "modified" => TranslateMailFlow(l, "Изменено", "Modified", "שונה"),
+                "added" => TranslateMailFlow(l, "Добавлено", "Added", "נוסף"),
+                "removed" => TranslateMailFlow(l, "Удалено из проекта", "Removed from draft", "הוסר מהטיוטה"),
+                _ => throw new InvalidOperationException("Unknown route change.")
+            };
+            string credential = item.CredentialIntent switch
+            {
+                "existing_candidate_only" => TranslateMailFlow(l,
+                    "Существующий пароль: только кандидат на сохранение.",
+                    "Existing credential: reuse candidate only.", "פרטי התחברות קיימים: מועמד לשימוש חוזר בלבד."),
+                "new_credential_required" => TranslateMailFlow(l,
+                    "Потребуются новые учётные данные.", "New credentials required.", "נדרשים פרטי התחברות חדשים."),
+                "remove_reference_only" => TranslateMailFlow(l,
+                    "Планируется удалить ссылку на старую карту.",
+                    "Old credential-map reference would be removed.", "הפניה למפת פרטי ההתחברות תוסר."),
+                _ => ""
+            };
+            string Describe(AdvancedRouteRule? r) => r is null ? "—" :
+                r.Pattern + " · " + r.Endpoint + " · " + r.TlsMode + " · " + r.AuthMode;
+            AddLine(page, MailFlowText(change + " · #" + (item.OldIndex?.ToString() ?? "—") +
+                " → #" + (item.NewIndex?.ToString() ?? "—") + Environment.NewLine +
+                Describe(item.Before) + Environment.NewLine + "→ " + Describe(item.After) +
+                (credential.Length == 0 ? "" : Environment.NewLine + credential), width));
+        }
+        if (advancedRoutingRules.Count == 0)
+            AddLine(page, MailFlowText(TranslateMailFlow(l,
+                "Пустой проект не разрешает удаление установленной конфигурации. Restore — отдельная операция.",
+                "An empty draft cannot authorize removal of the installed set. Restore is a separate operation.",
+                "טיוטה ריקה אינה מאשרת הסרת התצורה. שחזור הוא פעולה נפרדת."), width, warning: true));
+        AddLine(page, MailFlowText(TranslateMailFlow(l,
+            "Никакие пароли не читаются или копируются. Это только сравнение; запись изменений ещё не поддерживается.",
+            "No credentials are read or copied. Comparison only; applying these changes is not yet supported.",
+            "לא נקראים או מועתקים פרטי התחברות. השוואה בלבד; החלת שינויים עדיין אינה נתמכת."), width));
     }
 
     private async Task DiscoverMultiTransportAsync()
