@@ -146,6 +146,62 @@ class ForeignMtaRestoreTests(unittest.TestCase):
             with self.assertRaises(restore.Refused):
                 restore.preview("exim", snap_id, root, base, uid)
 
+    def test_unsupported_xattr_refuses_before_safety_backup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, sid, uid = self.fixture(folder, "exim")
+            target = next(tree.iterdir())
+            target.write_text("current edit\n")
+            try:
+                os.setxattr(str(target), "user.lmr365_test", b"not-supported")
+            except OSError as exc:
+                self.skipTest("test filesystem does not support user xattrs: " + str(exc))
+            with self.assertRaisesRegex(restore.Refused, "file_extended_attributes_unsupported"):
+                restore.preview("exim", sid, root, base, uid)
+            self.assertEqual(snapshot.listed("exim", base, uid), [sid])
+            self.assertEqual(target.read_text(), "current edit\n")
+
+    def test_label_hash_binds_plan_and_drift_refuses(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, base, tree, sid, uid = self.fixture(folder, "exim")
+            target = next(tree.iterdir())
+            target.write_text("current edit\n")
+            # Synthetic labels test receipt binding only. No SELinux claim.
+            with patch.object(restore, "label_from_fd", return_value=b"test-label-a"):
+                plan = restore.preview("exim", sid, root, base, uid)
+            with patch.object(restore, "label_from_fd", return_value=b"test-label-b"):
+                self.assertNotEqual(plan["sha"], restore.preview("exim", sid, root, base, uid)["sha"])
+                with self.assertRaisesRegex(restore.Refused, "plan_changed"):
+                    restore.apply("exim", sid, plan["sha"], restore.APPROVAL,
+                                  **self.kwargs(folder, root, base, uid))
+            self.assertEqual(snapshot.listed("exim", base, uid), [sid])
+            self.assertEqual(target.read_text(), "current edit\n")
+
+    def test_parser_pass_cannot_hide_new_file_or_label_drift(self):
+        for drift in ("new_file", "label"):
+            with self.subTest(drift=drift), tempfile.TemporaryDirectory() as folder:
+                root, base, tree, sid, uid = self.fixture(folder, "exim")
+                target = next(tree.iterdir())
+                target.write_text("current edit\n")
+                plan = restore.preview("exim", sid, root, base, uid)
+                options = self.kwargs(folder, root, base, uid)
+                actual = restore.label_from_fd
+                changed = [False]
+                def label(fd):
+                    return b"synthetic-drift" if changed[0] else actual(fd)
+                def parser(mta, root, uid):
+                    if drift == "new_file":
+                        (tree / "new.conf").write_text("concurrent file\n")
+                    else:
+                        changed[0] = True
+                    return True
+                options["static_check"] = parser
+                with patch.object(restore, "label_from_fd", side_effect=label):
+                    with self.assertRaisesRegex(restore.Refused, "rollback_incomplete_use_safety_backup"):
+                        restore.apply("exim", sid, plan["sha"], restore.APPROVAL, **options)
+                self.assertEqual(len(snapshot.listed("exim", base, uid)), 2)
+                if drift == "new_file":
+                    self.assertTrue((tree / "new.conf").is_file())
+
     def test_same_bytes_new_inode_invalidates_approval(self):
         with tempfile.TemporaryDirectory() as folder:
             root, base, tree, snap_id, uid = self.fixture(folder, "sendmail")

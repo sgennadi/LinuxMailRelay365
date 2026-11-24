@@ -213,3 +213,18 @@ acceptance and signing gates have passed.
 ## Post-RC16 development
 
 Diagnostics now has a provider-independent Backup & Restore page even for an unchanged mail route. The existing archive, compare, static check, preflight and export operations remain. The exact native Restore Plan runs the existing CLI in read-only --plan mode, checks a strict host/MTA/snapshot-bound receipt, and shows changed/total file counts, stopped-service, process, queue and listener evidence and plan SHA. Stopped-MTA preflight no longer accidentally requires an active service during its final identity check. Sendmail v2 still requires manual metadata recovery. No GUI native Apply or service restart is enabled. RC16 remains immutable; full live recovery acceptance is outstanding.
+
+### Exact metadata and post-parser validation (development)
+
+Native v1 preview now binds each current SELinux label digest to the exact
+SHA-256 plan, rejects unsupported extended attributes before any safety
+backup or replacement, and associates each label read with the same
+verified file metadata as its content. Replacement checks the staged and
+published label and refuses inherited unexpected metadata. Rollback checks
+labels and ownership and will not overwrite a file with unexpected metadata.
+After the native parser succeeds, the complete file set, contents, labels,
+service state, queue and listener evidence are checked again. Unexpected
+new files or label drift prevent a verified-rollback claim; preserve the
+pre-operation safety snapshot and inspect manually. Synthetic xattr/label
+unit tests are not proof of real SELinux Enforcing acceptance. No native GUI
+Apply is enabled by this change.

@@ -38,6 +38,45 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def metadata_key(st):
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mode, st.st_uid,
+            st.st_gid, st.st_nlink, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def label_from_fd(fd):
+    """Only SELinux labels are supported; never silently drop ACLs/xattrs."""
+    attrs = os.listxattr(fd)
+    if any(name != "security.selinux" for name in attrs):
+        raise Refused("file_extended_attributes_unsupported")
+    if "security.selinux" not in attrs:
+        return None
+    value = os.getxattr(fd, "security.selinux")
+    if not value or len(value) > 4096:
+        raise Refused("invalid_selinux_label")
+    return value
+
+
+def checked_label(path, uid, expected):
+    """Bind label reads to the same inode and metadata as the content read."""
+    fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_CLOEXEC", 0))
+    try:
+        if metadata_key(os.fstat(fd)) != metadata_key(expected):
+            raise Refused("config_changed_before_label_read")
+        label = label_from_fd(fd)
+        if (metadata_key(os.fstat(fd)) != metadata_key(expected) or
+                metadata_key(backup.safe_regular(path, uid)) != metadata_key(expected)):
+            raise Refused("config_changed_during_label_read")
+        return label
+    finally:
+        os.close(fd)
+
+
+def read_restore_file(path, uid):
+    metadata, data = backup.stable_file(path, uid)
+    return metadata, data, checked_label(path, uid, metadata)
+
+
 def content_from_snapshot(mta, snapshot_id, base, uid):
     if mta not in backup.ALLOWED or not backup.ID.fullmatch(snapshot_id):
         raise Refused("invalid_snapshot_selection")
@@ -78,26 +117,29 @@ def preview(mta, snapshot_id, root=backup.ROOT, base=backup.BASE, uid=0):
     if set(stored) != set(current):
         raise Refused("restore_file_set_mismatch")
     originals = {}
+    labels = {}
     reviewed = []
     changed = 0
     for name in sorted(current):
-        metadata, data = backup.stable_file(current[name], uid)
+        metadata, data, label = read_restore_file(current[name], uid)
         if metadata.st_mode & 0o7000:
             raise Refused("unsupported_special_file_permissions")
         originals[name] = (metadata, data)
+        labels[name] = label
         changed += data != stored[name]
         reviewed.append({"path": name, "sha256": digest(data),
                          "size": len(data), "mode": stat.S_IMODE(metadata.st_mode),
                          "uid": metadata.st_uid, "gid": metadata.st_gid,
                          "device": metadata.st_dev, "inode": metadata.st_ino,
                          "ctime_ns": metadata.st_ctime_ns,
-                         "mtime_ns": metadata.st_mtime_ns})
+                         "mtime_ns": metadata.st_mtime_ns,
+                         "selinux_label_sha256": None if label is None else digest(label)})
     evidence = {"version": 1, "mta": mta, "snapshot": snapshot_id,
                 "snapshot_sha256": info["sha256"], "current": reviewed}
     approved_sha = digest(json.dumps(
         evidence, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     return {"sha": approved_sha, "changed": changed, "files": len(reviewed),
-            "original": originals, "target": stored}
+            "original": originals, "target": stored, "labels": labels}
 
 
 def stopped(mta):
@@ -249,9 +291,14 @@ def take_lock(path=LOCK, uid=0):
     return fd
 
 
-def replace_one(path, content, metadata, uid, original_inode=True):
-    """Atomic single-file replacement, preserving ownership/mode/SELinux."""
-    backup.safe_regular(path, uid)
+def replace_one(path, content, metadata, uid, original_inode=True,
+                expected_label=None):
+    """Atomic single-file replacement, preserving the reviewed SELinux label."""
+    current_meta, _, current_label = read_restore_file(path, uid)
+    if current_label != expected_label:
+        raise Refused("config_selinux_label_changed_before_replace")
+    if original_inode and metadata_key(current_meta) != metadata_key(metadata):
+        raise Refused("config_changed_before_atomic_replace")
     if metadata.st_mode & 0o7000:
         raise Refused("unsupported_special_file_permissions")
     handle, temporary = tempfile.mkstemp(prefix=".lmr365-restore-",
@@ -261,31 +308,30 @@ def replace_one(path, content, metadata, uid, original_inode=True):
         if (current.st_uid, current.st_gid) != (metadata.st_uid, metadata.st_gid):
             os.fchown(handle, metadata.st_uid, metadata.st_gid)
         os.fchmod(handle, stat.S_IMODE(metadata.st_mode))
-        attrs = os.listxattr(str(path), follow_symlinks=False)
-        if any(name != "security.selinux" for name in attrs):
-            raise Refused("file_extended_attributes_unsupported")
-        if "security.selinux" in attrs:
-            value = os.getxattr(str(path), "security.selinux",
-                                follow_symlinks=False)
-            os.setxattr(temporary, "security.selinux", value)
-        if any(name != "security.selinux" for name in os.listxattr(temporary)):
-            raise Refused("temporary_file_inherited_unsupported_acl")
+        if expected_label is not None:
+            os.setxattr(handle, "security.selinux", expected_label)
+        if label_from_fd(handle) != expected_label:
+            raise Refused("temporary_file_label_mismatch")
         with os.fdopen(handle, "wb", closefd=False) as output:
             output.write(content)
             output.flush()
             os.fsync(output.fileno())
+        # Verify the actual temporary inode's label after writing, then
+        # reject even equal-content replacements of the live source inode.
+        staged_meta = os.fstat(handle)
+        if label_from_fd(handle) != expected_label:
+            raise Refused("temporary_file_label_changed")
         os.close(handle)
         handle = -1
-        new_meta, _ = backup.stable_file(path, uid)
-        if original_inode and (new_meta.st_dev, new_meta.st_ino,
-                               new_meta.st_ctime_ns, new_meta.st_mtime_ns) != (
-                                   metadata.st_dev, metadata.st_ino,
-                                   metadata.st_ctime_ns, metadata.st_mtime_ns):
+        new_meta, _, new_label = read_restore_file(path, uid)
+        if (metadata_key(new_meta) != metadata_key(current_meta) or
+                new_label != expected_label):
             raise Refused("config_changed_before_atomic_replace")
         os.replace(temporary, str(path))
-        check, data = backup.stable_file(path, uid)
-        if (data != content or check.st_uid != metadata.st_uid or
-                check.st_gid != metadata.st_gid or
+        check, data, label = read_restore_file(path, uid)
+        if ((check.st_dev, check.st_ino) != (staged_meta.st_dev, staged_meta.st_ino) or
+                data != content or check.st_uid != metadata.st_uid or
+                check.st_gid != metadata.st_gid or label != expected_label or
                 stat.S_IMODE(check.st_mode) != stat.S_IMODE(metadata.st_mode)):
             raise Refused("restored_file_verification_failed")
         parent = os.open(str(path.parent), os.O_RDONLY |
@@ -365,31 +411,46 @@ def apply(mta, snapshot_id, approved_sha, confirm,
                 if len(changed) and len(changed) % 16 == 0:
                     require_offline_preflight(mta, snapshot_id, root, base, uid,
                                               preflight_check)
-                now, current_data = backup.stable_file(root / name, uid)
-                if (current_data != original_data or
+                now, current_data, label = read_restore_file(root / name, uid)
+                if (label != state["labels"][name] or current_data != original_data or
                         now.st_dev != original_meta.st_dev or
                         now.st_ino != original_meta.st_ino or
                         now.st_mtime_ns != original_meta.st_mtime_ns or
                         now.st_ctime_ns != original_meta.st_ctime_ns):
                     raise Refused("configuration_changed_during_restore")
                 changed.append(name)
-                replace_one(root / name, wanted, original_meta, uid)
+                replace_one(root / name, wanted, original_meta, uid,
+                            expected_label=state["labels"][name])
             if not offline_check(mta):
                 raise Refused("primary_mta_restarted_after_restore")
             require_offline_preflight(mta, snapshot_id, root, base, uid,
                                       preflight_check)
-            for name in sorted(state["target"]):
-                metadata, observed = backup.stable_file(root / name, uid)
-                original_meta = state["original"][name][0]
-                if (observed != state["target"][name] or
-                        metadata.st_uid != original_meta.st_uid or
-                        metadata.st_gid != original_meta.st_gid or
-                        stat.S_IMODE(metadata.st_mode) !=
-                        stat.S_IMODE(original_meta.st_mode)):
-                    raise Refused("post_restore_content_or_metadata_mismatch")
+            def verify_restored_files():
+                current_files = backup.selected_files(mta, root, uid)
+                if set(current_files) != set(state["target"]):
+                    raise Refused("post_restore_file_set_mismatch")
+                for name in sorted(state["target"]):
+                    metadata, observed, label = read_restore_file(root / name, uid)
+                    original_meta = state["original"][name][0]
+                    if (observed != state["target"][name] or
+                            label != state["labels"][name] or
+                            metadata.st_uid != original_meta.st_uid or
+                            metadata.st_gid != original_meta.st_gid or
+                            stat.S_IMODE(metadata.st_mode) !=
+                            stat.S_IMODE(original_meta.st_mode)):
+                        raise Refused("post_restore_content_or_metadata_mismatch")
+
+            verify_restored_files()
             checker = native_static_config_check if static_check is None else static_check
             if checker(mta, root, uid) is not True:
                 raise Refused("native_mta_static_configuration_unverified")
+            # A parser pass is not proof that the MTA remained stopped or
+            # that a concurrent edit did not invalidate the restored tree.
+            if not offline_check(mta):
+                raise Refused("primary_mta_restarted_during_static_check")
+            require_offline_preflight(mta, snapshot_id, root, base, uid,
+                                      preflight_check)
+            verify_restored_files()
         except Exception:
             safe_rollback = True
             for name in reversed(changed):
@@ -397,19 +458,29 @@ def apply(mta, snapshot_id, approved_sha, confirm,
                 try:
                     if not offline_check(mta):
                         raise Refused("primary_mta_restarted_before_rollback")
-                    _, observed = backup.stable_file(root / name, uid)
-                    if observed not in (original_data, state["target"][name]):
+                    observed_meta, observed, label = read_restore_file(root / name, uid)
+                    if (label != state["labels"][name] or
+                            observed_meta.st_uid != original_meta.st_uid or
+                            observed_meta.st_gid != original_meta.st_gid or
+                            stat.S_IMODE(observed_meta.st_mode) != stat.S_IMODE(original_meta.st_mode) or
+                            observed not in (original_data, state["target"][name])):
                         raise Refused("concurrent_edit_prevents_rollback")
                     if observed != original_data:
                         replace_one(root / name, original_data, original_meta,
-                                    uid, original_inode=False)
+                                    uid, original_inode=False,
+                                    expected_label=state["labels"][name])
+                except Exception:
+                    safe_rollback = False
+            if safe_rollback:
+                try:
+                    safe_rollback = set(backup.selected_files(mta, root, uid)) == set(state["original"])
                 except Exception:
                     safe_rollback = False
             if safe_rollback:
                 for name, (prior_meta, prior_data) in state["original"].items():
                     try:
-                        now_meta, now_data = backup.stable_file(root / name, uid)
-                        if (now_data != prior_data or
+                        now_meta, now_data, label = read_restore_file(root / name, uid)
+                        if (label != state["labels"][name] or now_data != prior_data or
                                 now_meta.st_uid != prior_meta.st_uid or
                                 now_meta.st_gid != prior_meta.st_gid or
                                 stat.S_IMODE(now_meta.st_mode) !=
