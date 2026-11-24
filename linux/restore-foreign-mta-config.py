@@ -33,6 +33,8 @@ PENDING = ".native-restore-pending.json"
 REVIEW_FILE = "native-restore-review.json"
 MAX_REVIEW = 8 * 1024 * 1024
 ROLLBACK_APPROVAL = "ROLLBACK_INTERRUPTED_EXIM_CONFIG"
+SENDMAIL_V2_APPROVAL = "RESTORE_STOPPED_SENDMAIL_V2_COMPILED_CONFIG"
+SENDMAIL_V2_ROLLBACK_APPROVAL = "ROLLBACK_INTERRUPTED_SENDMAIL_V2_CONFIG"
 UNITS = {"exim": ("exim4.service", "exim.service"),
          "sendmail": ("sendmail.service",)}
 PROCESSES = {"exim": ("exim", "exim4"), "sendmail": ("sendmail",)}
@@ -410,12 +412,17 @@ def read_pending(base, uid):
         raise Refused("invalid_pending_restore_marker")
     expected = {"version", "mta", "target", "safety", "safety_sha256", "plan_sha256"}
     if (not isinstance(record, dict) or type(record.get("version")) is not int or
-            record["version"] not in (1, 2, 3)):
+            record["version"] not in (1, 2, 3, 4)):
         raise Refused("invalid_pending_restore_marker")
     digest_fields = ("safety_sha256", "plan_sha256")
     if record["version"] >= 2:
         expected.add("target_sha256")
         digest_fields += ("target_sha256",)
+    if record["version"] == 4:
+        expected.update(("target_manifest_sha256", "safety_manifest_sha256"))
+        digest_fields += ("target_manifest_sha256", "safety_manifest_sha256")
+        if record.get("mta") != "sendmail":
+            raise Refused("invalid_pending_restore_marker")
     if (set(record) != expected or
             not isinstance(record["mta"], str) or record["mta"] not in backup.ALLOWED or
             any(not isinstance(record[key], str) or not backup.ID.fullmatch(record[key])
@@ -465,6 +472,18 @@ def read_saved_review(base, uid, record):
         evidence = json.loads(raw.decode("ascii"))
     except (ValueError, UnicodeError):
         raise Refused("invalid_saved_restore_review")
+    if record["version"] == 4:
+        if (not isinstance(evidence, dict) or canonical_json(evidence) != raw or
+                set(evidence) != {"version", "scope", "snapshot", "archive_sha256",
+                                  "manifest_sha256", "current", "offline", "gate"} or
+                evidence["version"] != 1 or evidence["scope"] != "sendmail_v2_compiled_files_review_only" or
+                evidence["snapshot"] != record["target"] or
+                evidence["archive_sha256"] != record["target_sha256"] or
+                evidence["manifest_sha256"] != record["target_manifest_sha256"] or
+                evidence["gate"] != "compiled_files_review_candidate_only" or
+                not isinstance(evidence["current"], dict)):
+            raise Refused("invalid_saved_sendmail_v2_review")
+        return evidence
     if (not isinstance(evidence, dict) or canonical_json(evidence) != raw or
             set(evidence) != {"version", "mta", "snapshot", "snapshot_sha256", "current"} or
             evidence["version"] != 1 or evidence["mta"] != record["mta"] or
@@ -493,7 +512,7 @@ def publish_saved_review(base, uid, record, evidence):
     finally:
         os.close(fd)
     sync_directory(folder)
-    if read_saved_review(base, uid, record) != evidence:
+    if canonical_json(read_saved_review(base, uid, record)) != raw:
         raise Refused("saved_restore_review_verification_failed")
 
 
@@ -532,6 +551,8 @@ def pending_status(base=backup.BASE, uid=0):
                              record["mta"], uid)
     if evidence["sha256"] != record["safety_sha256"]:
         raise Refused("pending_restore_safety_snapshot_changed")
+    if record["version"] == 4:
+        sendmail_v2_bound_archives(base, uid, record)
     return record
 
 
@@ -603,9 +624,17 @@ def inspect_pending(root=backup.ROOT, base=backup.BASE, uid=0, lock_path=LOCK):
         mta = record["mta"]
         safety = pending_manifest(base, mta, record["safety"], record["safety_sha256"], uid)
         target = pending_manifest(base, mta, record["target"], record["target_sha256"], uid)
-        if target["version"] != 1 or set(safety["files"]) != set(target["files"]):
+        if (target["version"] != (2 if record["version"] == 4 else 1) or
+                safety["version"] != target["version"] or set(safety["files"]) != set(target["files"])):
             raise Refused("pending_restore_snapshot_file_set_mismatch")
-        first = pending_current_evidence(mta, root, uid)
+        def inventory():
+            if record["version"] == 4:
+                return sendmail_v2_current_inventory(root, uid)
+            return pending_current_evidence(mta, root, uid)
+        first_inventory = inventory()
+        first = ({name: (row["identity"], row["sha256"], row["selinux_label_sha256"])
+                  for name, row in first_inventory["files"].items()}
+                 if record["version"] == 4 else first_inventory)
         counts = {"original_only": 0, "target_only": 0, "both": 0,
                   "other": 0, "missing": 0,
                   "extra": len(set(first) - set(target["files"]))}
@@ -624,9 +653,11 @@ def inspect_pending(root=backup.ROOT, base=backup.BASE, uid=0, lock_path=LOCK):
         # a sampled comparison; another administrator can still change it.
         if (pending_manifest(base, mta, record["safety"], record["safety_sha256"], uid) != safety or
                 pending_manifest(base, mta, record["target"], record["target_sha256"], uid) != target or
-                pending_current_evidence(mta, root, uid) != first or
+                inventory() != first_inventory or
                 read_pending(base, uid) != record):
             raise Refused("pending_restore_state_changed_during_inspection")
+        if record["version"] == 4:
+            sendmail_v2_bound_archives(base, uid, record)
         report.update({"comparison": "verified_sampled_content_only",
                        "files": len(target["files"]), "counts": counts})
         return report
@@ -997,81 +1028,329 @@ def sendmail_v2_current_inventory(root, uid):
             "etc_identity": metadata_key(backup.safe_dir(root / "etc", uid))}
 
 
+def _sendmail_v2_plan(snapshot_id, root, base, uid, preflight_check):
+    """Build a fresh exact review while the caller holds the relevant lock."""
+    if read_pending(base, uid) is not None:
+        raise Refused("pending_restore_requires_manual_recovery")
+    manifest, manifest_sha, archive_identity = verified_sendmail_v2_manifest(
+        snapshot_id, base, uid)
+    current = sendmail_v2_current_inventory(root, uid)
+    archived = manifest["files"]
+    live = current["files"]
+    shared = set(archived) & set(live)
+    changed = {name for name in shared if archived[name]["sha256"] != live[name]["sha256"]}
+    meta_changed = {name for name in shared if any(
+        archived[name][key] != live[name][key] for key in ("uid", "gid", "mode"))}
+    old_objects, new_objects = manifest["objects"], current["objects"]
+    object_drift = len(set(old_objects) ^ set(new_objects)) + sum(
+        old_objects[name] != new_objects[name]
+        for name in set(old_objects) & set(new_objects))
+    counts = {
+        "file_count": len(archived),
+        "compiled_targets": len(SENDMAIL_V2_TARGETS & shared),
+        "compiled_changed": len(changed & SENDMAIL_V2_TARGETS),
+        "other_changed": len(changed - SENDMAIL_V2_TARGETS),
+        "missing": len(set(archived) - set(live)),
+        "extra": len(set(live) - set(archived)),
+        "metadata_changed": len(meta_changed),
+        "object_drift": object_drift
+    }
+    check = backup.offline_recovery_preflight if preflight_check is None else preflight_check
+    proof = check("sendmail", snapshot_id, root, base, uid)
+    if (not isinstance(proof, dict) or proof.get("mta") != "sendmail" or
+            proof.get("snapshot_id") != snapshot_id or
+            proof.get("archive_sha256") != manifest["sha256"]):
+        raise Refused("sendmail_v2_preflight_identity_unverified")
+    allowed = {"service": ("running", "stopped_declared", "unverified"),
+               "processes": ("running", "none_observed", "unverified"),
+               "queue": ("empty_reported", "nonempty_reported", "unverified"),
+               "listener": ("running", "none_observed", "unverified"),
+               "gate": ("blocked_running", "blocked_nonempty_queue",
+                        "blocked_unverified", "offline_candidate_manual_recovery_only")}
+    if any(proof.get(key) not in values for key, values in allowed.items()):
+        raise Refused("sendmail_v2_invalid_preflight")
+    offline = {key: proof[key] for key in allowed}
+    offline_ok = (offline == {"service": "stopped_declared", "processes": "none_observed",
+                  "queue": "empty_reported", "listener": "none_observed",
+                  "gate": "offline_candidate_manual_recovery_only"} and
+                  proof.get("current") in ("identical", "different"))
+    if not offline_ok:
+        gate = "blocked_offline_preflight"
+    elif (counts["compiled_targets"] != 2 or counts["other_changed"] or
+          counts["missing"] or counts["extra"] or counts["metadata_changed"] or
+          counts["object_drift"]):
+        gate = "blocked_inventory_drift"
+    elif (new_objects["etc/mail"]["uid"] != uid or any(
+            live[name]["uid"] != uid or live[name]["mode"] & 0o7022
+            for name in SENDMAIL_V2_TARGETS)):
+        gate = "blocked_untrusted_write_scope"
+    else:
+        gate = "compiled_files_review_candidate_only"
+    second = sendmail_v2_current_inventory(root, uid)
+    if (second != current or verified_sendmail_v2_manifest(snapshot_id, base, uid) !=
+            (manifest, manifest_sha, archive_identity) or read_pending(base, uid) is not None):
+        raise Refused("sendmail_v2_state_changed_during_review")
+    evidence = {"version": 1, "scope": "sendmail_v2_compiled_files_review_only",
+                "snapshot": snapshot_id, "archive_sha256": manifest["sha256"],
+                "manifest_sha256": manifest_sha, "current": current,
+                "offline": offline, "gate": gate}
+    return {"snapshot": snapshot_id, "archive_sha256": manifest["sha256"],
+            "manifest_sha256": manifest_sha, "plan_sha256": digest(canonical_json(evidence)),
+            "counts": counts, "offline": offline, "gate": gate, "evidence": evidence}
+
+
 def preview_sendmail_v2(snapshot_id, root=backup.ROOT, base=backup.BASE, uid=0,
                         lock_path=LOCK, preflight_check=None):
-    """Exact read-only analysis of a possible two-file recovery, never Apply."""
+    """Read-only review; the report itself never authorizes Apply."""
     lock = open_existing_inspection_lock(lock_path, uid)
     try:
-        if read_pending(base, uid) is not None:
-            raise Refused("pending_restore_requires_manual_recovery")
-        manifest, manifest_sha, archive_identity = verified_sendmail_v2_manifest(
-            snapshot_id, base, uid)
-        current = sendmail_v2_current_inventory(root, uid)
-        archived = manifest["files"]
-        live = current["files"]
-        shared = set(archived) & set(live)
-        changed = {name for name in shared if archived[name]["sha256"] != live[name]["sha256"]}
-        meta_changed = {name for name in shared if any(
-            archived[name][key] != live[name][key] for key in ("uid", "gid", "mode"))}
-        old_objects, new_objects = manifest["objects"], current["objects"]
-        object_drift = len(set(old_objects) ^ set(new_objects)) + sum(
-            old_objects[name] != new_objects[name]
-            for name in set(old_objects) & set(new_objects))
-        counts = {
-            "file_count": len(archived),
-            "compiled_targets": len(SENDMAIL_V2_TARGETS & shared),
-            "compiled_changed": len(changed & SENDMAIL_V2_TARGETS),
-            "other_changed": len(changed - SENDMAIL_V2_TARGETS),
-            "missing": len(set(archived) - set(live)),
-            "extra": len(set(live) - set(archived)),
-            "metadata_changed": len(meta_changed),
-            "object_drift": object_drift
-        }
-        check = backup.offline_recovery_preflight if preflight_check is None else preflight_check
-        proof = check("sendmail", snapshot_id, root, base, uid)
-        if (not isinstance(proof, dict) or proof.get("mta") != "sendmail" or
-                proof.get("snapshot_id") != snapshot_id or
-                proof.get("archive_sha256") != manifest["sha256"]):
-            raise Refused("sendmail_v2_preflight_identity_unverified")
-        allowed = {"service": ("running", "stopped_declared", "unverified"),
-                   "processes": ("running", "none_observed", "unverified"),
-                   "queue": ("empty_reported", "nonempty_reported", "unverified"),
-                   "listener": ("running", "none_observed", "unverified"),
-                   "gate": ("blocked_running", "blocked_nonempty_queue",
-                            "blocked_unverified", "offline_candidate_manual_recovery_only")}
-        if any(proof.get(key) not in values for key, values in allowed.items()):
-            raise Refused("sendmail_v2_invalid_preflight")
-        offline = {key: proof[key] for key in allowed}
-        offline_ok = (offline == {"service": "stopped_declared", "processes": "none_observed",
-                      "queue": "empty_reported", "listener": "none_observed",
-                      "gate": "offline_candidate_manual_recovery_only"} and
-                      proof.get("current") in ("identical", "different"))
-        if not offline_ok:
-            gate = "blocked_offline_preflight"
-        elif (counts["compiled_targets"] != 2 or counts["other_changed"] or
-              counts["missing"] or counts["extra"] or counts["metadata_changed"] or
-              counts["object_drift"]):
-            gate = "blocked_inventory_drift"
-        elif (new_objects["etc/mail"]["uid"] != uid or any(
-                live[name]["uid"] != uid or live[name]["mode"] & 0o7022
-                for name in SENDMAIL_V2_TARGETS)):
-            gate = "blocked_untrusted_write_scope"
-        else:
-            gate = "compiled_files_review_candidate_only"
-        second = sendmail_v2_current_inventory(root, uid)
-        if (second != current or verified_sendmail_v2_manifest(snapshot_id, base, uid) !=
-                (manifest, manifest_sha, archive_identity) or read_pending(base, uid) is not None):
-            raise Refused("sendmail_v2_state_changed_during_review")
-        evidence = {"version": 1, "scope": "sendmail_v2_compiled_files_review_only",
-                    "snapshot": snapshot_id, "archive_sha256": manifest["sha256"],
-                    "manifest_sha256": manifest_sha, "current": current,
-                    "offline": offline, "gate": gate}
-        return {"snapshot": snapshot_id, "archive_sha256": manifest["sha256"],
-                "manifest_sha256": manifest_sha, "plan_sha256": digest(canonical_json(evidence)),
-                "counts": counts, "offline": offline, "gate": gate}
+        plan = _sendmail_v2_plan(snapshot_id, root, base, uid, preflight_check)
+        plan.pop("evidence")
+        return plan
     finally:
         if lock is not None:
             os.close(lock)
+
+
+def sendmail_v2_manifest_rows(inventory):
+    return {name: {key: row[key] for key in ("size", "sha256", "uid", "gid", "mode")}
+            for name, row in inventory["files"].items()}
+
+
+def sendmail_v2_bound_archives(base, uid, record):
+    """Bind both raw manifests, not just their compressed file data."""
+    reviewed = read_saved_review(base, uid, record)
+    safety = verified_sendmail_v2_manifest(record["safety"], base, uid)
+    target = verified_sendmail_v2_manifest(record["target"], base, uid)
+    for label, item in (("safety", safety), ("target", target)):
+        if (item[0]["sha256"] != record[label + "_sha256"] or
+                item[1] != record[label + "_manifest_sha256"]):
+            raise Refused("sendmail_v2_bound_archive_changed")
+    original = reviewed["current"]
+    if (set(original) != {"files", "objects", "object_ids", "etc_identity"} or
+            not isinstance(original["files"], dict) or not isinstance(original["objects"], dict) or
+            not isinstance(original["object_ids"], dict) or
+            not SENDMAIL_V2_TARGETS.issubset(original["files"]) or
+            set(original["object_ids"]) != set(original["objects"])):
+        raise Refused("sendmail_v2_saved_inventory_invalid")
+    rows = sendmail_v2_manifest_rows(original)
+    if (safety[0]["files"] != rows or safety[0]["objects"] != original["objects"] or
+            target[0]["objects"] != original["objects"] or set(target[0]["files"]) != set(rows)):
+        raise Refused("sendmail_v2_bound_archive_inventory_mismatch")
+    for name, item in rows.items():
+        destination = target[0]["files"][name]
+        keys = ("uid", "gid", "mode") if name in SENDMAIL_V2_TARGETS else tuple(item)
+        if any(item[key] != destination[key] for key in keys):
+            raise Refused("sendmail_v2_bound_archive_scope_mismatch")
+    return reviewed, safety, target
+
+
+def sendmail_v2_compiled_bytes(base, uid, snapshot_id, verified):
+    """Read two verified regular TAR members as bytes; never extract paths."""
+    manifest, _, identity = verified
+    result = {}
+    path = base / "sendmail" / snapshot_id / "config.tar.gz"
+    fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_CLOEXEC", 0))
+    with os.fdopen(fd, "rb") as stream:
+        if metadata_key(os.fstat(stream.fileno())) != identity:
+            raise Refused("sendmail_v2_archive_identity_changed")
+        with tarfile.open(fileobj=stream, mode="r:gz") as archive:
+            for member in archive:
+                if member.name not in SENDMAIL_V2_TARGETS:
+                    continue
+                item = manifest["files"][member.name]
+                if (not member.isfile() or member.name in result or member.size != item["size"] or
+                        member.size > backup.MAX_SINGLE or
+                        (member.uid, member.gid, member.mode) != (item["uid"], item["gid"], item["mode"])):
+                    raise Refused("sendmail_v2_unsafe_compiled_member")
+                source = archive.extractfile(member)
+                if source is None:
+                    raise Refused("sendmail_v2_unreadable_compiled_member")
+                data = source.read(member.size + 1)
+                if len(data) != member.size or digest(data) != item["sha256"]:
+                    raise Refused("sendmail_v2_compiled_member_digest_changed")
+                result[member.name] = data
+        if metadata_key(os.fstat(stream.fileno())) != identity:
+            raise Refused("sendmail_v2_archive_identity_changed")
+    if set(result) != SENDMAIL_V2_TARGETS:
+        raise Refused("sendmail_v2_missing_compiled_members")
+    if verified_sendmail_v2_manifest(snapshot_id, base, uid) != verified:
+        raise Refused("sendmail_v2_archive_changed_after_read")
+    return result
+
+
+def sendmail_v2_validate_live(current, original, target, uid):
+    """Only the two compiled byte streams may differ after the first write."""
+    if (current["objects"] != original["objects"] or
+            set(current["files"]) != set(original["files"]) or
+            set(current["object_ids"]) != set(original["object_ids"]) or
+            list(current["etc_identity"]) != list(original["etc_identity"])):
+        raise Refused("sendmail_v2_live_inventory_drift")
+    for name, now in current["object_ids"].items():
+        old = original["object_ids"][name]
+        # Atomic replacement necessarily changes the parent directory's
+        # size/timestamps. Its device/inode, ownership, mode and link count
+        # must remain identical; every other object identity is exact.
+        indices = (0, 1, 3, 4, 5, 6) if name == "etc/mail" else tuple(range(9))
+        if any(now[i] != old[i] for i in indices):
+            raise Refused("sendmail_v2_live_object_identity_drift")
+    for name, row in current["files"].items():
+        old = original["files"][name]
+        if name not in SENDMAIL_V2_TARGETS:
+            if canonical_json(row) != canonical_json(old):
+                raise Refused("sendmail_v2_unrelated_file_drift")
+            continue
+        if (row["uid"] != uid or row["mode"] & 0o7022 or
+                any(row[key] != old[key] for key in ("uid", "gid", "mode", "selinux_label_sha256")) or
+                row["sha256"] not in (old["sha256"], target["files"][name]["sha256"])):
+            raise Refused("sendmail_v2_compiled_file_drift")
+
+
+def sendmail_v2_pending_state(root, base, uid, offline_check, preflight_check):
+    record = read_pending(base, uid)
+    if record is None or record["version"] != 4 or record["mta"] != "sendmail":
+        raise Refused("sendmail_v2_pending_marker_required")
+    if not offline_check("sendmail"):
+        raise Refused("primary_mta_not_stopped")
+    backup.safe_dir(root / "etc", uid)
+    backup.safe_dir(root / "etc" / "mail", uid)
+    reviewed, safety, target = sendmail_v2_bound_archives(base, uid, record)
+    original = reviewed["current"]
+    current = sendmail_v2_current_inventory(root, uid)
+    sendmail_v2_validate_live(current, original, target[0], uid)
+    proof = require_offline_preflight("sendmail", record["safety"], root, base, uid, preflight_check)
+    if proof.get("archive_sha256") != record["safety_sha256"]:
+        raise Refused("sendmail_v2_offline_archive_identity_changed")
+    if (sendmail_v2_current_inventory(root, uid) != current or
+            sendmail_v2_bound_archives(base, uid, record) != (reviewed, safety, target) or
+            read_pending(base, uid) != record):
+        raise Refused("sendmail_v2_pending_state_changed")
+    changed = sum(current["files"][name]["sha256"] != original["files"][name]["sha256"]
+                  for name in SENDMAIL_V2_TARGETS)
+    approval = digest(canonical_json({"version": 1, "scope": "sendmail_v2_rollback",
+                                      "marker": record, "current": current}))
+    return {"record": record, "current": current, "safety": safety, "target": target,
+            "changed": changed, "sha": approval}
+
+
+def sendmail_v2_finish(root, base, uid, record, direction, offline_check,
+                       preflight_check, static_check):
+    """Recheck full scope before and after parsing; retain marker on any error."""
+    count = 0
+    initial = sendmail_v2_pending_state(root, base, uid, offline_check, preflight_check)
+    if initial["record"] != record:
+        raise Refused("sendmail_v2_pending_marker_changed")
+    wanted = sendmail_v2_compiled_bytes(base, uid, record[direction], initial[direction])
+    # Every single-file replacement is independently checked against the
+    # exact last sampled state. No automatic writes occur on a failure.
+    expected = initial["current"]
+    for name in sorted(SENDMAIL_V2_TARGETS):
+        state = sendmail_v2_pending_state(root, base, uid, offline_check, preflight_check)
+        if state["record"] != record or state["current"] != expected:
+            raise Refused("sendmail_v2_state_changed_before_replace")
+        metadata, data, label = read_restore_file(root / name, uid)
+        row = expected["files"][name]
+        if (metadata_key(metadata) != row["identity"] or digest(data) != row["sha256"] or
+                (None if label is None else digest(label)) != row["selinux_label_sha256"]):
+            raise Refused("sendmail_v2_file_changed_before_replace")
+        if data == wanted[name]:
+            continue
+        replace_one(root / name, wanted[name], metadata, uid, expected_label=label)
+        count += 1
+        next_state = sendmail_v2_pending_state(root, base, uid, offline_check, preflight_check)
+        if next_state["record"] != record:
+            raise Refused("sendmail_v2_pending_marker_changed")
+        now = next_state["current"]
+        if (any(now["files"][other] != expected["files"][other]
+                for other in expected["files"] if other != name) or
+                now["files"][name]["sha256"] != digest(wanted[name])):
+            raise Refused("sendmail_v2_unexpected_concurrent_change")
+        expected = now
+
+    def verify_final():
+        state = sendmail_v2_pending_state(root, base, uid, offline_check, preflight_check)
+        if (state["record"] != record or state["current"] != expected or any(
+                state["current"]["files"][name]["sha256"] != digest(wanted[name])
+                for name in SENDMAIL_V2_TARGETS)):
+            raise Refused("sendmail_v2_final_verification_failed")
+
+    verify_final()
+    checker = native_static_config_check if static_check is None else static_check
+    if checker("sendmail", root, uid) is not True:
+        raise Refused("sendmail_v2_native_static_check_failed")
+    verify_final()
+    clear_verified_pending(base, uid, record)
+    return {"changed": count, "record": record}
+
+
+def apply_sendmail_v2(snapshot_id, approved_sha, confirm, root=backup.ROOT,
+                      base=backup.BASE, uid=0, offline_check=stopped,
+                      lock_path=LOCK, preflight_check=None, static_check=None):
+    """Experimental compiled-config-only Restore. Failures retain recovery evidence."""
+    if confirm != SENDMAIL_V2_APPROVAL or not backup.SHA.fullmatch(approved_sha):
+        raise Refused("sendmail_v2_confirmation_and_sha_required")
+    lock = take_lock(lock_path, uid)
+    try:
+        plan = _sendmail_v2_plan(snapshot_id, root, base, uid, preflight_check)
+        if plan["plan_sha256"] != approved_sha:
+            raise Refused("sendmail_v2_plan_changed_reapprove")
+        if plan["gate"] != "compiled_files_review_candidate_only" or not plan["counts"]["compiled_changed"]:
+            raise Refused("sendmail_v2_plan_not_eligible_for_restore")
+        if not offline_check("sendmail"):
+            raise Refused("primary_mta_not_stopped")
+        backup.safe_dir(root / "etc" / "mail", uid)
+        safety_id, _ = backup.backup("sendmail", root, base, uid, package_v2=True)
+        safety = verified_sendmail_v2_manifest(safety_id, base, uid)
+        original = plan["evidence"]["current"]
+        if (safety[0]["files"] != sendmail_v2_manifest_rows(original) or
+                safety[0]["objects"] != original["objects"]):
+            raise Refused("sendmail_v2_safety_snapshot_mismatch")
+        folder = base / "sendmail" / safety_id
+        for directory in (folder, folder.parent, base, base.parent):
+            sync_directory(directory)
+        if _sendmail_v2_plan(snapshot_id, root, base, uid, preflight_check) != plan:
+            raise Refused("sendmail_v2_state_changed_during_safety_backup")
+        record = {"version": 4, "mta": "sendmail", "target": snapshot_id, "safety": safety_id,
+                  "target_sha256": plan["archive_sha256"], "safety_sha256": safety[0]["sha256"],
+                  "target_manifest_sha256": plan["manifest_sha256"], "safety_manifest_sha256": safety[1],
+                  "plan_sha256": approved_sha}
+        publish_saved_review(base, uid, record, plan["evidence"])
+        sendmail_v2_bound_archives(base, uid, record)
+        if _sendmail_v2_plan(snapshot_id, root, base, uid, preflight_check) != plan:
+            raise Refused("sendmail_v2_state_changed_before_pending_marker")
+        publish_pending(base, uid, record)
+        print("SENDMAIL_V2_RECOVERY_SAFETY_ID=" + safety_id, flush=True)
+        return sendmail_v2_finish(root, base, uid, record, "target", offline_check,
+                                  preflight_check, static_check)
+    finally:
+        os.close(lock)
+
+
+def preview_sendmail_v2_rollback(root=backup.ROOT, base=backup.BASE, uid=0,
+                                 offline_check=stopped, lock_path=LOCK, preflight_check=None):
+    lock = open_existing_inspection_lock(lock_path, uid)
+    try:
+        return sendmail_v2_pending_state(root, base, uid, offline_check, preflight_check)
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
+def rollback_sendmail_v2(approved_sha, confirm, root=backup.ROOT, base=backup.BASE,
+                         uid=0, offline_check=stopped, lock_path=LOCK,
+                         preflight_check=None, static_check=None):
+    if confirm != SENDMAIL_V2_ROLLBACK_APPROVAL or not backup.SHA.fullmatch(approved_sha):
+        raise Refused("sendmail_v2_rollback_confirmation_and_sha_required")
+    lock = take_lock(lock_path, uid)
+    try:
+        plan = sendmail_v2_pending_state(root, base, uid, offline_check, preflight_check)
+        if plan["sha"] != approved_sha:
+            raise Refused("sendmail_v2_rollback_plan_changed_reapprove")
+        return sendmail_v2_finish(root, base, uid, plan["record"], "safety",
+                                  offline_check, preflight_check, static_check)
+    finally:
+        os.close(lock)
 
 
 def main(argv=None):
@@ -1080,6 +1359,9 @@ def main(argv=None):
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--plan", metavar="SNAPSHOT_ID")
     group.add_argument("--sendmail-v2-plan", metavar="SNAPSHOT_ID")
+    group.add_argument("--sendmail-v2-apply", metavar="SNAPSHOT_ID")
+    group.add_argument("--sendmail-v2-rollback-plan", action="store_true")
+    group.add_argument("--sendmail-v2-rollback-apply", action="store_true")
     group.add_argument("--apply", metavar="SNAPSHOT_ID")
     group.add_argument("--static-check", action="store_true")
     group.add_argument("--pending-status", action="store_true")
@@ -1107,6 +1389,38 @@ def main(argv=None):
                 print("SENDMAIL_V2_PLAN_OFFLINE_" + key.upper() + "=" + value)
             for key in ("CONFIG_CHANGED", "QUEUE_CHANGED", "SERVICE_CHANGED", "APPLY_AUTHORIZED"):
                 print("SENDMAIL_V2_PLAN_" + key + "=no")
+            return 0
+        if args.sendmail_v2_apply or args.sendmail_v2_rollback_plan or args.sendmail_v2_rollback_apply:
+            if args.mta != "sendmail":
+                raise Refused("sendmail_v2_action_requires_sendmail")
+            if args.sendmail_v2_rollback_plan:
+                if args.approve_sha256 or args.confirm:
+                    raise Refused("approval_not_permitted_during_preview")
+                plan = preview_sendmail_v2_rollback()
+                record = plan["record"]
+                print("SENDMAIL_V2_ROLLBACK_STATUS=review_only")
+                print("SENDMAIL_V2_ROLLBACK_PLAN_SHA256=" + plan["sha"])
+                print("SENDMAIL_V2_ROLLBACK_CHANGED_FILES=" + str(plan["changed"]))
+                print("SENDMAIL_V2_ROLLBACK_CONFIG_CHANGED=no")
+            elif args.sendmail_v2_apply:
+                result = apply_sendmail_v2(args.sendmail_v2_apply, args.approve_sha256, args.confirm)
+                record = result["record"]
+                print("SENDMAIL_V2_RECOVERY_STATUS=config_replaced_service_not_started")
+                print("SENDMAIL_V2_RECOVERY_CHANGED_FILES=" + str(result["changed"]))
+                print("SENDMAIL_V2_RECOVERY_NATIVE_STATIC_CHECK=passed_partial_parse_only")
+                print("SENDMAIL_V2_RECOVERY_MARKER_CLEARED=yes")
+            else:
+                result = rollback_sendmail_v2(args.approve_sha256, args.confirm)
+                record = result["record"]
+                print("SENDMAIL_V2_RECOVERY_STATUS=original_verified_service_not_started")
+                print("SENDMAIL_V2_RECOVERY_CHANGED_FILES=" + str(result["changed"]))
+                print("SENDMAIL_V2_RECOVERY_NATIVE_STATIC_CHECK=passed_partial_parse_only")
+                print("SENDMAIL_V2_RECOVERY_MARKER_CLEARED=yes")
+            for key in ("target", "safety", "target_sha256", "safety_sha256",
+                        "target_manifest_sha256", "safety_manifest_sha256", "plan_sha256"):
+                print("SENDMAIL_V2_EVIDENCE_" + key.upper() + "=" + record[key])
+            print("SENDMAIL_V2_QUEUE_CHANGED=no")
+            print("SENDMAIL_V2_SERVICE_CHANGED=no")
             return 0
         if args.pending_rollback_plan:
             if args.approve_sha256 or args.confirm:

@@ -415,8 +415,12 @@ def verify(directory, mta, owner_uid=0):
                        else "v1_regular_files")}
 
 
-def backup(mta, root=ROOT, base=BASE, owner_uid=0):
-    package_objects = {} if mta == "sendmail" and owner_uid == 0 else None
+def backup(mta, root=ROOT, base=BASE, owner_uid=0, package_v2=None):
+    # The CLI default is unchanged. Internal scoped recovery explicitly
+    # requests v2, including for unprivileged isolated test fixtures.
+    if package_v2 is not None and (mta != "sendmail" or package_v2 is not True):
+        raise Refused("invalid_explicit_package_snapshot_format")
+    package_objects = {} if mta == "sendmail" and (owner_uid == 0 or package_v2) else None
     files = selected_files(mta, root, owner_uid, package_objects)
     directory = archive_folder(base, mta, owner_uid)
     staging = Path(tempfile.mkdtemp(prefix=".pending-", dir=str(directory)))
