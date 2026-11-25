@@ -6,25 +6,26 @@ namespace LinuxMailRelay365;
 internal sealed record SendmailQueueRow(int Reference, int Group, string State,
     long Bytes, string NativeTime, string Reason, string Fingerprint = "-");
 
-// Normal-queue metadata only. Native IDs and reusable write handles are absent.
+// Queue metadata only. Native IDs and raw quarantine reasons are absent.
 internal sealed record SendmailQueueInventory(string Queue, string Result, int? Total,
     int? Groups, int? NativeListed, bool? NativeTruncated, bool? DisplayTruncated,
-    SendmailQueueRow[] Rows, long? SampledAt = null, bool ContextVerified = false)
+    SendmailQueueRow[] Rows, long? SampledAt = null, bool ContextVerified = false, bool Quarantine = false)
 {
     internal static readonly string[] States = ["queued", "processing_mark", "load_limited", "too_young"];
     internal static readonly string[] Reasons = ["auth", "tls", "dns", "network", "temporary",
         "permanent", "mixed", "other_reason", "no_reason"];
 
-    internal static SendmailQueueInventory Parse(string output, string queue, string nonce, bool requireReviewable = false)
+    internal static SendmailQueueInventory Parse(string output, string queue, string nonce, bool requireReviewable = false,
+        bool quarantine = false)
     {
-        if (queue is not ("mta" or "msp") || !QueueRetryReview.ValidSha(nonce))
+        if (queue is not ("mta" or "msp") || !QueueRetryReview.ValidSha(nonce) || (quarantine && requireReviewable))
             throw new ArgumentException("Invalid Sendmail queue request.");
         var f = new EximQueueFields(output, "SENDMAIL_ITEMS_", rows: true);
-        bool reviewable = f.Take("VERSION", requireReviewable ? "2" : "1|2") == "2";
+        bool reviewable = f.Take("VERSION", quarantine ? "1" : requireReviewable ? "2" : "1|2") == "2";
         f.Exact("SCOPE", "sendmail");
         f.Exact("QUEUE", queue); f.Exact("NONCE", nonce);
         f.Exact("REFERENCE_KIND", "sample_ordinal_only");
-        f.Exact("QUEUE_CLASS", "normal"); f.Exact("DATE_KIND", "native_local_no_year");
+        f.Exact("QUEUE_CLASS", quarantine ? "quarantine" : "normal"); f.Exact("DATE_KIND", "native_local_no_year");
         f.Exact("CHANGES_APPLIED", "no"); f.Exact("ATOMIC", "no");
         f.Exact("DELIVERY_VERIFIED", "no");
         string result = f.Take("RESULT", "ok|" + EximQueueFields.Failures);
@@ -72,7 +73,7 @@ internal sealed record SendmailQueueInventory(string Queue, string Result, int? 
                 throw new InvalidDataException("Invalid Sendmail message correlation.");
             rows.Add(new(rows.Count + 1, group, p[2], bytes, p[4], p[5], fingerprint));
         }
-        return new(queue, result, total, groups, native, nativeTruncated, displayTruncated, rows.ToArray(), sampled, verified);
+        return new(queue, result, total, groups, native, nativeTruncated, displayTruncated, rows.ToArray(), sampled, verified, quarantine);
     }
 
     private static bool ValidNativeTime(string value)
@@ -111,6 +112,12 @@ internal sealed record SendmailQueueInventory(string Queue, string Result, int? 
             sample.Replace("processing_mark", "active"), sample + "SENDMAIL_ITEMS_RAW=message\n" })
             if (!Reject(() => Parse(bad, "msp", nonce))) return false;
         if (!Reject(() => Parse(sample, "mta", nonce))) return false;
+        string held = sample.Replace("QUEUE_CLASS=normal", "QUEUE_CLASS=quarantine");
+        if (!Parse(held, "msp", nonce, quarantine: true).Quarantine ||
+            !Reject(() => Parse(held, "msp", nonce)) ||
+            !Reject(() => Parse(sample, "msp", nonce, quarantine: true)) ||
+            !Reject(() => Parse(held.Replace("VERSION=1", "VERSION=2"), "msp", nonce, quarantine: true)))
+            return false;
         string bundle = EmbeddedAssets.BuildSendmailQueueInventoryBundle("msp", nonce);
         return bundle.Contains(" --scope sendmail --sendmail-inventory msp --selection-nonce " + nonce + "\n",
             StringComparison.Ordinal);

@@ -914,12 +914,13 @@ internal static class EmbeddedAssets
         return BuildQueueBundle(scope, arguments);
     }
 
-    internal static string BuildSendmailQueueInventoryBundle(string queue, string nonce, bool reviewable = false)
+    internal static string BuildSendmailQueueInventoryBundle(string queue, string nonce, bool reviewable = false,
+        bool quarantine = false)
     {
-        if (queue is not ("mta" or "msp") || !QueueRetryReview.ValidSha(nonce))
-            throw new ArgumentException("Invalid Sendmail normal queue inventory context.");
+        if (queue is not ("mta" or "msp") || !QueueRetryReview.ValidSha(nonce) || (quarantine && reviewable))
+            throw new ArgumentException("Invalid Sendmail queue inventory context.");
         return BuildQueueReadOnlyBundle("sendmail", " --sendmail-inventory " + queue + " --selection-nonce " + nonce +
-            (reviewable ? " --sendmail-reviewable" : ""));
+            (reviewable ? " --sendmail-reviewable" : "") + (quarantine ? " --sendmail-quarantine" : ""));
     }
 
     internal static string BuildSendmailQueueActionBundle(string queue, string action, string nonce,

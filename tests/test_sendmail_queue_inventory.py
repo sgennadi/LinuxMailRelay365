@@ -48,6 +48,29 @@ class SendmailInventoryTests(unittest.TestCase):
         for args in (["-q"], ["-Ac", "-q"], ["-bp", "-qQ"], ["-bp", "-qL"]):
             self.assertFalse(q.allowed_args("sendmail", args))
 
+    def test_quarantine_is_separate_read_only_and_redacts_reason(self):
+        normal = "/var/spool/mqueue (1 request)\n" + HEADER + row()
+        held = normal.replace("                                      <recipient",
+                              " QUARANTINE: private@example.invalid secret reason\n                                      <recipient")
+        runner = Mock(return_value=held)
+        data = q.sendmail_inventory("mta", NONCE, runner, quarantine=True)
+        self.assertEqual(data[:5], ("ok", 1, 1, 1, "no"))
+        runner.assert_called_once_with("sendmail", ["-Am", "-bp", "-qQ"])
+        receipt = "\n".join(q.sendmail_inventory_lines("mta", NONCE, *data, quarantine=True))
+        self.assertIn("SENDMAIL_ITEMS_QUEUE_CLASS=quarantine", receipt)
+        self.assertNotIn("secret reason", receipt)
+        self.assertNotIn("example.invalid", receipt)
+        self.assertNotIn("3AP123AB45678", receipt)
+        for raw, quarantine in ((held, False), (normal, True),
+                                (held.replace(" QUARANTINE:", " QUARANTINE: duplicate\n QUARANTINE:"), True)):
+            with self.assertRaises(q.Unavailable):
+                q.sendmail_rows(raw, quarantine=quarantine)
+        self.assertTrue(q.allowed_args("sendmail", ["-Ac", "-bp", "-qQ"]))
+        for args in (["-Ac", "-qQ"], ["-Am", "-qQ", "-Q"], ["-Ac", "-bp", "-qQ", "-qI123"]):
+            self.assertFalse(q.allowed_args("sendmail", args))
+        with self.assertRaises(ValueError):
+            list(q.sendmail_inventory_lines("mta", NONCE, *data, sampled=1000, context="verified", quarantine=True))
+
     def test_reject_unknown_or_inconsistent_nonempty_listing(self):
         valid = "/var/spool/mqueue (1 request)\n" + HEADER + row()
         for raw in (valid.replace(HEADER, ""), valid.replace("1 request", "2 requests"),
@@ -113,6 +136,11 @@ class SendmailInventoryTests(unittest.TestCase):
         main = (src / "MainForm.MailQueue.cs").read_text()
         self.assertIn('InspectSendmailQueueAsync("mta")', main)
         self.assertIn('InspectSendmailQueueAsync("msp")', main)
+        self.assertIn('InspectSendmailQueueAsync("mta", quarantine: true)', main)
+        self.assertIn('InspectSendmailQueueAsync("msp", quarantine: true)', main)
+        self.assertIn("bool available = !quarantine", ui)
+        self.assertIn("if (quarantine || working", ui)
+        self.assertIn("reviewable: !quarantine, quarantine: quarantine", ui)
 
 
 if __name__ == "__main__":

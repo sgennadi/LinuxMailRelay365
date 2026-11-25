@@ -39,6 +39,10 @@ internal sealed partial class MainForm
                     () => InspectSendmailQueueAsync("mta"), false, "check", "sendmail-queue-mta");
                 AddAction(page, T("Сообщения Sendmail — MSP", "Sendmail MSP queue manager", "הודעות Sendmail MSP לקריאה בלבד"),
                     () => InspectSendmailQueueAsync("msp"), false, "check", "sendmail-queue-msp");
+                AddAction(page, T("Карантин Sendmail — MTA", "Sendmail MTA quarantine (read-only)", "הסגר Sendmail MTA"),
+                    () => InspectSendmailQueueAsync("mta", quarantine: true), false, "check", "sendmail-quarantine-mta");
+                AddAction(page, T("Карантин Sendmail — MSP", "Sendmail MSP quarantine (read-only)", "הסגר Sendmail MSP"),
+                    () => InspectSendmailQueueAsync("msp", quarantine: true), false, "check", "sendmail-quarantine-msp");
             }
             if (scope is "postfix" or "sidecar")
             {

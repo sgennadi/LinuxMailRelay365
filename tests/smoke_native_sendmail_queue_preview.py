@@ -198,6 +198,36 @@ def main():
                     "cross_queue_plan_not_refused")
             require(snapshot() == before, "synthetic_queue_changed_by_preview_or_refusal")
         print("NATIVE_SENDMAIL_" + queue.upper() + "_PREVIEW_AND_REFUSAL=verified")
+    # Exercise native quarantine transitions ONLY on the two isolated
+    # synthetic spools. Product quarantine inventory itself is read-only.
+    for queue, (mode, path) in QUEUES.items():
+        other = "msp" if queue == "mta" else "mta"
+        def held_count(expected):
+            nonce = secrets.token_hex(32)
+            f = fields("--sendmail-inventory", queue, "--sendmail-quarantine",
+                       "--selection-nonce", nonce)
+            require(f.get("SENDMAIL_ITEMS_VERSION") == "1" and
+                    f.get("SENDMAIL_ITEMS_QUEUE_CLASS") == "quarantine" and
+                    f.get("SENDMAIL_ITEMS_RESULT") == "ok" and
+                    f.get("SENDMAIL_ITEMS_TOTAL") == str(expected) and
+                    f.get("SENDMAIL_ITEMS_LISTED") == str(expected) and
+                    "SENDMAIL_ITEMS_CONTEXT" not in f, "quarantine_inventory_mismatch:" + queue)
+            require("fixture-private-quarantine" not in str(f), "raw_quarantine_reason_disclosed")
+        held_count(0)
+        candidates = [p.name[2:] for p in Path(path).iterdir() if p.name.startswith("qf")]
+        require(len(candidates) == 1 and re.fullmatch(r"[A-Za-z0-9]{8}[0-9]{5,56}", candidates[0]),
+                "fixture_quarantine_id_invalid")
+        ident = candidates[0]
+        other_before = snapshot()[other]
+        run(["/usr/sbin/sendmail", mode, "-Qfixture-private-quarantine", "-qI" + ident])
+        held_count(1)
+        inventory(queue, 0)
+        require(snapshot()[other] == other_before, "quarantine_other_queue_changed")
+        run(["/usr/sbin/sendmail", mode, "-qQ", "-Q", "-qI" + ident])
+        held_count(0)
+        inventory(queue, 1)
+        require(snapshot()[other] == other_before, "release_other_queue_changed")
+        print("NATIVE_SENDMAIL_" + queue.upper() + "_QUARANTINE_INVENTORY=verified_separate_classes")
     print("NATIVE_SENDMAIL_QUEUE_ISOLATION=verified_private_spools_no_delivery")
     # Namespace teardown drops private mounts, never deletes host queue files.
     return 0

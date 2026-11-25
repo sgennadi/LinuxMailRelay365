@@ -114,7 +114,8 @@ def allowed_args(tool, args):
         return len(args) == 3 and args[0] == "-c" and args[1] in (CONFIG, SIDECAR_CONFIG) and args[2] == "-j"
     return (tool == "exim" and args in (["-bpc"], ["-bp"],
         ["-bP", "spool_directory"], ["-bP", "config_file"])) or (
-        tool == "sendmail" and args in (["-bp"], ["-Am", "-bp"], ["-Ac", "-bp"]))
+        tool == "sendmail" and args in (["-bp"], ["-Am", "-bp"], ["-Ac", "-bp"],
+                                         ["-Am", "-bp", "-qQ"], ["-Ac", "-bp", "-qQ"]))
 
 
 def run_native(tool, args, timeout=12, limit=LIMIT):
@@ -627,7 +628,7 @@ SM_ROW = re.compile(r"^[ ]{0,3}(" + SM_ID.pattern + r")[ ]*([*X-]?)\s+([0-9]{1,1
 SM_STATUS = {"": "queued", "*": "processing_mark", "X": "load_limited", "-": "too_young"}
 
 
-def sendmail_rows(output, private=False):
+def sendmail_rows(output, private=False, quarantine=False):
     """Validate native per-group print counts, then discard all private text.
 
     A native listing may be incomplete due to MaxQueueRunSize. This is
@@ -644,6 +645,7 @@ def sendmail_rows(output, private=False):
         raise Unavailable("invalid_output")
     rows = []
     private_rows = []
+    quarantine_markers = set()
     seen = set()
     group = 0
     expected = 0
@@ -705,6 +707,15 @@ def sendmail_rows(output, private=False):
             printed += 1
         elif current is not None and line[:1].isspace():
             private_rows[-1][2].append(line)
+            if text.startswith("QUARANTINE:"):
+                # Native reason is sensitive and is never returned. Require
+                # exactly one nonempty marker per quarantined row; do not
+                # infer quarantine from an ordinary delay diagnostic.
+                if (not quarantine or len(rows) in quarantine_markers or
+                        not re.fullmatch(r"\s+QUARANTINE: [^\x00-\x1f\x7f]{1,16384}", line)):
+                    raise Unavailable("invalid_output")
+                quarantine_markers.add(len(rows))
+                continue
             # Only recognize the native status-line layout, not arbitrary
             # recipient text. A reason is a heuristic, never a raw string.
             diagnostic = re.fullmatch(r" .{10} \((.{1,16384})\)", line)
@@ -724,6 +735,8 @@ def sendmail_rows(output, private=False):
     finish_group()
     if group != group_count or len(rows) > total or ((len(rows) < total) != (native_truncated == "yes")):
         raise Unavailable("invalid_output")
+    if quarantine and len(quarantine_markers) != len(rows):
+        raise Unavailable("invalid_output")
     if private:
         # Only server-side action planning may consume native IDs and lines.
         return total, group_count, len(rows), native_truncated, private_rows
@@ -732,19 +745,23 @@ def sendmail_rows(output, private=False):
         (i + 1,) + tuple(row) for i, row in enumerate(rows[:MAX_VISIBLE_MESSAGES])]
 
 
-def sendmail_inventory(queue, nonce, runner=run_native):
+def sendmail_inventory(queue, nonce, runner=run_native, quarantine=False):
     if queue not in ("mta", "msp") or not SHA.fullmatch(nonce):
         raise ValueError("invalid_sendmail_inventory_context")
-    args = ["-bp"] if queue == "mta" else ["-Ac", "-bp"]
+    args = (["-Am" if queue == "mta" else "-Ac", "-bp", "-qQ"] if quarantine
+            else ["-bp"] if queue == "mta" else ["-Ac", "-bp"])
     try:
-        total, groups, native_listed, truncated, rows = sendmail_rows(runner("sendmail", args))
+        total, groups, native_listed, truncated, rows = sendmail_rows(
+            runner("sendmail", args), quarantine=quarantine)
         return "ok", total, groups, native_listed, truncated, rows
     except Unavailable as error:
         return error.result, None, None, None, "unknown", []
 
 
 def sendmail_inventory_lines(queue, nonce, result, total, groups, native_listed, truncated, rows,
-                             sampled=None, context=None):
+                             sampled=None, context=None, quarantine=False):
+    if quarantine and (sampled is not None or context is not None):
+        raise ValueError("quarantine_inventory_is_read_only")
     values = (("VERSION", 1 if sampled is None else 2), ("SCOPE", "sendmail"), ("QUEUE", queue), ("NONCE", nonce),
               ("RESULT", result), ("TOTAL", "unknown" if total is None else total),
               ("GROUPS", "unknown" if groups is None else groups),
@@ -752,7 +769,7 @@ def sendmail_inventory_lines(queue, nonce, result, total, groups, native_listed,
               ("NATIVE_TRUNCATED", truncated), ("LISTED", len(rows)),
               ("DISPLAY_TRUNCATED", "unknown" if native_listed is None else
                "yes" if native_listed > len(rows) else "no"),
-              ("REFERENCE_KIND", "sample_ordinal_only"), ("QUEUE_CLASS", "normal"),
+              ("REFERENCE_KIND", "sample_ordinal_only"), ("QUEUE_CLASS", "quarantine" if quarantine else "normal"),
               ("DATE_KIND", "native_local_no_year"), ("CHANGES_APPLIED", "no"),
               ("ATOMIC", "no"), ("DELIVERY_VERIFIED", "no"))
     for key, value in values:
@@ -1652,6 +1669,8 @@ def main():
     action.add_argument("--exim-action", choices=tuple(EXIM_ACTIONS))
     parser.add_argument("--sendmail-inventory", choices=("mta", "msp"))
     parser.add_argument("--sendmail-reviewable", action="store_true")
+    parser.add_argument("--sendmail-quarantine", action="store_true",
+                        help="read-only quarantine inventory, never a delivery request")
     action.add_argument("--sendmail-action", choices=tuple(SM_ACTIONS))
     parser.add_argument("--sendmail-queue", choices=tuple(SM_PATHS))
     parser.add_argument("--sendmail-apply", action="store_true")
@@ -1666,6 +1685,8 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         return 2
+    if args.sendmail_quarantine and (args.sendmail_inventory is None or args.sendmail_reviewable):
+        parser.error("quarantine requires a separate read-only Sendmail inventory")
     if args.sendmail_action is not None:
         if (args.scope != "sendmail" or args.sendmail_queue is None or args.sendmail_inventory is not None
                 or args.sendmail_reviewable or args.messages or args.exim_inventory
@@ -1711,8 +1732,10 @@ def main():
                 not SHA.fullmatch(args.selection_nonce or "")):
             parser.error("Sendmail inventory is read-only and requires one normal queue")
         values = (sendmail_review_inventory(args.sendmail_inventory, args.selection_nonce)
-                  if args.sendmail_reviewable else sendmail_inventory(args.sendmail_inventory, args.selection_nonce))
-        for line in sendmail_inventory_lines(args.sendmail_inventory, args.selection_nonce, *values):
+                  if args.sendmail_reviewable else sendmail_inventory(args.sendmail_inventory, args.selection_nonce,
+                                                                      quarantine=args.sendmail_quarantine))
+        for line in sendmail_inventory_lines(args.sendmail_inventory, args.selection_nonce, *values,
+                                             quarantine=args.sendmail_quarantine):
             print(line)
         return 0
     if args.exim_inventory or args.exim_action is not None:
