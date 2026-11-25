@@ -82,17 +82,68 @@ class EximQueueTests(unittest.TestCase):
         self.assertEqual(self.apply("freeze", token, prepared, plan), ("not_requested", "sample_changed"))
         self.executor.assert_not_called()
 
+    def test_retry_and_delete_state_specific(self):
+        token = self.inventory()[3][0][-1]
+        result, prepared, plan = self.plan("retry", token)
+        self.assertEqual(result, "candidate")
+        self.assertEqual(self.apply("delete", token, prepared, plan), ("not_requested", "sample_changed"))
+        self.assertEqual(self.apply("retry", token, prepared, plan), ("command_completed", "none"))
+        self.executor.assert_called_once_with("retry", self.ident)
+        self.executor.reset_mock()
+        self.raw = self.raw.replace("<sender@example.invalid>", "<sender@example.invalid> *** frozen ***")
+        frozen = self.inventory()[3][0][-1]
+        self.assertEqual(self.plan("retry", frozen)[0], "sample_changed")
+        result, prepared, plan = self.plan("delete", frozen)
+        self.assertEqual(result, "candidate")
+        self.assertEqual(self.apply("thaw", frozen, prepared, plan), ("not_requested", "plan_changed"))
+        self.assertEqual(self.apply("delete", frozen, prepared, plan), ("command_completed", "none"))
+        self.executor.assert_called_once_with("delete", self.ident)
+        for outcome, expected in (("command_completed", "yes"), ("outcome_unknown", "unknown"), ("not_requested", "no")):
+            fields = list(q.exim_action_lines("delete", self.nonce, 1000, frozen, "apply", prepared, plan, outcome, "none"))
+            self.assertIn("EXIM_ACTION_DELETE_REQUESTED=" + expected, fields)
+            self.assertIn("EXIM_ACTION_EFFECT_VERIFIED=no", fields)
+
+    def test_flush_binds_complete_listing_and_refuses_frozen_only(self):
+        result, prepared, digest, detail = q.exim_prepare_details("flush", self.nonce, 0, "-",
+            self.runner, self.context, clock=lambda: 1060)
+        self.assertEqual((result, detail), ("candidate", "1|0"))
+        def apply(**kw):
+            options = dict(runner=self.runner, context_check=self.context, executor=self.executor,
+                           clock=lambda: 1070, monotonic=lambda: 1)
+            options.update(kw)
+            return q.exim_apply("flush", self.nonce, 0, "-", prepared, digest,
+                                q.EXIM_ACTIONS["flush"], **options)
+        self.raw = self.raw.replace("25m", "26m")
+        self.raw = self.raw.replace("pending@", "other@")
+        self.assertEqual(apply(), ("not_requested", "plan_changed"))
+        self.raw = self.raw.replace("other@", "pending@")
+        self.assertEqual(apply(clock=lambda: 1121), ("not_requested", "expired"))
+        self.executor.assert_not_called()
+        self.assertEqual(apply(), ("command_completed", "none"))
+        self.executor.assert_called_once_with("flush", None)
+        self.executor.reset_mock()
+        self.raw = self.raw.replace("<sender@example.invalid>", "<sender@example.invalid> *** frozen ***")
+        self.assertEqual(apply(), ("not_requested", "no_queued_messages"))
+        self.executor.assert_not_called()
+        with self.assertRaises(ValueError):
+            q.exim_prepare("flush", self.nonce, 1000, "b"*64, self.runner, self.context, clock=lambda: 1060)
+
     def test_native_commands_are_single_id_only(self):
         with patch.object(q, "native_binary", return_value="/usr/sbin/exim4"), \
                 patch.object(q.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
-            for action, flag in (("freeze", "-Mf"), ("thaw", "-Mt")):
+            for action, flag in (("freeze", "-Mf"), ("thaw", "-Mt"), ("delete", "-Mrm")):
                 self.assertEqual(q.exim_execute(action, self.ident), "command_completed")
                 self.assertEqual(run.call_args[0][0], ["/usr/sbin/exim4", flag, self.ident])
                 self.assertFalse(q.allowed_args("exim", [flag, self.ident]))
-            for action, ident in (("freeze", "ALL"), ("thaw", "-Mrm"), ("delete", self.ident)):
+            self.assertEqual(q.exim_execute("retry", self.ident), "command_completed")
+            self.assertEqual(run.call_args[0][0], ["/usr/sbin/exim4", "-qf", self.ident, self.ident])
+            self.assertEqual(q.exim_execute("flush", None), "command_completed")
+            self.assertEqual(run.call_args[0][0], ["/usr/sbin/exim4", "-qf"])
+            for action, ident in (("freeze", "ALL"), ("thaw", "-Mrm"), ("delete", "ALL"),
+                                  ("flush", self.ident), ("retry", None), ("unknown", self.ident)):
                 with self.assertRaises(ValueError):
                     q.exim_execute(action, ident)
-            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_count, 5)
         with patch.object(q, "native_binary", return_value="/usr/sbin/exim4"), \
                 patch.object(q.subprocess, "run", side_effect=subprocess.TimeoutExpired([], 12)) as run:
             self.assertEqual(q.exim_execute("freeze", self.ident), "outcome_unknown")
@@ -105,6 +156,10 @@ class EximQueueTests(unittest.TestCase):
         self.assertLess(form.index("EximQueueAction.Parse(reply.StdOut"), form.index("ConfirmDestructive("))
         self.assertLess(form.index("ConfirmDestructive("), form.index("attempted = true"))
         self.assertIn("if (attempted) dialog.Close();", form)
+        self.assertIn('delete.Enabled = change.Enabled && row?.State == "frozen"', form)
+        self.assertIn('retry.Enabled = change.Enabled && row?.State == "queued"', form)
+        self.assertIn('await ExecuteAsync("flush", null)', form)
+        self.assertIn("IRREVERSIBLE removal", form)
 
 
 if __name__ == "__main__":

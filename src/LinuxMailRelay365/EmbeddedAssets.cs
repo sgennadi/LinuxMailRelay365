@@ -923,15 +923,19 @@ internal static class EmbeddedAssets
     internal static string BuildEximQueueActionBundle(string action, string nonce, long sampledAt,
         string fingerprint, long? preparedAt = null, string? planSha = null)
     {
-        if (action is not ("freeze" or "thaw") || !QueueRetryReview.ValidSha(nonce) ||
-            !QueueRetryReview.ValidSha(fingerprint) || sampledAt is < 1 or > 9999999999 ||
+        if (action is not ("freeze" or "thaw" or "retry" or "flush" or "delete") ||
+            !QueueRetryReview.ValidSha(nonce) ||
+            (action == "flush" ? sampledAt != 0 || fingerprint != "-" :
+                !QueueRetryReview.ValidSha(fingerprint) || sampledAt is < 1 or > 9999999999) ||
             (preparedAt is null) != (planSha is null) ||
-            (preparedAt is long time && (time < sampledAt || time - sampledAt > 300 ||
+            (preparedAt is long time && (time < Math.Max(1, sampledAt) ||
+                (action != "flush" && time - sampledAt > 300) ||
                 time > 9999999999 || !QueueRetryReview.ValidSha(planSha))))
             throw new ArgumentException("Invalid Exim queue action context.");
         var culture = System.Globalization.CultureInfo.InvariantCulture;
-        string args = " --exim-action " + action + " --selection-nonce " + nonce +
-            " --sampled-at " + sampledAt.ToString(culture) + " --target-fingerprint " + fingerprint;
+        string args = " --exim-action " + action + " --selection-nonce " + nonce;
+        if (action != "flush")
+            args += " --sampled-at " + sampledAt.ToString(culture) + " --target-fingerprint " + fingerprint;
         if (preparedAt is long prepared)
             args += " --exim-apply --prepared-at " + prepared.ToString(culture) +
                 " --approve-sha256 " + planSha + " --confirm " + EximQueueAction.Confirmation(action);

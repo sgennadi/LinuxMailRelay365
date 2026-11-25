@@ -71,7 +71,7 @@ internal sealed partial class MainForm
         var status = UiTheme.Text("");
         var help = UiTheme.Text(T(
             "Снимок до 500 старейших сообщений. Размер и возраст приблизительные; Queued не означает активную доставку. Адреса и ID скрыты. Freeze/Thaw экспериментальны; после команды проверяйте состояние заново.",
-            "Sample of up to 500 oldest messages. Native size and age are approximate; Queued is not active delivery. Addresses and IDs are hidden. Freeze/Thaw are experimental; refresh to verify the effect.",
+            "Sample of up to 500 oldest messages. Native size and age are approximate; Queued is not active delivery. Addresses and IDs are hidden. Freeze/Thaw, Retry, Flush and Delete are experimental; refresh to verify the effect.",
             "דגימה של עד 500 הודעות. הגודל והגיל משוערים; Queued אינו מסירה פעילה. מזהים וכתובות מוסתרים. יש לבדוק שוב לאחר הקפאה או הפשרה."));
         notes.Controls.Add(status, 0, 0); notes.Controls.Add(help, 0, 1);
         var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true,
@@ -79,7 +79,11 @@ internal sealed partial class MainForm
         var close = UiTheme.Action(T("Закрыть", "Close", "סגור"), false, "back");
         close.DialogResult = DialogResult.OK;
         var change = UiTheme.Action("Freeze / Thaw (experimental)...", false, "shield");
-        footer.Controls.Add(close); footer.Controls.Add(change);
+        var retry = UiTheme.Action(T("Retry выбранного...", "Retry selected...", "ניסיון חוזר לנבחרת..."), false, "refresh");
+        var flush = UiTheme.Action(T("Flush всей очереди...", "Flush default queue...", "ניסיון מסירה לכל התור..."), false, "refresh");
+        var delete = UiTheme.Action(T("Удалить Frozen...", "Delete frozen...", "מחיקת הודעה קפואה..."), false, "trash");
+        footer.Controls.Add(close); footer.Controls.Add(change); footer.Controls.Add(retry);
+        footer.Controls.Add(delete); footer.Controls.Add(flush);
         bool working = false, attempted = false;
         EximQueueRow? Selected() => grid.SelectedRows.Count == 1 &&
             grid.SelectedRows[0].Cells["ref"].Value is int number
@@ -90,6 +94,11 @@ internal sealed partial class MainForm
             change.Enabled = !working && !attempted && inventory.ContextVerified && row is not null &&
                 QueueRetryReview.ValidSha(row.Fingerprint);
             change.Text = row?.State == "frozen" ? "Thaw (experimental)..." : "Freeze (experimental)...";
+            retry.Enabled = change.Enabled && row?.State == "queued";
+            delete.Enabled = change.Enabled && row?.State == "frozen";
+            // A fresh whole-queue plan, not a visible-row selection, controls Flush.
+            flush.Enabled = !working && !attempted && inventory.ContextVerified &&
+                inventory.Result == "ok" && inventory.Total > 0;
         }
         void Refresh()
         {
@@ -113,46 +122,70 @@ internal sealed partial class MainForm
         states.SelectedIndexChanged += (_, _) => Refresh();
         age.ValueChanged += (_, _) => Refresh();
         dialog.FormClosing += (_, args) => { if (working) args.Cancel = true; };
-        change.Click += async (_, _) =>
+        async Task ExecuteAsync(string action, EximQueueRow? row)
         {
-            var row = Selected();
-            if (!change.Enabled || row is null || working || attempted) return;
-            string action = row.State == "frozen" ? "thaw" : "freeze";
+            bool wholeQueue = action == "flush";
+            if (working || attempted || !inventory.ContextVerified ||
+                (wholeQueue ? !flush.Enabled || row is not null : row is null ||
+                 !QueueRetryReview.ValidSha(row.Fingerprint) || Selected() != row)) return;
+            long sampled = wholeQueue ? 0 : inventory.SampledAt;
+            string fingerprint = row?.Fingerprint ?? "-";
+            string actionNonce = wholeQueue
+                ? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant()
+                : nonce;
             working = true;
-            change.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            change.Enabled = retry.Enabled = flush.Enabled = delete.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 var initial = RequireSameArchiveConnection(endpoint);
                 if (!QueueScopeDiscovered("exim")) throw new InvalidOperationException("Exim discovery changed.");
                 var reply = await SshRemote.RunRootScriptAsync(initial,
-                    EmbeddedAssets.BuildEximQueueActionBundle(action, nonce, inventory.SampledAt, row.Fingerprint),
+                    EmbeddedAssets.BuildEximQueueActionBundle(action, actionNonce, sampled, fingerprint),
                     TimeSpan.FromMinutes(3));
                 if (reply.ExitCode != 0) throw new IOException("Exim preview failed.");
                 var reviewed = RequireSameArchiveConnection(initial);
-                var plan = EximQueueAction.Parse(reply.StdOut, action, nonce, inventory.SampledAt, row);
+                var plan = EximQueueAction.Parse(reply.StdOut, action, actionNonce, sampled, row);
                 if (plan.Outcome != "candidate")
                 {
                     MessageBox.Show(dialog, plan.Reason, "Exim | Preview refused", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
                 string details = reviewed.Host + ":" + reviewed.Port + "\r\nExim / " + action +
-                    "\r\nSample #" + row.Reference + " | " + row.State + " | " + row.NativeSize + "\r\n\r\n" +
-                    T("Только тестовый сервер. Одна операция над выбранным письмом. Freeze может быть отменён auto_thaw; Thaw позволяет доставку. Активное письмо может не измениться. План действует 60 секунд.",
-                        "Disposable test host only. One selected message. Freeze may be undone by auto_thaw; Thaw permits delivery. An active message may not change. Plan expires after 60 seconds.",
-                        "לשרת בדיקה בלבד. הודעה נבחרת אחת. הקפאה עשויה להתבטל אוטומטית; הפשרה מאפשרת מסירה. התוכנית תקפה ל-60 שניות.") +
+                    "\r\n" + (wholeQueue
+                        ? "Fresh default queue: " + plan.Total + " | Frozen: " + plan.Frozen
+                        : "Sample #" + row!.Reference + " | " + row.State + " | " + row.NativeSize) +
+                    "\r\n\r\n" + T("Только тестовый сервер. План действует 60 секунд.",
+                        "Disposable test host only. Plan expires after 60 seconds.", "לשרת בדיקה בלבד. התוכנית תקפה ל-60 שניות.") + "\r\n\r\n";
+                details += action switch
+                {
+                    "retry" => T("Принудительный проход очереди в диапазоне одного ID. Exim может использовать SMTP-соединение для других писем. Не используется -M или -qff. Письма могут быть доставлены; эффект не гарантирован.",
+                        "Forced queue run restricted to one ID range. Exim may reuse SMTP connections for other messages. No -M or -qff. Mail may be delivered; effect is not guaranteed.",
+                        "מעבר כפוי בטווח מזהה אחד. Exim עשוי להשתמש בחיבור גם להודעות נוספות. הודעות עשויות להימסר."),
+                    "flush" => T("Однократный принудительный проход всей очереди по умолчанию. Не удаляет письма и не использует -qff. Новые сообщения могут попасть в очередь; auto_thaw может разморозить письма. Частый Flush снижает производительность.",
+                        "One forced default-queue run, not deletion. No -qff. Mail may arrive after preview; auto_thaw may thaw messages. Frequent Flush can harm performance.",
+                        "מעבר כפוי חד-פעמי בכל תור ברירת המחדל, ללא מחיקה. הודעות חדשות עשויות להגיע והפשרה אוטומטית אפשרית."),
+                    "delete" => T("НЕОБРАТИМОЕ удаление одного Frozen-сообщения. Exim не отправит уведомление о недоставке. Резервная копия письма не создаётся.",
+                        "IRREVERSIBLE removal of one frozen message. Exim sends no bounce. This manager does not back up the message.",
+                        "מחיקה בלתי הפיכה של הודעה קפואה אחת. אין הודעת כשל ואין גיבוי אוטומטי."),
+                    _ => T("Одна операция над выбранным письмом. Freeze может быть отменён auto_thaw; Thaw разрешает доставку. Активное письмо может не измениться.",
+                        "One selected message. Freeze may be undone by auto_thaw; Thaw permits delivery. An active message may not change.",
+                        "הודעה נבחרת אחת. הקפאה עשויה להתבטל אוטומטית; הפשרה מאפשרת מסירה.")
+                };
+                details += "\r\n\r\n" + T("Операция неатомарная. При неизвестном результате не повторяйте автоматически.",
+                    "Not atomic. Do not automatically repeat an unconfirmed operation.", "הפעולה אינה אטומית; אין לחזור אוטומטית אם התוצאה לא ידועה.") +
                     "\r\nSHA-256: " + plan.PlanSha;
                 if (!ConfirmDestructive("Exim | EXPERIMENTAL " + action, details,
                         EximQueueAction.Confirmation(action), dialog)) return;
                 var confirmed = RequireSameArchiveConnection(reviewed);
-                if (!QueueScopeDiscovered("exim") || Selected() != row)
+                if (!QueueScopeDiscovered("exim") || (!wholeQueue && Selected() != row))
                     throw new InvalidOperationException("Exim selected message changed.");
                 attempted = true;
                 var result = await SshRemote.RunRootScriptAsync(confirmed,
-                    EmbeddedAssets.BuildEximQueueActionBundle(action, nonce, inventory.SampledAt, row.Fingerprint,
+                    EmbeddedAssets.BuildEximQueueActionBundle(action, actionNonce, sampled, fingerprint,
                         plan.PreparedAt, plan.PlanSha), TimeSpan.FromMinutes(3));
                 if (result.ExitCode != 0) throw new IOException("Exim action outcome unknown.");
                 RequireSameArchiveConnection(confirmed);
-                var receipt = EximQueueAction.Parse(result.StdOut, action, nonce, inventory.SampledAt,
+                var receipt = EximQueueAction.Parse(result.StdOut, action, actionNonce, sampled,
                     row, plan.PreparedAt, plan.PlanSha);
                 WriteLine("Exim " + action + ": " + receipt.Outcome + "; " + receipt.Reason + ". Effect unverified.");
                 string message = receipt.Outcome switch
@@ -180,7 +213,22 @@ internal sealed partial class MainForm
                 Update();
                 if (attempted) dialog.Close();
             }
+        }
+        change.Click += async (_, _) =>
+        {
+            var row = Selected();
+            if (change.Enabled && row is not null)
+                await ExecuteAsync(row.State == "frozen" ? "thaw" : "freeze", row);
         };
+        retry.Click += async (_, _) =>
+        {
+            if (retry.Enabled && Selected() is { State: "queued" } row) await ExecuteAsync("retry", row);
+        };
+        delete.Click += async (_, _) =>
+        {
+            if (delete.Enabled && Selected() is { State: "frozen" } row) await ExecuteAsync("delete", row);
+        };
+        flush.Click += async (_, _) => { if (flush.Enabled) await ExecuteAsync("flush", null); };
         root.Controls.Add(heading, 0, 0); root.Controls.Add(filters, 0, 1);
         root.Controls.Add(grid, 0, 2); root.Controls.Add(notes, 0, 3); root.Controls.Add(footer, 0, 4);
         dialog.Controls.Add(root);

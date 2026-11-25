@@ -121,43 +121,82 @@ internal sealed record EximQueueInventory(string Result, long SampledAt, int? To
             !Reject(() => EximQueueAction.Parse(apply.Replace("EFFECT_VERIFIED=no", "EFFECT_VERIFIED=yes"),
                 "thaw", nonce, 1000, row, 1060, digest)) ||
             !Reject(() => EximQueueAction.Parse(preview, "freeze", nonce, 1000, row))) return false;
-        return EmbeddedAssets.BuildEximQueueActionBundle("thaw", nonce, 1000, token, 1060, digest)
-            .Contains(" --confirm THAW_SELECTED_EXIM_MESSAGE\n", StringComparison.Ordinal);
+        string deletion = apply.Replace("ACTION=thaw", "ACTION=delete")
+            .Replace("DELETE_REQUESTED=no", "DELETE_REQUESTED=yes");
+        if (EximQueueAction.Parse(deletion, "delete", nonce, 1000, row, 1060, digest).Outcome != "command_completed" ||
+            !Reject(() => EximQueueAction.Parse(deletion.Replace("DELETE_REQUESTED=yes", "DELETE_REQUESTED=no"),
+                "delete", nonce, 1000, row, 1060, digest))) return false;
+        string flush = preview.Replace("ACTION=thaw", "ACTION=flush").Replace("SAMPLED_AT=1000", "SAMPLED_AT=0")
+            .Replace("FINGERPRINT=" + token, "FINGERPRINT=-") + "EXIM_ACTION_DETAIL=4|1\n";
+        if (EximQueueAction.Parse(flush, "flush", nonce, 0, null) is not { Total: 4, Frozen: 1 } ||
+            !Reject(() => EximQueueAction.Parse(flush.Replace("DETAIL=4|1", "DETAIL=4|4"), "flush", nonce, 0, null)))
+            return false;
+        string retry = preview.Replace("ACTION=thaw", "ACTION=retry");
+        if (EximQueueAction.Parse(retry, "retry", nonce, 1000, row with { State = "queued" }).Outcome != "candidate" ||
+            !Reject(() => EximQueueAction.Parse(retry, "retry", nonce, 1000, row))) return false;
+        string flushBundle = EmbeddedAssets.BuildEximQueueActionBundle("flush", nonce, 0, "-", 1060, digest);
+        return !flushBundle.Contains(" --target-fingerprint ", StringComparison.Ordinal) &&
+            flushBundle.Contains(" --confirm FLUSH_DEFAULT_EXIM_QUEUE\n", StringComparison.Ordinal) &&
+            EmbeddedAssets.BuildEximQueueActionBundle("thaw", nonce, 1000, token, 1060, digest)
+                .Contains(" --confirm THAW_SELECTED_EXIM_MESSAGE\n", StringComparison.Ordinal);
     }
 }
 
-internal sealed record EximQueueAction(string Outcome, string Reason, long PreparedAt, string PlanSha)
+internal sealed record EximQueueAction(string Outcome, string Reason, long PreparedAt, string PlanSha,
+    int? Total = null, int? Frozen = null)
 {
     internal static string Confirmation(string action) => action switch
     {
         "freeze" => "FREEZE_SELECTED_EXIM_MESSAGE",
         "thaw" => "THAW_SELECTED_EXIM_MESSAGE",
+        "retry" => "RETRY_SELECTED_EXIM_MESSAGE",
+        "flush" => "FLUSH_DEFAULT_EXIM_QUEUE",
+        "delete" => "PERMANENTLY_DELETE_SELECTED_FROZEN_EXIM_MESSAGE",
         _ => throw new ArgumentException("Invalid Exim action.")
     };
     internal static EximQueueAction Parse(string output, string action, string nonce, long sampled,
-        EximQueueRow row, long? expectedTime = null, string? expectedSha = null)
+        EximQueueRow? row, long? expectedTime = null, string? expectedSha = null)
     {
-        if (action is not ("freeze" or "thaw") || row.State != (action == "freeze" ? "queued" : "frozen") ||
-            !QueueRetryReview.ValidSha(nonce) || !QueueRetryReview.ValidSha(row.Fingerprint) ||
-            sampled is < 1 or > 9999999999 || (expectedTime is null) != (expectedSha is null))
+        bool flush = action == "flush";
+        if (action is not ("freeze" or "thaw" or "retry" or "flush" or "delete") ||
+            !QueueRetryReview.ValidSha(nonce) || (expectedTime is null) != (expectedSha is null) ||
+            (flush ? row is not null || sampled != 0 :
+                row is null || row.State != (action is "freeze" or "retry" ? "queued" : "frozen") ||
+                !QueueRetryReview.ValidSha(row.Fingerprint) || sampled is < 1 or > 9999999999))
             throw new InvalidDataException("Invalid Exim action context.");
         bool apply = expectedTime.HasValue;
         var f = new EximQueueFields(output, "EXIM_ACTION_");
         f.Exact("VERSION", "1"); f.Exact("SCOPE", "exim"); f.Exact("ACTION", action);
         f.Exact("NONCE", nonce); f.Exact("SAMPLED_AT", sampled.ToString(CultureInfo.InvariantCulture));
-        f.Exact("FINGERPRINT", row.Fingerprint); f.Exact("PHASE", apply ? "apply" : "prepare");
+        f.Exact("FINGERPRINT", row?.Fingerprint ?? "-"); f.Exact("PHASE", apply ? "apply" : "prepare");
         long prepared = EximQueueFields.Number(f.Take("PREPARED_AT", "[1-9][0-9]{0,9}"), 9999999999);
         string outcome = f.Take("OUTCOME", apply ? "command_completed|not_requested|outcome_unknown" : "candidate|not_requested");
         string sha = f.Take("PLAN_SHA256", apply || outcome == "candidate" ? "[a-f0-9]{64}" : "-");
         if ((apply && (prepared != expectedTime || sha != expectedSha)) ||
-            ((apply || outcome == "candidate") && (prepared < sampled || prepared - sampled > 300)))
+            (!flush && (apply || outcome == "candidate") && (prepared < sampled || prepared - sampled > 300)))
             throw new InvalidDataException("Exim plan context changed.");
         string reason = f.Take("REASON", outcome is "candidate" or "command_completed" ? "none" :
-            outcome == "outcome_unknown" ? "native_result_unconfirmed" : "expired|plan_changed|" + EximQueueFields.Failures);
+            outcome == "outcome_unknown" ? "native_result_unconfirmed" :
+                "expired|plan_changed|" + (flush ? "no_queued_messages|" : "") + EximQueueFields.Failures);
         f.Exact("COMMAND_COUNT", outcome == "command_completed" ? "1" : outcome == "outcome_unknown" ? "unknown" : "0");
-        foreach (string key in new[] { "EFFECT_VERIFIED", "DELIVERY_VERIFIED", "ATOMIC", "DELETE_REQUESTED",
+        foreach (string key in new[] { "EFFECT_VERIFIED", "DELIVERY_VERIFIED", "ATOMIC",
             "NEW_MESSAGE_SUBMITTED", "CONFIG_CHANGED", "SERVICE_CHANGED" }) f.Exact(key, "no");
+        f.Exact("DELETE_REQUESTED", action == "delete" && apply
+            ? outcome == "command_completed" ? "yes" : outcome == "outcome_unknown" ? "unknown" : "no"
+            : "no");
+        int? total = null, frozen = null;
+        if (flush)
+        {
+            string detail = f.Take("DETAIL", outcome == "candidate" ? @"[0-9]{1,5}\|[0-9]{1,5}" : "-");
+            if (outcome == "candidate")
+            {
+                var parts = detail.Split('|');
+                total = (int)EximQueueFields.Number(parts[0], 50000);
+                frozen = (int)EximQueueFields.Number(parts[1], 50000);
+                if (total <= frozen) throw new InvalidDataException("Inconsistent Exim Flush counts.");
+            }
+        }
         f.End();
-        return new(outcome, reason, prepared, sha);
+        return new(outcome, reason, prepared, sha, total, frozen);
     }
 }

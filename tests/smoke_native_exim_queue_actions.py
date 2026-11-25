@@ -63,10 +63,12 @@ def action(name, state):
         raise AssertionError("native_exim_plan_refused")
     result = fields(*args, "--exim-apply", "--prepared-at", plan["EXIM_ACTION_PREPARED_AT"],
                     "--approve-sha256", plan["EXIM_ACTION_PLAN_SHA256"],
-                    "--confirm", name.upper() + "_SELECTED_EXIM_MESSAGE")
+                    "--confirm", "PERMANENTLY_DELETE_SELECTED_FROZEN_EXIM_MESSAGE" if name == "delete"
+                    else name.upper() + "_SELECTED_EXIM_MESSAGE")
     if (result.get("EXIM_ACTION_OUTCOME") != "command_completed" or
             result.get("EXIM_ACTION_EFFECT_VERIFIED") != "no" or
-            result.get("EXIM_ACTION_COMMAND_COUNT") != "1"):
+            result.get("EXIM_ACTION_COMMAND_COUNT") != "1" or
+            result.get("EXIM_ACTION_DELETE_REQUESTED") != ("yes" if name == "delete" else "no")):
         raise AssertionError("native_exim_action_unconfirmed")
 
 
@@ -93,6 +95,13 @@ def main():
         action("thaw", "frozen")
         selection("queued")
         print("NATIVE_EXIM_THAW=verified_queued")
+        action("freeze", "queued")
+        selection("frozen")
+        action("delete", "frozen")
+        if run([binary, "-bpc"]).stdout.strip() != "0":
+            raise AssertionError("native_exim_delete_effect_unverified")
+        ident = None
+        print("NATIVE_EXIM_DELETE=verified_single_frozen_fixture_absent")
     finally:
         # Fixture cleanup only: never delete an unverified or non-fixture ID.
         if ident is not None:

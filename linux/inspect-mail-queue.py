@@ -278,7 +278,10 @@ EXIM_HEADER = re.compile(
     r"\s+((?:\([^()\r\n]{1,256}\)\s+)?<[^>\r\n]*>)"
     r"(?:\s+(\*\*\* frozen \*\*\*))?\s*$")
 EXIM_ACTIONS = {"freeze": "FREEZE_SELECTED_EXIM_MESSAGE",
-                "thaw": "THAW_SELECTED_EXIM_MESSAGE"}
+                "thaw": "THAW_SELECTED_EXIM_MESSAGE",
+                "retry": "RETRY_SELECTED_EXIM_MESSAGE",
+                "flush": "FLUSH_DEFAULT_EXIM_QUEUE",
+                "delete": "PERMANENTLY_DELETE_SELECTED_FROZEN_EXIM_MESSAGE"}
 
 
 def exim_rows(output, expected):
@@ -413,17 +416,32 @@ def exim_inventory_lines(nonce, result, sampled, total, rows, context):
 
 
 def exim_candidate(action, nonce, sampled, token, now, runner, context_check):
-    if (action not in EXIM_ACTIONS or not SHA.fullmatch(nonce) or not SHA.fullmatch(token)
-            or type(sampled) is not int or sampled <= 0):
+    if action not in EXIM_ACTIONS or not SHA.fullmatch(nonce) or type(sampled) is not int:
         raise ValueError("invalid_exim_selection")
-    if now < sampled or now - sampled > REVIEW_TTL:
+    if action == "flush":
+        if sampled != 0 or token != "-":
+            raise ValueError("flush_is_default_queue_wide")
+    elif sampled <= 0 or not SHA.fullmatch(token):
+        raise ValueError("invalid_exim_selection")
+    if action != "flush" and (now < sampled or now - sampled > REVIEW_TTL):
         return "expired", None, None
     try:
         context = context_check(runner)
         rows = exim_snapshot(runner)
         if context_check(runner) != context:
             raise Unavailable("scope_unverified")
-        state = "queued" if action == "freeze" else "frozen"
+        if action == "flush":
+            frozen = sum(row[1] == "frozen" for row in rows)
+            if len(rows) == frozen:
+                return "no_queued_messages", None, None
+            # Bind the entire validated native listing, not just visible rows.
+            # The display age changes naturally; no raw identity leaves Linux.
+            canonical = [[row[0], row[1], row[3], row[4], sorted(row[5])]
+                         for row in sorted(rows, key=lambda item: item[0])]
+            digest = hmac.new(bytes.fromhex(nonce), json.dumps(canonical,
+                ensure_ascii=True, separators=(",", ":")).encode("ascii"), hashlib.sha256).hexdigest()
+            return "candidate", [None, len(rows), frozen], (context, digest, len(rows), frozen)
+        state = "queued" if action in ("freeze", "retry") else "frozen"
         matches = [row for row in rows[:MAX_VISIBLE_MESSAGES] if row[1] == state and
                    hmac.compare_digest(exim_token(row, context, nonce, sampled), token)]
         if len(matches) != 1:
@@ -439,23 +457,39 @@ def exim_plan_digest(action, nonce, sampled, token, prepared, context):
         ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest()
 
 
-def exim_prepare(action, nonce, sampled, token, runner=run_native, context_check=exim_context,
-                 clock=time.time):
+def exim_prepare_details(action, nonce, sampled, token, runner=run_native, context_check=exim_context,
+                         clock=time.time):
     prepared = int(clock())
     result, row, context = exim_candidate(action, nonce, sampled, token, prepared, runner, context_check)
     if result != "candidate":
-        return result, prepared, "-"
-    return result, prepared, exim_plan_digest(action, nonce, sampled, token, prepared, context)
+        return result, prepared, "-", "-"
+    detail = "{}|{}".format(row[1], row[2]) if action == "flush" else "-"
+    return result, prepared, exim_plan_digest(action, nonce, sampled, token, prepared, context), detail
+
+
+def exim_prepare(action, nonce, sampled, token, runner=run_native, context_check=exim_context,
+                 clock=time.time):
+    return exim_prepare_details(action, nonce, sampled, token, runner, context_check, clock)[:3]
 
 
 def exim_execute(action, ident):
-    if action not in EXIM_ACTIONS or not EXIM_ID.fullmatch(ident):
+    if (action not in EXIM_ACTIONS or (action == "flush" and ident is not None) or
+            (action != "flush" and (not isinstance(ident, str) or not EXIM_ID.fullmatch(ident)))):
         raise ValueError("invalid_exim_action")
     binary = native_binary("exim")
+    if action == "flush":
+        args = [binary, "-qf"]
+    elif action == "retry":
+        # Limit the primary queue-run ID range. Exim may reuse SMTP
+        # connections for other mail; never promise an exclusive delivery.
+        args = [binary, "-qf", ident, ident]
+    else:
+        args = [binary, {"freeze": "-Mf", "thaw": "-Mt", "delete": "-Mrm"}[action], ident]
     try:
-        completed = subprocess.run([binary, "-Mf" if action == "freeze" else "-Mt", ident],
+        completed = subprocess.run(args,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, timeout=12, check=False,
+                                   stderr=subprocess.DEVNULL,
+                                   timeout=60 if action in ("retry", "flush") else 12, check=False,
                                    env={"PATH": PATH, "LC_ALL": "C"})
     except (OSError, subprocess.TimeoutExpired):
         return "outcome_unknown"
@@ -466,7 +500,8 @@ def exim_apply(action, nonce, sampled, token, prepared, approved, confirmation,
                runner=run_native, context_check=exim_context, executor=exim_execute,
                clock=time.time, monotonic=time.monotonic):
     if (action not in EXIM_ACTIONS or confirmation != EXIM_ACTIONS[action] or
-            not SHA.fullmatch(approved) or not sampled <= prepared):
+            not SHA.fullmatch(approved) or type(prepared) is not int or prepared <= 0 or
+            not sampled <= prepared):
         raise ValueError("exim_confirmation_required")
     started = int(clock())
     tick = monotonic()
@@ -474,8 +509,8 @@ def exim_apply(action, nonce, sampled, token, prepared, approved, confirmation,
         now = int(clock())
         elapsed = monotonic() - tick
         return (0 <= elapsed <= RETRY_PLAN_TTL and abs(now - started - elapsed) <= 2
-                and sampled <= prepared <= now <= sampled + REVIEW_TTL
-                and now - prepared <= RETRY_PLAN_TTL)
+                and prepared <= now <= prepared + RETRY_PLAN_TTL
+                and (action == "flush" or sampled <= prepared <= now <= sampled + REVIEW_TTL))
     if not fresh():
         return "not_requested", "expired"
     ident = None
@@ -498,16 +533,21 @@ def exim_apply(action, nonce, sampled, token, prepared, approved, confirmation,
             else ("outcome_unknown", "native_result_unconfirmed"))
 
 
-def exim_action_lines(action, nonce, sampled, token, phase, prepared, plan, outcome, reason):
+def exim_action_lines(action, nonce, sampled, token, phase, prepared, plan, outcome, reason, detail="-"):
     for key, value in (("VERSION", 1), ("SCOPE", "exim"), ("ACTION", action), ("NONCE", nonce),
                        ("SAMPLED_AT", sampled), ("FINGERPRINT", token), ("PHASE", phase),
                        ("PREPARED_AT", prepared), ("PLAN_SHA256", plan), ("OUTCOME", outcome),
                        ("REASON", reason), ("COMMAND_COUNT", "1" if outcome == "command_completed"
                         else "unknown" if outcome == "outcome_unknown" else "0"),
                        ("EFFECT_VERIFIED", "no"), ("DELIVERY_VERIFIED", "no"), ("ATOMIC", "no"),
-                       ("DELETE_REQUESTED", "no"), ("NEW_MESSAGE_SUBMITTED", "no"),
+                       ("DELETE_REQUESTED", ("yes" if outcome == "command_completed" else
+                        "unknown" if outcome == "outcome_unknown" else "no")
+                        if action == "delete" and phase == "apply" else "no"),
+                       ("NEW_MESSAGE_SUBMITTED", "no"),
                        ("CONFIG_CHANGED", "no"), ("SERVICE_CHANGED", "no")):
         yield "EXIM_ACTION_" + key + "=" + str(value)
+    if action == "flush":
+        yield "EXIM_ACTION_DETAIL=" + detail
 
 
 def sendmail_summary(output):
@@ -1154,11 +1194,16 @@ def main():
             result, sampled, total, rows, context = exim_inventory(args.selection_nonce)
             lines = exim_inventory_lines(args.selection_nonce, result, sampled, total, rows, context)
         else:
-            if (args.sampled_at is None or not 0 < args.sampled_at <= 9999999999 or
+            if args.exim_action == "flush":
+                if args.sampled_at is not None or args.target_fingerprint is not None:
+                    parser.error("Exim Flush targets the default queue")
+                args.sampled_at = 0
+                args.target_fingerprint = "-"
+            elif (args.sampled_at is None or not 0 < args.sampled_at <= 9999999999 or
                     not SHA.fullmatch(args.target_fingerprint or "")):
                 parser.error("selected Exim message required")
             if args.exim_apply:
-                if (args.prepared_at is None or not args.sampled_at <= args.prepared_at <= 9999999999 or
+                if (args.prepared_at is None or not max(1, args.sampled_at) <= args.prepared_at <= 9999999999 or
                         not SHA.fullmatch(args.approve_sha256 or "") or
                         args.confirm != EXIM_ACTIONS[args.exim_action]):
                     parser.error("explicit Exim action approval required")
@@ -1169,12 +1214,12 @@ def main():
             else:
                 if any(value is not None for value in (args.prepared_at, args.approve_sha256, args.confirm)):
                     parser.error("approval not permitted in Exim preview")
-                result, prepared, plan = exim_prepare(args.exim_action, args.selection_nonce,
+                result, prepared, plan, detail = exim_prepare_details(args.exim_action, args.selection_nonce,
                     args.sampled_at, args.target_fingerprint)
                 lines = exim_action_lines(args.exim_action, args.selection_nonce, args.sampled_at,
                     args.target_fingerprint, "prepare", prepared, plan,
                     "candidate" if result == "candidate" else "not_requested",
-                    "none" if result == "candidate" else result)
+                    "none" if result == "candidate" else result, detail)
         for line in lines:
             print(line)
         return 0
