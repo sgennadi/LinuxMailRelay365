@@ -48,6 +48,10 @@ internal sealed partial class MainForm : Form
     private string? foreignBackupListContext;
     private bool backupMaintenanceOpen;
     private bool renderedBackupMaintenanceOpen;
+    // Sampled read-only UI evidence, never persisted or used for authorization.
+    private ForeignPendingInspection? nativeRecoverySample;
+    private string? nativeRecoverySampleIdentity;
+    private bool nativeRecoveryToolsExpanded;
     private readonly ComboBox sidecarBackupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private string? reviewedSidecarRestoreSha;
     private string? reviewedSidecarRestoreId;
@@ -492,6 +496,9 @@ internal sealed partial class MainForm : Form
                 existingSmtpAuditIdentity = null;
             };
         }
+        foreach (var connectionField in new[] { host, sshPort, sshUser, sshKey, sshPassword, sudoPassword, sshFingerprint })
+            connectionField.TextChanged += (_, _) => ClearNativeRecoverySample(collapseTools: true);
+        sshAuthMode.SelectedIndexChanged += (_, _) => ClearNativeRecoverySample(collapseTools: true);
         mailTransport.SelectedIndexChanged += (_, _) => {
             if (!routingLoading) {
                 ResetMultiMailboxRouteReview();
@@ -2639,6 +2646,7 @@ internal sealed partial class MainForm : Form
     {
         if (step == 4 && backupMaintenanceOpen)
         {
+            ClearNativeRecoverySample(collapseTools: true);
             backupMaintenanceOpen = false;
             return;
         }
@@ -4136,6 +4144,10 @@ internal sealed partial class MainForm : Form
         if (!pageHost.Controls[0].Controls.OfType<Button>().Any(button =>
                 button.Text.Contains("Inspect interrupted native Restore", StringComparison.Ordinal)))
             throw new InvalidOperationException("Global recovery inspection is absent.");
+        var recoveryActions = pageHost.Controls[0].Controls.OfType<Button>().ToArray();
+        if (recoveryActions.Any(button => button.Text.Contains("Roll back interrupted", StringComparison.Ordinal)) ||
+            !recoveryActions.Any(button => button.Text.Contains("Show all interrupted recovery tools", StringComparison.Ordinal)))
+            throw new InvalidOperationException("Default recovery center must prioritize inspection and retain advanced actions.");
         Screenshot("05-native-recovery-center.png");
         Screenshot("05-native-recovery-center-bottom.png", scrollToBottom: true);
         Size = new Size(760, 700);
@@ -4222,6 +4234,9 @@ internal sealed partial class MainForm : Form
     private async Task RunBusyAsync(string category, Func<Task> work)
     {
         if (busy) return;
+        // Any new operation may change the server. Do not display a cached
+        // clean/pending sample as current after a new operation or lost reply.
+        ClearNativeRecoverySample();
         busy = true;
         lastFailed = false;
         lastStatus = T("Выполняется...", "Working...", "מתבצע...");
@@ -7058,8 +7073,14 @@ internal sealed partial class MainForm : Form
             EmbeddedAssets.BuildForeignMtaPendingInspectBundle(), TimeSpan.FromMinutes(4));
         result.EnsureSuccess();
         var report = ForeignPendingInspection.Parse(result.StdOut);
-        if (identity != TryCurrentIdentity())
-            throw new InvalidOperationException("SSH identity changed during pending Restore inspection.");
+        var reviewed = Endpoint();
+        if (identity != TryCurrentIdentity() || !SameRollbackConnection(endpoint, reviewed) ||
+            (endpoint.HostKeySha256.Length > 0 && endpoint.HostKeySha256 != reviewed.HostKeySha256) ||
+            (reviewed.Password.Length > 0 && reviewed.HostKeySha256.Length == 0))
+            throw new InvalidOperationException("SSH connection or trusted host key changed during pending Restore inspection.");
+        nativeRecoverySample = report;
+        nativeRecoverySampleIdentity = identity;
+        nativeRecoveryToolsExpanded = false;
         if (report.IsClear)
         {
             WriteLine("Native Restore inspection: no pending marker observed. This is not service-start approval.");
@@ -7269,28 +7290,86 @@ internal sealed partial class MainForm : Form
             "Inspect interrupted native Restore (read-only)",
             "בדיקת שחזור שנקטע ללא שינוי"),
             InspectForeignPendingRestoreAsync, false, "check", "foreign-pending-inspect");
-        AddAction(page, T("Предварительный план аварийного отката Exim",
-            "Preview interrupted Exim rollback (read-only)", "תצוגה מקדימה של שחזור Exim"),
-            () => ReviewEximPendingRollbackAsync(false), false, "check", "restore");
-        AddAction(page, T("Аварийный откат Exim (экспериментальный)...",
-            "Roll back interrupted Exim (experimental)...", "שחזור Exim ניסיוני..."),
-            () => ReviewEximPendingRollbackAsync(true), false, "back", "restore");
-        AddLine(page, MailFlowText(T(
-            "Только для остановленного Exim с журналом версии 3, пустой очередью и неизменными правами/метками. Перед записью проверяется свежий план и требуется отдельное подтверждение. Используйте только на тестовом сервере.",
-            "Experimental: stopped Exim with schema-3 journal, empty queue and matching original metadata only. A fresh plan and typed confirmation are required before writes. Disposable test hosts only.",
-            "ניסיוני: Exim עצור, יומן גרסה 3 ותור ריק. נדרש אישור מפורש; לשרת בדיקה בלבד."),
-            Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
-        AddAction(page, T("Предварительный план аварийного отката Sendmail v2",
-            "Preview interrupted Sendmail v2 rollback (read-only)", "בדיקת תוכנית שחזור Sendmail v2"),
-            () => ReviewSendmailV2RollbackAsync(false), false, "check", "restore");
-        AddAction(page, T("Аварийный откат Sendmail v2 (экспериментальный)...",
-            "Roll back interrupted Sendmail v2 (experimental)...", "שחזור Sendmail v2 ניסיוני..."),
-            () => ReviewSendmailV2RollbackAsync(true), false, "back", "restore");
-        AddLine(page, MailFlowText(T(
-            "Sendmail v2: только два файла конфигурации, журнал версии 4. Остановленный MTA, пустые очереди и отдельное подтверждение; только тестовый сервер.",
-            "Sendmail v2: two compiled files only, schema-4 journal. Stopped MTA, empty queues and separate confirmation; disposable test hosts only.",
-            "Sendmail v2: שני קובצי תצורה בלבד, יומן גרסה 4, שירות עצור ואישור נפרד."),
-            Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
+        var sample = nativeRecoverySampleIdentity is not null &&
+            nativeRecoverySampleIdentity == TryCurrentIdentity() ? nativeRecoverySample : null;
+        var visibility = NativeRecoveryVisibility.From(sample, nativeRecoveryToolsExpanded);
+        int recoveryWidth = Math.Max(260, pageHost.ClientSize.Width - 90);
+        string sampleSummary = visibility.State switch
+        {
+            NativeRecoverySampleState.Clear => T(
+                "Последняя проверка: аварийного журнала нет. Это не разрешение на запуск MTA.",
+                "Last inspection: no pending marker observed. Not service-start approval.",
+                "בדיקה אחרונה: לא נמצא יומן פתוח. אין אישור להפעלת השירות."),
+            NativeRecoverySampleState.Exim or NativeRecoverySampleState.Sendmail => T(
+                "Последняя проверка: незавершённое восстановление " + sample!.Mta + ". Сначала проверьте план аварийного отката.",
+                "Last inspection: interrupted " + sample!.Mta + " Restore. Review its rollback plan first.",
+                "בדיקה אחרונה: שחזור " + sample!.Mta + " לא הושלם. יש לבדוק תחילה תוכנית חזרה."),
+            NativeRecoverySampleState.ManualOnly => T(
+                "Последняя проверка: журнал требует ручного анализа. Совместимость автоматического Rollback не подтверждена.",
+                "Last inspection: marker needs manual investigation. Rollback compatibility is unverified.",
+                "בדיקה אחרונה: נדרשת בדיקה ידנית של היומן. התאימות לשחזור לא אומתה."),
+            _ => T(
+                "Состояние аварийного журнала не проверено. Начните с проверки выше.",
+                "Pending Restore status is not checked. Start with the inspection above.",
+                "מצב יומן השחזור טרם נבדק. התחילו בבדיקה למעלה.")
+        };
+        AddLine(page, UiTheme.Emphasis(sampleSummary, recoveryWidth,
+            warning: visibility.State is not (NativeRecoverySampleState.Unknown or NativeRecoverySampleState.Clear),
+            success: visibility.State == NativeRecoverySampleState.Clear));
+        if (sample is { IsClear: false })
+        {
+            AddLine(page, MailFlowText(T("Аварийный архив", "Safety snapshot", "גיבוי חירום") +
+                ": " + sample.SafetyId + "\n" +
+                T("Целевой архив", "Target snapshot", "גיבוי יעד") + ": " + sample.TargetId,
+                recoveryWidth, warning: true));
+            if (sample.Counts is { } counts)
+                AddLine(page, MailFlowText(T(
+                    "Исходные / целевые / совпадают: ", "Original / target / both: ", "מקור / יעד / שניהם: ") +
+                    counts.Original + " / " + counts.Target + " / " + counts.Both + "\n" +
+                    T("Другие / отсутствуют / дополнительные: ", "Other / missing / extra: ", "אחרים / חסרים / נוספים: ") +
+                    counts.Other + " / " + counts.Missing + " / " + counts.Extra,
+                    recoveryWidth, warning: counts.Other != 0 || counts.Missing != 0 || counts.Extra != 0));
+        }
+        var toggleRecovery = UiTheme.Action(nativeRecoveryToolsExpanded
+            ? T("Скрыть полный набор аварийных инструментов", "Hide all interrupted recovery tools", "הסתר את כל כלי השחזור")
+            : T("Показать все аварийные инструменты", "Show all interrupted recovery tools", "הצג את כל כלי השחזור"),
+            false, "shield");
+        toggleRecovery.Enabled = !busy;
+        toggleRecovery.Click += (_, _) =>
+        {
+            if (busy) return;
+            nativeRecoveryToolsExpanded = !nativeRecoveryToolsExpanded;
+            RenderPage();
+        };
+        AddLine(page, toggleRecovery);
+        if (visibility.ShowExim)
+        {
+            AddAction(page, T("Предварительный план аварийного отката Exim",
+                "Preview interrupted Exim rollback (read-only)", "תצוגה מקדימה של שחזור Exim"),
+                () => ReviewEximPendingRollbackAsync(false), false, "check", "restore");
+            AddAction(page, T("Аварийный откат Exim (экспериментальный)...",
+                "Roll back interrupted Exim (experimental)...", "שחזור Exim ניסיוני..."),
+                () => ReviewEximPendingRollbackAsync(true), false, "back", "restore");
+            AddLine(page, MailFlowText(T(
+                "Только для остановленного Exim с журналом версии 3, пустой очередью и неизменными правами/метками. Перед записью проверяется свежий план и требуется отдельное подтверждение. Используйте только на тестовом сервере.",
+                "Experimental: stopped Exim with schema-3 journal, empty queue and matching original metadata only. A fresh plan and typed confirmation are required before writes. Disposable test hosts only.",
+                "ניסיוני: Exim עצור, יומן גרסה 3 ותור ריק. נדרש אישור מפורש; לשרת בדיקה בלבד."),
+                Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
+        }
+        if (visibility.ShowSendmail)
+        {
+            AddAction(page, T("Предварительный план аварийного отката Sendmail v2",
+                "Preview interrupted Sendmail v2 rollback (read-only)", "בדיקת תוכנית שחזור Sendmail v2"),
+                () => ReviewSendmailV2RollbackAsync(false), false, "check", "restore");
+            AddAction(page, T("Аварийный откат Sendmail v2 (экспериментальный)...",
+                "Roll back interrupted Sendmail v2 (experimental)...", "שחזור Sendmail v2 ניסיוני..."),
+                () => ReviewSendmailV2RollbackAsync(true), false, "back", "restore");
+            AddLine(page, MailFlowText(T(
+                "Sendmail v2: только два файла конфигурации, журнал версии 4. Остановленный MTA, пустые очереди и отдельное подтверждение; только тестовый сервер.",
+                "Sendmail v2: two compiled files only, schema-4 journal. Stopped MTA, empty queues and separate confirmation; disposable test hosts only.",
+                "Sendmail v2: שני קובצי תצורה בלבד, יומן גרסה 4, שירות עצור ואישור נפרד."),
+                Math.Max(260, pageHost.ClientSize.Width - 90), warning: true));
+        }
         AddLine(page, MailFlowText(T(
             "Проверка относится ко всему Linux-серверу, независимо от текущего MTA. Она не возобновляет Restore и не разрешает запуск служб.",
             "Checks the entire Linux host, independently of the selected MTA. It never resumes Restore or authorizes starting services.",
@@ -7443,8 +7522,16 @@ internal sealed partial class MainForm : Form
         }
     }
 
+    private void ClearNativeRecoverySample(bool collapseTools = false)
+    {
+        nativeRecoverySample = null;
+        nativeRecoverySampleIdentity = null;
+        if (collapseTools) nativeRecoveryToolsExpanded = false;
+    }
+
     private Task OpenBackupStepAsync()
     {
+        ClearNativeRecoverySample(collapseTools: true);
         step = 4;
         backupMaintenanceOpen = true;
         RenderPage();
