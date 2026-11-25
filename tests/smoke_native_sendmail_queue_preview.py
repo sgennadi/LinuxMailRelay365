@@ -11,8 +11,11 @@ import subprocess
 import sys
 
 HELPER = Path(__file__).resolve().parents[1] / "linux/inspect-mail-queue.py"
-QUEUES = {"mta": ("-Am", "/var/spool/mqueue"),
-          "msp": ("-Ac", "/var/spool/clientmqueue")}
+QUEUES = {}
+PACKAGE_LAYOUTS = {
+    "mta": ("-Am", "sendmail.cf", ("/var/spool/mqueue",)),
+    "msp": ("-Ac", "submit.cf", ("/var/spool/clientmqueue", "/var/spool/mqueue-client")),
+}
 RECIPIENT = "lmr365-queue-fixture@[192.0.2.1]"
 SHA = re.compile(r"[a-f0-9]{64}")
 CONFIRM = {"retry": "RETRY_SELECTED_SENDMAIL_MESSAGE",
@@ -48,6 +51,23 @@ def isolated_spools():
     require(run(["pgrep", "-x", "sendmail"], check=False).returncode == 1,
             "sendmail_process_present")
     run(["mount", "--make-rprivate", "/"])
+    for queue, (mode, config, allowed) in PACKAGE_LAYOUTS.items():
+        # Do not create a guessed directory or use an arbitrary config path.
+        # Establish the independent native fixture layout before any submission.
+        text = (Path("/etc/mail") / config).read_text(encoding="utf-8")
+        candidates = re.findall(r"(?m)^O\s+QueueDirectory\s*=\s*([^\s#]+)", text)
+        require(len(candidates) == 1, "fixture_queue_directory_ambiguous:" + queue)
+        path = candidates[0]
+        if path.endswith("/"):
+            path = path[:-1]
+        require(path in allowed, "fixture_queue_directory_unsupported:" + queue)
+        require(Path(path).is_dir() and not Path(path).is_symlink(),
+                "fixture_queue_directory_missing:" + queue + ":" + path)
+        QUEUES[queue] = (mode, path)
+        meta = os.lstat(path)
+        print("NATIVE_SENDMAIL_FIXTURE_LAYOUT=" + queue + ":" + path +
+              ":uid=" + str(meta.st_uid) + ":gid=" + str(meta.st_gid) +
+              ":mode=" + format(stat.S_IMODE(meta.st_mode), "o"), flush=True)
     for _, path in QUEUES.values():
         meta = os.lstat(path)
         require(stat.S_ISDIR(meta.st_mode) and not meta.st_mode & 0o007,
@@ -58,6 +78,7 @@ def isolated_spools():
         require(run(["findmnt", "-n", "-o", "FSTYPE", "--mountpoint", path]).stdout.strip()
                 == "tmpfs", "fixture_spool_not_mounted")
         require(not list(Path(path).iterdir()), "fixture_spool_not_empty")
+    print("NATIVE_SENDMAIL_FIXTURE_PRIVATE_MOUNTS=ready", flush=True)
 
 
 def fields(*args):
@@ -123,18 +144,21 @@ def refusal(args, plan, action, digest):
 
 def main():
     isolated_spools()
+    print("NATIVE_SENDMAIL_FIXTURE_PHASE=empty_review", flush=True)
     for queue in QUEUES:
         _, f = preview(queue, "flush", inventory(queue, 0))
         require(f.get("SENDMAIL_ACTION_OUTCOME") == "not_requested"
                 and f.get("SENDMAIL_ACTION_REASON") == "no_queued_messages"
                 and f.get("SENDMAIL_ACTION_COMMAND_COUNT") == "0", "empty_queue_flush_accepted")
 
+    print("NATIVE_SENDMAIL_FIXTURE_PHASE=synthetic_submission", flush=True)
     for queue, (mode, _) in QUEUES.items():
         run(["/usr/sbin/sendmail", mode, "-odq", "-i", "-f", "<>", RECIPIENT],
             "Subject: Isolated synthetic Sendmail queue fixture\n\nSynthetic test only.\n")
         inventory(queue, 1)
         inventory("msp" if queue == "mta" else "mta", 0 if queue == "mta" else 1)
 
+    print("NATIVE_SENDMAIL_FIXTURE_PHASE=nonempty_review", flush=True)
     before = snapshot()
     require(all(any(name.startswith("qf") for name in files)
                 for files in before.values()), "synthetic_queue_file_missing")
@@ -168,5 +192,7 @@ if __name__ == "__main__":
         sys.exit(main())
     except (OSError, AssertionError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
         print("NATIVE_SENDMAIL_QUEUE_PREVIEW=failed:" +
-              (str(error) if isinstance(error, AssertionError) else type(error).__name__), file=sys.stderr)
+              (str(error) if isinstance(error, AssertionError) else
+               type(error).__name__ + (":errno=" + str(error.errno)
+                                      if isinstance(error, OSError) else "")), file=sys.stderr)
         sys.exit(2)

@@ -98,6 +98,21 @@ class SendmailActions(unittest.TestCase):
             with self.assertRaises(q.Unavailable):
                 q.sm_config_queue(config, "/var/spool/mqueue")
 
+    def test_package_queue_path_is_config_selected_and_scope_bound(self):
+        allowed = q.SM_ALLOWED_QUEUE_PATHS
+        for path in allowed["msp"]:
+            for spelling in (path, path + "/"):
+                self.assertEqual(q.sm_config_queue("O QueueDirectory=" + spelling, allowed["msp"]), path)
+                with self.assertRaises(q.Unavailable):
+                    q.sm_config_queue("O QueueDirectory=" + spelling, allowed["mta"])
+        for value in ("/var/spool/mqueue", "/var/spool/mqueue-client/*",
+                      "/var/spool/mqueue-client//", "/var/spool/../spool/mqueue-client",
+                      "/var/spool/mqueue-client\nO QueueDirectory=/var/spool/clientmqueue"):
+            with self.assertRaises(q.Unavailable):
+                q.sm_config_queue("O QueueDirectory=" + value, allowed["msp"])
+        self.assertEqual(q.sm_config_queue("O QueueDirectory=/var/spool/mqueue", allowed["mta"]),
+                         "/var/spool/mqueue")
+
     def test_fixed_native_modes_and_no_quarantine_or_periodic_command(self):
         with patch.object(q, "native_binary", return_value="/usr/sbin/sendmail"), \
                 patch.object(q.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:

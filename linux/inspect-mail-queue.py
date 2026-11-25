@@ -770,6 +770,12 @@ SM_ACTIONS = {
 }
 SM_PATHS = {"mta": ("sendmail.cf", "/var/spool/mqueue", "-Am"),
             "msp": ("submit.cf", "/var/spool/clientmqueue", "-Ac")}
+# Debian-family packages use mqueue-client; upstream/RHEL use clientmqueue.
+# Scope is selected only by the checked compiled config, not directory existence.
+SM_ALLOWED_QUEUE_PATHS = {
+    "mta": ("/var/spool/mqueue",),
+    "msp": ("/var/spool/clientmqueue", "/var/spool/mqueue-client"),
+}
 
 
 def sm_meta(st):
@@ -816,8 +822,16 @@ def sm_config_queue(text, expected):
             paths.append(match.group(1))
         elif re.match(r"^O\s+QueueDirectory\b|^OQ", line, re.I):
             raise Unavailable("scope_unverified")
-    if paths != [expected]:
+    allowed = (expected,) if isinstance(expected, str) else expected
+    if len(paths) != 1:
         raise Unavailable("scope_unverified")
+    path = paths[0]
+    # A single trailing slash is equivalent for these fixed directories.
+    if path.endswith("/"):
+        path = path[:-1]
+    if path not in allowed:
+        raise Unavailable("scope_unverified")
+    return path
 
 
 def sendmail_action_context(queue):
@@ -838,10 +852,10 @@ def sendmail_action_context(queue):
                 raise Unavailable("scope_unverified")
         secure_directory("/var/spool")
         configs, roots = [], []
-        for mode, (name, path, _) in sorted(SM_PATHS.items()):
+        for mode, (name, _, _) in sorted(SM_PATHS.items()):
             text, evidence = sm_config(Path("/etc/mail") / name)
-            sm_config_queue(text, path)
-            configs.append((mode, evidence))
+            path = sm_config_queue(text, SM_ALLOWED_QUEUE_PATHS[mode])
+            configs.append((mode, evidence, path))
             directory = os.lstat(path)
             if not stat.S_ISDIR(directory.st_mode) or directory.st_mode & 0o007:
                 raise Unavailable("scope_unverified")
