@@ -76,7 +76,7 @@ sudo postconf -c "$CONF" -e \
   "smtp_tls_security_level = none" \
   "smtp_bind_address = 127.0.0.1" \
   "enable_long_queue_ids = yes" \
-  "minimum_backoff_time = 600s" \
+  "minimal_backoff_time = 600s" \
   "maximal_backoff_time = 600s" \
   "queue_run_delay = 600s" \
   "smtp_connection_cache_on_demand = no" \

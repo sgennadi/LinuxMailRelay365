@@ -46,7 +46,7 @@ def check_route(sinkport):
         "smtp_tls_security_level": "none", "enable_long_queue_ids": "yes",
         "transport_maps": "", "sender_dependent_relayhost_maps": "",
         "sender_dependent_default_transport_maps": "", "content_filter": "",
-        "mydestination": "", "minimum_backoff_time": "600s",
+        "mydestination": "", "minimal_backoff_time": "600s",
         "maximal_backoff_time": "600s", "queue_run_delay": "600s",
     }
     for key, value in expected.items():
