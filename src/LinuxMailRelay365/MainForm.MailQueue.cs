@@ -30,11 +30,15 @@ internal sealed partial class MainForm
             AddAction(page, T("Проверить очередь " + name + " (только чтение)",
                     "Inspect " + name + " queue (read-only)", "בדיקת תור " + name + " ללא שינוי"),
                 () => InspectNativeQueueAsync(scope), false, "check", "mail-queue");
+            if (scope is "postfix" or "sidecar")
+                AddAction(page, T("Просмотреть сообщения " + name + " (без содержимого)",
+                    "View " + name + " messages (metadata only)", "הצגת הודעות " + name + " (מטא-נתונים בלבד)"),
+                    () => InspectQueueMessagesAsync(scope), false, "check", "mail-queue-messages");
         }
         if (available)
             AddLine(page, UiTheme.Text(T(
                 "Статистика без адресов, идентификаторов и текста писем. Не отправляет сообщения и не очищает очередь.",
-                "Aggregate statistics only: no addresses, message IDs or content. No mail submission or queue clearing.",
+                "Statistics and bounded metadata: no addresses, native message IDs or content. No mail submission or queue clearing.",
                 "סטטיסטיקה בלבד, ללא כתובות או תוכן הודעות, ללא שליחה או ניקוי תור.")));
     }
 

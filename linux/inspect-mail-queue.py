@@ -22,6 +22,8 @@ SIDECAR_CONFIG = "/etc/linuxmailrelay365/sidecar-postfix"
 SIDECAR_QUEUE = "/var/spool/linuxmailrelay365-sidecar"
 LIMIT = 8 * 1024 * 1024
 MAX_POSTFIX = 50000
+MAX_VISIBLE_MESSAGES = 500
+MAX_MESSAGE_SIZE = 1099511627776
 MAX_COUNT = 999999999
 RESULTS = ("ok", "tool_unavailable", "timeout", "output_limit",
            "command_failed", "invalid_output", "scope_unverified", "sample_changed")
@@ -406,12 +408,87 @@ def sample(scope, runner=run_native, scope_check=verify_postfix_scope):
     return report
 
 
+def postfix_inventory(output, now=None):
+    """Validate the complete bounded sample before emitting any message row.
+
+    References are display ordinals, not queue IDs, and are never reusable
+    across samples. Sender/recipient identities and raw reasons remain local.
+    """
+    now = time.time() if now is None else now
+    counts = postfix_counts(output, now)
+    rows = []
+    try:
+        for line in output.splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line, object_pairs_hook=unique_json)
+            size = item.get("message_size")
+            if type(size) is not int or not 0 <= size <= MAX_MESSAGE_SIZE:
+                raise ValueError("invalid_message_size")
+            age = max(0, int((now - item["arrival_time"]) // 60))
+            state = QUEUES.get(item["queue_name"], "other")
+            categories = set(reason_category(r["delay_reason"]) for r in item["recipients"]
+                             if r.get("delay_reason"))
+            reason = ("not_applicable" if state != "deferred" else
+                      "no_reason" if not categories else
+                      next(iter(categories)) if len(categories) == 1 else "mixed")
+            rows.append((item["arrival_time"], item["queue_id"],
+                         state, age, size, len(item["recipients"]), reason))
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        raise Unavailable("invalid_output")
+    if len(rows) != counts["total"]:
+        raise Unavailable("sample_changed")
+    rows.sort(key=lambda row: (row[0], row[1]))
+    # Discard native IDs, arrival timestamps and all raw metadata before return.
+    return counts["total"], [(i + 1,) + row[2:]
+                             for i, row in enumerate(rows[:MAX_VISIBLE_MESSAGES])]
+
+
+def message_inventory(scope, runner=run_native, scope_check=verify_postfix_scope):
+    if scope not in ("postfix", "sidecar"):
+        raise ValueError("unsupported_message_inventory_scope")
+    try:
+        before = scope_check(scope, runner)
+        total, rows = postfix_inventory(runner("postqueue", ["-c", before[0], "-j"]))
+        if scope_check(scope, runner) != before:
+            raise Unavailable("scope_unverified")
+        return "ok", total, rows
+    except Unavailable as error:
+        return error.result, None, []
+
+
+def inventory_lines(scope, result, total, rows):
+    # Fixed field order and an exact row count; no raw native output.
+    yield "MAIL_ITEMS_VERSION=1"
+    yield "MAIL_ITEMS_SCOPE=" + scope
+    yield "MAIL_ITEMS_RESULT=" + result
+    yield "MAIL_ITEMS_TOTAL=" + ("unknown" if total is None else str(total))
+    yield "MAIL_ITEMS_LISTED=" + str(len(rows))
+    yield "MAIL_ITEMS_TRUNCATED=" + ("unknown" if total is None else
+                                    "yes" if total > len(rows) else "no")
+    yield "MAIL_ITEMS_CHANGES_APPLIED=no"
+    yield "MAIL_ITEMS_ATOMIC=no"
+    yield "MAIL_ITEMS_DELIVERY_VERIFIED=no"
+    yield "MAIL_ITEMS_REFERENCE_KIND=sample_ordinal_only"
+    for row in rows:
+        yield "MAIL_ITEMS_ROW=" + "|".join(str(value) for value in row)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scope", required=True, choices=("postfix", "sidecar", "exim", "sendmail"))
+    parser.add_argument("--messages", action="store_true",
+                        help="read-only bounded Postfix message metadata, no native IDs")
     args = parser.parse_args()
     if os.geteuid() != 0:
         return 2
+    if args.messages:
+        if args.scope not in ("postfix", "sidecar"):
+            parser.error("message inventory is supported only for Postfix instances")
+        result, total, rows = message_inventory(args.scope)
+        for line in inventory_lines(args.scope, result, total, rows):
+            print(line)
+        return 0
     report = sample(args.scope)
     for name, value in sorted(report.items()):
         print("MAIL_QUEUE_" + name.upper() + "=" + str(value))

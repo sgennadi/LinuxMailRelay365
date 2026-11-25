@@ -850,9 +850,10 @@ internal static class EmbeddedAssets
 
     // Passing null inspects effective MTA configuration independently of the
     // selected wizard port; it does not silently substitute TCP 2525.
-    internal static string BuildMailQueueInspectionBundle(string scope)
+    internal static string BuildMailQueueInspectionBundle(string scope, bool messages = false)
     {
-        if (scope is not ("postfix" or "exim" or "sendmail" or "sidecar"))
+        if (scope is not ("postfix" or "exim" or "sendmail" or "sidecar") ||
+            (messages && scope is not ("postfix" or "sidecar")))
             throw new ArgumentException("Unsupported native mail queue scope.");
         return "set -Eeuo pipefail\numask 077\n" +
             "export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n" +
@@ -860,7 +861,8 @@ internal static class EmbeddedAssets
             "trap 'rm -rf -- \"$work\"' EXIT\n" +
             "base64 -d > \"$work/inspect-mail-queue.py\" <<'LMR365_QUEUE_READ'\n" +
             Encode(MailQueueInspector) + "\nLMR365_QUEUE_READ\n" +
-            "python3 \"$work/inspect-mail-queue.py\" --scope " + scope + "\n";
+            "python3 \"$work/inspect-mail-queue.py\" --scope " + scope +
+            (messages ? " --messages" : "") + "\n";
     }
 
     internal static string BuildMailHostInspectionBundle(int? selectedPort = null,

@@ -13,6 +13,7 @@ import os
 import re
 import smtplib
 import socketserver
+import subprocess
 import sys
 import threading
 
@@ -29,6 +30,8 @@ class Sink(socketserver.ThreadingTCPServer):
     def __init__(self, address):
         super(Sink, self).__init__(address, Handler)
         self.delivered = threading.Event()
+        self.pending_sample = threading.Event()
+        self.allow_accept = threading.Event()
         self.messages = []
 
 
@@ -88,6 +91,11 @@ class Handler(socketserver.StreamRequestHandler):
                         return
                     chunks.append(fragment)
                 self.server.messages.append((sender, recipient, b"".join(chunks)))
+                # Keep the synthetic DATA transaction open while the product
+                # reads the real active queue. Always release from main finally.
+                self.server.pending_sample.set()
+                if not self.server.allow_accept.wait(timeout=90):
+                    return
                 self.reply("250 queued-in-local-fixture")
                 self.server.delivered.set()
                 sender, recipient = None, None
@@ -132,9 +140,39 @@ def main(args):
                     raise AssertionError("local_sidecar_smtp_ehlo_failed")
                 if client.sendmail(SENDER, [RECIPIENT], message.as_bytes()):
                     raise AssertionError("sidecar_refused_local_fixture_recipient")
-            if not receiver.delivered.wait(timeout=50):
+            if not receiver.pending_sample.wait(timeout=50):
                 raise AssertionError("local_postfix_sink_did_not_receive_message")
+            try:
+                query = subprocess.run(
+                    ["sudo", "-n", "python3", "linux/inspect-mail-queue.py",
+                     "--scope", "sidecar", "--messages"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    universal_newlines=True, timeout=70, check=False)
+                if query.returncode != 0 or len(query.stdout) > 8192:
+                    raise AssertionError("native_queue_message_inventory_failed")
+                fields = query.stdout.splitlines()
+                for expected in ("MAIL_ITEMS_VERSION=1", "MAIL_ITEMS_SCOPE=sidecar",
+                                 "MAIL_ITEMS_RESULT=ok", "MAIL_ITEMS_TOTAL=1",
+                                 "MAIL_ITEMS_LISTED=1", "MAIL_ITEMS_TRUNCATED=no",
+                                 "MAIL_ITEMS_CHANGES_APPLIED=no", "MAIL_ITEMS_ATOMIC=no",
+                                 "MAIL_ITEMS_DELIVERY_VERIFIED=no",
+                                 "MAIL_ITEMS_REFERENCE_KIND=sample_ordinal_only"):
+                    if fields.count(expected) != 1:
+                        raise AssertionError("native_queue_inventory_receipt_inconsistent")
+                rows = [line for line in fields if line.startswith("MAIL_ITEMS_ROW=")]
+                if (len(fields) != 11 or len(rows) != 1 or not re.fullmatch(
+                        r"MAIL_ITEMS_ROW=1\|active\|[0-9]+\|[1-9][0-9]*\|1\|not_applicable",
+                        rows[0])):
+                    raise AssertionError("native_active_queue_row_not_verified")
+                if any(value in query.stdout for value in (SENDER, RECIPIENT, MARKER)):
+                    raise AssertionError("native_queue_inventory_disclosed_private_data")
+                print("LOCAL_POSTFIX_ACTIVE_MESSAGE_METADATA=verified_read_only")
+            finally:
+                receiver.allow_accept.set()
+            if not receiver.delivered.wait(timeout=20):
+                raise AssertionError("local_postfix_sink_did_not_accept_message")
         finally:
+            receiver.allow_accept.set()
             receiver.shutdown()
             thread.join(timeout=5)
         if len(receiver.messages) != 1:
@@ -161,6 +199,6 @@ def main(args):
 if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv[1:]))
-    except (OSError, ValueError, RuntimeError, AssertionError, smtplib.SMTPException):
+    except (OSError, ValueError, RuntimeError, AssertionError, smtplib.SMTPException, subprocess.TimeoutExpired):
         print("LOCAL_POSTFIX_SINK_RESULT=failed", file=sys.stderr)
         sys.exit(2)

@@ -137,6 +137,54 @@ class NativeQueueInspection(unittest.TestCase):
                 with self.assertRaises(q.Unavailable):
                     q.verify_postfix_scope("sidecar", None)
 
+    def test_private_postfix_message_inventory_oldest_first(self):
+        def sized(ident, state, arrival, size, reason=""):
+            item = json.loads(row(ident, state, reason, arrival))
+            item["message_size"] = size
+            return json.dumps(item)
+        raw = "\n".join([sized("NATIVESECRET1", "active", 940, 200),
+                         sized("NATIVESECRET2", "deferred", 400, 100, "TLS private@example.invalid")])
+        total, rows = q.postfix_inventory(raw, now=1000)
+        self.assertEqual(total, 2)
+        self.assertEqual(rows, [(1, "deferred", 10, 100, 1, "tls"),
+                                (2, "active", 1, 200, 1, "not_applicable")])
+        receipt = "\n".join(q.inventory_lines("postfix", "ok", total, rows))
+        for private in ("NATIVESECRET", "example.invalid", "TLS private"):
+            self.assertNotIn(private, receipt)
+        self.assertIn("MAIL_ITEMS_REFERENCE_KIND=sample_ordinal_only", receipt)
+        self.assertIn("MAIL_ITEMS_TRUNCATED=no", receipt)
+
+    def test_message_inventory_validates_all_rows_even_after_display_cap(self):
+        def data(i, size=1):
+            value = json.loads(row("QUEUE" + str(i), "active"))
+            value["message_size"] = size
+            return json.dumps(value)
+        raw = "\n".join(data(i) for i in range(505))
+        total, rows = q.postfix_inventory(raw, now=1000)
+        self.assertEqual((total, len(rows), rows[-1][0]), (505, 500, 500))
+        self.assertIn("MAIL_ITEMS_TRUNCATED=yes",
+                      list(q.inventory_lines("sidecar", "ok", total, rows)))
+        for size in (-1, True, q.MAX_MESSAGE_SIZE + 1):
+            with self.assertRaises(q.Unavailable):
+                q.postfix_inventory(raw + "\n" + data(505, size), now=1000)
+        with self.assertRaises(q.Unavailable):
+            q.postfix_inventory(row("NOSIZE", "active"), now=1000)
+
+    def test_message_inventory_refuses_scope_change_and_partial_results(self):
+        item = json.loads(row("NATIVEPRIVATE", "active", arrival=0))
+        item["message_size"] = 123
+        contexts = iter([(q.CONFIG, "/var/spool/postfix", (1, 2)),
+                         (q.CONFIG, "/var/spool/postfix", (1, 3))])
+        result, total, rows = q.message_inventory("postfix", lambda *_: json.dumps(item),
+                                                   lambda *_: next(contexts))
+        self.assertEqual((result, total, rows), ("scope_unverified", None, []))
+        receipt = list(q.inventory_lines("postfix", result, total, rows))
+        self.assertIn("MAIL_ITEMS_TOTAL=unknown", receipt)
+        self.assertIn("MAIL_ITEMS_LISTED=0", receipt)
+        self.assertIn("MAIL_ITEMS_TRUNCATED=unknown", receipt)
+        with self.assertRaises(ValueError):
+            q.message_inventory("exim")
+
     def test_no_mutation_or_untrusted_configuration_commands(self):
         for tool, args in (("postqueue", ["-f"]), ("sendmail", ["-q"]),
                            ("exim", ["-Mrm", "id"]), ("postqueue", ["-c", "/tmp/evil", "-j"]),
@@ -175,6 +223,19 @@ class QueueGuiContract(unittest.TestCase):
         self.assertIn("MailQueueSample.SelfTest", (cs / "Program.cs").read_text())
         self.assertIn("LinuxMailRelay365.linux.inspect-mail-queue.py",
                       (cs / "LinuxMailRelay365.csproj").read_text())
+
+    def test_message_inventory_ui_is_read_only_and_filters_only_local_rows(self):
+        cs = ROOT / "src/LinuxMailRelay365"
+        ui = (cs / "MainForm.QueueMessages.cs").read_text()
+        for marker in ("QueueScopeDiscovered(scope)", "RequireSameArchiveConnection(initial",
+                       "QueueMessageInventory.Parse(response.StdOut, scope)", "DataGridView",
+                       "ReadOnly = true", "inventory.Filter(", "sample references",
+                       "messages: true", "No queue writes or retry actions"):
+            self.assertIn(marker, ui)
+        for forbidden in ("ConfirmDestructive(", "response.EnsureSuccess()", " --flush ", " --delete "):
+            self.assertNotIn(forbidden, ui)
+        self.assertIn("QueueMessageInventory.SelfTest", (cs / "Program.cs").read_text())
+        self.assertIn("InspectQueueMessagesAsync(scope)", (cs / "MainForm.MailQueue.cs").read_text())
 
 
 if __name__ == "__main__":
