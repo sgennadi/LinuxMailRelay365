@@ -51,6 +51,7 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_sendmail_queue_actions.py
           python3 -m py_compile tests/smoke_native_exim_queue_actions.py
           python3 -m py_compile tests/smoke_native_sendmail_queue_preview.py
+          python3 -m py_compile tests/smoke_native_sendmail_queue_execute.py
           python3 -m py_compile tests/smoke_local_postfix_maintenance.py
           python3 linux/audit-mail-bindings.py --self-test
           python3 -W error::DeprecationWarning -m unittest discover -v -s tests -p test_postfix_basics.py
@@ -200,6 +201,17 @@ jobs:
           sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" RUNNER_TEMP="$RUNNER_TEMP" \
             unshare --mount --net --propagation private \
             python3 tests/smoke_native_sendmail_queue_preview.py
+      - name: Verify real Sendmail Retry and Flush in isolated native MTA and MSP queues
+        if: matrix.mta == 'sendmail'
+        shell: bash
+        run: |
+          for queue in mta msp; do
+            for action in retry flush; do
+              sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" RUNNER_TEMP="$RUNNER_TEMP" \
+                unshare --mount --net --propagation private \
+                python3 tests/smoke_native_sendmail_queue_execute.py "$queue" "$action"
+            done
+          done
 
   rc14-native-transaction-fast:
     # Independent fresh package fixture; does not replace the full sidecar smoke.

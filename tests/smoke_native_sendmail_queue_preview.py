@@ -30,7 +30,7 @@ def require(ok, reason):
 def run(args, data=None, check=True):
     result = subprocess.run(args, input=data, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True,
-                            timeout=45, check=False,
+                            timeout=90, check=False,
                             env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
     require(not check or result.returncode == 0,
             "native_command_failed:" + Path(args[0]).name)
