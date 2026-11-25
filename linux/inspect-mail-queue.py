@@ -110,7 +110,8 @@ def allowed_args(tool, args):
                 and args[2] == "-h" and args[3] in ("queue_directory", "enable_long_queue_ids", "myhostname"))
     if tool == "postqueue":
         return len(args) == 3 and args[0] == "-c" and args[1] in (CONFIG, SIDECAR_CONFIG) and args[2] == "-j"
-    return (tool == "exim" and args in (["-bpc"], ["-bp"])) or (
+    return (tool == "exim" and args in (["-bpc"], ["-bp"],
+        ["-bP", "spool_directory"], ["-bP", "config_file"])) or (
         tool == "sendmail" and args in (["-bp"], ["-Ac", "-bp"]))
 
 
@@ -269,30 +270,32 @@ def exim_count(output):
     return int(value)
 
 
-def exim_details(output, expected):
-    """Documented Exim -bp header format; ignore envelope text, never emit it.
+EXIM_ID = re.compile(r"[A-Za-z0-9]{6}-[A-Za-z0-9]{6,16}-[A-Za-z0-9]{2,8}")
+EXIM_HEADER = re.compile(
+    r"^\s*([0-9]{1,9})([smhdw])\s+"
+    r"([0-9]{1,12}(?:\.[0-9]{1,3})?[KMGT]?)\s+"
+    r"(" + EXIM_ID.pattern + r")"
+    r"\s+((?:\([^()\r\n]{1,256}\)\s+)?<[^>\r\n]*>)"
+    r"(?:\s+(\*\*\* frozen \*\*\*))?\s*$")
+EXIM_ACTIONS = {"freeze": "FREEZE_SELECTED_EXIM_MESSAGE",
+                "thaw": "THAW_SELECTED_EXIM_MESSAGE"}
 
-    Count only unique native message headers, and require the separate
-    native count to agree. The queue can still change during a sample.
-    """
+
+def exim_rows(output, expected):
+    """Keep native IDs and envelope lines local. 'Queued' is not 'active'."""
+    if len(output.encode("utf-8")) > LIMIT or expected > MAX_POSTFIX:
+        raise Unavailable("output_limit")
     seen = set()
-    frozen = 0
-    oldest = 0
-    header = re.compile(
-        r"^\s*([0-9]{1,9})([smhdw])\s+"
-        r"[0-9]+(?:\.[0-9]+)?[KMGT]?\s+"
-        r"([A-Za-z0-9]{6}-[A-Za-z0-9]{6,16}-[A-Za-z0-9]{2,8})"
-        r"\s+(?:\([^()\r\n]{1,256}\)\s+)?<[^>\r\n]*>"
-        r"(?:\s+(\*\*\* frozen \*\*\*))?\s*$")
+    rows = []
+    current = None
     factors = {"s": 1 / 60, "m": 1, "h": 60, "d": 1440, "w": 10080}
-    in_message = False
     for line in output.splitlines():
         if not line.strip():
-            in_message = False
+            current = None
             continue
-        match = header.fullmatch(line)
+        match = EXIM_HEADER.fullmatch(line)
         if match:
-            ident = match.group(3)
+            ident = match.group(4)
             if ident in seen:
                 raise Unavailable("sample_changed")
             seen.add(ident)
@@ -301,14 +304,210 @@ def exim_details(output, expected):
             age = int(int(match.group(1)) * factors[match.group(2)])
             if age > MAX_COUNT:
                 raise Unavailable("invalid_output")
-            oldest = max(oldest, age)
-            frozen += int(match.group(4) is not None)
-            in_message = True
-        elif not in_message or not line[:1].isspace():
+            current = [ident, "frozen" if match.group(6) else "queued",
+                       age, match.group(3), match.group(5), []]
+            rows.append(current)
+        elif current is not None and line[:1].isspace():
+            text = line.strip()
+            if not text or len(text) > 4096 or len(current[5]) >= 10000 or any(
+                    ord(char) < 32 for char in text):
+                raise Unavailable("invalid_output")
+            current[5].append(text)
+        else:
             raise Unavailable("invalid_output")
-    if len(seen) != expected:
+    if len(rows) != expected:
         raise Unavailable("sample_changed")
-    return frozen, oldest
+    return sorted(rows, key=lambda row: (-row[2], row[0]))
+
+
+def exim_details(output, expected):
+    rows = exim_rows(output, expected)
+    return sum(row[1] == "frozen" for row in rows), max((row[2] for row in rows), default=0)
+
+
+def exim_context(runner):
+    """Default configured queue only; no custom -C or named queue arguments."""
+    def setting(name):
+        value = runner("exim", ["-bP", name]).strip()
+        prefix = re.match(r"^(?:" + name + r"|configure_file)\s*=\s*", value)
+        if prefix:
+            value = value[prefix.end():]
+        if not re.fullmatch(r"/[A-Za-z0-9_.+/-]{1,511}", value) or ".." in Path(value).parts:
+            raise Unavailable("scope_unverified")
+        return value
+    directory = setting("spool_directory")
+    config = setting("config_file")
+    try:
+        secure_directory(str(Path(directory).parent))
+        secure_directory(str(Path(config).parent))
+        spool = os.lstat(directory)
+        cfg = os.lstat(config)
+        binary = native_binary("exim")
+        executable = os.stat(binary)
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        if (not stat.S_ISDIR(spool.st_mode) or spool.st_mode & 0o022 or
+                not stat.S_ISREG(cfg.st_mode) or cfg.st_uid != 0 or cfg.st_mode & 0o022 or
+                not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", boot)):
+            raise Unavailable("scope_unverified")
+        # Configuration identity is metadata only; included file changes are
+        # not comprehensively detected. No config text is returned or read.
+        def identity(st):
+            return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_uid, st.st_mode)
+        return (directory, spool.st_dev, spool.st_ino, config, identity(cfg),
+                binary, identity(executable), boot)
+    except (OSError, UnicodeError):
+        raise Unavailable("scope_unverified")
+
+
+def exim_snapshot(runner):
+    first = exim_count(runner("exim", ["-bpc"]))
+    if first > MAX_POSTFIX:
+        raise Unavailable("output_limit")
+    rows = exim_rows(runner("exim", ["-bp"]), first)
+    if exim_count(runner("exim", ["-bpc"])) != first:
+        raise Unavailable("sample_changed")
+    return rows
+
+
+def exim_token(row, context, nonce, sampled):
+    # Age display changes over time; identity, state and envelope do not
+    # have to be exposed to the client to correlate a selected message.
+    evidence = [context, sampled, row[0], row[1], row[3], row[4], sorted(row[5])]
+    encoded = json.dumps(evidence, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    return hmac.new(bytes.fromhex(nonce), encoded, hashlib.sha256).hexdigest()
+
+
+def exim_inventory(nonce, runner=run_native, context_check=exim_context, now=None):
+    if not SHA.fullmatch(nonce):
+        raise ValueError("invalid_exim_nonce")
+    now = int(time.time()) if now is None else now
+    context = None
+    try:
+        context = context_check(runner)
+    except Unavailable:
+        pass
+    try:
+        rows = exim_snapshot(runner)
+        if context is not None and context_check(runner) != context:
+            raise Unavailable("scope_unverified")
+        public = []
+        for index, row in enumerate(rows[:MAX_VISIBLE_MESSAGES], 1):
+            delivered = sum(text.startswith("D ") for text in row[5])
+            public.append((index, row[1], row[2], row[3], len(row[5]) - delivered,
+                           delivered, exim_token(row, context, nonce, now) if context else "-"))
+        return "ok", now, len(rows), public, "verified" if context else "unverified"
+    except Unavailable as error:
+        return error.result, now, None, [], "unverified"
+
+
+def exim_inventory_lines(nonce, result, sampled, total, rows, context):
+    values = (("VERSION", 1), ("SCOPE", "exim"), ("NONCE", nonce), ("RESULT", result),
+              ("SAMPLED_AT", sampled), ("TOTAL", "unknown" if total is None else total),
+              ("LISTED", len(rows)), ("TRUNCATED", "unknown" if total is None else
+               "yes" if total > len(rows) else "no"), ("CONTEXT", context),
+              ("CHANGES_APPLIED", "no"), ("ATOMIC", "no"), ("DELIVERY_VERIFIED", "no"))
+    for key, value in values:
+        yield "EXIM_ITEMS_" + key + "=" + str(value)
+    for row in rows:
+        yield "EXIM_ITEMS_ROW=" + "|".join(str(value) for value in row)
+
+
+def exim_candidate(action, nonce, sampled, token, now, runner, context_check):
+    if (action not in EXIM_ACTIONS or not SHA.fullmatch(nonce) or not SHA.fullmatch(token)
+            or type(sampled) is not int or sampled <= 0):
+        raise ValueError("invalid_exim_selection")
+    if now < sampled or now - sampled > REVIEW_TTL:
+        return "expired", None, None
+    try:
+        context = context_check(runner)
+        rows = exim_snapshot(runner)
+        if context_check(runner) != context:
+            raise Unavailable("scope_unverified")
+        state = "queued" if action == "freeze" else "frozen"
+        matches = [row for row in rows[:MAX_VISIBLE_MESSAGES] if row[1] == state and
+                   hmac.compare_digest(exim_token(row, context, nonce, sampled), token)]
+        if len(matches) != 1:
+            return "sample_changed", None, None
+        return "candidate", matches[0], context
+    except Unavailable as error:
+        return error.result, None, None
+
+
+def exim_plan_digest(action, nonce, sampled, token, prepared, context):
+    return hashlib.sha256(json.dumps(
+        ["exim_queue_action_v1", action, nonce, sampled, token, prepared, context],
+        ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def exim_prepare(action, nonce, sampled, token, runner=run_native, context_check=exim_context,
+                 clock=time.time):
+    prepared = int(clock())
+    result, row, context = exim_candidate(action, nonce, sampled, token, prepared, runner, context_check)
+    if result != "candidate":
+        return result, prepared, "-"
+    return result, prepared, exim_plan_digest(action, nonce, sampled, token, prepared, context)
+
+
+def exim_execute(action, ident):
+    if action not in EXIM_ACTIONS or not EXIM_ID.fullmatch(ident):
+        raise ValueError("invalid_exim_action")
+    binary = native_binary("exim")
+    try:
+        completed = subprocess.run([binary, "-Mf" if action == "freeze" else "-Mt", ident],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=12, check=False,
+                                   env={"PATH": PATH, "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired):
+        return "outcome_unknown"
+    return "command_completed" if completed.returncode == 0 else "outcome_unknown"
+
+
+def exim_apply(action, nonce, sampled, token, prepared, approved, confirmation,
+               runner=run_native, context_check=exim_context, executor=exim_execute,
+               clock=time.time, monotonic=time.monotonic):
+    if (action not in EXIM_ACTIONS or confirmation != EXIM_ACTIONS[action] or
+            not SHA.fullmatch(approved) or not sampled <= prepared):
+        raise ValueError("exim_confirmation_required")
+    started = int(clock())
+    tick = monotonic()
+    def fresh():
+        now = int(clock())
+        elapsed = monotonic() - tick
+        return (0 <= elapsed <= RETRY_PLAN_TTL and abs(now - started - elapsed) <= 2
+                and sampled <= prepared <= now <= sampled + REVIEW_TTL
+                and now - prepared <= RETRY_PLAN_TTL)
+    if not fresh():
+        return "not_requested", "expired"
+    ident = None
+    for _ in range(2):
+        result, row, context = exim_candidate(action, nonce, sampled, token, int(clock()),
+                                               runner, context_check)
+        if result != "candidate":
+            return "not_requested", result
+        digest = exim_plan_digest(action, nonce, sampled, token, prepared, context)
+        if not hmac.compare_digest(approved, digest) or (ident is not None and ident != row[0]):
+            return "not_requested", "plan_changed"
+        ident = row[0]
+    if not fresh():
+        return "not_requested", "expired"
+    try:
+        result = executor(action, ident)
+    except Unavailable as error:
+        return "not_requested", error.result
+    return (("command_completed", "none") if result == "command_completed"
+            else ("outcome_unknown", "native_result_unconfirmed"))
+
+
+def exim_action_lines(action, nonce, sampled, token, phase, prepared, plan, outcome, reason):
+    for key, value in (("VERSION", 1), ("SCOPE", "exim"), ("ACTION", action), ("NONCE", nonce),
+                       ("SAMPLED_AT", sampled), ("FINGERPRINT", token), ("PHASE", phase),
+                       ("PREPARED_AT", prepared), ("PLAN_SHA256", plan), ("OUTCOME", outcome),
+                       ("REASON", reason), ("COMMAND_COUNT", "1" if outcome == "command_completed"
+                        else "unknown" if outcome == "outcome_unknown" else "0"),
+                       ("EFFECT_VERIFIED", "no"), ("DELIVERY_VERIFIED", "no"), ("ATOMIC", "no"),
+                       ("DELETE_REQUESTED", "no"), ("NEW_MESSAGE_SUBMITTED", "no"),
+                       ("CONFIG_CHANGED", "no"), ("SERVICE_CHANGED", "no")):
+        yield "EXIM_ACTION_" + key + "=" + str(value)
 
 
 def sendmail_summary(output):
@@ -930,6 +1129,9 @@ def main():
     action.add_argument("--retry-prepare")
     action.add_argument("--retry-apply")
     action.add_argument("--maintenance", choices=tuple(MAINTENANCE_CONFIRM))
+    action.add_argument("--exim-action", choices=tuple(EXIM_ACTIONS))
+    parser.add_argument("--exim-inventory", action="store_true")
+    parser.add_argument("--exim-apply", action="store_true")
     parser.add_argument("--maintenance-apply", action="store_true")
     parser.add_argument("--target-fingerprint")
     parser.add_argument("--sampled-at", type=int)
@@ -939,6 +1141,45 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         return 2
+    if args.exim_inventory or args.exim_action is not None:
+        if (args.scope != "exim" or args.messages or args.maintenance_apply or
+                args.maintenance is not None or args.retry_plan is not None or
+                args.retry_prepare is not None or args.retry_apply is not None or
+                not SHA.fullmatch(args.selection_nonce or "")):
+            parser.error("invalid Exim queue context")
+        if args.exim_inventory:
+            if args.exim_action is not None or args.exim_apply or any(value is not None for value in
+                    (args.sampled_at, args.target_fingerprint, args.prepared_at, args.approve_sha256, args.confirm)):
+                parser.error("inventory cannot carry Exim write approval")
+            result, sampled, total, rows, context = exim_inventory(args.selection_nonce)
+            lines = exim_inventory_lines(args.selection_nonce, result, sampled, total, rows, context)
+        else:
+            if (args.sampled_at is None or not 0 < args.sampled_at <= 9999999999 or
+                    not SHA.fullmatch(args.target_fingerprint or "")):
+                parser.error("selected Exim message required")
+            if args.exim_apply:
+                if (args.prepared_at is None or not args.sampled_at <= args.prepared_at <= 9999999999 or
+                        not SHA.fullmatch(args.approve_sha256 or "") or
+                        args.confirm != EXIM_ACTIONS[args.exim_action]):
+                    parser.error("explicit Exim action approval required")
+                outcome, reason = exim_apply(args.exim_action, args.selection_nonce, args.sampled_at,
+                    args.target_fingerprint, args.prepared_at, args.approve_sha256, args.confirm)
+                lines = exim_action_lines(args.exim_action, args.selection_nonce, args.sampled_at,
+                    args.target_fingerprint, "apply", args.prepared_at, args.approve_sha256, outcome, reason)
+            else:
+                if any(value is not None for value in (args.prepared_at, args.approve_sha256, args.confirm)):
+                    parser.error("approval not permitted in Exim preview")
+                result, prepared, plan = exim_prepare(args.exim_action, args.selection_nonce,
+                    args.sampled_at, args.target_fingerprint)
+                lines = exim_action_lines(args.exim_action, args.selection_nonce, args.sampled_at,
+                    args.target_fingerprint, "prepare", prepared, plan,
+                    "candidate" if result == "candidate" else "not_requested",
+                    "none" if result == "candidate" else result)
+        for line in lines:
+            print(line)
+        return 0
+    if args.exim_apply:
+        parser.error("explicit Exim action required")
     if args.maintenance is not None:
         operation = args.maintenance
         sampled_at = args.sampled_at if args.sampled_at is not None else 0

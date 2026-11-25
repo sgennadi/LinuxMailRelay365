@@ -30,6 +30,9 @@ internal sealed partial class MainForm
             AddAction(page, T("Проверить очередь " + name + " (только чтение)",
                     "Inspect " + name + " queue (read-only)", "בדיקת תור " + name + " ללא שינוי"),
                 () => InspectNativeQueueAsync(scope), false, "check", "mail-queue");
+            if (scope == "exim")
+                AddAction(page, T("Сообщения Exim и Freeze / Thaw", "Exim messages and Freeze / Thaw", "הודעות Exim והקפאה / הפשרה"),
+                    InspectEximQueueAsync, false, "check", "exim-queue-messages");
             if (scope is "postfix" or "sidecar")
             {
                 AddAction(page, T("Просмотреть сообщения " + name + " (без содержимого)",

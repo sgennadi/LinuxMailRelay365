@@ -914,6 +914,30 @@ internal static class EmbeddedAssets
         return BuildQueueBundle(scope, arguments);
     }
 
+    internal static string BuildEximQueueInventoryBundle(string nonce)
+    {
+        if (!QueueRetryReview.ValidSha(nonce)) throw new ArgumentException("Invalid Exim nonce.");
+        return BuildQueueReadOnlyBundle("exim", " --exim-inventory --selection-nonce " + nonce);
+    }
+
+    internal static string BuildEximQueueActionBundle(string action, string nonce, long sampledAt,
+        string fingerprint, long? preparedAt = null, string? planSha = null)
+    {
+        if (action is not ("freeze" or "thaw") || !QueueRetryReview.ValidSha(nonce) ||
+            !QueueRetryReview.ValidSha(fingerprint) || sampledAt is < 1 or > 9999999999 ||
+            (preparedAt is null) != (planSha is null) ||
+            (preparedAt is long time && (time < sampledAt || time - sampledAt > 300 ||
+                time > 9999999999 || !QueueRetryReview.ValidSha(planSha))))
+            throw new ArgumentException("Invalid Exim queue action context.");
+        var culture = System.Globalization.CultureInfo.InvariantCulture;
+        string args = " --exim-action " + action + " --selection-nonce " + nonce +
+            " --sampled-at " + sampledAt.ToString(culture) + " --target-fingerprint " + fingerprint;
+        if (preparedAt is long prepared)
+            args += " --exim-apply --prepared-at " + prepared.ToString(culture) +
+                " --approve-sha256 " + planSha + " --confirm " + EximQueueAction.Confirmation(action);
+        return BuildQueueBundle("exim", args);
+    }
+
     private static string BuildQueueReadOnlyBundle(string scope, string fixedArguments) =>
         BuildQueueBundle(scope, fixedArguments);
 

@@ -46,6 +46,8 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_mail_queue_inspect.py
           python3 -m unittest discover -v -s tests -p test_selected_queue_retry.py
           python3 -m unittest discover -v -s tests -p test_queue_maintenance.py
+          python3 -m unittest discover -v -s tests -p test_exim_queue_actions.py
+          python3 -m py_compile tests/smoke_native_exim_queue_actions.py
           python3 -m py_compile tests/smoke_local_postfix_maintenance.py
           python3 linux/audit-mail-bindings.py --self-test
           python3 -W error::DeprecationWarning -m unittest discover -v -s tests -p test_postfix_basics.py
@@ -181,6 +183,9 @@ jobs:
         if: matrix.mta == 'exim'
         shell: bash
         run: bash tests/smoke_native_exim_offline_restore.sh
+      - name: Verify selected Exim Freeze and Thaw on one queue-only synthetic message
+        if: matrix.mta == 'exim'
+        run: sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_TEMP="$RUNNER_TEMP" python3 tests/smoke_native_exim_queue_actions.py
       - name: Verify packaged Sendmail read-only backup without mail delivery
         if: matrix.mta == 'sendmail'
         shell: bash
