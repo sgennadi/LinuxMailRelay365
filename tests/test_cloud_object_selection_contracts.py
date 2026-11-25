@@ -28,6 +28,30 @@ class CloudObjectsIdentityContracts(unittest.TestCase):
         self.assertIn("psi.ArgumentList.Add(requestedConnectorName);", source)
         self.assertNotIn("Guid nowClient", source)
 
+    def test_smtp_mailbox_audit_exact_identity_and_no_mutation(self):
+        source = FORM.read_text(encoding="utf-8")
+        shell = SHELL.read_text(encoding="utf-8")
+        model = (ROOT / "src/LinuxMailRelay365/CloudObjectsInventory.cs").read_text(encoding="utf-8")
+        for marker in ("requestedTransport == 0", "EnterpriseObjectId: Guid enterprise",
+                       'psi.ArgumentList.Add("-EnterpriseObjectId")',
+                       'psi.ArgumentList.Add("-Mailbox")',
+                       "tenantId, clientId, auditMailbox, auditEnterprise",
+                       "ValidateMailboxSelection();", "Live authentication not tested"):
+            self.assertIn(marker, source)
+        for marker in ("Get-TransportConfig -ErrorAction Stop", "Get-Mailbox -Identity $exactMailbox",
+                       "Get-CASMailbox -Identity $exactMailbox",
+                       "Get-ServicePrincipal -Identity $exactEnterprise.ToString('D')",
+                       "Test-ServicePrincipalAuthorization -Identity $exactEnterprise.ToString('D') -Resource $exactMailbox",
+                       "([guid]$principal[0].AppId) -eq $exactClient",
+                       "([guid]$principal[0].ObjectId) -eq $exactEnterprise",
+                       "M365_SMTP_MAILBOX_POLICY_SELF_TEST=pass"):
+            self.assertIn(marker, shell)
+        self.assertIn("Inconsistent SMTP mailbox audit evidence", model)
+        self.assertIn("Missing or unexpected SMTP mailbox audit", model)
+        for forbidden in ("Set-CASMailbox ", "Set-TransportConfig ", "New-ServicePrincipal ",
+                          "New-ManagementRoleAssignment ", "Remove-ManagementRoleAssignment "):
+            self.assertNotIn(forbidden, shell)
+
     def test_live_cloud_inventory_is_read_only_and_exact_tenant_bound(self):
         source = SHELL.read_text(encoding="utf-8")
         for required in ("Get-InboundConnector", "TenantID",

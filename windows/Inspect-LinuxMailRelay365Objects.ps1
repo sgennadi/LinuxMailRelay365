@@ -5,6 +5,8 @@ param(
   [guid]$TenantId = [guid]::Empty,
   [guid]$ClientId = [guid]::Empty,
   [string]$ConnectorName = '',
+  [string]$Mailbox = '',
+  [guid]$EnterpriseObjectId = [guid]::Empty,
   [string]$ResultPath = '',
   [switch]$SelfTest
 )
@@ -37,7 +39,105 @@ function ConnectorRecord($item,[guid]$exactTenant = [guid]::Empty) {
     ownership=$provenance
   }
 }
+function SmtpPolicy($item,[bool]$allowInherit) {
+  if ($null -eq $item) { return 'unverified' }
+  $property = $item.PSObject.Properties['SmtpClientAuthenticationDisabled']
+  if ($null -eq $property) { return 'unverified' }
+  $v = $property.Value
+  if ($null -eq $v) {
+    if ($allowInherit) { return 'inherit' }
+    return 'unverified'
+  }
+  if ($v -isnot [bool]) { return 'unverified' }
+  if ($v) { return 'disabled' }
+  return 'enabled'
+}
+function EffectiveSmtpPolicy([string]$organization,[string]$mailbox) {
+  if ($mailbox -cin @('enabled','disabled')) { return $mailbox }
+  if ($mailbox -ceq 'inherit' -and $organization -cin @('enabled','disabled')) { return $organization }
+  return 'unverified'
+}
+function SmtpRbac($rows) {
+  $items = @($rows)
+  if ($items.Count -gt 256) { return 'unverified' }
+  $matched = $false
+  $inScope = $false
+  foreach ($item in $items) {
+    if ($null -eq $item -or $null -eq $item.PSObject.Properties['RoleName']) { return 'unverified' }
+    if ([string]$item.RoleName -cne 'Application SMTP.SendAsApp') { continue }
+    $matched = $true
+    if ($null -eq $item.PSObject.Properties['InScope'] -or $item.InScope -isnot [bool]) { return 'unverified' }
+    if ($item.InScope) { $inScope = $true }
+  }
+  if ($inScope) { return 'in_scope' }
+  if ($matched) { return 'out_of_scope' }
+  return 'no_smtp_role'
+}
+function AssertExactExchangeTenant([guid]$expected) {
+  $current=@(Get-ConnectionInformation -ErrorAction Stop)
+  Require ($current.Count -eq 1 -and $current[0].TenantID -and
+    ([guid]$current[0].TenantID) -eq $expected) 'wrong_exchange_tenant'
+}
+function ReadSmtpMailboxAudit([guid]$exactTenant,[guid]$exactClient,[guid]$exactEnterprise,[string]$exactMailbox) {
+  AssertExactExchangeTenant $exactTenant
+  $audit=[ordered]@{
+    mailbox=$exactMailbox; enterpriseObjectId=$exactEnterprise.ToString('D')
+    mailboxIdentity='unverified'; organizationPolicy='unverified'
+    mailboxPolicy='unverified'; effectivePolicy='unverified'
+    exchangePrincipal='unverified'; smtpRbac='unverified'
+  }
+  try {
+    $config=@(Get-TransportConfig -ErrorAction Stop)
+    if ($config.Count -eq 1) { $audit.organizationPolicy=SmtpPolicy $config[0] $false }
+  } catch { } # No raw error or permission-success inference.
+  try {
+    $target=@(Get-Mailbox -Identity $exactMailbox -ErrorAction Stop)
+    if ($target.Count -eq 1 -and ([string]$target[0].PrimarySmtpAddress).ToLowerInvariant() -ceq $exactMailbox) {
+      $audit.mailboxIdentity='verified'
+    }
+  } catch { }
+  if ($audit.mailboxIdentity -ceq 'verified') {
+    try {
+      $cas=@(Get-CASMailbox -Identity $exactMailbox -ErrorAction Stop)
+      if ($cas.Count -eq 1) { $audit.mailboxPolicy=SmtpPolicy $cas[0] $true }
+    } catch { }
+  }
+  $audit.effectivePolicy=EffectiveSmtpPolicy $audit.organizationPolicy $audit.mailboxPolicy
+  try {
+    # The exact Graph Enterprise Application ID, not the app registration ID.
+    $principal=@(Get-ServicePrincipal -Identity $exactEnterprise.ToString('D') -ErrorAction Stop)
+    if ($principal.Count -eq 1 -and ([guid]$principal[0].AppId) -eq $exactClient -and
+        ([guid]$principal[0].ObjectId) -eq $exactEnterprise) {
+      $audit.exchangePrincipal='verified'
+    }
+  } catch { }
+  if ($audit.exchangePrincipal -ceq 'verified' -and $audit.mailboxIdentity -ceq 'verified') {
+    try {
+      $authorization=@(Test-ServicePrincipalAuthorization -Identity $exactEnterprise.ToString('D') -Resource $exactMailbox -ErrorAction Stop)
+      $audit.smtpRbac=SmtpRbac $authorization
+    } catch { }
+  }
+  AssertExactExchangeTenant $exactTenant
+  return $audit
+}
 if ($SelfTest) {
+  Require ((SmtpPolicy ([pscustomobject]@{SmtpClientAuthenticationDisabled=$false}) $true) -ceq 'enabled') 'smtp_policy_enabled'
+  Require ((SmtpPolicy ([pscustomobject]@{SmtpClientAuthenticationDisabled=$true}) $true) -ceq 'disabled') 'smtp_policy_disabled'
+  Require ((SmtpPolicy ([pscustomobject]@{SmtpClientAuthenticationDisabled=$null}) $true) -ceq 'inherit') 'smtp_policy_inherit'
+  Require ((SmtpPolicy ([pscustomobject]@{}) $true) -ceq 'unverified') 'smtp_missing_property'
+  Require ((SmtpPolicy ([pscustomobject]@{SmtpClientAuthenticationDisabled='False'}) $true) -ceq 'unverified') 'smtp_string_not_bool'
+  Require ((EffectiveSmtpPolicy 'disabled' 'enabled') -ceq 'enabled') 'smtp_mailbox_override'
+  Require ((EffectiveSmtpPolicy 'enabled' 'disabled') -ceq 'disabled') 'smtp_mailbox_disable'
+  Require ((EffectiveSmtpPolicy 'disabled' 'inherit') -ceq 'disabled') 'smtp_inherit_disabled'
+  Require ((EffectiveSmtpPolicy 'enabled' 'unverified') -ceq 'unverified') 'smtp_unknown_not_inherited'
+  Require ((SmtpRbac @()) -ceq 'no_smtp_role') 'smtp_no_role'
+  $allowed=[pscustomobject]@{RoleName='Application SMTP.SendAsApp';InScope=$true}
+  $outside=[pscustomobject]@{RoleName='Application SMTP.SendAsApp';InScope=$false}
+  $unknown=[pscustomobject]@{RoleName='Application SMTP.SendAsApp';InScope='True'}
+  Require ((SmtpRbac @($outside,$allowed)) -ceq 'in_scope') 'smtp_scope_union'
+  Require ((SmtpRbac @($outside)) -ceq 'out_of_scope') 'smtp_outside_scope'
+  Require ((SmtpRbac @($unknown)) -ceq 'unverified') 'smtp_bad_scope'
+  Write-Output 'M365_SMTP_MAILBOX_POLICY_SELF_TEST=pass'
   $test = ConnectorRecord ([pscustomobject]@{
     Identity='test-connector'; Name='LinuxMailRelay365 Test'
     Comment=''; ConnectorType='OnPremises'; Enabled=$true
@@ -64,6 +164,13 @@ Require ($ConnectorName.Length -le 70 -and (-not $ConnectorName -or
   $ConnectorName -cmatch '^[A-Za-z0-9][A-Za-z0-9._ -]{2,69}$')) 'invalid_connector_name'
 Require ($null -ne (Get-Module -ListAvailable ExchangeOnlineManagement)) 'exchange_module_missing'
 $graphRequested = $ClientId -ne [guid]::Empty
+$mailboxRequested = $Mailbox.Length -gt 0
+Require ($mailboxRequested -eq ($EnterpriseObjectId -ne [guid]::Empty)) 'smtp_audit_selection_incomplete'
+if ($mailboxRequested) {
+  Require ($graphRequested -and $Mailbox.Length -le 254 -and $Mailbox -ceq $Mailbox.ToLowerInvariant() -and
+    $Mailbox -cmatch '^[a-z0-9.!#$%&''*+/=?^_\x60{|}~-]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$' -and
+    -not $Mailbox.Contains('..')) 'smtp_audit_mailbox_invalid'
+}
 $inventory = [ordered]@{
   schema='linuxmailrelay365-cloud-objects/v1'
   tenantId=$TenantId.ToString('D')
@@ -74,6 +181,7 @@ $inventory = [ordered]@{
   connectors=@()
   scopes=@()
   roleAssignments=@()
+  mailboxAudit=$null
   changesApplied=$false
 }
 $exoOpened=$false
@@ -116,6 +224,10 @@ try {
       [ordered]@{name=SafeText $_.Name;role=SafeText $_.Role;scope=SafeText $_.CustomResourceScope}
     })
   }
+  if ($mailboxRequested) {
+    $inventory.mailboxAudit=ReadSmtpMailboxAudit $TenantId $ClientId $EnterpriseObjectId $Mailbox
+  }
+  AssertExactExchangeTenant $TenantId
   $path=Split-Path -Parent $ResultPath
   if ($path -and -not (Test-Path -LiteralPath $path)) {
     [void](New-Item -ItemType Directory -Path $path -Force)

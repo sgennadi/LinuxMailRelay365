@@ -14,16 +14,36 @@ internal sealed record CloudCredentialObject(
 internal sealed record CloudScopeObject(string Name, string Filter);
 internal sealed record CloudAssignmentObject(string Name, string Role, string Scope);
 
+internal sealed record CloudSmtpMailboxAudit(
+    string Mailbox, Guid EnterpriseObjectId, string MailboxIdentity,
+    string OrganizationPolicy, string MailboxPolicy, string EffectivePolicy,
+    string ExchangePrincipal, string SmtpRbac)
+{
+    internal bool ScopedConfigurationObserved =>
+        MailboxIdentity == "verified" && EffectivePolicy == "enabled" &&
+        ExchangePrincipal == "verified" && SmtpRbac == "in_scope";
+    internal static string Effective(string organization, string mailbox) =>
+        mailbox is "enabled" or "disabled" ? mailbox :
+        mailbox == "inherit" && (organization is "enabled" or "disabled") ?
+            organization : "unverified";
+}
+
 internal sealed record CloudObjectsInventory(
     Guid Tenant, Guid? Client, string ApplicationStatus, Guid? ApplicationObjectId,
     string ApplicationName, string ServicePrincipalStatus, Guid? ServicePrincipalObjectId,
     IReadOnlyList<CloudCredentialObject> Certificates,
     IReadOnlyList<CloudConnectorObject> Connectors,
     IReadOnlyList<CloudScopeObject> Scopes,
-    IReadOnlyList<CloudAssignmentObject> RoleAssignments)
+    IReadOnlyList<CloudAssignmentObject> RoleAssignments,
+    CloudSmtpMailboxAudit? MailboxAudit = null)
 {
-    internal static CloudObjectsInventory Parse(string json, Guid expectedTenant, Guid? expectedClient)
+    internal static CloudObjectsInventory Parse(string json, Guid expectedTenant, Guid? expectedClient,
+        string? expectedMailbox = null, Guid? expectedEnterprise = null)
     {
+        if ((expectedMailbox is null) != (expectedEnterprise is null) ||
+            (expectedMailbox is not null && (expectedClient is null ||
+                expectedEnterprise == Guid.Empty || !SshRemote.IsEmail(expectedMailbox))))
+            throw new InvalidDataException("SMTP mailbox audit selection invalid.");
         if (json.Length > 300_000 || json.Contains('\0'))
             throw new InvalidDataException("Cloud inventory is too large or contains null bytes.");
         using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 14 });
@@ -75,9 +95,36 @@ internal sealed record CloudObjectsInventory(
         if (certificates.GroupBy(x => x.KeyId).Any(g => g.Count() != 1) ||
             connectors.GroupBy(x => x.Identity, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() != 1))
             throw new InvalidDataException("Duplicate cloud object identifiers.");
+        CloudSmtpMailboxAudit? mailboxAudit = null;
+        bool hasAudit = root.TryGetProperty("mailboxAudit", out var audit) &&
+            audit.ValueKind != JsonValueKind.Null;
+        if (hasAudit != (expectedMailbox is not null))
+            throw new InvalidDataException("Missing or unexpected SMTP mailbox audit.");
+        if (hasAudit)
+        {
+            if (audit.ValueKind != JsonValueKind.Object ||
+                audit.EnumerateObject().Select(p => p.Name).Distinct(StringComparer.Ordinal).Count() != 8 ||
+                audit.EnumerateObject().Count() != 8 ||
+                !string.Equals(Read(audit, "mailbox", 254), expectedMailbox, StringComparison.Ordinal) ||
+                !Guid.TryParse(Read(audit, "enterpriseObjectId", 36), out Guid enterprise) ||
+                enterprise != expectedEnterprise)
+                throw new InvalidDataException("SMTP mailbox audit identity mismatch.");
+            string mailboxIdentity = OneOf(Read(audit, "mailboxIdentity", 32), "verified", "unverified");
+            string organization = OneOf(Read(audit, "organizationPolicy", 32), "enabled", "disabled", "unverified");
+            string policy = OneOf(Read(audit, "mailboxPolicy", 32), "enabled", "disabled", "inherit", "unverified");
+            string effective = OneOf(Read(audit, "effectivePolicy", 32), "enabled", "disabled", "unverified");
+            string principal = OneOf(Read(audit, "exchangePrincipal", 32), "verified", "unverified");
+            string rbac = OneOf(Read(audit, "smtpRbac", 32), "in_scope", "out_of_scope", "no_smtp_role", "unverified");
+            if (effective != CloudSmtpMailboxAudit.Effective(organization, policy) ||
+                (mailboxIdentity != "verified" && policy != "unverified") ||
+                ((mailboxIdentity != "verified" || principal != "verified") && rbac != "unverified"))
+                throw new InvalidDataException("Inconsistent SMTP mailbox audit evidence.");
+            mailboxAudit = new(expectedMailbox!, enterprise, mailboxIdentity, organization,
+                policy, effective, principal, rbac);
+        }
         return new(actual, parsedClient, applicationStatus, applicationId,
             Read(application, "name", 128), serviceStatus, serviceId,
-            certificates, connectors, scopes, assignments);
+            certificates, connectors, scopes, assignments, mailboxAudit);
     }
 
     private static string OneOf(string input, params string[] values) =>
@@ -178,6 +225,28 @@ internal sealed record CloudObjectsInventory(
         catch (InvalidDataException) { }
         try { Parse(test.Replace("\"ownership\":\"unverified\"", "\"ownership\":\"mine\""),
             Guid.Parse(tenant), Guid.Parse(app)); return false; }
-        catch (InvalidDataException) { return true; }
+        catch (InvalidDataException) { }
+        const string mailbox = "fixture@example.org";
+        string audited = test.Replace("\"changesApplied\":false", """
+            "mailboxAudit":{"mailbox":"fixture@example.org","enterpriseObjectId":"33333333-3333-4333-8333-333333333333",
+            "mailboxIdentity":"verified","organizationPolicy":"disabled","mailboxPolicy":"enabled",
+            "effectivePolicy":"enabled","exchangePrincipal":"verified","smtpRbac":"in_scope"},"changesApplied":false
+            """);
+        CloudObjectsInventory ReadAudit(string json) =>
+            Parse(json, Guid.Parse(tenant), Guid.Parse(app), mailbox, Guid.Parse(cert));
+        if (ReadAudit(audited).MailboxAudit?.ScopedConfigurationObserved != true) return false;
+        bool RejectAudit(string json)
+        {
+            try { ReadAudit(json); return false; }
+            catch (InvalidDataException) { return true; }
+        }
+        if (!RejectAudit(test) ||
+            !RejectAudit(audited.Replace(mailbox, "other@example.org")) ||
+            !RejectAudit(audited.Replace("\"effectivePolicy\":\"enabled\"", "\"effectivePolicy\":\"disabled\"")) ||
+            !RejectAudit(audited.Replace("\"exchangePrincipal\":\"verified\"", "\"exchangePrincipal\":\"unverified\"")) ||
+            !RejectAudit(audited.Replace("\"smtpRbac\":\"in_scope\"", "\"smtpRbac\":\"in_scope\",\"smtpRbac\":\"in_scope\"")))
+            return false;
+        return ReadAudit(audited.Replace("\"smtpRbac\":\"in_scope\"", "\"smtpRbac\":\"out_of_scope\""))
+            .MailboxAudit?.ScopedConfigurationObserved == false;
     }
 }

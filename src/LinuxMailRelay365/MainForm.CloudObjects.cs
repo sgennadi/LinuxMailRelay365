@@ -75,6 +75,16 @@ internal sealed partial class MainForm
         string requestedClientField = existingAppId.Text.Trim();
         string requestedConnectorName = outboundConnectorName.Text.Trim();
         string requestedBootstrap = entraSignInClientId.Text.Trim();
+        string requestedMailbox = mailbox.Text.Trim().ToLowerInvariant();
+        int requestedTransport = mailTransport.SelectedIndex;
+        string? auditMailbox = null;
+        Guid? auditEnterprise = null;
+        void ValidateMailboxSelection()
+        {
+            if (mailTransport.SelectedIndex != requestedTransport ||
+                !string.Equals(mailbox.Text.Trim().ToLowerInvariant(), requestedMailbox, StringComparison.Ordinal))
+                throw new InvalidOperationException("Microsoft 365 mailbox or transport selection changed during inspection.");
+        }
         ValidateCloudInventorySelection(
             tenantId, clientId, requestedClientField, requestedConnectorName);
         // App Registration / Enterprise Application / public credentials are
@@ -95,6 +105,14 @@ internal sealed partial class MainForm
             ValidateCloudInventorySelection(tenantId, clientId, requestedClientField, requestedConnectorName);
             if (!string.Equals(requestedBootstrap, entraSignInClientId.Text.Trim(), StringComparison.Ordinal))
                 throw new InvalidOperationException("Microsoft sign-in client changed during read-only inspection.");
+        }
+        ValidateMailboxSelection();
+        if (requestedTransport == 0 && SshRemote.IsEmail(requestedMailbox) &&
+            nativeGraph is { EnterpriseStatus: "found", EnterpriseObjectId: Guid enterprise } &&
+            enterprise != Guid.Empty)
+        {
+            auditMailbox = requestedMailbox;
+            auditEnterprise = enterprise;
         }
         Directory.CreateDirectory(dataDirectory);
         string script = Path.Combine(dataDirectory, "Inspect-LinuxMailRelay365Objects.ps1");
@@ -121,6 +139,14 @@ internal sealed partial class MainForm
             psi.ArgumentList.Add("-ConnectorName");
             psi.ArgumentList.Add(requestedConnectorName);
         }
+        if (auditMailbox is not null && auditEnterprise is Guid exactEnterprise)
+        {
+            psi.ArgumentList.Add("-Mailbox");
+            psi.ArgumentList.Add(auditMailbox);
+            psi.ArgumentList.Add("-EnterpriseObjectId");
+            psi.ArgumentList.Add(exactEnterprise.ToString("D"));
+            WriteLine("Exchange Online: live read-only SMTP AUTH mailbox policy and application RBAC check.");
+        }
         WriteLine("Microsoft 365 object audit: interactive admin sign-in; exact tenant-bound and read-only.");
         try
         {
@@ -133,7 +159,7 @@ internal sealed partial class MainForm
             if (!File.Exists(report))
                 throw new InvalidDataException("Microsoft 365 cloud inventory report is missing.");
             var inventory = CloudObjectsInventory.Parse(
-                await File.ReadAllTextAsync(report), tenantId, clientId);
+                await File.ReadAllTextAsync(report), tenantId, clientId, auditMailbox, auditEnterprise);
             if (nativeGraph is not null)
             {
                 inventory = inventory with
@@ -150,6 +176,12 @@ internal sealed partial class MainForm
             }
             ValidateCloudInventorySelection(
                 tenantId, clientId, requestedClientField, requestedConnectorName);
+            ValidateMailboxSelection();
+            if (!string.Equals(requestedBootstrap, entraSignInClientId.Text.Trim(), StringComparison.Ordinal))
+                throw new InvalidOperationException("Microsoft sign-in client changed during inspection.");
+            if (inventory.MailboxAudit is { } check)
+                WriteLine("Exchange SMTP configuration: policy=" + check.EffectivePolicy +
+                    "; application RBAC=" + check.SmtpRbac + ". Live authentication not tested.");
             WriteLine("Native C# Graph + Exchange-only PowerShell object inspection: " +
                 inventory.Connectors.Count + " candidate connectors, " +
                 inventory.Certificates.Count + " public credential records, " +
@@ -251,6 +283,15 @@ internal sealed partial class MainForm
         app.Tag = inventory;
         var enterprise = tree.Nodes.Add("Enterprise Application — " + inventory.ServicePrincipalStatus);
         enterprise.Tag = inventory;
+        var readiness = tree.Nodes.Add(T("SMTP AUTH / права ящика", "SMTP AUTH / mailbox RBAC", "SMTP AUTH / הרשאות תיבה"));
+        if (inventory.MailboxAudit is { } mailboxAudit)
+        {
+            readiness.Tag = mailboxAudit;
+            readiness.Text += mailboxAudit.ScopedConfigurationObserved ? " | CONFIG OK" : " | REVIEW";
+            if (!SystemInformation.HighContrast)
+                readiness.ForeColor = mailboxAudit.ScopedConfigurationObserved ? Color.DarkGreen : UiTheme.WarningInk;
+        }
+        else readiness.Text += " | NOT VERIFIED";
         var certificates = tree.Nodes.Add("OAuth certificates (" + inventory.Certificates.Count + ")");
         foreach (var certificate in inventory.Certificates)
             AddChild(certificates, certificate.Name + " | " + certificate.ValidUntil.ToString("yyyy-MM-dd"), certificate);
@@ -270,6 +311,17 @@ internal sealed partial class MainForm
                 CloudObjectsInventory full => full.Summary() + Environment.NewLine +
                     "Only exact Client IDs and selected Connector candidates are shown." + Environment.NewLine +
                     "Existing OAuth users may share one app and its union of mailbox scopes.",
+                CloudSmtpMailboxAudit a => "Mailbox: " + a.Mailbox +
+                    Environment.NewLine + "Exact primary mailbox: " + a.MailboxIdentity +
+                    Environment.NewLine + "Organization SMTP AUTH: " + a.OrganizationPolicy +
+                    Environment.NewLine + "Mailbox SMTP AUTH: " + a.MailboxPolicy +
+                    Environment.NewLine + "Effective configuration: " + a.EffectivePolicy +
+                    Environment.NewLine + "Exchange service principal: " + a.ExchangePrincipal +
+                    Environment.NewLine + "Application SMTP.SendAsApp RBAC: " + a.SmtpRbac +
+                    Environment.NewLine + Environment.NewLine +
+                    T("Проверка конфигурации, не SMTP-входа. Права Entra, Conditional Access и доставка не проверены.",
+                      "Exchange configuration only, not SMTP login. Separate Entra grants, Conditional Access and delivery are not verified.",
+                      "בדיקת תצורה בלבד, לא כניסת SMTP. הרשאות Entra נפרדות, גישה מותנית ומסירה לא אומתו."),
                 CloudCredentialObject c => "Certificate credential: " + c.Name +
                     Environment.NewLine + "Key ID: " + c.KeyId +
                     Environment.NewLine + "Type: " + c.Type +
@@ -295,6 +347,10 @@ internal sealed partial class MainForm
                     Environment.NewLine + "Role: " + c.Role +
                     Environment.NewLine + "Scope: " + c.Scope +
                     Environment.NewLine + "Do not remove while SMTP apps depend on this role.",
+                _ when tree.SelectedNode == readiness => T(
+                    "Выберите XOAUTH2, точный почтовый ящик и Client ID с найденным Enterprise Application.",
+                    "Select XOAUTH2, an exact mailbox and Client ID with a verified Enterprise Application.",
+                    "בחרו XOAUTH2, תיבה מדויקת ו-Client ID עם Enterprise Application מזוהה."),
                 _ => inventory.Summary()
             };
         };
