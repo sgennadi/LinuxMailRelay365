@@ -82,3 +82,19 @@ reachability and action isolation. It saves 42 compact PNGs (table and
 actions) and records actual runner DPI. All data are synthetic, remote
 operations are disabled, and the screenshots do not establish physical
 200% DPI acceptance. This new CI test must pass before claiming validation.
+
+## Real Rocky KVM queue acceptance (pending CI)
+
+The RC18 KVM recovery harness has an opt-in post-reboot queue test. It
+requires the disposable Rocky 9.9 guest, a root-private boot-bound marker,
+real KVM, systemd, SELinux Enforcing, stopped Sendmail units and a private
+network/mount namespace. The native package queue paths are overlaid by
+empty private on-disk directories with matching SELinux labels; unlike a
+context-mounted tmpfs, these exercise ordinary file labeling. Native queue
+previews, rejected approvals and confirmed MTA/MSP quarantine/release run
+on synthetic messages. Native message labels are checked against policy.
+After namespace exit the independent original RC18 recovery report must
+match byte for byte. No original spool, MTA configuration or service is
+modified by this queue fixture; its temporary disk is discarded with the VM.
+This does not claim live external SMTP delivery or SELinux acceptance until
+CI passes, nor does it prove real physical TPM or 200% hardware DPI.

@@ -1711,6 +1711,17 @@ jobs:
             --title "LinuxMailRelay365 v0.1.1 RC16 (UNSIGNED TEST ONLY)" --prerelease \
             --notes "UNSIGNED TEST RC16. RC15 plus root-default remembered SSH endpoint profiles without saved passwords or SSH trust, adaptive delivery mini-wizard, automatic read-only certificate-local TPM discovery, route-specific review and headers, fixed Security Center and forward/back navigation. Windows self-tests cover delivery phase sequences, and CI includes the actual WinForms viewport capture and all existing Linux gates. Existing releases are immutable. Physical 200% DPI, real discovered-server GUI behavior, real tenant/provider delivery, TPM signing and full Enforcing acceptance remain unverified. Active SELinux writes for multi-provider routing remain blocked. Use a disposable nonproduction host and verified backup. NOT Stable or production approved."
 
+  rc19-queue-enforcing-vm:
+    name: Same-commit Rocky Enforcing VM gate for queue acceptance
+    if: >-
+      github.ref == 'refs/heads/feature/post-rc18-queue-enforcing-qa' ||
+      github.event.pull_request.head.ref == 'feature/post-rc18-queue-enforcing-qa'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rocky-enforcing-vm.yml
+    with:
+      queue-acceptance: true
+
   rc18-rocky-enforcing-vm:
     name: Same-commit Rocky Enforcing VM gate for RC18
     if: >-

@@ -334,6 +334,37 @@ echo "LMR365_GUEST_SENDMAIL_PACKAGE_SELINUX_POST_REBOOT=verified_full_v2_invento
 echo "LMR365_GUEST_SENDMAIL_LISTENER_POST_REBOOT=verified_private_ipv4_25"
 echo "LMR365_GUEST_POSTFIX_AFTER_RECOVERY_REBOOT=active"
 
+# Post-RC18 queue acceptance is opt-in for the exact new workflow invocation.
+# Preserve the prior RC18 reboot/restore evidence, then exercise only private
+# labeled spools in this disposable guest. The namespace hides them from the
+# real Postfix and Sendmail queue paths outside the test process.
+if test "${LMR365_KVM_QUEUE_ACCEPTANCE:-false}" = "true"; then
+    scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+        -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+        linux/inspect-mail-queue.py tests/smoke_native_sendmail_queue_preview.py \
+        ci@127.0.0.1:/home/ci/
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-queue-test/linux /usr/local/libexec/lmr365-kvm-queue-test/tests && sudo install -o root -g root -m 0755 /home/ci/inspect-mail-queue.py /usr/local/libexec/lmr365-kvm-queue-test/linux/inspect-mail-queue.py && sudo install -o root -g root -m 0755 /home/ci/smoke_native_sendmail_queue_preview.py /usr/local/libexec/lmr365-kvm-queue-test/tests/smoke_native_sendmail_queue_preview.py && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-sendmail-queue-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-sendmail-queue-vm"'
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted RUNNER_TEMP=/tmp LMR365_CI_KVM_QUEUE_FIXTURE=1 unshare --mount --net --propagation private python3 /usr/local/libexec/lmr365-kvm-queue-test/tests/smoke_native_sendmail_queue_preview.py' \
+        > "$work/sendmail-queue-enforcing"
+    cat "$work/sendmail-queue-enforcing"
+    for expected in \
+        'NATIVE_SENDMAIL_VM_SELINUX=enforcing_verified' \
+        'NATIVE_SENDMAIL_FIXTURE_PRIVATE_MOUNTS=labeled_vm_bind' \
+        'NATIVE_SENDMAIL_MTA_QUARANTINE_INVENTORY=verified_separate_classes' \
+        'NATIVE_SENDMAIL_MSP_QUARANTINE_INVENTORY=verified_separate_classes' \
+        'NATIVE_SENDMAIL_VM_QUEUE_LABELS=verified_policy_match' \
+        'NATIVE_SENDMAIL_VM_QUEUE_TRANSITIONS=verified_under_enforcing'; do
+        grep -Fxq "$expected" "$work/sendmail-queue-enforcing"
+    done
+    # Outside the namespaces the original spools and primary service must
+    # still match the independently verified post-reboot RC18 evidence.
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 "$reboot_check" > "$work/sendmail-after-queue-test"
+    diff -u "$work/sendmail-after-reboot" "$work/sendmail-after-queue-test"
+    echo "LMR365_GUEST_SENDMAIL_QUEUE_ENFORCING=verified_native_transitions_original_spools_unchanged"
+fi
+
 echo "LMR365_GUEST_MICROSOFT365_DELIVERY_TESTED=no"
 echo "LMR365_GUEST_EXTERNAL_MAIL_DELIVERY_TESTED=no"
 

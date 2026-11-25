@@ -12,6 +12,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 
 HELPER = Path(__file__).resolve().parents[1] / "linux/inspect-mail-queue.py"
 QUEUES = {}
@@ -78,6 +79,90 @@ def container_isolation():
     print("NATIVE_SENDMAIL_FIXTURE_CONTAINER=verified_overlay_network_none", flush=True)
 
 
+def vm_isolation():
+    """Only the explicitly marked Rocky KVM guest, with real Enforcing."""
+    release = {}
+    for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+        if line.startswith(("ID=", "VERSION_ID=")):
+            key, value = line.split("=", 1)
+            require(key not in release, "ambiguous_vm_os_release")
+            release[key] = value.strip().strip("'\"")
+    require(release == {"ID": "rocky", "VERSION_ID": "9.9"}
+            and Path("/proc/1/comm").read_text().strip() == "systemd"
+            and not Path("/.dockerenv").exists()
+            and socket.gethostname().split(".")[0] == "rocky-selinux-ci",
+            "disposable_rocky_vm_required")
+    require(run(["systemd-detect-virt", "--vm"]).stdout.strip() == "kvm",
+            "real_kvm_required")
+    require(Path("/sys/fs/selinux/enforce").read_text().strip() == "1"
+            and run(["getenforce"]).stdout.strip() == "Enforcing",
+            "selinux_enforcing_required")
+    marker = Path("/run/lmr365-disposable-sendmail-queue-vm")
+    st = marker.lstat()
+    require(stat.S_ISREG(st.st_mode) and st.st_uid == 0 and st.st_nlink == 1
+            and stat.S_IMODE(st.st_mode) == 0o600 and st.st_size <= 64,
+            "vm_marker_not_root_private")
+    require(marker.read_text(encoding="ascii").strip() ==
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip(),
+            "vm_marker_boot_mismatch")
+    # The host primary Postfix remains running outside the network namespace.
+    # Both Sendmail units must be inactive and the package queue runners absent.
+    require(run(["systemctl", "is-active", "--quiet", "postfix.service"],
+                check=False).returncode == 0, "primary_postfix_not_active")
+    for unit in ("sendmail.service", "sm-client.service"):
+        require(run(["systemctl", "is-active", "--quiet", unit],
+                    check=False).returncode != 0, "sendmail_unit_active")
+    print("NATIVE_SENDMAIL_VM_SELINUX=enforcing_verified", flush=True)
+
+
+def vm_bind_empty_spool(path, metadata):
+    """Bind a private, correctly labeled on-disk spool over the native path.
+
+    The original directory is not renamed or written. Never use a context=
+    tmpfs mount (which would hide real on-disk labels and type transitions).
+    The caller already holds private mount/network namespaces and has
+    verified the disposable guest and inactive native Sendmail services.
+    """
+    require(not os.path.ismount(path), "vm_native_queue_is_mount")
+    run(["matchpathcon", "-V", path])
+    label = os.getxattr(path, "security.selinux", follow_symlinks=False)
+    require(bool(label), "vm_native_queue_label_missing")
+    original = Path(path)
+    # Only an empty queue or the RPM-owned client statistics file is allowed.
+    for item in original.iterdir():
+        item_stat = item.lstat()
+        require(path == "/var/spool/clientmqueue" and item.name == "sm-client.st"
+                and stat.S_ISREG(item_stat.st_mode) and item_stat.st_nlink == 1
+                and run(["rpm", "-qf", "--qf", "%{NAME}", str(item)]).stdout.strip() == "sendmail",
+                "vm_original_queue_not_empty")
+    private = tempfile.mkdtemp(prefix="lmr365-ci-queue-", dir="/var/spool")
+    os.chown(private, metadata.st_uid, metadata.st_gid)
+    os.chmod(private, stat.S_IMODE(metadata.st_mode))
+    run(["chcon", "--reference=" + path, private])
+    require(os.getxattr(private, "security.selinux", follow_symlinks=False) == label,
+            "vm_fixture_queue_label_mismatch")
+    run(["mount", "--bind", private, path])
+    require(os.path.ismount(path) and os.getxattr(path, "security.selinux",
+                follow_symlinks=False) == label, "vm_private_spool_not_verified")
+    run(["matchpathcon", "-V", path])
+    require(not list(Path(path).iterdir()), "vm_private_spool_not_empty")
+    # The disposable VM disk is discarded by the outer KVM harness. No
+    # explicit file removal, mount of a host path, or service change here.
+
+
+def verify_vm_message_labels():
+    require(Path("/sys/fs/selinux/enforce").read_text().strip() == "1",
+            "selinux_changed_during_queue_test")
+    for _, path in QUEUES.values():
+        run(["matchpathcon", "-V", path])
+        for item in Path(path).iterdir():
+            st = item.lstat()
+            require(stat.S_ISREG(st.st_mode) and st.st_nlink == 1,
+                    "vm_unexpected_message_artifact")
+            run(["matchpathcon", "-V", str(item)])
+    print("NATIVE_SENDMAIL_VM_QUEUE_LABELS=verified_policy_match", flush=True)
+
+
 def isolated_spools():
     require(os.geteuid() == 0 and os.environ.get("GITHUB_ACTIONS") == "true"
             and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
@@ -85,6 +170,8 @@ def isolated_spools():
     require({name for _, name in socket.if_nameindex()} == {"lo"},
             "isolated_network_required")
     container = os.environ.get("LMR365_CI_DISPOSABLE_CONTAINER") == "1"
+    vm = os.environ.get("LMR365_CI_KVM_QUEUE_FIXTURE") == "1"
+    require(not (container and vm), "ambiguous_fixture_isolation")
     if container:
         container_isolation()
     else:
@@ -96,6 +183,8 @@ def isolated_spools():
         require(run(["pgrep", "-x", "sendmail"], check=False).returncode == 1,
                 "sendmail_process_present")
         run(["mount", "--make-rprivate", "/"])
+        if vm:
+            vm_isolation()
     for queue, (mode, config, allowed) in PACKAGE_LAYOUTS.items():
         # Do not create a guessed directory or use an arbitrary config path.
         # Establish the independent native fixture layout before any submission.
@@ -121,7 +210,9 @@ def isolated_spools():
                 "unexpected_package_queue_directory")
         options = "size=16m,nosuid,nodev,noexec,mode={:o},uid={},gid={}".format(
             stat.S_IMODE(meta.st_mode), meta.st_uid, meta.st_gid)
-        if not container:
+        if vm:
+            vm_bind_empty_spool(path, meta)
+        elif not container:
             run(["mount", "-t", "tmpfs", "-o", options, "tmpfs", path])
             require(run(["findmnt", "-n", "-o", "FSTYPE", "--mountpoint", path]).stdout.strip()
                     == "tmpfs", "fixture_spool_not_mounted")
@@ -145,7 +236,7 @@ def isolated_spools():
         else:
             require(not entries, "fixture_spool_not_empty:" + queue)
     print("NATIVE_SENDMAIL_FIXTURE_PRIVATE_MOUNTS=" +
-          ("disposable_overlay" if container else "ready"), flush=True)
+          ("disposable_overlay" if container else "labeled_vm_bind" if vm else "ready"), flush=True)
     spec = importlib.util.spec_from_file_location("sendmail_fixture_product", str(HELPER))
     product = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(product)
@@ -314,6 +405,9 @@ def main():
         inventory(queue, 1)
         require(snapshot()[other] == other_before, "release_other_queue_changed")
         print("NATIVE_SENDMAIL_" + queue.upper() + "_QUARANTINE_INVENTORY=verified_separate_classes")
+    if os.environ.get("LMR365_CI_KVM_QUEUE_FIXTURE") == "1":
+        verify_vm_message_labels()
+        print("NATIVE_SENDMAIL_VM_QUEUE_TRANSITIONS=verified_under_enforcing", flush=True)
     print("NATIVE_SENDMAIL_QUEUE_ISOLATION=verified_private_spools_no_delivery")
     # Namespace teardown drops private mounts; container teardown discards
     # its writable overlay. Never delete host queue files.
