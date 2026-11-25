@@ -870,7 +870,35 @@ internal static class EmbeddedAssets
             " --retry-plan " + fingerprint);
     }
 
+    internal static string BuildQueueRetryPrepareBundle(string scope, string nonce, long sampledAt, string fingerprint)
+    {
+        if (scope is not ("postfix" or "sidecar") || !QueueRetryReview.ValidSha(nonce) ||
+            !QueueRetryReview.ValidSha(fingerprint) || sampledAt is < 1 or > 9999999999)
+            throw new ArgumentException("Invalid selected Retry preparation context.");
+        return BuildQueueReadOnlyBundle(scope, " --selection-nonce " + nonce +
+            " --sampled-at " + sampledAt.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+            " --retry-prepare " + fingerprint);
+    }
+
+    internal static string BuildQueueRetryApplyBundle(string scope, string nonce, long sampledAt,
+        string fingerprint, long preparedAt, string planSha)
+    {
+        if (scope is not ("postfix" or "sidecar") || !QueueRetryReview.ValidSha(nonce) ||
+            !QueueRetryReview.ValidSha(fingerprint) || !QueueRetryReview.ValidSha(planSha) ||
+            sampledAt is < 1 or > 9999999999 || preparedAt < sampledAt ||
+            preparedAt > 9999999999 || preparedAt - sampledAt > 300)
+            throw new ArgumentException("Invalid selected Retry approval context.");
+        return BuildQueueBundle(scope, " --selection-nonce " + nonce +
+            " --sampled-at " + sampledAt.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+            " --retry-apply " + fingerprint +
+            " --prepared-at " + preparedAt.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+            " --approve-sha256 " + planSha + " --confirm " + QueueRetryApplyReceipt.Confirmation);
+    }
+
     private static string BuildQueueReadOnlyBundle(string scope, string fixedArguments) =>
+        BuildQueueBundle(scope, fixedArguments);
+
+    private static string BuildQueueBundle(string scope, string fixedArguments) =>
         "set -Eeuo pipefail\numask 077\n" +
             "export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n" +
             "work=$(mktemp -d /tmp/lmr365-queue.XXXXXXXX)\n" +

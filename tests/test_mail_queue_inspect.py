@@ -268,10 +268,16 @@ class QueueGuiContract(unittest.TestCase):
         for marker in ("QueueScopeDiscovered(scope)", "RequireSameArchiveConnection(initial",
                        "QueueMessageInventory.Parse(response.StdOut, scope, requireReviewContext: true)", "DataGridView",
                        "ReadOnly = true", "inventory.Filter(", "sample references",
-                       "messages: true", "No queue writes or retry actions"):
+                       "messages: true", "Selected Retry is experimental and separately confirmed."):
             self.assertIn(marker, ui)
-        for forbidden in ("ConfirmDestructive(", "response.EnsureSuccess()", " --flush ", " --delete "):
+        for forbidden in ("response.EnsureSuccess()", " --flush ", " --delete "):
             self.assertNotIn(forbidden, ui)
+        apply = ui.split("applyRetry.Click += async", 1)[1].split("var notes =", 1)[0]
+        self.assertLess(apply.index("BuildQueueRetryPrepareBundle"), apply.index("ConfirmDestructive("))
+        self.assertLess(apply.index("ConfirmDestructive("), apply.index("attempted = true"))
+        self.assertLess(apply.index("attempted = true"), apply.index("BuildQueueRetryApplyBundle"))
+        self.assertIn("if (attempted) dialog.Close();", apply)
+        self.assertIn("QueueRetryApplyReceipt.ParseApply", apply)
         self.assertIn("QueueMessageInventory.SelfTest", (cs / "Program.cs").read_text())
         self.assertIn("InspectQueueMessagesAsync(scope)", (cs / "MainForm.MailQueue.cs").read_text())
 

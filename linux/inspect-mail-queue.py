@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Privacy-safe, read-only native queue sampling; Python 3.6+.
+"""Privacy-safe native queue sampling and explicitly confirmed selected Retry.
 
-No message submission, retry/flush, deletion, body reading, or service changes.
-No message IDs, addresses, raw delay reasons or command output leave this tool.
-The result is a non-atomic sample, NOT an offline-restore preflight.
+Default actions are read-only. The separate experimental Retry Apply can
+request immediate delivery of one reidentified deferred long-ID message.
+No flush, deletion, new submission, body reading or service/config changes.
+Native IDs, addresses and raw reasons stay on the server. No atomic
+compare-and-act or delivery guarantee; this is not Restore preflight.
 """
 import argparse
 import hashlib
@@ -416,6 +418,8 @@ def sample(scope, runner=run_native, scope_check=verify_postfix_scope):
 LONG_ID = re.compile(r"[0-9B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]{10,100}z[0-9B-DF-HJ-NP-TV-Zb-df-hj-np-tv-y]{1,24}")
 SHA = re.compile(r"[a-f0-9]{64}")
 REVIEW_TTL = 300
+RETRY_PLAN_TTL = 60
+RETRY_CONFIRM = "RETRY_SELECTED_DEFERRED_MESSAGE"
 
 
 def retry_context(scope, runner, before):
@@ -453,7 +457,7 @@ def message_fingerprint(item, context, nonce, sampled_at):
     return hmac.new(bytes.fromhex(nonce), raw, hashlib.sha256).hexdigest()
 
 
-def postfix_inventory(output, now=None, selection=None):
+def _postfix_inventory_rows(output, now=None, selection=None):
     """Validate the complete bounded sample before emitting any message row.
 
     References are display ordinals, not queue IDs, and are never reusable
@@ -488,9 +492,13 @@ def postfix_inventory(output, now=None, selection=None):
     if len(rows) != counts["total"]:
         raise Unavailable("sample_changed")
     rows.sort(key=lambda row: (row[0], row[1]))
-    # Discard native IDs, arrival timestamps and all raw metadata before return.
-    return counts["total"], [(i + 1,) + row[2:]
-                             for i, row in enumerate(rows[:MAX_VISIBLE_MESSAGES])]
+    return counts["total"], rows[:MAX_VISIBLE_MESSAGES]
+
+
+def postfix_inventory(output, now=None, selection=None):
+    total, rows = _postfix_inventory_rows(output, now, selection)
+    # Discard native IDs, arrival timestamps and raw metadata before return.
+    return total, [(i + 1,) + row[2:] for i, row in enumerate(rows)]
 
 
 def message_inventory(scope, runner=run_native, scope_check=verify_postfix_scope):
@@ -554,29 +562,135 @@ def reviewable_inventory(scope, nonce, runner=run_native, scope_check=verify_pos
                 None, [], now, "unverified")
 
 
-def retry_review(scope, nonce, sampled_at, token, runner=run_native,
-                 scope_check=verify_postfix_scope, context_check=retry_context, now=None):
+def _retry_candidate(scope, nonce, sampled_at, token, runner, scope_check, context_check, now):
     if (scope not in ("postfix", "sidecar") or not SHA.fullmatch(nonce)
             or not SHA.fullmatch(token) or type(sampled_at) is not int or sampled_at <= 0):
         raise ValueError("invalid_retry_review_context")
-    now = int(time.time()) if now is None else now
     if now < sampled_at or now - sampled_at > REVIEW_TTL:
-        return "expired", None
+        return "expired", None, None, None
     try:
         before = scope_check(scope, runner)
         context = context_check(scope, runner, before)
-        _, rows = postfix_inventory(runner("postqueue", ["-c", before[0], "-j"]),
-                                    now, (context, nonce, sampled_at))
+        _, rows = _postfix_inventory_rows(runner("postqueue", ["-c", before[0], "-j"]),
+                                         now, (context, nonce, sampled_at))
         if scope_check(scope, runner) != before or context_check(scope, runner, before) != context:
             raise Unavailable("scope_unverified")
-        matches = [row for row in rows if hmac.compare_digest(row[-1], token)]
+        matches = [(i + 1, row) for i, row in enumerate(rows) if hmac.compare_digest(row[-1], token)]
         if len(matches) != 1:
-            return "sample_changed", None
-        # Revalidation is read-only and not atomic; a candidate is not a
-        # command authorization. A row outside the 500-row sample is refused.
-        return "candidate_review_only", matches[0]
+            return "sample_changed", None, None, None
+        index, row = matches[0]
+        return "candidate_review_only", (index,) + row[2:], row[1], context
     except Unavailable as error:
-        return error.result, None
+        return error.result, None, None, None
+
+
+def retry_review(scope, nonce, sampled_at, token, runner=run_native,
+                 scope_check=verify_postfix_scope, context_check=retry_context, now=None):
+    now = int(time.time()) if now is None else now
+    result, row, _, _ = _retry_candidate(scope, nonce, sampled_at, token, runner,
+                                         scope_check, context_check, now)
+    return result, row
+
+
+def retry_plan_digest(scope, nonce, sampled_at, token, prepared_at, row, context):
+    # Age and ordinal may change between samples. Bind state, bytes,
+    # recipient count, current delay category and the original fingerprint.
+    evidence = ["selected_retry_v1", scope, nonce, sampled_at, token, prepared_at,
+                row[1], row[3], row[4], row[5], context]
+    return hashlib.sha256(json.dumps(evidence, separators=(",", ":"),
+                                     ensure_ascii=True).encode("ascii")).hexdigest()
+
+
+def retry_prepare(scope, nonce, sampled_at, token, runner=run_native,
+                  scope_check=verify_postfix_scope, context_check=retry_context, now=None):
+    now = int(time.time()) if now is None else now
+    result, row, _, context = _retry_candidate(scope, nonce, sampled_at, token, runner,
+                                                scope_check, context_check, now)
+    plan = retry_plan_digest(scope, nonce, sampled_at, token, now, row, context) if row else None
+    return result, row, now, plan
+
+
+def schedule_selected_retry(directory, native_id):
+    """Only one native long ID, no shell, no raw output, no automatic retry."""
+    if directory not in (CONFIG, SIDECAR_CONFIG) or not LONG_ID.fullmatch(native_id):
+        raise ValueError("invalid_selected_retry_target")
+    binary = native_binary("postqueue")
+    try:
+        completed = subprocess.run([binary, "-c", directory, "-i", native_id],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=12, check=False,
+                                   env={"PATH": PATH, "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired):
+        return "outcome_unknown"
+    # Nonzero/timeout is not proof the daemon didn't receive the request.
+    return "request_accepted" if completed.returncode == 0 else "outcome_unknown"
+
+
+def retry_apply(scope, nonce, sampled_at, token, prepared_at, approved, confirm,
+                runner=run_native, scope_check=verify_postfix_scope,
+                context_check=retry_context, scheduler=schedule_selected_retry,
+                clock=time.time, monotonic=time.monotonic):
+    if (confirm != RETRY_CONFIRM or not SHA.fullmatch(approved)
+            or type(prepared_at) is not int or prepared_at < sampled_at):
+        raise ValueError("retry_confirmation_required")
+    started = int(clock())
+    tick = monotonic()
+
+    def fresh():
+        current = int(clock())
+        elapsed = monotonic() - tick
+        # Refuse a visible wall-clock jump during this operation, as well
+        # as an expired sample/plan. Historical clock monotonicity and the
+        # final native daemon race still cannot be proven.
+        return (0 <= elapsed <= RETRY_PLAN_TTL and abs((current - started) - elapsed) <= 2
+                and sampled_at <= prepared_at <= current
+                and current - sampled_at <= REVIEW_TTL
+                and current - prepared_at <= RETRY_PLAN_TTL)
+
+    if not fresh():
+        return "not_requested", "expired"
+    try:
+        result, row, native_id, context = _retry_candidate(
+            scope, nonce, sampled_at, token, runner, scope_check, context_check, started)
+        if result != "candidate_review_only":
+            return "not_requested", result
+        if not hmac.compare_digest(retry_plan_digest(scope, nonce, sampled_at, token,
+                                                     prepared_at, row, context), approved):
+            return "not_requested", "plan_changed"
+        # Independent final sample; do not substitute a newly selected ID,
+        # a different reason/instance or any other message.
+        result, final, final_id, final_context = _retry_candidate(
+            scope, nonce, sampled_at, token, runner, scope_check, context_check, int(clock()))
+        if result != "candidate_review_only":
+            return "not_requested", result
+        if (final_id != native_id or final_context != context or
+                not hmac.compare_digest(retry_plan_digest(scope, nonce, sampled_at, token,
+                                                         prepared_at, final, final_context), approved)):
+            return "not_requested", "plan_changed"
+        if not fresh():
+            return "not_requested", "expired"
+        directory = SIDECAR_CONFIG if scope == "sidecar" else CONFIG
+        # Last scope check is inside _retry_candidate. No atomic comparison
+        # and delivery request exists in Postfix; this is an experimental path.
+        outcome = scheduler(directory, final_id)
+        if outcome == "request_accepted":
+            return outcome, "none"
+        return "outcome_unknown", "native_result_unconfirmed"
+    except Unavailable as error:
+        return "not_requested", error.result
+
+
+def retry_apply_lines(scope, token, sampled_at, prepared_at, approved, outcome, reason):
+    for key, value in (("VERSION", 1), ("SCOPE", scope), ("FINGERPRINT", token),
+                       ("SAMPLED_AT", sampled_at), ("PREPARED_AT", prepared_at),
+                       ("PLAN_SHA256", approved), ("OUTCOME", outcome), ("REASON", reason),
+                       ("REQUEST_COUNT", "1" if outcome == "request_accepted" else
+                        "0" if outcome == "not_requested" else "unknown"),
+                       ("DELIVERY_VERIFIED", "no"), ("ATOMIC", "no"),
+                       ("SERVICE_CHANGED", "no"), ("CONFIG_CHANGED", "no"),
+                       ("NEW_MESSAGE_SUBMITTED", "no"), ("DELETE_REQUESTED", "no"),
+                       ("FLUSH_REQUESTED", "no")):
+        yield "MAIL_RETRY_APPLY_" + key + "=" + str(value)
 
 
 def retry_lines(scope, token, sampled_at, result, row):
@@ -598,20 +712,49 @@ def main():
     parser.add_argument("--messages", action="store_true",
                         help="read-only bounded Postfix message metadata, no native IDs")
     parser.add_argument("--selection-nonce")
-    parser.add_argument("--retry-plan")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--retry-plan")
+    action.add_argument("--retry-prepare")
+    action.add_argument("--retry-apply")
     parser.add_argument("--sampled-at", type=int)
+    parser.add_argument("--prepared-at", type=int)
+    parser.add_argument("--approve-sha256")
+    parser.add_argument("--confirm")
     args = parser.parse_args()
     if os.geteuid() != 0:
         return 2
-    if args.retry_plan is not None:
+    token = args.retry_plan or args.retry_prepare or args.retry_apply
+    apply_fields = (args.prepared_at, args.approve_sha256, args.confirm)
+    if token is not None:
         if (args.messages or args.scope not in ("postfix", "sidecar") or
-                not SHA.fullmatch(args.selection_nonce or "") or not SHA.fullmatch(args.retry_plan) or
+                not SHA.fullmatch(args.selection_nonce or "") or not SHA.fullmatch(token) or
                 args.sampled_at is None or not 0 < args.sampled_at <= 9999999999):
-            parser.error("invalid read-only retry review")
-        result, row = retry_review(args.scope, args.selection_nonce, args.sampled_at, args.retry_plan)
-        for line in retry_lines(args.scope, args.retry_plan, args.sampled_at, result, row):
+            parser.error("invalid selected Retry context")
+        if args.retry_apply is not None:
+            if (args.prepared_at is None or not args.sampled_at <= args.prepared_at <= 9999999999 or
+                    not SHA.fullmatch(args.approve_sha256 or "") or args.confirm != RETRY_CONFIRM):
+                parser.error("explicit selected Retry approval required")
+            outcome, reason = retry_apply(args.scope, args.selection_nonce, args.sampled_at,
+                                          token, args.prepared_at, args.approve_sha256, args.confirm)
+            for line in retry_apply_lines(args.scope, token, args.sampled_at, args.prepared_at,
+                                          args.approve_sha256, outcome, reason):
+                print(line)
+            return 0
+        if any(value is not None for value in apply_fields):
+            parser.error("approval not permitted during Retry preview")
+        if args.retry_prepare is not None:
+            result, row, prepared_at, plan = retry_prepare(
+                args.scope, args.selection_nonce, args.sampled_at, token)
+            if plan is not None:
+                print("MAIL_RETRY_PREPARED_AT=" + str(prepared_at))
+                print("MAIL_RETRY_PLAN_SHA256=" + plan)
+        else:
+            result, row = retry_review(args.scope, args.selection_nonce, args.sampled_at, token)
+        for line in retry_lines(args.scope, token, args.sampled_at, result, row):
             print(line)
         return 0
+    if any(value is not None for value in apply_fields):
+        parser.error("approval requires explicit Retry Apply")
     if args.sampled_at is not None or (args.selection_nonce is not None and
             (not args.messages or not SHA.fullmatch(args.selection_nonce))):
         parser.error("invalid selection context")

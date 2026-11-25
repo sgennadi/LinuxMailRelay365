@@ -6460,7 +6460,7 @@ internal sealed partial class MainForm : Form
         catch (Exception ex) when (ex is ArgumentException or FileNotFoundException) { return null; }
     }
 
-    private bool ConfirmDestructive(string dialogTitle, string explanation, string phrase)
+    private bool ConfirmDestructive(string dialogTitle, string explanation, string phrase, IWin32Window? owner = null)
     {
         var workArea = Screen.FromControl(this).WorkingArea.Size;
         using var dialog = new Form
@@ -6536,7 +6536,7 @@ internal sealed partial class MainForm : Form
         dialog.Shown += (_, _) => { Fit(); input.Focus(); };
         dialog.AcceptButton = approve;
         dialog.CancelButton = cancel;
-        return dialog.ShowDialog(this) == DialogResult.OK;
+        return dialog.ShowDialog(owner ?? this) == DialogResult.OK;
     }
 
     private async Task BackupSidecarConfigAsync()

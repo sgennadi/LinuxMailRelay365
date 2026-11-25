@@ -124,10 +124,10 @@ internal sealed partial class MainForm
         var status = UiTheme.Text("");
         var explanation = UiTheme.Text(T(
             "Только текущий снимок. Номера не являются Queue ID и меняются при новой проверке. " +
-            "Фильтры применяются только к полученным строкам (до 500 старейших). Адреса и содержимое не показаны. Запись и повторная отправка недоступны.",
+            "Фильтры применяются только к полученным строкам (до 500 старейших). Адреса и содержимое не показаны. Retry экспериментальный, с отдельным подтверждением.",
             "Current sample only. Numbers are not native Queue IDs and change on refresh. " +
-            "Filters cover only the returned rows (up to the oldest 500). No addresses or message content. No queue writes or retry actions.",
-            "דגימה בלבד. המספרים אינם מזהי תור. הסינון חל על עד 500 ההודעות הוותיקות שהתקבלו, ללא כתובות או תוכן וללא פעולות כתיבה."));
+            "Filters cover only the returned rows (up to the oldest 500). No addresses or message content. Selected Retry is experimental and separately confirmed.",
+            "דגימה בלבד. המספרים אינם מזהי תור. הסינון חל על עד 500 ההודעות הוותיקות, ללא כתובות או תוכן. ניסיון חוזר ניסיוני דורש אישור נפרד."));
         var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true,
             FlowDirection = FlowDirection.RightToLeft, WrapContents = true };
         var close = UiTheme.Action(T("Закрыть", "Close", "סגור"), false, "back");
@@ -136,6 +136,11 @@ internal sealed partial class MainForm
         var retry = UiTheme.Action(T("Проверить Retry (без отправки)", "Preview selected Retry (read-only)", "בדיקת ניסיון חוזר ללא שליחה"), false, "check");
         retry.Enabled = false;
         footer.Controls.Add(retry);
+        var applyRetry = UiTheme.Action(T("Retry выбранного сообщения (экспериментально)...",
+            "Retry selected message (experimental)...", "ניסיון חוזר להודעה נבחרת (ניסיוני)..."), false, "refresh");
+        applyRetry.Enabled = false;
+        footer.Controls.Add(applyRetry);
+        bool attempted = false;
         bool reviewing = false;
         bool closed = false;
         QueueMessageRow? SelectedRow()
@@ -147,9 +152,10 @@ internal sealed partial class MainForm
         }
         void UpdateRetry()
         {
-            retry.Enabled = !closed && !reviewing && inventory.SampledAt.HasValue &&
+            retry.Enabled = !closed && !attempted && !reviewing && inventory.SampledAt.HasValue &&
                 inventory.RetryState == "review_only" && SelectedRow() is { State: "deferred" } selected &&
                 QueueRetryReview.ValidSha(selected.Fingerprint);
+            applyRetry.Enabled = retry.Enabled;
         }
         grid.SelectionChanged += (_, _) => UpdateRetry();
         dialog.FormClosing += (_, args) => { if (reviewing) args.Cancel = true; else closed = true; };
@@ -159,7 +165,7 @@ internal sealed partial class MainForm
             if (reviewing || selected is null || !retry.Enabled || inventory.SampledAt is not long sampledAt)
                 return;
             reviewing = true;
-            retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 var current = RequireSameArchiveConnection(endpoint);
@@ -200,13 +206,97 @@ internal sealed partial class MainForm
                 UpdateRetry();
             }
         };
+        applyRetry.Click += async (_, _) =>
+        {
+            var selected = SelectedRow();
+            if (reviewing || attempted || selected is null || !applyRetry.Enabled ||
+                inventory.SampledAt is not long sampledAt)
+                return;
+            reviewing = true;
+            applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            try
+            {
+                var current = RequireSameArchiveConnection(endpoint);
+                if (!QueueScopeDiscovered(inventory.Scope))
+                    throw new InvalidOperationException("Refresh discovery before Retry.");
+                var reply = await SshRemote.RunRootScriptAsync(current,
+                    EmbeddedAssets.BuildQueueRetryPrepareBundle(inventory.Scope, nonce, sampledAt, selected.Fingerprint),
+                    TimeSpan.FromMinutes(3));
+                if (reply.ExitCode != 0) throw new IOException("Retry preparation failed.");
+                RequireSameArchiveConnection(current);
+                var plan = QueueRetryApplyReceipt.ParsePrepare(reply.StdOut, inventory.Scope, sampledAt, selected);
+                if (!plan.Review.Candidate || plan.PreparedAt is not long preparedAt || plan.PlanSha is not string planSha)
+                {
+                    MessageBox.Show(dialog, T("Подготовка Retry отклонена. Обновите список.",
+                        "Retry preparation refused. Refresh the inventory.", "הכנת ניסיון חוזר נדחתה. רעננו את הרשימה.") +
+                        "\r\n" + plan.Review.Result, "LinuxMailRelay365 | Retry", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                string details = "Host: " + current.Host + ":" + current.Port +
+                    "\r\n" + QueueScopeName(inventory.Scope) + "\r\nSample #" + selected.Reference +
+                    "\r\nBytes: " + selected.Bytes + "\r\nRecipients: " + selected.RecipientCount +
+                    "\r\nPlan SHA-256: " + planSha + "\r\n\r\n" +
+                    T("Только тестовый сервер. Запросить немедленную доставку одного уже находящегося в deferred сообщения. " +
+                        "Письмо может уйти реальному получателю. Это не атомарная операция: состояние и часы сервера могут измениться. " +
+                        "Нет гарантии доставки. План действует 60 секунд. Не повторяйте запрос при неизвестном результате.",
+                        "Disposable test host only. Request immediate delivery of one existing deferred message. " +
+                        "It may reach a real recipient. This is not atomic; queue state and server time can change. " +
+                        "Delivery is not guaranteed. Plan expires after 60 seconds. Do not repeat an unconfirmed request.",
+                        "לשרת בדיקה בלבד. בקשת מסירה מיידית של הודעה מושהית אחת. ההודעה עשויה להגיע לנמען אמיתי. " +
+                        "הפעולה אינה אטומית ואין הבטחת מסירה. התוכנית תקפה ל-60 שניות; אין לחזור על בקשה שלא אומתה.");
+                if (!ConfirmDestructive("LinuxMailRelay365 | EXPERIMENTAL selected Retry", details,
+                        QueueRetryApplyReceipt.Confirmation, dialog))
+                    return;
+                var confirmed = RequireSameArchiveConnection(current);
+                if (!QueueScopeDiscovered(inventory.Scope) || SelectedRow() != selected)
+                    throw new InvalidOperationException("Selected message context changed.");
+                // Once dispatched, never reuse this sample, even if the reply is lost.
+                attempted = true;
+                var result = await SshRemote.RunRootScriptAsync(confirmed,
+                    EmbeddedAssets.BuildQueueRetryApplyBundle(inventory.Scope, nonce, sampledAt,
+                        selected.Fingerprint, preparedAt, planSha), TimeSpan.FromMinutes(3));
+                if (result.ExitCode != 0) throw new IOException("Retry request outcome unconfirmed.");
+                RequireSameArchiveConnection(confirmed);
+                var receipt = QueueRetryApplyReceipt.ParseApply(result.StdOut, inventory.Scope, sampledAt,
+                    selected.Fingerprint, preparedAt, planSha);
+                WriteLine("Selected Retry outcome: " + receipt.Outcome + "; " + receipt.Reason +
+                    ". Delivery unverified. Refresh queue.");
+                string message = receipt.Outcome switch
+                {
+                    "request_accepted" => T("Postfix принял запрос повторной доставки. Доставка не подтверждена.",
+                        "Postfix accepted the delivery request. Delivery is not verified.", "Postfix קיבל את בקשת המסירה. המסירה לא אומתה."),
+                    "not_requested" => T("Запрос не отправлен: ", "No request issued: ", "הבקשה לא נשלחה: ") + receipt.Reason,
+                    _ => T("Результат неизвестен. Не повторяйте запрос; проверьте очередь и журналы.",
+                        "Outcome unknown. Do not repeat the request; inspect the queue and logs.", "תוצאה לא ידועה. בדקו תור ויומנים לפני פעולה נוספת.")
+                };
+                MessageBox.Show(dialog, message, "LinuxMailRelay365 | Retry",
+                    MessageBoxButtons.OK, receipt.Outcome == "request_accepted" ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            }
+            catch (Exception)
+            {
+                WriteLine(attempted ? "Selected Retry outcome unknown; do not automatically retry." :
+                    "Selected Retry preparation failed; no write dispatched.");
+                MessageBox.Show(dialog, attempted
+                    ? T("Результат неизвестен. Проверьте очередь и журналы; не повторяйте автоматически.",
+                        "Outcome unknown. Inspect queue and logs; do not automatically retry.", "תוצאה לא ידועה. בדקו תור ויומנים.")
+                    : T("Подготовка не завершилась. Обновите список.", "Preparation failed. Refresh the inventory.", "ההכנה נכשלה. רעננו את הרשימה."),
+                    "LinuxMailRelay365 | Retry", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                reviewing = false;
+                close.Enabled = filters.Enabled = grid.Enabled = true;
+                UpdateRetry();
+                if (attempted) dialog.Close();
+            }
+        };
         var notes = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
         notes.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         notes.Controls.Add(status, 0, 0);
         notes.Controls.Add(explanation, 0, 1);
         var retryNote = UiTheme.Text(inventory.RetryState == "review_only"
             ? T("Retry Plan: только выбранные отложенные сообщения с длинным Queue ID; снимок действителен до 5 минут.",
-                "Retry Plan: deferred messages with long Queue IDs only; sample expires after five minutes.",
+                "Retry Plan: deferred long-ID messages only; sample expires after five minutes. Experimental Apply requires a new 60-second plan and confirmation.",
                 "תוכנית ניסיון חוזר: הודעות מושהות עם מזהים ארוכים בלבד; הדגימה תקפה לחמש דקות.")
             : T("Retry Plan недоступен: длинные идентификаторы отключены или контекст не подтверждён.",
                 "Retry Plan unavailable: long IDs are disabled or instance context is unverified.",
