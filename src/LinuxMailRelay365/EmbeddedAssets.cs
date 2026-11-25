@@ -850,20 +850,34 @@ internal static class EmbeddedAssets
 
     // Passing null inspects effective MTA configuration independently of the
     // selected wizard port; it does not silently substitute TCP 2525.
-    internal static string BuildMailQueueInspectionBundle(string scope, bool messages = false)
+    internal static string BuildMailQueueInspectionBundle(string scope, bool messages = false, string? selectionNonce = null)
     {
         if (scope is not ("postfix" or "exim" or "sendmail" or "sidecar") ||
-            (messages && scope is not ("postfix" or "sidecar")))
-            throw new ArgumentException("Unsupported native mail queue scope.");
-        return "set -Eeuo pipefail\numask 077\n" +
+            (messages && scope is not ("postfix" or "sidecar")) ||
+            (selectionNonce is not null && (!messages || !QueueRetryReview.ValidSha(selectionNonce))))
+            throw new ArgumentException("Unsupported native mail queue scope or selection context.");
+        return BuildQueueReadOnlyBundle(scope, (messages ? " --messages" : "") +
+            (selectionNonce is null ? "" : " --selection-nonce " + selectionNonce));
+    }
+
+    internal static string BuildQueueRetryReviewBundle(string scope, string nonce, long sampledAt, string fingerprint)
+    {
+        if (scope is not ("postfix" or "sidecar") || !QueueRetryReview.ValidSha(nonce) ||
+            !QueueRetryReview.ValidSha(fingerprint) || sampledAt is < 1 or > 9999999999)
+            throw new ArgumentException("Invalid read-only Retry review context.");
+        return BuildQueueReadOnlyBundle(scope, " --selection-nonce " + nonce +
+            " --sampled-at " + sampledAt.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+            " --retry-plan " + fingerprint);
+    }
+
+    private static string BuildQueueReadOnlyBundle(string scope, string fixedArguments) =>
+        "set -Eeuo pipefail\numask 077\n" +
             "export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n" +
             "work=$(mktemp -d /tmp/lmr365-queue.XXXXXXXX)\n" +
             "trap 'rm -rf -- \"$work\"' EXIT\n" +
             "base64 -d > \"$work/inspect-mail-queue.py\" <<'LMR365_QUEUE_READ'\n" +
             Encode(MailQueueInspector) + "\nLMR365_QUEUE_READ\n" +
-            "python3 \"$work/inspect-mail-queue.py\" --scope " + scope +
-            (messages ? " --messages" : "") + "\n";
-    }
+            "python3 \"$work/inspect-mail-queue.py\" --scope " + scope + fixedArguments + "\n";
 
     internal static string BuildMailHostInspectionBundle(int? selectedPort = null,
         string currentMta = "unknown")

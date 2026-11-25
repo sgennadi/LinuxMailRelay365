@@ -4,11 +4,11 @@ using System.Text.RegularExpressions;
 namespace LinuxMailRelay365;
 
 internal sealed record QueueMessageRow(int Reference, string State, int AgeMinutes,
-    long Bytes, int RecipientCount, string Reason);
+    long Bytes, int RecipientCount, string Reason, string Fingerprint = "-");
 
 // No persistent message identity or write authorization is carried by this sample.
 internal sealed record QueueMessageInventory(string Scope, string Result, int? Total,
-    bool? Truncated, QueueMessageRow[] Rows)
+    bool? Truncated, QueueMessageRow[] Rows, long? SampledAt = null, string RetryState = "unverified")
 {
     internal const int Limit = 500;
     internal static readonly string[] States =
@@ -16,13 +16,14 @@ internal sealed record QueueMessageInventory(string Scope, string Result, int? T
     internal static readonly string[] Reasons =
         ["auth", "tls", "dns", "network", "temporary", "permanent", "mixed", "other_reason", "no_reason", "not_applicable"];
 
-    internal static QueueMessageInventory Parse(string output, string scope)
+    internal static QueueMessageInventory Parse(string output, string scope, bool requireReviewContext = false)
     {
         if (scope is not ("postfix" or "sidecar") || output.Length > 128 * 1024 || output.Contains('\0'))
             throw new InvalidDataException("Invalid queue message inventory context.");
         const string prefix = "MAIL_ITEMS_";
         var fields = new Dictionary<string, string>(StringComparer.Ordinal);
         var rows = new List<QueueMessageRow>();
+        int? rowFields = null;
         long Number(string value, long max)
         {
             if (!Regex.IsMatch(value, @"\A(?:0|[1-9][0-9]{0,12})\z", RegexOptions.CultureInvariant) ||
@@ -36,7 +37,8 @@ internal sealed record QueueMessageInventory(string Scope, string Result, int? T
             if (line.StartsWith(prefix + "ROW=", StringComparison.Ordinal))
             {
                 var parts = line[(prefix.Length + 4)..].Split('|');
-                if (parts.Length != 6 || rows.Count >= Limit ||
+                if (parts.Length is not (6 or 7) || (rowFields is not null && rowFields != parts.Length) ||
+                    rows.Count >= Limit ||
                     Number(parts[0], Limit) != rows.Count + 1 ||
                     !States.Contains(parts[1], StringComparer.Ordinal) ||
                     !Reasons.Contains(parts[5], StringComparer.Ordinal) ||
@@ -45,8 +47,12 @@ internal sealed record QueueMessageInventory(string Scope, string Result, int? T
                 int age = (int)Number(parts[2], 999999999);
                 if (rows.Count > 0 && age > rows[^1].AgeMinutes)
                     throw new InvalidDataException("Queue sample order is inconsistent.");
+                rowFields = parts.Length;
+                string fingerprint = parts.Length == 7 ? parts[6] : "-";
+                if (fingerprint != "-" && (parts[1] != "deferred" || !QueueRetryReview.ValidSha(fingerprint)))
+                    throw new InvalidDataException("Invalid Retry fingerprint.");
                 rows.Add(new(rows.Count + 1, parts[1], age, Number(parts[3], 1099511627776),
-                    (int)Number(parts[4], 10000), parts[5]));
+                    (int)Number(parts[4], 10000), parts[5], fingerprint));
                 continue;
             }
             int n = line.IndexOf('=');
@@ -62,7 +68,15 @@ internal sealed record QueueMessageInventory(string Scope, string Result, int? T
             return value;
         }
         void Exact(string key, string value) => Take(key, Regex.Escape(value));
-        Exact("VERSION", "1");
+        string version = Take("VERSION", requireReviewContext ? "2" : "1|2");
+        bool reviewable = version == "2";
+        long? sampledAt = reviewable ? Number(Take("SAMPLED_AT", "[1-9][0-9]{0,9}"), 9999999999) : null;
+        string retryState = reviewable ? Take("RETRY_STATE", "review_only|long_ids_required|unverified") : "unverified";
+        if ((rowFields is not null && rowFields != (reviewable ? 7 : 6)) ||
+            (retryState != "review_only" && rows.Any(row => row.Fingerprint != "-")) ||
+            rows.Where(row => row.Fingerprint != "-").Select(row => row.Fingerprint).Distinct().Count() !=
+                rows.Count(row => row.Fingerprint != "-"))
+            throw new InvalidDataException("Inconsistent Retry selection context.");
         Exact("SCOPE", scope);
         Exact("CHANGES_APPLIED", "no");
         Exact("ATOMIC", "no");
@@ -78,7 +92,9 @@ internal sealed record QueueMessageInventory(string Scope, string Result, int? T
             (total is null && (listed != 0 || truncated is not null)) ||
             (total is int count && (listed != Math.Min(count, Limit) || truncated != (count > Limit))))
             throw new InvalidDataException("Inconsistent queue message inventory.");
-        return new(scope, result, total, truncated, rows.ToArray());
+        if (result != "ok" && retryState != "unverified")
+            throw new InvalidDataException("Failed inventory cannot carry Retry context.");
+        return new(scope, result, total, truncated, rows.ToArray(), sampledAt, retryState);
     }
 
     internal IEnumerable<QueueMessageRow> Filter(string? state, string? reason, int minimumAge, int? reference = null)

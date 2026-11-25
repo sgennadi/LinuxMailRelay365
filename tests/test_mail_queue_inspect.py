@@ -185,6 +185,44 @@ class NativeQueueInspection(unittest.TestCase):
         with self.assertRaises(ValueError):
             q.message_inventory("exim")
 
+    def test_retry_plan_reidentifies_without_native_id_or_addresses(self):
+        nonce = "a" * 64
+        item = json.loads(row("3Pt2mN2VXxznjll", "deferred", "TLS certificate", arrival=940))
+        item["message_size"] = 123
+        before = (q.CONFIG, "/var/spool/postfix", (1, 2))
+        scope = lambda *_: before
+        context = lambda *_: ("postfix", before, "test.example.invalid", "boot")
+        runner = lambda *_: json.dumps(item)
+        result, total, rows, sampled, retry_state = q.reviewable_inventory(
+            "postfix", nonce, runner, scope, context, now=1000)
+        self.assertEqual((result, total, sampled, retry_state), ("ok", 1, 1000, "review_only"))
+        token = rows[0][-1]
+        self.assertRegex(token, r"^[a-f0-9]{64}$")
+        receipt = "\n".join(q.inventory_lines("postfix", result, total, rows, sampled, retry_state))
+        self.assertNotIn(item["queue_id"], receipt)
+        self.assertNotIn("example.invalid", receipt)
+        result, match = q.retry_review("postfix", nonce, sampled, token, runner, scope, context, now=1060)
+        self.assertEqual(result, "candidate_review_only")
+        self.assertEqual(match[2], 2)
+        report = "\n".join(q.retry_lines("postfix", token, sampled, result, match))
+        self.assertIn("MAIL_RETRY_APPLY_AUTHORIZED=no", report)
+        self.assertNotIn("example.invalid", report)
+        for time in (999, 1301):
+            self.assertEqual(q.retry_review("postfix", nonce, sampled, token, runner, scope, context, now=time),
+                             ("expired", None))
+        for key, value in (("message_size", 124), ("queue_name", "active"),
+                           ("sender", "changed@example.invalid"), ("queue_id", "ABCDEF123")):
+            changed = dict(item, **{key: value})
+            self.assertEqual(q.retry_review("postfix", nonce, sampled, token,
+                             lambda *_: json.dumps(changed), scope, context, now=1060),
+                             ("sample_changed", None))
+        self.assertEqual(q.retry_review("postfix", "b" * 64, sampled, token, runner, scope, context, now=1060),
+                         ("sample_changed", None))
+        def disabled(*_):
+            raise q.Unavailable("long_ids_required")
+        result, total, rows, _, state = q.reviewable_inventory("postfix", nonce, runner, scope, disabled, now=1000)
+        self.assertEqual((result, total, rows[0][-1], state), ("ok", 1, "-", "long_ids_required"))
+
     def test_no_mutation_or_untrusted_configuration_commands(self):
         for tool, args in (("postqueue", ["-f"]), ("sendmail", ["-q"]),
                            ("exim", ["-Mrm", "id"]), ("postqueue", ["-c", "/tmp/evil", "-j"]),
@@ -228,7 +266,7 @@ class QueueGuiContract(unittest.TestCase):
         cs = ROOT / "src/LinuxMailRelay365"
         ui = (cs / "MainForm.QueueMessages.cs").read_text()
         for marker in ("QueueScopeDiscovered(scope)", "RequireSameArchiveConnection(initial",
-                       "QueueMessageInventory.Parse(response.StdOut, scope)", "DataGridView",
+                       "QueueMessageInventory.Parse(response.StdOut, scope, requireReviewContext: true)", "DataGridView",
                        "ReadOnly = true", "inventory.Filter(", "sample references",
                        "messages: true", "No queue writes or retry actions"):
             self.assertIn(marker, ui)

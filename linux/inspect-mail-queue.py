@@ -6,6 +6,8 @@ No message IDs, addresses, raw delay reasons or command output leave this tool.
 The result is a non-atomic sample, NOT an offline-restore preflight.
 """
 import argparse
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -100,7 +102,7 @@ def native_binary(tool):
 def allowed_args(tool, args):
     if tool == "postconf":
         return (len(args) == 4 and args[0] == "-c" and args[1] in (CONFIG, SIDECAR_CONFIG)
-                and args[2:] == ["-h", "queue_directory"])
+                and args[2] == "-h" and args[3] in ("queue_directory", "enable_long_queue_ids", "myhostname"))
     if tool == "postqueue":
         return len(args) == 3 and args[0] == "-c" and args[1] in (CONFIG, SIDECAR_CONFIG) and args[2] == "-j"
     return (tool == "exim" and args in (["-bpc"], ["-bp"])) or (
@@ -408,7 +410,50 @@ def sample(scope, runner=run_native, scope_check=verify_postfix_scope):
     return report
 
 
-def postfix_inventory(output, now=None):
+# Long IDs have a time component, a 'z' separator and an inode component.
+# Existing short IDs may remain even with long IDs enabled. No short-ID
+# candidate is accepted; clock rollback still prevents any atomic guarantee.
+LONG_ID = re.compile(r"[0-9B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]{10,100}z[0-9B-DF-HJ-NP-TV-Zb-df-hj-np-tv-y]{1,24}")
+SHA = re.compile(r"[a-f0-9]{64}")
+REVIEW_TTL = 300
+
+
+def retry_context(scope, runner, before):
+    directory = before[0]
+    enabled = runner("postconf", ["-c", directory, "-h", "enable_long_queue_ids"]).strip()
+    if enabled != "yes":
+        raise Unavailable("long_ids_required")
+    hostname = runner("postconf", ["-c", directory, "-h", "myhostname"]).strip()
+    try:
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        raise Unavailable("scope_unverified")
+    if not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", hostname) or not re.fullmatch(
+            r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", boot):
+        raise Unavailable("scope_unverified")
+    return (scope, before, hostname, boot)
+
+
+def message_fingerprint(item, context, nonce, sampled_at):
+    if (context is None or item["queue_name"] != "deferred" or
+            not LONG_ID.fullmatch(item["queue_id"]) or item["arrival_time"] > sampled_at):
+        return "-"
+    sender = item.get("sender")
+    addresses = [r.get("address") for r in item["recipients"]]
+    if (not isinstance(sender, str) or len(sender) > 4096 or not addresses or
+            any(not isinstance(address, str) or not address or len(address) > 4096
+                for address in addresses)):
+        return "-"
+    # HMAC covers the private native identity and immutable-enough envelope
+    # metadata without returning the queue ID/address. The nonce is ephemeral
+    # client context, not a remote credential or a write capability.
+    evidence = [context, sampled_at, item["queue_id"], item["queue_name"],
+                item["arrival_time"], item["message_size"], sender, sorted(addresses)]
+    raw = json.dumps(evidence, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    return hmac.new(bytes.fromhex(nonce), raw, hashlib.sha256).hexdigest()
+
+
+def postfix_inventory(output, now=None, selection=None):
     """Validate the complete bounded sample before emitting any message row.
 
     References are display ordinals, not queue IDs, and are never reusable
@@ -432,8 +477,12 @@ def postfix_inventory(output, now=None):
             reason = ("not_applicable" if state != "deferred" else
                       "no_reason" if not categories else
                       next(iter(categories)) if len(categories) == 1 else "mixed")
-            rows.append((item["arrival_time"], item["queue_id"],
-                         state, age, size, len(item["recipients"]), reason))
+            row = (item["arrival_time"], item["queue_id"],
+                   state, age, size, len(item["recipients"]), reason)
+            if selection is not None:
+                context, nonce, sampled_at = selection
+                row += (message_fingerprint(item, context, nonce, sampled_at),)
+            rows.append(row)
     except (ValueError, TypeError, OverflowError, RecursionError):
         raise Unavailable("invalid_output")
     if len(rows) != counts["total"]:
@@ -457,9 +506,10 @@ def message_inventory(scope, runner=run_native, scope_check=verify_postfix_scope
         return error.result, None, []
 
 
-def inventory_lines(scope, result, total, rows):
-    # Fixed field order and an exact row count; no raw native output.
-    yield "MAIL_ITEMS_VERSION=1"
+def inventory_lines(scope, result, total, rows, selection_time=None, retry_state=None):
+    # Version 1 is unchanged for existing CLI clients. V2 adds non-authorizing
+    # ephemeral fingerprints and a server sample time.
+    yield "MAIL_ITEMS_VERSION=" + ("1" if selection_time is None else "2")
     yield "MAIL_ITEMS_SCOPE=" + scope
     yield "MAIL_ITEMS_RESULT=" + result
     yield "MAIL_ITEMS_TOTAL=" + ("unknown" if total is None else str(total))
@@ -470,8 +520,76 @@ def inventory_lines(scope, result, total, rows):
     yield "MAIL_ITEMS_ATOMIC=no"
     yield "MAIL_ITEMS_DELIVERY_VERIFIED=no"
     yield "MAIL_ITEMS_REFERENCE_KIND=sample_ordinal_only"
+    if selection_time is not None:
+        yield "MAIL_ITEMS_SAMPLED_AT=" + str(selection_time)
+        yield "MAIL_ITEMS_RETRY_STATE=" + retry_state
     for row in rows:
         yield "MAIL_ITEMS_ROW=" + "|".join(str(value) for value in row)
+
+
+def reviewable_inventory(scope, nonce, runner=run_native, scope_check=verify_postfix_scope,
+                         context_check=retry_context, now=None):
+    now = int(time.time()) if now is None else now
+    if scope not in ("postfix", "sidecar") or not SHA.fullmatch(nonce):
+        raise ValueError("invalid_retry_inventory_context")
+    try:
+        before = scope_check(scope, runner)
+        context = None
+        state = "unverified"
+        try:
+            context = context_check(scope, runner, before)
+            state = "review_only"
+        except Unavailable as error:
+            if error.result == "long_ids_required":
+                state = "long_ids_required"
+        total, rows = postfix_inventory(runner("postqueue", ["-c", before[0], "-j"]),
+                                        now, (context, nonce, now))
+        if scope_check(scope, runner) != before:
+            raise Unavailable("scope_unverified")
+        if context is not None and context_check(scope, runner, before) != context:
+            raise Unavailable("scope_unverified")
+        return "ok", total, rows, now, state
+    except Unavailable as error:
+        return (error.result if error.result in RESULTS else "scope_unverified",
+                None, [], now, "unverified")
+
+
+def retry_review(scope, nonce, sampled_at, token, runner=run_native,
+                 scope_check=verify_postfix_scope, context_check=retry_context, now=None):
+    if (scope not in ("postfix", "sidecar") or not SHA.fullmatch(nonce)
+            or not SHA.fullmatch(token) or type(sampled_at) is not int or sampled_at <= 0):
+        raise ValueError("invalid_retry_review_context")
+    now = int(time.time()) if now is None else now
+    if now < sampled_at or now - sampled_at > REVIEW_TTL:
+        return "expired", None
+    try:
+        before = scope_check(scope, runner)
+        context = context_check(scope, runner, before)
+        _, rows = postfix_inventory(runner("postqueue", ["-c", before[0], "-j"]),
+                                    now, (context, nonce, sampled_at))
+        if scope_check(scope, runner) != before or context_check(scope, runner, before) != context:
+            raise Unavailable("scope_unverified")
+        matches = [row for row in rows if hmac.compare_digest(row[-1], token)]
+        if len(matches) != 1:
+            return "sample_changed", None
+        # Revalidation is read-only and not atomic; a candidate is not a
+        # command authorization. A row outside the 500-row sample is refused.
+        return "candidate_review_only", matches[0]
+    except Unavailable as error:
+        return error.result, None
+
+
+def retry_lines(scope, token, sampled_at, result, row):
+    yield "MAIL_RETRY_VERSION=1"
+    yield "MAIL_RETRY_SCOPE=" + scope
+    yield "MAIL_RETRY_FINGERPRINT=" + token
+    yield "MAIL_RETRY_SAMPLED_AT=" + str(sampled_at)
+    yield "MAIL_RETRY_RESULT=" + result
+    yield "MAIL_RETRY_CHANGES_APPLIED=no"
+    yield "MAIL_RETRY_APPLY_AUTHORIZED=no"
+    yield "MAIL_RETRY_DELIVERY_VERIFIED=no"
+    if row is not None:
+        yield "MAIL_RETRY_ROW=" + "|".join(str(value) for value in row[1:-1])
 
 
 def main():
@@ -479,14 +597,34 @@ def main():
     parser.add_argument("--scope", required=True, choices=("postfix", "sidecar", "exim", "sendmail"))
     parser.add_argument("--messages", action="store_true",
                         help="read-only bounded Postfix message metadata, no native IDs")
+    parser.add_argument("--selection-nonce")
+    parser.add_argument("--retry-plan")
+    parser.add_argument("--sampled-at", type=int)
     args = parser.parse_args()
     if os.geteuid() != 0:
         return 2
+    if args.retry_plan is not None:
+        if (args.messages or args.scope not in ("postfix", "sidecar") or
+                not SHA.fullmatch(args.selection_nonce or "") or not SHA.fullmatch(args.retry_plan) or
+                args.sampled_at is None or not 0 < args.sampled_at <= 9999999999):
+            parser.error("invalid read-only retry review")
+        result, row = retry_review(args.scope, args.selection_nonce, args.sampled_at, args.retry_plan)
+        for line in retry_lines(args.scope, args.retry_plan, args.sampled_at, result, row):
+            print(line)
+        return 0
+    if args.sampled_at is not None or (args.selection_nonce is not None and
+            (not args.messages or not SHA.fullmatch(args.selection_nonce))):
+        parser.error("invalid selection context")
     if args.messages:
         if args.scope not in ("postfix", "sidecar"):
             parser.error("message inventory is supported only for Postfix instances")
-        result, total, rows = message_inventory(args.scope)
-        for line in inventory_lines(args.scope, result, total, rows):
+        if args.selection_nonce is not None:
+            result, total, rows, sampled_at, retry_state = reviewable_inventory(args.scope, args.selection_nonce)
+            lines = inventory_lines(args.scope, result, total, rows, sampled_at, retry_state)
+        else:
+            result, total, rows = message_inventory(args.scope)
+            lines = inventory_lines(args.scope, result, total, rows)
+        for line in lines:
             print(line)
         return 0
     report = sample(args.scope)

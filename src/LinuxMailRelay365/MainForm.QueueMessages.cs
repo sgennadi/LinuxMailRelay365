@@ -11,19 +11,20 @@ internal sealed partial class MainForm
         if (scope is not ("postfix" or "sidecar") || !QueueScopeDiscovered(scope))
             throw new InvalidOperationException("Refresh Postfix instance discovery before viewing messages.");
         var initial = Endpoint();
+        string nonce = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         var response = await SshRemote.RunRootScriptAsync(initial,
-            EmbeddedAssets.BuildMailQueueInspectionBundle(scope, messages: true), TimeSpan.FromMinutes(3));
+            EmbeddedAssets.BuildMailQueueInspectionBundle(scope, messages: true, selectionNonce: nonce), TimeSpan.FromMinutes(3));
         // Do not put raw command output into the log even on a failed reply.
         if (response.ExitCode != 0)
             throw new IOException("Queue metadata query failed (exit " + response.ExitCode + ").");
         var current = RequireSameArchiveConnection(initial, allowFirstPin: true);
         if (!QueueScopeDiscovered(scope))
             throw new InvalidOperationException("Postfix discovery changed during message inventory.");
-        var inventory = QueueMessageInventory.Parse(response.StdOut, scope);
+        var inventory = QueueMessageInventory.Parse(response.StdOut, scope, requireReviewContext: true);
         WriteLine("Queue message metadata: " + scope + "; result=" + inventory.Result +
             "; listed=" + inventory.Rows.Length + "; total=" + (inventory.Total?.ToString() ?? "unknown") +
             ". Read-only; temporary sample references.");
-        ShowQueueMessages(current, inventory);
+        ShowQueueMessages(current, inventory, nonce);
     }
 
     private string QueueMessageState(string state) => state switch
@@ -50,7 +51,7 @@ internal sealed partial class MainForm
         _ => "—"
     };
 
-    private void ShowQueueMessages(SshEndpoint endpoint, QueueMessageInventory inventory)
+    private void ShowQueueMessages(SshEndpoint endpoint, QueueMessageInventory inventory, string nonce)
     {
         var work = Screen.FromControl(this).WorkingArea.Size;
         using var dialog = new Form
@@ -132,10 +133,85 @@ internal sealed partial class MainForm
         var close = UiTheme.Action(T("Закрыть", "Close", "סגור"), false, "back");
         close.DialogResult = DialogResult.OK;
         footer.Controls.Add(close);
+        var retry = UiTheme.Action(T("Проверить Retry (без отправки)", "Preview selected Retry (read-only)", "בדיקת ניסיון חוזר ללא שליחה"), false, "check");
+        retry.Enabled = false;
+        footer.Controls.Add(retry);
+        bool reviewing = false;
+        bool closed = false;
+        QueueMessageRow? SelectedRow()
+        {
+            if (grid.SelectedRows.Count != 1 ||
+                grid.SelectedRows[0].Cells["ref"].Value is not int referenceNumber)
+                return null;
+            return inventory.Rows.SingleOrDefault(item => item.Reference == referenceNumber);
+        }
+        void UpdateRetry()
+        {
+            retry.Enabled = !closed && !reviewing && inventory.SampledAt.HasValue &&
+                inventory.RetryState == "review_only" && SelectedRow() is { State: "deferred" } selected &&
+                QueueRetryReview.ValidSha(selected.Fingerprint);
+        }
+        grid.SelectionChanged += (_, _) => UpdateRetry();
+        dialog.FormClosing += (_, args) => { if (reviewing) args.Cancel = true; else closed = true; };
+        retry.Click += async (_, _) =>
+        {
+            var selected = SelectedRow();
+            if (reviewing || selected is null || !retry.Enabled || inventory.SampledAt is not long sampledAt)
+                return;
+            reviewing = true;
+            retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            try
+            {
+                var current = RequireSameArchiveConnection(endpoint);
+                if (!QueueScopeDiscovered(inventory.Scope))
+                    throw new InvalidOperationException("Refresh discovery before reviewing Retry.");
+                var reply = await SshRemote.RunRootScriptAsync(current,
+                    EmbeddedAssets.BuildQueueRetryReviewBundle(inventory.Scope, nonce, sampledAt, selected.Fingerprint),
+                    TimeSpan.FromMinutes(3));
+                if (reply.ExitCode != 0)
+                    throw new IOException("Read-only Retry review failed.");
+                RequireSameArchiveConnection(current);
+                if (!QueueScopeDiscovered(inventory.Scope))
+                    throw new InvalidOperationException("Discovery changed during Retry review.");
+                var plan = QueueRetryReview.Parse(reply.StdOut, inventory.Scope, sampledAt, selected);
+                string message = plan.Candidate
+                    ? T("Выбранное отложенное сообщение повторно найдено. Запись не разрешена.",
+                        "Selected deferred message was reidentified. No queue operation is authorized.",
+                        "ההודעה המושהית זוהתה מחדש. אין אישור לפעולה בתור.")
+                    : T("Повторно определить сообщение не удалось. Обновите список.",
+                        "Message could not be revalidated. Refresh the inventory.",
+                        "לא ניתן לאמת שוב את ההודעה. רעננו את הרשימה.") + "\r\n" + plan.Result;
+                WriteLine("Read-only selected Retry review: " + plan.Result + ". No submission or retry scheduled.");
+                MessageBox.Show(dialog, message, "LinuxMailRelay365 | Retry Plan",
+                    MessageBoxButtons.OK, plan.Candidate ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            }
+            catch (Exception)
+            {
+                // Never log a malformed reply, fingerprint or native identity.
+                WriteLine("Read-only Retry review failed; refresh the sample. No queue operation requested.");
+                MessageBox.Show(dialog, T("Проверка не завершилась. Обновите список.",
+                    "Review failed. Refresh the inventory.", "הבדיקה נכשלה. רעננו את הרשימה."),
+                    "LinuxMailRelay365 | Retry Plan", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                reviewing = false;
+                close.Enabled = filters.Enabled = grid.Enabled = true;
+                UpdateRetry();
+            }
+        };
         var notes = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
         notes.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         notes.Controls.Add(status, 0, 0);
         notes.Controls.Add(explanation, 0, 1);
+        var retryNote = UiTheme.Text(inventory.RetryState == "review_only"
+            ? T("Retry Plan: только выбранные отложенные сообщения с длинным Queue ID; снимок действителен до 5 минут.",
+                "Retry Plan: deferred messages with long Queue IDs only; sample expires after five minutes.",
+                "תוכנית ניסיון חוזר: הודעות מושהות עם מזהים ארוכים בלבד; הדגימה תקפה לחמש דקות.")
+            : T("Retry Plan недоступен: длинные идентификаторы отключены или контекст не подтверждён.",
+                "Retry Plan unavailable: long IDs are disabled or instance context is unverified.",
+                "תוכנית ניסיון חוזר אינה זמינה: מזהים ארוכים כבויים או שההקשר לא אומת."));
+        notes.Controls.Add(retryNote, 0, 2);
 
         void RefreshRows()
         {
@@ -160,6 +236,7 @@ internal sealed partial class MainForm
                             grid.Rows[index].Cells[1].Style.ForeColor = Color.DarkOrange;
                     }
                 grid.ClearSelection();
+                UpdateRetry();
                 status.Text = T("Показано / получено / всего: ", "Shown / sampled / total: ", "מוצגות / נדגמו / סך הכל: ") +
                     grid.Rows.Count + " / " + inventory.Rows.Length + " / " +
                     (inventory.Total?.ToString() ?? T("Неизвестно", "Unknown", "לא ידוע")) +
@@ -181,7 +258,7 @@ internal sealed partial class MainForm
         void ResizeNotes()
         {
             int width = Math.Max(240, root.ClientSize.Width - root.Padding.Horizontal - 12);
-            heading.MaximumSize = explanation.MaximumSize = status.MaximumSize = new Size(width, 0);
+            heading.MaximumSize = explanation.MaximumSize = status.MaximumSize = retryNote.MaximumSize = new Size(width, 0);
         }
         dialog.ClientSizeChanged += (_, _) => ResizeNotes();
         ResizeNotes();

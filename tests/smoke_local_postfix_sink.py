@@ -27,11 +27,13 @@ class Sink(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, address):
+    def __init__(self, address, pause_for_sample=False):
         super(Sink, self).__init__(address, Handler)
         self.delivered = threading.Event()
         self.pending_sample = threading.Event()
         self.allow_accept = threading.Event()
+        if not pause_for_sample:
+            self.allow_accept.set()
         self.messages = []
 
 
@@ -129,7 +131,7 @@ def main(args):
     message["Message-ID"] = "<lmr365-local-fixture@ci.invalid>"
     message.set_content(MARKER + "\n")
 
-    with Sink(("127.0.0.1", sinkport)) as receiver:
+    with Sink(("127.0.0.1", sinkport), pause_for_sample=True) as receiver:
         thread = threading.Thread(target=receiver.serve_forever, kwargs={"poll_interval": .1})
         thread.daemon = True
         thread.start()

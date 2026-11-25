@@ -15,13 +15,21 @@ class ForceReplaceWizardTests(unittest.TestCase):
         self.assertIn('REPLACE_POSTFIX_CONFIG',MAIN)
 
     def test_restore_requires_selected_backup_and_typed_confirmation(self):
-        self.assertIn('backupSelector.SelectedItem is not string backupId',MAIN)
-        self.assertIn('BuildRecoveryBundle("--restore", backupId)',MAIN)
-        self.assertIn('BuildRecoveryBundle("--list")',MAIN)
-        self.assertIn('BuildRecoveryBundle("--backup")',MAIN)
-        self.assertIn('RESTORE POSTFIX',MAIN)
-        self.assertIn('result.EnsureSuccess()',MAIN)
-        self.assertIn('inspectedMail = null',MAIN)
+        body = MAIN.split("private async Task RestoreBackupAsync()", 1)[1].split("\n    private ", 1)[0]
+        helper = (ROOT/'src/LinuxMailRelay365/MainForm.ArchiveSelection.cs').read_text()
+        self.assertIn('RequireArchiveSelection(backupSelector, postfixBackupListIdentity, endpoint)', body)
+        self.assertIn('selector.SelectedItem is not string id', helper)
+        self.assertIn('listIdentity != SecurityOptionsStore.Identity(endpoint)', helper)
+        self.assertIn('BuildRecoveryBundle("--restore", backupId)', body)
+        self.assertIn('BuildRecoveryBundle("--list")', MAIN)
+        self.assertIn('BuildRecoveryBundle("--backup")', MAIN)
+        self.assertIn('RESTORE POSTFIX', body)
+        self.assertLess(body.index('await VerifySelectedPostfixArchiveAsync()'), body.index('ConfirmDestructive('))
+        self.assertLess(body.index('ConfirmDestructive('), body.index('BuildRecoveryBundle("--restore"'))
+        self.assertIn('result.EnsureSuccess()', body)
+        self.assertIn('finally { InvalidateAfterArchiveWrite(); }', body)
+        self.assertIn('InvalidateAfterSendmailV2Write();', helper)
+        self.assertIn('inspectedMail = null', (ROOT/'src/LinuxMailRelay365/MainForm.SendmailV2Recovery.cs').read_text())
         self.assertIn('"backup" or "restore"',(ROOT/'src/LinuxMailRelay365/DiagnosticJournal.cs').read_text())
 
     def test_undetected_postfix_fails_closed(self):

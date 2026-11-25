@@ -65,6 +65,34 @@ class LocalPostfixSinkTests(unittest.TestCase):
                 server.shutdown()
                 thread.join(timeout=5)
 
+    def test_pause_for_sampling_is_explicit_and_releasable(self):
+        with SINK.Sink(("127.0.0.1", 0), pause_for_sample=True) as server:
+            thread = threading.Thread(target=server.serve_forever,
+                                      kwargs={"poll_interval": .05}, daemon=True)
+            thread.start()
+            failures = []
+            def submit():
+                try:
+                    with smtplib.SMTP("127.0.0.1", server.server_address[1], timeout=5) as client:
+                        client.sendmail(SINK.SENDER, [SINK.RECIPIENT], "Subject: test\r\n\r\nbody")
+                except Exception as error:
+                    failures.append(error)
+            worker = threading.Thread(target=submit, daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(server.pending_sample.wait(3))
+                self.assertFalse(server.delivered.is_set())
+                server.allow_accept.set()
+                self.assertTrue(server.delivered.wait(3))
+                worker.join(timeout=3)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(failures, [])
+            finally:
+                server.allow_accept.set()
+                server.shutdown()
+                thread.join(timeout=5)
+                worker.join(timeout=5)
+
     def test_ci_shell_guards_and_transport_only_loopback(self):
         src = (Path(__file__).parent / "smoke_local_postfix_delivery.sh"
                ).read_text(encoding="utf-8")
