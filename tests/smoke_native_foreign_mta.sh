@@ -88,6 +88,27 @@ if sudo python3 linux/restore-foreign-mta-config.py \
   exit 1
 fi
 
+# Validate the actual product aggregate protocol on the same stopped native
+# package; no mail is submitted and the queue listing is never logged.
+if test "${GITHUB_ACTIONS:-}" = true; then
+  sudo python3 linux/inspect-mail-queue.py --scope "$mta" > "$log"
+  grep -Fxq 'MAIL_QUEUE_VERSION=2' "$log"
+  grep -Fxq "MAIL_QUEUE_SCOPE=$mta" "$log"
+  grep -Fxq 'MAIL_QUEUE_CHANGES_APPLIED=no' "$log"
+  grep -Fxq 'MAIL_QUEUE_ATOMIC=no' "$log"
+  grep -Fxq 'MAIL_QUEUE_DELIVERY_VERIFIED=no' "$log"
+  grep -Fxq 'MAIL_QUEUE_RESULT=ok' "$log"
+  grep -Fxq 'MAIL_QUEUE_TOTAL=0' "$log"
+  if test "$mta" = exim; then
+    grep -Fxq 'MAIL_QUEUE_DETAIL_RESULT=ok' "$log"
+    grep -Fxq 'MAIL_QUEUE_FROZEN=0' "$log"
+    grep -Fxq 'MAIL_QUEUE_EXIM_OLDEST_MINUTES=0' "$log"
+  else
+    grep -Fxq 'MAIL_QUEUE_CLIENT_RESULT=ok' "$log"
+    grep -Fxq 'MAIL_QUEUE_CLIENT_TOTAL=0' "$log"
+  fi
+  echo "NATIVE_FOREIGN_MTA_QUEUE=verified_empty_sample_no_changes"
+fi
 ! systemctl is-active --quiet sendmail.service
 ! systemctl is-active --quiet exim4.service
 ! systemctl is-active --quiet exim.service

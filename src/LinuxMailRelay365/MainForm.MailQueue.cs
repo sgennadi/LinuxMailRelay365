@@ -73,6 +73,7 @@ internal sealed partial class MainForm
         "command_failed" => T("Нативная проверка не завершилась", "Native query failed", "בדיקת התור נכשלה"),
         "invalid_output" => T("Формат ответа не подтверждён", "Native output could not be verified", "פורמט התשובה לא אומת"),
         "scope_unverified" => T("Не подтверждена область очереди", "Queue instance could not be verified", "מופע התור לא אומת"),
+        "sample_changed" => T("Очередь изменилась — повторите проверку", "Queue changed — repeat the sample", "התור השתנה — דגמו שוב"),
         _ => T("Недоступно", "Unavailable", "לא זמין")
     };
 
@@ -89,6 +90,16 @@ internal sealed partial class MainForm
         {
             lines.Add("MSP / submit.cf: " + QueueResultText(report.ClientResult) + " — " +
                 (report.ClientTotal?.ToString() ?? T("Неизвестно", "Unknown", "לא ידוע")));
+            string GroupText(int? groups, string truncated)
+            {
+                string text = T("Групп очереди", "Queue groups", "קבוצות תור") + ": " +
+                    (groups?.ToString() ?? T("Неизвестно", "Unknown", "לא ידוע"));
+                if (truncated == "yes")
+                    text += " — " + T("Вывод списка ограничен", "Native listing truncated", "הרשימה מוגבלת");
+                return text;
+            }
+            lines.Add("MTA: " + GroupText(report.Groups, report.ListingTruncated));
+            lines.Add("MSP: " + GroupText(report.ClientGroups, report.ClientListingTruncated));
             lines.Add(T("Две очереди показаны отдельно; уникальные письма не суммируются.",
                 "MTA and MSP queues are shown separately; no unique-message sum is inferred.",
                 "שני התורים מוצגים בנפרד; אין חיבור של הודעות ייחודיות."));
@@ -114,10 +125,24 @@ internal sealed partial class MainForm
             lines.Add(T("Категории приблизительные; не являются доказанной причиной сбоя.",
                 "Categories are heuristic, not proven root causes.", "הקטגוריות משוערות ואינן סיבת כשל מוכחת."));
         }
-        else if (report.Scope is "exim" or "sendmail")
-            lines.Add(T("Нативный счётчик; разбивка по возрасту и причинам пока недоступна.",
-                "Native counts only; age and delay categories are not available for this MTA yet.",
-                "ספירה מקורית בלבד; פירוט גיל וסיבות אינו זמין עדיין."));
+        else if (report.Scope == "exim")
+        {
+            lines.Add(T("Дополнительная проверка", "Detailed listing", "בדיקה מפורטת") +
+                ": " + QueueResultText(report.DetailResult));
+            if (report.DetailResult == "ok")
+            {
+                lines.Add(T("Замороженные (Frozen)", "Frozen messages", "הודעות קפואות") + ": " + report.Frozen);
+                lines.Add(T("Возраст старейшего (примерно, мин)", "Oldest age (approx. minutes)", "גיל ההודעה הוותיקה בקירוב (דקות)") +
+                    ": " + report.EximOldestMinutes);
+            }
+            lines.Add(T("Причины задержек не подтверждены. Детали сверяются с нативным счётчиком, но это не атомарный снимок.",
+                "Delay reasons are not verified. Listing details are cross-checked against the native count, not an atomic snapshot.",
+                "סיבות העיכוב לא אומתו. הפירוט נבדק מול הספירה המקורית, ללא צילום אטומי."));
+        }
+        else if (report.Scope == "sendmail")
+            lines.Add(T("Возраст и причины задержек в Sendmail пока не определяются.",
+                "Sendmail age and delay categories are not available yet.",
+                "גיל וסיבות עיכוב ב-Sendmail אינם זמינים עדיין."));
         lines.Add("");
         lines.Add(T("Неполный или изменяющийся снимок не доказывает пустую очередь или доставку. " +
             "Проверка не разрешает Restore, запуск служб, удаление или повторную отправку.",
@@ -135,6 +160,8 @@ internal sealed partial class MainForm
         };
         bool warning = report.Result != "ok" ||
             (report.Scope == "sendmail" && report.ClientResult != "ok") ||
+            (report.Scope == "exim" && (report.DetailResult != "ok" || (report.Frozen ?? 0) > 0)) ||
+            report.ListingTruncated == "yes" || report.ClientListingTruncated == "yes" ||
             (report.Counts["DEFERRED"] ?? 0) > 0 || (report.Counts["HELD"] ?? 0) > 0;
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(12) };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));

@@ -53,6 +53,53 @@ class NativeQueueInspection(unittest.TestCase):
             with self.assertRaises(q.Unavailable):
                 q.exim_count(raw)
 
+    def test_sendmail_group_totals_and_single_queue_without_footer(self):
+        self.assertEqual(q.sendmail_summary("/var/spool/mqueue (2 requests)\n-----Q-ID-----\nmessage row\n"), (2, 1, "no"))
+        self.assertEqual(q.sendmail_summary("/var/spool/mqueue (4 requests, only 2 printed)\nmessage row\n"), (4, 1, "yes"))
+        self.assertEqual(q.sendmail_summary("/var/spool/mqueue/a is empty\n/var/spool/mqueue/b (2 requests)\nmessage row\nTotal requests: 2\n"), (2, 2, "no"))
+        self.assertEqual(q.sendmail_summary("Total requests: 4\n"), (4, "unknown", "unknown"))
+        for raw in ("/var/spool/a (2 requests)\nTotal requests: 1\n",
+                    "/var/spool/a is empty\n/var/spool/b is empty\n",
+                    "/var/spool/a is empty\n/var/spool/a is empty\nTotal requests: 0\n",
+                    "/var/spool/a (2 requests, only 3 printed)\n",
+                    "/var/spool/a: unknown number of entries\n",
+                    "/var/spool/a is empty\nunexpected\nTotal requests: 0\n"):
+            with self.subTest(raw=raw), self.assertRaises(q.Unavailable):
+                q.sendmail_summary(raw)
+
+    def test_exim_age_frozen_and_non_atomic_counts(self):
+        raw = (" 25m  2.9K 0t5C6f-0000c8-00 <private@example.invalid>\n"
+               "          recipient@example.invalid\n\n"
+               "  2h  300  1abcdE-00000001234-ABCD <> *** frozen ***\n"
+               "          private@example.invalid\n\n")
+        self.assertEqual(q.exim_details(raw, 2), (1, 120))
+        self.assertEqual(q.exim_details("", 0), (0, 0))
+        for data, total in ((raw, 1), (raw + raw, 4), ("unexpected\n", 0),
+                            (" 5m 1K bad-id <private>\n", 1)):
+            with self.subTest(total=total), self.assertRaises(q.Unavailable):
+                q.exim_details(data, total)
+        values = iter(["2\n", raw, "2\n"])
+        report = q.sample("exim", lambda *_: next(values))
+        self.assertEqual((report["total"], report["detail_result"], report["frozen"],
+                          report["exim_oldest_minutes"]), (2, "ok", 1, 120))
+        self.assertNotIn("example.invalid", str(report))
+        values = iter(["2\n", raw, "3\n"])
+        report = q.sample("exim", lambda *_: next(values))
+        self.assertEqual((report["total"], report["detail_result"], report["frozen"]),
+                         (2, "sample_changed", "unknown"))
+
+    def test_sendmail_native_libexec_path_not_foreign_alternative(self):
+        from types import SimpleNamespace
+        import stat
+        metadata = SimpleNamespace(st_uid=0, st_mode=stat.S_IFREG | 0o755)
+        with patch.object(q.os.path, "realpath", return_value="/usr/libexec/sendmail/sendmail"), \
+                patch.object(q, "secure_directory"), patch.object(q.os, "stat", return_value=metadata):
+            self.assertEqual(q.native_binary("sendmail"), "/usr/libexec/sendmail/sendmail")
+        with patch.object(q.os.path, "realpath", return_value="/usr/libexec/postfix/sendmail"), \
+                patch.object(q, "secure_directory"), patch.object(q.os, "stat", return_value=metadata):
+            with self.assertRaises(q.Unavailable):
+                q.native_binary("sendmail")
+
     def test_sendmail_partial_results_independent(self):
         def runner(tool, args):
             self.assertEqual(tool, "sendmail")
