@@ -87,7 +87,10 @@ class EntraPublicCertificateTests(unittest.TestCase):
         result = M.active_inventory("sidecar")
         self.assertEqual(result["certificate_sha"], M.digest(self.new_der))
         self.assertEqual(self.read.call_count, 2)
-        self.assertTrue(all(call.args[0] == active["certificate"] for call in M.secure_read.call_args_list))
+        # tuple access works on EL8's native Python 3.6 unittest.mock.
+        self.assertEqual(M.secure_read.call_count, 2)
+        self.assertTrue(all(call[0][0] == active["certificate"]
+                            for call in M.secure_read.call_args_list))
         with contextlib.redirect_stdout(io.StringIO()) as buf:
             M.print_active_inventory(result)
         self.assertIn("ACTIVE_OAUTH_PRIVATE_KEY_EXPORTED=no", buf.getvalue())
@@ -99,6 +102,12 @@ class EntraPublicCertificateTests(unittest.TestCase):
         self.read.side_effect = [(self.active_raw, self.active),
             (json.dumps(changed).encode("ascii"), changed)]
         with self.assertRaisesRegex(M.Refused, "changed_during_review"):
+            M.active_inventory("sidecar")
+
+    def test_active_inventory_rejects_duplicate_identity_property(self):
+        raw = self.active_raw[:-1] + b', "mailbox":"sender@example.org"}'
+        self.read.side_effect = [(raw, self.active)]
+        with self.assertRaisesRegex(M.Refused, "duplicate_identity_property"):
             M.active_inventory("sidecar")
 
     def test_route_policy_classifies_pipe_only_and_flags_overrides(self):

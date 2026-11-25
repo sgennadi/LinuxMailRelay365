@@ -149,10 +149,30 @@ public static class EntraGraphInventoryClient
         return text;
     }
 
-    public static bool SelfTest() =>
-        EntraTenantDiscoveryClient.DefaultGraphClientId != Guid.Empty &&
-        GuidProperty(JsonDocument.Parse("{\"id\":\"11111111-1111-4111-8111-111111111111\"}")
-            .RootElement, "id") != Guid.Empty;
+    public static bool SelfTest()
+    {
+        using var document = JsonDocument.Parse("{\"id\":\"11111111-1111-4111-8111-111111111111\"}");
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest("CN=Graph public fixture", rsa,
+            HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var now = DateTimeOffset.UtcNow;
+        using var cert = request.CreateSelfSigned(now.AddDays(-1), now.AddDays(1));
+        string sha = Convert.ToHexString(SHA256.HashData(cert.RawData)).ToLowerInvariant();
+        using var key = JsonDocument.Parse(JsonSerializer.Serialize(new
+            { key = Convert.ToBase64String(cert.RawData) }));
+        using var malformed = JsonDocument.Parse("{\"key\":\"not base64\"}");
+        using var missing = JsonDocument.Parse("{\"key\":null}");
+        using var trailing = JsonDocument.Parse(JsonSerializer.Serialize(new
+            { key = Convert.ToBase64String(cert.RawData.Concat(new byte[] { 0 }).ToArray()) }));
+        return EntraTenantDiscoveryClient.DefaultGraphClientId != Guid.Empty &&
+            GuidProperty(document.RootElement, "id") != Guid.Empty &&
+            PublicCertificateSha256(key.RootElement, "AsymmetricX509Cert", "Verify") == sha &&
+            PublicCertificateSha256(key.RootElement, "AsymmetricX509Cert", "Sign") is null &&
+            PublicCertificateSha256(document.RootElement, "AsymmetricX509Cert", "Verify") is null &&
+            PublicCertificateSha256(missing.RootElement, "AsymmetricX509Cert", "Verify") is null &&
+            PublicCertificateSha256(malformed.RootElement, "AsymmetricX509Cert", "Verify") is null &&
+            PublicCertificateSha256(trailing.RootElement, "AsymmetricX509Cert", "Verify") is null;
+    }
 }
 
 public sealed record EntraCertificateMetadata(
