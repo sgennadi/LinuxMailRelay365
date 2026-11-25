@@ -334,6 +334,52 @@ jobs:
         shell: bash
         run: bash tests/smoke_rhel_native_foreign_mta.sh "${{ matrix.mta }}"
 
+  rhel-native-sendmail-queues:
+    # Package-native submissions and class transitions in a disposable
+    # network-disabled image. Not a live SELinux/systemd acceptance test.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [rockylinux:8, rockylinux:9, almalinux:9, oraclelinux:9]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build disposable native Sendmail package image
+        shell: bash
+        env:
+          BASE_IMAGE: ${{ matrix.image }}
+        run: |
+          set -Eeuo pipefail
+          case "$BASE_IMAGE" in
+            rockylinux:8|rockylinux:9|almalinux:9|oraclelinux:9) ;;
+            *) exit 2 ;;
+          esac
+          context="$(mktemp -d)"
+          trap 'rm -rf -- "$context"' EXIT
+          mkdir -p "$context/linux" "$context/tests"
+          cp linux/inspect-mail-queue.py "$context/linux/"
+          cp tests/smoke_native_sendmail_queue_preview.py "$context/tests/"
+          cat > "$context/Dockerfile" <<'DOCKER'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          RUN dnf -y install python3 hostname sendmail && dnf clean all
+          COPY linux/inspect-mail-queue.py /opt/lmr365/linux/inspect-mail-queue.py
+          COPY tests/smoke_native_sendmail_queue_preview.py /opt/lmr365/tests/smoke_native_sendmail_queue_preview.py
+          DOCKER
+          docker build --build-arg BASE_IMAGE="$BASE_IMAGE" -t lmr365-native-sendmail-ci:local "$context"
+      - name: Verify native MTA/MSP plans, quarantine and release without network
+        shell: bash
+        run: |
+          docker run --rm --network none --hostname lmr365-fixture.ci.localdomain \
+            --add-host lmr365-fixture.ci.localdomain:127.0.0.1 \
+            --add-host lmr365-fixture:127.0.0.1 \
+            --cap-drop NET_RAW --cap-drop NET_ADMIN \
+            -e GITHUB_ACTIONS=true -e RUNNER_ENVIRONMENT=github-hosted \
+            -e RUNNER_TEMP=/tmp -e LMR365_CI_DISPOSABLE_CONTAINER=1 \
+            --entrypoint /usr/bin/python3 lmr365-native-sendmail-ci:local \
+            /opt/lmr365/tests/smoke_native_sendmail_queue_preview.py
+
   rhel-family-readonly-smoke:
     # Container-only validation. Not a full systemd/Postfix/SELinux integration test.
     runs-on: ubuntu-latest

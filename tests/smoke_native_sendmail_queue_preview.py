@@ -32,7 +32,7 @@ def require(ok, reason):
 
 def run(args, data=None, check=True):
     result = subprocess.run(args, input=data, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True,
+                            stderr=subprocess.DEVNULL, universal_newlines=True,
                             timeout=90, check=False,
                             env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
     require(not check or result.returncode == 0,
@@ -40,20 +40,62 @@ def run(args, data=None, check=True):
     return result
 
 
+def container_isolation():
+    """PID 1 in a disposable Docker image with no network or host spools."""
+    require(os.getpid() == 1 and Path("/.dockerenv").is_file()
+            and not Path("/run/systemd/system").exists(),
+            "disposable_container_required")
+    cmdline = Path("/proc/1/cmdline").read_bytes().split(b"\0")
+    require(len(cmdline) >= 2 and cmdline[1].endswith(
+            b"smoke_native_sendmail_queue_preview.py"), "unexpected_container_entrypoint")
+    roots = []
+    mountpoints = set()
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        parts = line.split()
+        require(len(parts) > 8 and "-" in parts, "invalid_mountinfo")
+        mountpoints.add(parts[4])
+        if parts[4] == "/":
+            roots.append(parts[parts.index("-") + 1])
+    require(roots == ["overlay"], "disposable_overlay_required")
+    protected = [Path("/etc/mail"), Path("/var/spool")]
+    for _, _, allowed in PACKAGE_LAYOUTS.values():
+        protected.extend(Path(path) for path in allowed)
+    for root in protected:
+        for path in [root] + list(root.parents):
+            require(str(path) == "/" or (str(path) not in mountpoints
+                    and not path.is_symlink()), "host_mount_or_alias_refused")
+    # Reject nested mounts anywhere under the test spools or configuration.
+    require(not any(m.startswith(str(root) + "/") for m in mountpoints
+                    for root in protected), "nested_host_mount_refused")
+    for task in Path("/proc").iterdir():
+        if not task.name.isdigit():
+            continue
+        try:
+            name = (task / "comm").read_text().strip()
+        except FileNotFoundError:
+            continue
+        require(not name.startswith("sendmail"), "sendmail_process_present")
+    print("NATIVE_SENDMAIL_FIXTURE_CONTAINER=verified_overlay_network_none", flush=True)
+
+
 def isolated_spools():
     require(os.geteuid() == 0 and os.environ.get("GITHUB_ACTIONS") == "true"
             and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
             and bool(os.environ.get("RUNNER_TEMP")), "disposable_host_required")
-    for ns in ("mnt", "net"):
-        require(os.readlink("/proc/self/ns/" + ns) != os.readlink("/proc/1/ns/" + ns),
-                "private_namespace_required:" + ns)
     require({name for _, name in socket.if_nameindex()} == {"lo"},
             "isolated_network_required")
-    require(run(["systemctl", "is-active", "--quiet", "sendmail.service"],
-                check=False).returncode != 0, "sendmail_service_active")
-    require(run(["pgrep", "-x", "sendmail"], check=False).returncode == 1,
-            "sendmail_process_present")
-    run(["mount", "--make-rprivate", "/"])
+    container = os.environ.get("LMR365_CI_DISPOSABLE_CONTAINER") == "1"
+    if container:
+        container_isolation()
+    else:
+        for ns in ("mnt", "net"):
+            require(os.readlink("/proc/self/ns/" + ns) != os.readlink("/proc/1/ns/" + ns),
+                    "private_namespace_required:" + ns)
+        require(run(["systemctl", "is-active", "--quiet", "sendmail.service"],
+                    check=False).returncode != 0, "sendmail_service_active")
+        require(run(["pgrep", "-x", "sendmail"], check=False).returncode == 1,
+                "sendmail_process_present")
+        run(["mount", "--make-rprivate", "/"])
     for queue, (mode, config, allowed) in PACKAGE_LAYOUTS.items():
         # Do not create a guessed directory or use an arbitrary config path.
         # Establish the independent native fixture layout before any submission.
@@ -79,12 +121,16 @@ def isolated_spools():
                 "unexpected_package_queue_directory")
         options = "size=16m,nosuid,nodev,noexec,mode={:o},uid={},gid={}".format(
             stat.S_IMODE(meta.st_mode), meta.st_uid, meta.st_gid)
-        run(["mount", "-t", "tmpfs", "-o", options, "tmpfs", path])
-        require(run(["findmnt", "-n", "-o", "FSTYPE", "--mountpoint", path]).stdout.strip()
-                == "tmpfs", "fixture_spool_not_mounted")
+        if not container:
+            run(["mount", "-t", "tmpfs", "-o", options, "tmpfs", path])
+            require(run(["findmnt", "-n", "-o", "FSTYPE", "--mountpoint", path]).stdout.strip()
+                    == "tmpfs", "fixture_spool_not_mounted")
+        else:
+            require(not os.path.ismount(path), "external_queue_mount_refused")
         require(not list(Path(path).iterdir()), "fixture_spool_not_empty")
-    print("NATIVE_SENDMAIL_FIXTURE_PRIVATE_MOUNTS=ready", flush=True)
-    spec = importlib.util.spec_from_file_location("sendmail_fixture_product", HELPER)
+    print("NATIVE_SENDMAIL_FIXTURE_PRIVATE_MOUNTS=" +
+          ("disposable_overlay" if container else "ready"), flush=True)
+    spec = importlib.util.spec_from_file_location("sendmail_fixture_product", str(HELPER))
     product = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(product)
     for queue in QUEUES:
@@ -198,8 +244,8 @@ def main():
                     "cross_queue_plan_not_refused")
             require(snapshot() == before, "synthetic_queue_changed_by_preview_or_refusal")
         print("NATIVE_SENDMAIL_" + queue.upper() + "_PREVIEW_AND_REFUSAL=verified")
-    # Exercise native quarantine transitions ONLY on the two isolated
-    # synthetic spools. Product quarantine inventory itself is read-only.
+    # Exercise confirmed product quarantine transitions ONLY on the two
+    # isolated synthetic spools. No service or real delivery is involved.
     for queue, (mode, path) in QUEUES.items():
         other = "msp" if queue == "mta" else "mta"
         def held_count(expected):
@@ -253,7 +299,8 @@ def main():
         require(snapshot()[other] == other_before, "release_other_queue_changed")
         print("NATIVE_SENDMAIL_" + queue.upper() + "_QUARANTINE_INVENTORY=verified_separate_classes")
     print("NATIVE_SENDMAIL_QUEUE_ISOLATION=verified_private_spools_no_delivery")
-    # Namespace teardown drops private mounts, never deletes host queue files.
+    # Namespace teardown drops private mounts; container teardown discards
+    # its writable overlay. Never delete host queue files.
     return 0
 
 

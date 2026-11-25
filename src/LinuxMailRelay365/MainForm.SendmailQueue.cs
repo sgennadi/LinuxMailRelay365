@@ -94,9 +94,9 @@ internal sealed partial class MainForm
         notes.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var status = UiTheme.Text("");
         var help = UiTheme.Text(quarantine ? T(
-            "Карантин выбранной очереди. Исходные причины, адреса и ID скрыты. Release возвращает выбранное письмо в обычную очередь после подтверждения; удаление недоступно.",
-            "Quarantine for the selected queue. Raw reasons, addresses and IDs are hidden. Release returns one selected message to the normal queue after confirmation; deletion is unavailable.",
-            "הסגר בתור הנבחר. סיבות מקוריות, כתובות ומזהים מוסתרים. שחרור הודעה אחת דורש אישור; מחיקה אינה זמינה.") : T(
+            "Карантин выбранной очереди. Исходные причины, адреса и ID скрыты. Release возвращает выбранное письмо в обычную очередь после подтверждения. Штатное точечное Delete не поддерживается; не удаляйте файлы активной очереди.",
+            "Quarantine for the selected queue. Raw reasons, addresses and IDs are hidden. Release returns one selected message to the normal queue after confirmation. Native per-message Delete is unavailable; do not remove live queue files.",
+            "הסגר בתור הנבחר. סיבות מקוריות, כתובות ומזהים מוסתרים. שחרור הודעה אחת דורש אישור. מחיקה נקודתית אינה נתמכת; אין למחוק קובצי תור פעיל.") : T(
             "Только обычная очередь (не Lost и не Quarantine). Не более 500 записей в нативном порядке. " +
             "Номера строк и групп действуют только в снимке. Время без года/часового пояса; точный возраст неизвестен. " +
             "Отсутствие * не доказывает отсутствие обработки. Причины приблизительные; адреса и ID скрыты. Retry/Flush экспериментальны.",
