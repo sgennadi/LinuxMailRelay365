@@ -4,7 +4,8 @@
 Default actions are read-only. The separate experimental Retry Apply can
 request immediate delivery of one reidentified deferred long-ID message.
 Separate experimental Flush, Hold and Release require scoped fresh plans.
-No deletion, new submission, body reading or service/config changes.
+Delete is a separate irreversible action for one held long-ID message.
+No bulk deletion, new submission, body reading or service/config changes.
 Native IDs, addresses and raw reasons stay on the server. No atomic
 compare-and-act or delivery guarantee; this is not Restore preflight.
 """
@@ -692,6 +693,7 @@ MAINTENANCE_CONFIRM = {
     "flush": "FLUSH_SELECTED_POSTFIX_INSTANCE",
     "hold": "HOLD_SELECTED_DEFERRED_MESSAGE",
     "release": "RELEASE_SELECTED_HELD_MESSAGE",
+    "delete": "PERMANENTLY_DELETE_SELECTED_HELD_MESSAGE",
 }
 MAINTENANCE_COUNTS = ("total", "active", "deferred", "held", "incoming", "maildrop", "other")
 
@@ -818,8 +820,8 @@ def execute_maintenance(action, directory, native_id):
     else:
         if not isinstance(native_id, str) or not LONG_ID.fullmatch(native_id):
             raise ValueError("invalid_selected_message")
-        args = [native_binary("postsuper"), "-c", directory,
-                "-h" if action == "hold" else "-H", native_id,
+        flag = {"hold": "-h", "release": "-H", "delete": "-d"}[action]
+        args = [native_binary("postsuper"), "-c", directory, flag, native_id,
                 "deferred" if action == "hold" else "hold"]
     try:
         result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -883,7 +885,10 @@ def maintenance_lines(action, scope, nonce, sampled_at, token, phase, prepared, 
                "unknown" if outcome == "outcome_unknown" else "0"),
               ("EFFECT_VERIFIED", "no"), ("DELIVERY_VERIFIED", "no"), ("ATOMIC", "no"),
               ("CONFIG_CHANGED", "no"), ("SERVICE_CHANGED", "no"),
-              ("DELETE_REQUESTED", "no"), ("NEW_MESSAGE_SUBMITTED", "no"))
+              ("DELETE_REQUESTED", ("yes" if outcome == "command_completed" else
+                "unknown" if outcome == "outcome_unknown" else "no")
+                if action == "delete" and phase == "apply" else "no"),
+              ("NEW_MESSAGE_SUBMITTED", "no"))
     for key, value in values:
         yield "MAIL_MAINT_" + key + "=" + str(value)
 

@@ -88,20 +88,46 @@ class MaintenanceTests(unittest.TestCase):
                          ("command_completed", "none"))
         self.execute.assert_called_once_with("release", q.SIDECAR_CONFIG, self.item["queue_id"])
 
-    def test_fixed_commands_no_wildcards_delete_or_read_runner_writes(self):
+    def test_delete_requires_held_long_id_and_action_specific_plan(self):
+        deferred = self.selection()
+        result, _, digest, _ = q.maintenance_prepare("delete", "sidecar", self.nonce,
+            1000, deferred, clock=lambda: 1060, **self.options)
+        self.assertEqual((result, digest), ("sample_changed", "-"))
+        self.item["queue_name"] = "hold"
+        token = self.selection()
+        prepared, digest, detail = self.plan("delete", token, 1000)
+        self.assertEqual(detail, "held|123|1")
+        self.assertEqual(self.apply("release", prepared, digest, token, 1000),
+                         ("not_requested", "plan_changed"))
+        with self.assertRaises(ValueError):
+            q.maintenance_apply("delete", "sidecar", self.nonce, 1000, token,
+                prepared, digest, q.MAINTENANCE_CONFIRM["release"], **self.options)
+        self.execute.assert_not_called()
+        self.assertEqual(self.apply("delete", prepared, digest, token, 1000),
+                         ("command_completed", "none"))
+        self.execute.assert_called_once_with("delete", q.SIDECAR_CONFIG, self.item["queue_id"])
+        for outcome, expected in (("command_completed", "yes"), ("outcome_unknown", "unknown"),
+                                  ("not_requested", "no")):
+            lines = list(q.maintenance_lines("delete", "sidecar", self.nonce, 1000, token,
+                "apply", prepared, digest, outcome, "-", "none"))
+            self.assertIn("MAIL_MAINT_DELETE_REQUESTED=" + expected, lines)
+            self.assertIn("MAIL_MAINT_EFFECT_VERIFIED=no", lines)
+
+    def test_fixed_commands_no_wildcards_or_read_runner_writes(self):
         with patch.object(q, "native_binary", side_effect=lambda name: "/usr/sbin/" + name), \
                 patch.object(q.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
             for action, ident, expected in (
                     ("flush", None, ["/usr/sbin/postqueue", "-c", q.SIDECAR_CONFIG, "-f"]),
                     ("hold", self.item["queue_id"], ["/usr/sbin/postsuper", "-c", q.SIDECAR_CONFIG, "-h", self.item["queue_id"], "deferred"]),
-                    ("release", self.item["queue_id"], ["/usr/sbin/postsuper", "-c", q.SIDECAR_CONFIG, "-H", self.item["queue_id"], "hold"])):
+                    ("release", self.item["queue_id"], ["/usr/sbin/postsuper", "-c", q.SIDECAR_CONFIG, "-H", self.item["queue_id"], "hold"]),
+                    ("delete", self.item["queue_id"], ["/usr/sbin/postsuper", "-c", q.SIDECAR_CONFIG, "-d", self.item["queue_id"], "hold"])):
                 self.assertEqual(q.execute_maintenance(action, q.SIDECAR_CONFIG, ident), "command_completed")
                 self.assertEqual(run.call_args[0][0], expected)
                 self.assertFalse(q.allowed_args(expected[0].split("/")[-1], expected[1:]))
-            for action, ident in (("hold", "ALL"), ("release", "-"), ("flush", "ALL"), ("delete", self.item["queue_id"])):
+            for action, ident in (("hold", "ALL"), ("release", "-"), ("flush", "ALL"), ("delete", "ALL"), ("delete", "ABCDEF")):
                 with self.assertRaises(ValueError):
                     q.execute_maintenance(action, q.CONFIG, ident)
-            self.assertEqual(run.call_count, 3)
+            self.assertEqual(run.call_count, 4)
 
     def test_unknown_outcome_is_not_repeated(self):
         prepared, digest, _ = self.plan("flush")
@@ -120,7 +146,11 @@ class MaintenanceGuiContract(unittest.TestCase):
         self.assertIn("onDispatch();", ui)
         self.assertIn("Effect/delivery unverified", ui)
         self.assertIn("FlushPostfixQueueAsync(scope)", (src / "MainForm.MailQueue.cs").read_text())
-        self.assertIn("holdRelease.Click", (src / "MainForm.QueueMessages.cs").read_text())
+        messages = (src / "MainForm.QueueMessages.cs").read_text()
+        self.assertIn("holdRelease.Click", messages)
+        self.assertIn("deleteHeld.Enabled = holdRelease.Enabled && candidate?.State == \"held\"", messages)
+        self.assertIn("deleteHeld.Click", messages)
+        self.assertIn("IRREVERSIBLE deletion", ui)
         self.assertIn("QueueMaintenanceReceipt.SelfTest", (src / "Program.cs").read_text())
 
 

@@ -93,6 +93,24 @@ class LocalPostfixSinkTests(unittest.TestCase):
                 thread.join(timeout=5)
                 worker.join(timeout=5)
 
+    def test_temporary_failure_fixture_never_accepts_mail(self):
+        with SINK.Sink(("127.0.0.1", 0), defer_delivery=True) as server:
+            thread = threading.Thread(target=server.serve_forever,
+                                      kwargs={"poll_interval": .05}, daemon=True)
+            thread.start()
+            try:
+                with smtplib.SMTP("127.0.0.1", server.server_address[1], timeout=5) as client:
+                    client.ehlo()
+                    client.mail(SINK.SENDER)
+                    client.rcpt(SINK.RECIPIENT)
+                    self.assertEqual(client.data("Subject: fixture\r\n\r\nsynthetic")[0], 451)
+                self.assertTrue(server.pending_sample.is_set())
+                self.assertFalse(server.delivered.is_set())
+                self.assertEqual(len(server.messages), 1)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+
     def test_ci_shell_guards_and_transport_only_loopback(self):
         src = (Path(__file__).parent / "smoke_local_postfix_delivery.sh"
                ).read_text(encoding="utf-8")

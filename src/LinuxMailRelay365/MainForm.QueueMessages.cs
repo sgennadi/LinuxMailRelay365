@@ -143,6 +143,10 @@ internal sealed partial class MainForm
         var holdRelease = UiTheme.Action("Hold / Release (experimental)...", false, "shield");
         holdRelease.Enabled = false;
         footer.Controls.Add(holdRelease);
+        var deleteHeld = UiTheme.Action(T("Удалить Held (необратимо)...", "Delete held message (irreversible)...",
+            "מחיקת הודעה מוחזקת (בלתי הפיכה)..."), false, "trash");
+        deleteHeld.Enabled = false;
+        footer.Controls.Add(deleteHeld);
         bool attempted = false;
         bool reviewing = false;
         bool closed = false;
@@ -163,6 +167,7 @@ internal sealed partial class MainForm
             holdRelease.Enabled = !closed && !attempted && !reviewing && inventory.SampledAt.HasValue &&
                 inventory.RetryState == "review_only" && candidate is not null &&
                 candidate.State is "deferred" or "held" && QueueRetryReview.ValidSha(candidate.Fingerprint);
+            deleteHeld.Enabled = holdRelease.Enabled && candidate?.State == "held";
             holdRelease.Text = candidate?.State == "held"
                 ? T("Release (экспериментально)...", "Release (experimental)...", "שחרור (ניסיוני)...")
                 : T("Hold (экспериментально)...", "Hold (experimental)...", "השהיה (ניסיוני)...");
@@ -175,7 +180,7 @@ internal sealed partial class MainForm
             if (reviewing || selected is null || !retry.Enabled || inventory.SampledAt is not long sampledAt)
                 return;
             reviewing = true;
-            holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 var current = RequireSameArchiveConnection(endpoint);
@@ -223,7 +228,7 @@ internal sealed partial class MainForm
                 inventory.SampledAt is not long sampledAt)
                 return;
             reviewing = true;
-            holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 var current = RequireSameArchiveConnection(endpoint);
@@ -306,11 +311,31 @@ internal sealed partial class MainForm
             if (!holdRelease.Enabled || reviewing || attempted || selected is null ||
                 inventory.SampledAt is not long sampledAt) return;
             reviewing = true;
-            holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 await RunQueueMaintenanceAsync(endpoint, inventory.Scope,
                     selected.State == "held" ? "release" : "hold", nonce, sampledAt,
+                    selected, dialog, () => SelectedRow() == selected, () => attempted = true);
+            }
+            finally
+            {
+                reviewing = false;
+                close.Enabled = filters.Enabled = grid.Enabled = true;
+                UpdateRetry();
+                if (attempted) dialog.Close();
+            }
+        };
+        deleteHeld.Click += async (_, _) =>
+        {
+            var selected = SelectedRow();
+            if (!deleteHeld.Enabled || reviewing || attempted || selected is not { State: "held" } ||
+                inventory.SampledAt is not long sampledAt) return;
+            reviewing = true;
+            deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            try
+            {
+                await RunQueueMaintenanceAsync(endpoint, inventory.Scope, "delete", nonce, sampledAt,
                     selected, dialog, () => SelectedRow() == selected, () => attempted = true);
             }
             finally

@@ -57,9 +57,15 @@ internal sealed partial class MainForm
                         ? T("Hold: перевести одно отложенное письмо в удержание. Доставка приостанавливается, срок жизни не истекает в Hold.",
                             "Hold: move one deferred message to hold. Delivery attempts stop and queue lifetime does not expire while held.",
                             "Hold: העברת הודעה מושהית אחת להחזקה. ניסיונות המסירה נעצרים.")
-                        : T("Release: вернуть одно удержанное письмо в deferred. Оно может быть доставлено или просрочено.",
-                            "Release: return one held message to deferred. It may be delivered or expire.",
-                            "Release: החזרת הודעה מוחזקת לתור המושהה. היא עשויה להימסר או לפוג."));
+                        : action == "release"
+                            ? T("Release: вернуть одно удержанное письмо в deferred. Оно может быть доставлено или просрочено.",
+                                "Release: return one held message to deferred. It may be delivered or expire.",
+                                "Release: החזרת הודעה מוחזקת לתור המושהה. היא עשויה להימסר או לפוג.")
+                            : T("НЕОБРАТИМОЕ УДАЛЕНИЕ одного удержанного письма со всеми получателями. " +
+                                "Приложение не создаёт резервную копию письма. Если нужно сохранить письмо, отмените операцию и сделайте независимый архив.",
+                                "IRREVERSIBLE deletion of one held message for all its recipients. " +
+                                "The manager does not back up the message. Cancel and arrange an independent archive if preservation is required.",
+                                "מחיקה בלתי הפיכה של הודעה מוחזקת אחת לכל נמעניה. אין גיבוי אוטומטי; אם דרוש שימור, בטלו את הפעולה."));
             }
             details += "\r\n\r\n" + T("Операция неатомарная; доставка и фактическое перемещение не гарантированы. При неизвестном результате проверьте очередь и журналы.",
                 "Not atomic; delivery or actual movement is not guaranteed. If the outcome is unknown, inspect the queue and logs.",

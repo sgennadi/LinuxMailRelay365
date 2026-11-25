@@ -11,12 +11,13 @@ internal sealed record QueueMaintenanceReceipt(string Outcome, string Reason, lo
         "flush" => "FLUSH_SELECTED_POSTFIX_INSTANCE",
         "hold" => "HOLD_SELECTED_DEFERRED_MESSAGE",
         "release" => "RELEASE_SELECTED_HELD_MESSAGE",
+        "delete" => "PERMANENTLY_DELETE_SELECTED_HELD_MESSAGE",
         _ => throw new ArgumentException("Invalid queue maintenance action.")
     };
 
     internal static void ValidateContext(string scope, string action, string nonce, long sampledAt, string fingerprint)
     {
-        if (scope is not ("postfix" or "sidecar") || action is not ("flush" or "hold" or "release") ||
+        if (scope is not ("postfix" or "sidecar") || action is not ("flush" or "hold" or "release" or "delete") ||
             !QueueRetryReview.ValidSha(nonce) ||
             (action == "flush" ? sampledAt != 0 || fingerprint != "-" :
                 sampledAt is < 1 or > 9999999999 || !QueueRetryReview.ValidSha(fingerprint)))
@@ -94,8 +95,11 @@ internal sealed record QueueMaintenanceReceipt(string Outcome, string Reason, lo
         }
         Exact("COMMAND_COUNT", outcome == "command_completed" ? "1" : outcome == "outcome_unknown" ? "unknown" : "0");
         foreach (string flag in new[] { "EFFECT_VERIFIED", "DELIVERY_VERIFIED", "ATOMIC",
-            "CONFIG_CHANGED", "SERVICE_CHANGED", "DELETE_REQUESTED", "NEW_MESSAGE_SUBMITTED" })
+            "CONFIG_CHANGED", "SERVICE_CHANGED", "NEW_MESSAGE_SUBMITTED" })
             Exact(flag, "no");
+        Exact("DELETE_REQUESTED", action == "delete" && apply
+            ? outcome == "command_completed" ? "yes" : outcome == "outcome_unknown" ? "unknown" : "no"
+            : "no");
         if (fields.Count != 0) throw new InvalidDataException("Unexpected maintenance evidence.");
         return new(outcome, reason, prepared, digest, detail);
     }
@@ -124,6 +128,19 @@ internal sealed record QueueMaintenanceReceipt(string Outcome, string Reason, lo
             !Reject(() => Parse(release.Replace("1024", "2048"), "sidecar", "release", nonce, 1000, held)) ||
             !Reject(() => Parse(apply.Replace("EFFECT_VERIFIED=no", "EFFECT_VERIFIED=yes"), "sidecar", "release", nonce, 1000, held, 1060, sha)) ||
             !Reject(() => Parse(apply.Replace("COMMAND_COUNT=1", "COMMAND_COUNT=0"), "sidecar", "release", nonce, 1000, held, 1060, sha)))
+            return false;
+        string deletion = Make("delete", fingerprint, 1000, "apply", "command_completed", "-", "none")
+            .Replace("DELETE_REQUESTED=no", "DELETE_REQUESTED=yes");
+        if (Parse(deletion, "sidecar", "delete", nonce, 1000, held, 1060, sha).Outcome != "command_completed" ||
+            !Reject(() => Parse(deletion.Replace("DELETE_REQUESTED=yes", "DELETE_REQUESTED=no"),
+                "sidecar", "delete", nonce, 1000, held, 1060, sha)) ||
+            !Reject(() => Parse(deletion, "sidecar", "delete", nonce, 1000,
+                held with { State = "deferred" }, 1060, sha)))
+            return false;
+        string deletePreview = Make("delete", fingerprint, 1000, "prepare", "candidate", "held|1024|1", "none");
+        if (Parse(deletePreview, "sidecar", "delete", nonce, 1000, held).Outcome != "candidate" ||
+            !Reject(() => Parse(deletePreview.Replace("DELETE_REQUESTED=no", "DELETE_REQUESTED=yes"),
+                "sidecar", "delete", nonce, 1000, held)))
             return false;
         string bundle = EmbeddedAssets.BuildQueueMaintenanceBundle("sidecar", "release", nonce, 1000, fingerprint, 1060, sha);
         return bundle.Contains(" --maintenance release ", StringComparison.Ordinal) &&

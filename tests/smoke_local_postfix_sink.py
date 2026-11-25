@@ -27,7 +27,7 @@ class Sink(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, address, pause_for_sample=False):
+    def __init__(self, address, pause_for_sample=False, defer_delivery=False):
         super(Sink, self).__init__(address, Handler)
         self.delivered = threading.Event()
         self.pending_sample = threading.Event()
@@ -35,6 +35,7 @@ class Sink(socketserver.ThreadingTCPServer):
         if not pause_for_sample:
             self.allow_accept.set()
         self.messages = []
+        self.defer_delivery = defer_delivery
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -98,8 +99,11 @@ class Handler(socketserver.StreamRequestHandler):
                 self.server.pending_sample.set()
                 if not self.server.allow_accept.wait(timeout=90):
                     return
-                self.reply("250 queued-in-local-fixture")
-                self.server.delivered.set()
+                if self.server.defer_delivery:
+                    self.reply("451 4.3.0 synthetic temporary failure")
+                else:
+                    self.reply("250 queued-in-local-fixture")
+                    self.server.delivered.set()
                 sender, recipient = None, None
             elif upper == "RSET":
                 sender, recipient = None, None

@@ -74,7 +74,16 @@ sudo postconf -c "$CONF" -e \
   "relay_transport = smtp:[127.0.0.1]:$SINK" \
   "smtp_fallback_relay =" \
   "smtp_tls_security_level = none" \
-  "smtp_bind_address = 127.0.0.1"
+  "smtp_bind_address = 127.0.0.1" \
+  "enable_long_queue_ids = yes" \
+  "minimum_backoff_time = 600s" \
+  "maximal_backoff_time = 600s" \
+  "queue_run_delay = 600s" \
+  "smtp_connection_cache_on_demand = no" \
+  "transport_maps =" \
+  "sender_dependent_relayhost_maps =" \
+  "sender_dependent_default_transport_maps =" \
+  "content_filter ="
 test "$(sudo postconf -c "$CONF" -h relayhost)" = "[127.0.0.1]:$SINK"
 test "$(sudo postconf -c "$CONF" -h default_transport)" = "smtp:[127.0.0.1]:$SINK"
 test "$(sudo postconf -c "$CONF" -h relay_transport)" = "smtp:[127.0.0.1]:$SINK"
@@ -97,3 +106,9 @@ for attempt in $(seq 1 30); do
 done
 test -z "$(sudo postqueue -c "$CONF" -j)"
 echo 'LOCAL_POSTFIX_QUEUE_TO_SMTP_LOOPBACK_ACCEPTANCE=PASS'
+
+# Same disposable isolated instance and temporary loopback route. The
+# product CLI, not a direct postsuper shortcut, must exercise every action.
+python3 tests/smoke_local_postfix_maintenance.py "$PORT" "$SINK"
+test -z "$(sudo postqueue -c "$CONF" -j)"
+echo 'LOCAL_POSTFIX_QUEUE_MAINTENANCE_ACCEPTANCE=PASS'
