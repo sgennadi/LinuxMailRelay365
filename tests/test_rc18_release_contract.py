@@ -12,7 +12,8 @@ class RC18ReleaseContract(unittest.TestCase):
     def test_inherits_all_rc17_checks_and_requires_real_vm(self):
         prior = CI.split("\n  rc17-prerelease-publish:\n", 1)[1].split(
             "\n  rc18-prerelease-publish:\n", 1)[0]
-        release = CI.split("\n  rc18-prerelease-publish:\n", 1)[1]
+        release = CI.split("\n  rc18-prerelease-publish:\n", 1)[1].split(
+            "\n  rc19-prerelease-publish:\n", 1)[0]
         def deps(job):
             return job.split("    needs:\n", 1)[1].split("    runs-on:", 1)[0]
         self.assertEqual(deps(release), deps(prior) + "      - rc18-rocky-enforcing-vm\n")
@@ -31,7 +32,8 @@ class RC18ReleaseContract(unittest.TestCase):
         self.assertNotIn("continue-on-error", VM)
 
     def test_exact_version_and_immutable_unsigned_publication(self):
-        release = CI.split("\n  rc18-prerelease-publish:\n", 1)[1]
+        release = CI.split("\n  rc18-prerelease-publish:\n", 1)[1].split(
+            "\n  rc19-prerelease-publish:\n", 1)[0]
         for marker in ("github.event_name == 'push'",
                        "github.ref == 'refs/heads/feature/post-rc17-sendmail-v2'",
                        'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
@@ -43,11 +45,10 @@ class RC18ReleaseContract(unittest.TestCase):
             self.assertIn(marker, release)
         for marker in ("--clobber", "--latest", "continue-on-error"):
             self.assertNotIn(marker, release)
-        self.assertIn("<Version>0.1.1-rc.18</Version>", (CS / "LinuxMailRelay365.csproj").read_text())
-        for path in ("UpdateCheck.cs", "UpdateCheck.Fallback.cs"):
-            self.assertIn('internal const string Version = "0.1.1-rc.18";',
-                          (CS / path).read_text())
-        self.assertIn("-ExpectedCandidateVersion '0.1.1-rc.18'", CI)
+        # Historical RC18 publication gate stays exact after version advances.
+        self.assertIn("<Version>0.1.1-rc.18</Version>", release)
+        self.assertEqual(release.count('internal const string Version = "0.1.1-rc.18";'), 2)
+        self.assertIn("-SourceTag 'v0.1.1-rc.18'", CI)
         self.assertIn("STABLE_UNSIGNED_RELEASE_GATE=refused_expected", CI)
         self.assertIn("tag='v0.1.1-rc.17'", CI)
         self.assertIn('z.namelist() == ["LinuxMailRelay365.exe"]', release)

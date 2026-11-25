@@ -12,7 +12,7 @@ namespace LinuxMailRelay365;
 // UniversalUpdater module is present, the full shared verifier is compiled instead.
 internal static class UpdateCheck
 {
-    internal const string Version = "0.1.1-rc.18";
+    internal const string Version = "0.1.1-rc.19";
     private const int MaximumMetadataBytes = 2 * 1024 * 1024;
     private const string Repository = "sgennadi/LinuxMailRelay365";
 

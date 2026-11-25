@@ -129,3 +129,15 @@ from a changed backup or target. Built-in Windows tests exercise exclusive
 locks, unchanged foreign work files, altered backup/target rejection and
 successful rollback using disposable files. This is not yet interactive
 updater acceptance, and does not change signature/version requirements.
+
+## RC19 publication
+
+The RC19 release branch uses version 0.1.1-rc.19 consistently in the
+Windows project and both update discovery implementations. Publication is
+conditional on every prior RC18 dependency plus the native EL Sendmail
+matrix and the expanded same-commit Rocky queue/Enforcing workflow.
+The Windows baseline rehearsal now performs an actual RC18-to-RC19
+version transition, but remains a disposable file replacement test rather
+than interactive updater helper acceptance. Release archives are validated
+against their SHA-256 manifest and architecture-specific PE headers.
+The unsigned prerelease gate cannot overwrite existing release assets.
