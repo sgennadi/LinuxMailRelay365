@@ -18,7 +18,7 @@ internal sealed partial class MainForm
     /// <summary>Reusable WinForms Device Code interaction for Graph and ARM C# calls.</summary>
     private async Task<T> WithNativeMicrosoftSignInAsync<T>(
         Func<Func<DeviceCodeResult, Task>, CancellationToken, Task<T>> operation,
-        bool mayModifyEntra = false)
+        bool mayModifyEntra = false, Form? signInOwner = null)
     {
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(12));
         using var dialog = new NativeDeviceCodeDialog(cancellation.Cancel);
@@ -33,7 +33,9 @@ internal sealed partial class MainForm
                 {
                     if (IsDisposed || cancellation.IsCancellationRequested)
                         throw new OperationCanceledException("Sign-in cancelled.");
-                    dialog.Present(deviceCode, this);
+                    if (signInOwner?.IsDisposed == true)
+                        throw new OperationCanceledException("Sign-in owner closed.");
+                    dialog.Present(deviceCode, signInOwner ?? this);
                     displayed.TrySetResult(true);
                 }
                 catch (Exception ex) { displayed.TrySetException(ex); }

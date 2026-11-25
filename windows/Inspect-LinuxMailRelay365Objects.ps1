@@ -8,6 +8,7 @@ param(
   [string]$Mailbox = '',
   [guid]$EnterpriseObjectId = [guid]::Empty,
   [string]$ResultPath = '',
+  [switch]$MailboxOnly,
   [switch]$SelfTest
 )
 Set-StrictMode -Version Latest
@@ -166,6 +167,7 @@ Require ($null -ne (Get-Module -ListAvailable ExchangeOnlineManagement)) 'exchan
 $graphRequested = $ClientId -ne [guid]::Empty
 $mailboxRequested = $Mailbox.Length -gt 0
 Require ($mailboxRequested -eq ($EnterpriseObjectId -ne [guid]::Empty)) 'smtp_audit_selection_incomplete'
+Require (-not $MailboxOnly -or ($mailboxRequested -and $graphRequested -and -not $ConnectorName)) 'mailbox_only_requires_exact_identity'
 if ($mailboxRequested) {
   Require ($graphRequested -and $Mailbox.Length -le 254 -and $Mailbox -ceq $Mailbox.ToLowerInvariant() -and
     $Mailbox -cmatch '^[a-z0-9.!#$%&''*+/=?^_\x60{|}~-]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$' -and
@@ -195,34 +197,38 @@ try {
   }
   Require ($sessions.Count -eq 1 -and $sessions[0].TenantID -and
     ([guid]$sessions[0].TenantID) -eq $TenantId) 'wrong_exchange_tenant'
-  $connectors=@(Get-InboundConnector -ResultSize 501 -ErrorAction Stop)
-  Require ($connectors.Count -le 500) 'too_many_connectors'
-  $selected=@($connectors | Where-Object {
-    ([string]$_.Name).StartsWith('LinuxMailRelay365',[StringComparison]::OrdinalIgnoreCase) -or
-    ($ConnectorName -and [string]$_.Name -ceq $ConnectorName)
-  })
-  Require ($selected.Count -le 100) 'too_many_matching_connectors'
-  $inventory.connectors=@($selected | ForEach-Object { ConnectorRecord $_ $TenantId })
-  if ($graphRequested) {
-    $prefix='LMR365-' + $ClientId.ToString('N').Substring(0,16)
-    $scopes=@(Get-ManagementScope -ErrorAction Stop)
-    Require ($scopes.Count -le 3000) 'too_many_scopes'
-    $matchingScopes=@($scopes | Where-Object {
-      ([string]$_.Name).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)
+  # A selected mailbox audit does not enumerate organization-wide connectors,
+  # scopes or assignments. Their absence in this mode is not a deletion.
+  if (-not $MailboxOnly) {
+    $connectors=@(Get-InboundConnector -ResultSize 501 -ErrorAction Stop)
+    Require ($connectors.Count -le 500) 'too_many_connectors'
+    $selected=@($connectors | Where-Object {
+      ([string]$_.Name).StartsWith('LinuxMailRelay365',[StringComparison]::OrdinalIgnoreCase) -or
+      ($ConnectorName -and [string]$_.Name -ceq $ConnectorName)
     })
-    Require ($matchingScopes.Count -le 100) 'too_many_matching_scopes'
-    $inventory.scopes=@($matchingScopes | ForEach-Object {
-      [ordered]@{name=SafeText $_.Name;filter=SafeText $_.RecipientRestrictionFilter 300}
-    })
-    $assignments=@(Get-ManagementRoleAssignment -ErrorAction Stop)
-    Require ($assignments.Count -le 10000) 'too_many_assignments'
-    $mine=@($assignments | Where-Object {
-      ([string]$_.Name).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)
-    })
-    Require ($mine.Count -le 100) 'too_many_matching_assignments'
-    $inventory.roleAssignments=@($mine | ForEach-Object {
-      [ordered]@{name=SafeText $_.Name;role=SafeText $_.Role;scope=SafeText $_.CustomResourceScope}
-    })
+    Require ($selected.Count -le 100) 'too_many_matching_connectors'
+    $inventory.connectors=@($selected | ForEach-Object { ConnectorRecord $_ $TenantId })
+    if ($graphRequested) {
+      $prefix='LMR365-' + $ClientId.ToString('N').Substring(0,16)
+      $scopes=@(Get-ManagementScope -ErrorAction Stop)
+      Require ($scopes.Count -le 3000) 'too_many_scopes'
+      $matchingScopes=@($scopes | Where-Object {
+        ([string]$_.Name).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)
+      })
+      Require ($matchingScopes.Count -le 100) 'too_many_matching_scopes'
+      $inventory.scopes=@($matchingScopes | ForEach-Object {
+        [ordered]@{name=SafeText $_.Name;filter=SafeText $_.RecipientRestrictionFilter 300}
+      })
+      $assignments=@(Get-ManagementRoleAssignment -ErrorAction Stop)
+      Require ($assignments.Count -le 10000) 'too_many_assignments'
+      $mine=@($assignments | Where-Object {
+        ([string]$_.Name).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)
+      })
+      Require ($mine.Count -le 100) 'too_many_matching_assignments'
+      $inventory.roleAssignments=@($mine | ForEach-Object {
+        [ordered]@{name=SafeText $_.Name;role=SafeText $_.Role;scope=SafeText $_.CustomResourceScope}
+      })
+    }
   }
   if ($mailboxRequested) {
     $inventory.mailboxAudit=ReadSmtpMailboxAudit $TenantId $ClientId $EnterpriseObjectId $Mailbox

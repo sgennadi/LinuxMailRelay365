@@ -20,7 +20,7 @@ internal sealed partial class MainForm
             var reply = await SshRemote.RunRootScriptAsync(current,
                 EmbeddedAssets.BuildMultiMailboxIdentityInventoryBundle(nonce), TimeSpan.FromMinutes(3));
             if (reply.ExitCode != 0) throw new InvalidOperationException("Multi-mailbox identity inventory unavailable or changed.");
-            RequireSameArchiveConnection(current, allowFirstPin: true);
+            endpoint = RequireSameArchiveConnection(current, allowFirstPin: true);
             if (context != CurrentMultiMailboxContext())
                 throw new InvalidOperationException("Multi-mailbox selection changed.");
             return MultiMailboxIdentityInventory.Parse(reply.StdOut, nonce);
@@ -60,6 +60,9 @@ internal sealed partial class MainForm
         var refresh = UiTheme.Action(T("Обновить", "Refresh", "רענון"), true, "refresh");
         footer.Controls.Add(close);
         footer.Controls.Add(refresh);
+        var verify = UiTheme.Action(T("Проверить в Microsoft 365...", "Verify selected mailbox in Microsoft 365...",
+            "בדיקת התיבה ב-Microsoft 365..."), true, "check");
+        footer.Controls.Add(verify);
         DataGridView Grid(TabPage tab)
         {
             var grid = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true,
@@ -77,16 +80,27 @@ internal sealed partial class MainForm
         }
         var sourceGrid = Grid(sourceTab);
         var runtimeGrid = Grid(runtimeTab);
-        bool loading = false;
-        CloudObjectsInventory? CloudSample() => lastReadOnlyCloudLinuxIdentity == TryCurrentIdentity()
-            ? lastReadOnlyCloudInventory : null;
+        bool loading = false, reading = false, inventoryValid = true;
+        // Only within this dialog and exact source/runtime map selection.
+        var observations = new Dictionary<MultiMailboxCloudSelection, MultiMailboxCloudObservation>();
+        CloudObjectsInventory? CloudSample() => lastReadOnlyCloudLinuxIdentity is not null &&
+            lastReadOnlyCloudLinuxIdentity == TryCurrentIdentity() ? lastReadOnlyCloudInventory : null;
+        string SelectedScope() => tabs.SelectedTab == runtimeTab ? "runtime" : "source";
+        MultiMailboxCloudObservation? Observation(string scope, MultiMailboxIdentityRow? row)
+        {
+            var key = inventoryValid ? MultiMailboxCloudSelection.Capture(inventory, scope, row) : null;
+            return key is not null && observations.TryGetValue(key, out var result) ? result : null;
+        }
         MultiMailboxIdentityRow? Selected() =>
             (tabs.SelectedTab == runtimeTab ? runtimeGrid : sourceGrid).SelectedRows
                 .Cast<DataGridViewRow>().FirstOrDefault()?.Tag as MultiMailboxIdentityRow;
         void Detail()
         {
-            if (loading) return;
+            if (loading || !inventoryValid) return;
             var row = Selected();
+            string scope = SelectedScope();
+            verify.Enabled = !reading && MultiMailboxCloudSelection.Capture(inventory, scope, row) is not null;
+            var observed = Observation(scope, row);
             details.Text = row is null
                 ? "Select one mailbox. Source and runtime maps are distinct. No automatic changes or cloud sign-in."
                 : "SMTP login: " + row.Login + Environment.NewLine +
@@ -95,22 +109,32 @@ internal sealed partial class MainForm
                     "Client ID: " + (row.Client?.ToString("D") ?? "unverified") + Environment.NewLine +
                     "Configured signer: " + row.Signer + Environment.NewLine +
                     "Public certificate SHA-256: " + (row.CertificateSha.Length > 0 ? row.CertificateSha : "unverified") + Environment.NewLine +
-                    "Previous exact Graph sample: " + row.CompareCloud(CloudSample(), DateTimeOffset.UtcNow) + Environment.NewLine +
-                    "Previous exact mailbox RBAC sample: " + row.CompareMailboxRbac(CloudSample()) + Environment.NewLine +
-                    "Linux public PEM bytes only. Local X.509 dates, key possession, live SMTP login and delivery are not verified. " +
-                    "The Graph/Exchange sample may be stale; it is never applied to another tenant, app or mailbox.";
+                    (observed is not null ? observed.Describe(DateTimeOffset.UtcNow) :
+                        "Previous Objects Manager Graph sample: " + row.CompareCloud(CloudSample(), DateTimeOffset.UtcNow) + Environment.NewLine +
+                        "Previous Objects Manager mailbox RBAC sample: " + row.CompareMailboxRbac(CloudSample()) + Environment.NewLine +
+                        "Choose Verify selected mailbox for a new read-only cloud sample. " +
+                        "Local certificate validity, key possession, SMTP login and delivery remain unverified.");
         }
-        void Populate(DataGridView grid, MultiMailboxIdentityMap map)
+        void Populate(DataGridView grid, MultiMailboxIdentityMap map, string scope)
         {
             grid.Rows.Clear();
             foreach (var row in map.Rows)
             {
-                string cloud = row.CompareCloud(CloudSample(), DateTimeOffset.UtcNow);
+                var observed = Observation(scope, row);
+                string cloud = observed is not null ? observed.GraphStatus(DateTimeOffset.UtcNow) :
+                    row.CompareCloud(CloudSample(), DateTimeOffset.UtcNow);
                 int index = grid.Rows.Add(row.Login, row.Mailbox, row.Signer, row.Status, cloud);
                 grid.Rows[index].Tag = row;
                 if (!SystemInformation.HighContrast)
                 {
                     var cell = grid.Rows[index].Cells["status"];
+                    if (observed is not null)
+                    {
+                        var cloudCell = grid.Rows[index].Cells["cloud"];
+                        bool match = cloud == "matches_graph_credential_dates" &&
+                            observed.Cloud.MailboxAudit?.ScopedConfigurationObserved == true;
+                        cloudCell.Style.ForeColor = match ? Color.DarkGreen : UiTheme.WarningInk;
+                    }
                     if (row.Status != "public_certificate_read")
                     {
                         cell.Style.BackColor = UiTheme.WarningSurface;
@@ -121,8 +145,9 @@ internal sealed partial class MainForm
             grid.CurrentCell = null;
             grid.ClearSelection();
         }
-        void Render()
+        void Render(MultiMailboxCloudSelection? restore = null)
         {
+            inventoryValid = true;
             loading = true;
             try
             {
@@ -134,8 +159,20 @@ internal sealed partial class MainForm
                 heading.ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText :
                     inventory.Relation == "same" && inventory.InstalledBinding == "matches_marker" ? UiTheme.Navy : UiTheme.WarningInk;
                 heading.MaximumSize = new Size(Math.Max(160, dialog.ClientSize.Width - 38), 0);
-                Populate(sourceGrid, inventory.Source);
-                Populate(runtimeGrid, inventory.Runtime);
+                Populate(sourceGrid, inventory.Source, "source");
+                Populate(runtimeGrid, inventory.Runtime, "runtime");
+                if (restore is not null)
+                {
+                    tabs.SelectedTab = restore.Scope == "runtime" ? runtimeTab : sourceTab;
+                    var grid = restore.Scope == "runtime" ? runtimeGrid : sourceGrid;
+                    foreach (DataGridViewRow candidate in grid.Rows)
+                        if (candidate.Tag is MultiMailboxIdentityRow row && row == restore.Row)
+                        {
+                            grid.CurrentCell = candidate.Cells[0];
+                            candidate.Selected = true;
+                            break;
+                        }
+                }
             }
             finally { loading = false; }
             Detail();
@@ -144,25 +181,91 @@ internal sealed partial class MainForm
         runtimeGrid.SelectionChanged += (_, _) => Detail();
         tabs.SelectedIndexChanged += (_, _) => Detail();
         dialog.ClientSizeChanged += (_, _) => heading.MaximumSize = new Size(Math.Max(160, dialog.ClientSize.Width - 38), 0);
-        bool reading = false;
         dialog.FormClosing += (_, e) => { if (reading) e.Cancel = true; };
+        void Invalidate(string reason)
+        {
+            inventoryValid = false;
+            observations.Clear();
+            sourceGrid.Rows.Clear();
+            runtimeGrid.Rows.Clear();
+            heading.Text = reason;
+            details.Text = "No current cloud result accepted. Refresh the Linux inventory before retrying.";
+            verify.Enabled = false;
+        }
+        verify.Click += async (_, _) =>
+        {
+            if (reading || !inventoryValid) return;
+            var selection = MultiMailboxCloudSelection.Capture(inventory, SelectedScope(), Selected());
+            if (selection is null) return;
+            if (MessageBox.Show(dialog,
+                "Read Microsoft Graph and Exchange Online for this exact selected identity only?" +
+                Environment.NewLine + "Mailbox: " + selection.Row.Mailbox +
+                Environment.NewLine + "Tenant ID: " + selection.Row.Tenant +
+                Environment.NewLine + "Client ID: " + selection.Row.Client +
+                Environment.NewLine + "Use an authorized administrator account in this tenant. No cloud or Linux settings will change.",
+                "Microsoft 365 | Read-only mailbox audit", MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Information) != DialogResult.OK) return;
+            observations.Remove(selection);
+            reading = true;
+            refresh.Enabled = close.Enabled = tabs.Enabled = verify.Enabled = false;
+            heading.Text = "Checking Linux identity, then Microsoft Graph / Exchange Online...";
+            details.Clear();
+            try
+            {
+                string bootstrapField = entraSignInClientId.Text.Trim();
+                Guid bootstrap = ApprovedGraphPublicClientId();
+                void ValidateContext()
+                {
+                    RequireSameArchiveConnection(endpoint);
+                    if (!HasMailDiscovery() || context != CurrentMultiMailboxContext() ||
+                        bootstrapField != entraSignInClientId.Text.Trim() ||
+                        !selection.Matches(inventory, SelectedScope(), Selected()))
+                        throw new InvalidOperationException("Mailbox, Linux or sign-in selection changed.");
+                }
+                ValidateContext();
+                selection.RequireUnchanged(await ReadAsync());
+                ValidateContext();
+                var cloud = await QueryMultiMailboxCloudAsync(selection, dialog, bootstrap, ValidateContext);
+                DateTimeOffset sampled = DateTimeOffset.UtcNow;
+                ValidateContext();
+                var latest = await ReadAsync();
+                selection.RequireUnchanged(latest);
+                ValidateContext();
+                var observation = MultiMailboxCloudObservation.Create(selection, cloud, sampled);
+                inventory = latest;
+                observations[selection] = observation;
+                Render(selection);
+                WriteLine("Selected multi-mailbox cloud configuration sample completed. No SMTP, signer or delivery test.");
+            }
+            catch (Exception)
+            {
+                Invalidate("Mailbox audit failed or became stale.");
+                WriteLine("Selected mailbox read-only cloud audit incomplete. Refresh Linux inventory and verify tenant permissions.");
+            }
+            finally
+            {
+                reading = false;
+                refresh.Enabled = close.Enabled = tabs.Enabled = true;
+                Detail();
+            }
+        };
         refresh.Click += async (_, _) =>
         {
             if (reading) return;
             reading = true;
-            refresh.Enabled = close.Enabled = tabs.Enabled = false;
+            refresh.Enabled = close.Enabled = tabs.Enabled = verify.Enabled = false;
+            inventoryValid = false;
+            observations.Clear();
             sourceGrid.Rows.Clear(); runtimeGrid.Rows.Clear();
             heading.Text = "Reading fresh identity inventory...";
             details.Clear();
             try { inventory = await ReadAsync(); Render(); }
             catch (Exception)
             {
-                sourceGrid.Rows.Clear(); runtimeGrid.Rows.Clear();
-                heading.Text = "Refresh failed. Previous inventory invalidated.";
-                details.Text = "No changes requested. Reinspect the Linux connection before retrying.";
+                Invalidate("Refresh failed. Previous inventory invalidated.");
                 WriteLine("Multi-mailbox inventory refresh failed. No changes requested.");
             }
-            finally { reading = false; refresh.Enabled = close.Enabled = tabs.Enabled = true; }
+            finally { reading = false; refresh.Enabled = close.Enabled = tabs.Enabled = true; Detail(); }
         };
         root.Controls.Add(heading, 0, 0); root.Controls.Add(tabs, 0, 1);
         root.Controls.Add(details, 0, 2); root.Controls.Add(footer, 0, 3);

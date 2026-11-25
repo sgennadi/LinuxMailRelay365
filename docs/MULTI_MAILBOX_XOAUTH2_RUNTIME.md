@@ -371,3 +371,23 @@ No certificate validity or key possession is inferred from local PEM bytes.
 An absent, unsupported, malformed or changed configuration never becomes
 a successful audit. Full live cloud per-mailbox inspection and protected
 source-map editing remain separate development steps.
+
+## Selected mailbox live cloud inspection (post-RC19, pending CI)
+
+Select a source or runtime row and choose Verify selected mailbox in
+Microsoft 365. The exact Tenant ID, Client ID and mailbox are shown for
+explicit read-only sign-in approval. The main Wizard fields are not changed.
+Native C# Graph retrieves that application and public certificate digests;
+Exchange Online uses the exact returned Enterprise Application ID and a
+mailbox-only mode, without enumerating connectors, scopes or assignments.
+If Graph cannot identify the service principal, only the Graph observation
+is shown and Exchange remains unverified. Each observation is tied to the
+source/runtime scope, map SHA, complete row and runtime recovery binding.
+Fresh Linux inventory is checked before and after the cloud call; selection,
+SSH key or configuration drift invalidates the result. Observations are
+in-memory and cleared by Refresh. The timestamp and separate SMTP AUTH,
+mailbox identity, service principal and RBAC findings are shown per row.
+The administrator may need separate Graph and EXO device-code sign-ins;
+no new write permissions, tokens on disk, changes or mail sending are added.
+Local certificate validity, key possession and actual provider SMTP AUTH
+or delivery are still not verified. Real tenant acceptance remains open.
