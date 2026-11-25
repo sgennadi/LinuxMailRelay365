@@ -10,7 +10,7 @@ spec = importlib.util.spec_from_file_location("sm_action_product", str(ROOT / "l
 q = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(q)
 HEADER = "-----Q-ID----- --Size-- -----Q-Time----- ------------Sender/Recipient-----------\n"
-ID = "3AP123ABC45678"
+ID = "3AP123AB45678"
 
 
 def message(ident=ID, marker="", size=123):
@@ -59,7 +59,7 @@ class SendmailActions(unittest.TestCase):
         self.execute.assert_called_once_with("msp", "retry", ID)
 
     def test_substring_collision_processing_and_truncation_refused(self):
-        self.raw = "Mail Queue (2 requests)\n" + HEADER + message() + message("A" + ID)
+        self.raw = "Mail Queue (2 requests)\n" + HEADER + message() + message(ID + "9")
         self.assertEqual(self.inventory()[5][0][-1], "-")
         self.raw = "Mail Queue (1 request)\n" + HEADER + message(marker="*")
         self.assertEqual(self.inventory()[5][0][-1], "-")

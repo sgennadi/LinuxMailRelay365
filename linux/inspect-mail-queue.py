@@ -617,7 +617,11 @@ def sendmail_count(output):
 SM_GROUP = re.compile(r"(?:Mail [Qq]ueue|/[^\r\n]+?)\s+\(([0-9]{1,9}) requests?(?:, only ([0-9]{1,9}) printed)?\)")
 SM_EMPTY = re.compile(r"(?:Mail queue is empty|/[^\r\n]+ is empty)\.?", re.I)
 SM_HEADER = re.compile(r"-+Q-ID-+\s+-+Size-+\s+-+Q-Time-+\s+-+Sender/Recipient-+")
-SM_ROW = re.compile(r"^[ ]{0,3}([A-Za-z0-9]{6,64})[ ]*([*X-]?)\s+([0-9]{1,13})\s+"
+# Sendmail 8.12+ queue IDs end in at least five decimal PID digits.
+# Do not greedily consume X (load mark) as a part of the ID; reject
+# ambiguous/non-native IDs instead of deriving a potentially wrong target.
+SM_ID = re.compile(r"[A-Za-z0-9]{8}[0-9]{5,56}")
+SM_ROW = re.compile(r"^[ ]{0,3}(" + SM_ID.pattern + r")[ ]*([*X-]?)\s+([0-9]{1,13})\s+"
                     r"((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
                     r"\s+(?:[1-9]|[12][0-9]|3[01])\s+(?:[01][0-9]|2[0-3]):[0-5][0-9])\s+.*$")
 SM_STATUS = {"": "queued", "*": "processing_mark", "X": "load_limited", "-": "too_young"}
@@ -884,7 +888,7 @@ def sm_retryable(row, rows):
     ident, public, _ = row
     # -qI is SUBSTRING matching. Require a single full native ID match
     # across the complete normal queue and avoid marked processing entries.
-    return (public[1] != "processing_mark" and re.fullmatch(r"[A-Za-z0-9]{12,64}", ident)
+    return (public[1] != "processing_mark" and SM_ID.fullmatch(ident)
             and sum(ident in other[0] for other in rows) == 1)
 
 
@@ -964,7 +968,7 @@ def sm_prepare(queue, action, nonce, sampled, token, runner=run_native,
 def sm_execute(queue, action, ident):
     if queue not in SM_PATHS or action not in SM_ACTIONS or (
         action == "flush" and ident is not None) or (
-        action == "retry" and (not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9]{12,64}", ident))):
+        action == "retry" and (not isinstance(ident, str) or not SM_ID.fullmatch(ident))):
         raise ValueError("invalid_native_sendmail_target")
     binary = native_binary("sendmail")
     args = [binary, SM_PATHS[queue][2], "-qf"]

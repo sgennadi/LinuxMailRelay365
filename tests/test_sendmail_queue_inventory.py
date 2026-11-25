@@ -12,7 +12,7 @@ HEADER = "-----Q-ID----- --Size-- -----Q-Time----- ------------Sender/Recipient-
 NONCE = "a" * 64
 
 
-def row(ident="3AP123ABC45678", mark="", size=702, date="Wed Nov 25 06:00", reason=None):
+def row(ident="3AP123AB45678", mark="", size=702, date="Wed Nov 25 06:00", reason=None):
     result = ident + mark + "   " + str(size) + " " + date + " <private@example.invalid>\n"
     if reason:
         result += " " + "8BITMIME".rjust(10) + " (" + reason + ")\n"
@@ -30,7 +30,7 @@ class SendmailInventoryTests(unittest.TestCase):
         self.assertEqual(rows[0], (1, 1, "processing_mark", 702, "Wed Nov 25 06:00", "tls"))
         self.assertEqual(rows[1], (2, 2, "load_limited", 702, "Tue Nov 3 12:00", "no_reason"))
         receipt = "\n".join(q.sendmail_inventory_lines("mta", NONCE, "ok", total, groups, listed, truncated, rows))
-        for value in ("3AP123ABC45678", "example.invalid", "/var/spool", "certificate"):
+        for value in ("3AP123AB45678", "example.invalid", "/var/spool", "certificate"):
             self.assertNotIn(value, receipt)
 
     def test_independent_fixed_native_commands(self):
@@ -59,6 +59,20 @@ class SendmailInventoryTests(unittest.TestCase):
                 q.sendmail_rows(raw)
         runner = Mock(side_effect=q.Unavailable("timeout"))
         self.assertEqual(q.sendmail_inventory("msp", NONCE, runner), ("timeout", None, None, None, "unknown", []))
+
+    def test_native_pid_suffix_and_load_marker_are_unambiguous(self):
+        # IDs have an eight-character encoded prefix and a decimal PID
+        # suffix. X is permitted inside the prefix, not at the end of an ID.
+        ident = "3AP123AX456789"
+        raw = "Mail Queue (1 request)\n" + HEADER + row(ident=ident, mark="X")
+        data = q.sendmail_rows(raw, private=True)
+        self.assertEqual(data[-1][0][0], ident)
+        self.assertEqual(data[-1][0][1][1], "load_limited")
+        plain = raw.replace(ident + "X", ident)
+        self.assertEqual(q.sendmail_rows(plain, private=True)[-1][0][0], ident)
+        self.assertEqual(q.sendmail_rows(plain)[-1][0][2], "queued")
+        with self.assertRaises(q.Unavailable):
+            q.sendmail_rows("Mail Queue (1 request)\n" + HEADER + row(ident=ident + "X", mark="*"))
 
     def test_display_limit_is_not_native_limit(self):
         raw = "/var/spool/mqueue (505 requests)\n" + HEADER + "".join(

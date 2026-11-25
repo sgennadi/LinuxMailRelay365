@@ -35,9 +35,9 @@ internal sealed partial class MainForm
                     InspectEximQueueAsync, false, "check", "exim-queue-messages");
             if (scope == "sendmail")
             {
-                AddAction(page, T("Сообщения Sendmail — MTA", "Sendmail MTA messages (read-only)", "הודעות Sendmail MTA לקריאה בלבד"),
+                AddAction(page, T("Сообщения Sendmail — MTA", "Sendmail MTA queue manager", "הודעות Sendmail MTA לקריאה בלבד"),
                     () => InspectSendmailQueueAsync("mta"), false, "check", "sendmail-queue-mta");
-                AddAction(page, T("Сообщения Sendmail — MSP", "Sendmail MSP messages (read-only)", "הודעות Sendmail MSP לקריאה בלבד"),
+                AddAction(page, T("Сообщения Sendmail — MSP", "Sendmail MSP queue manager", "הודעות Sendmail MSP לקריאה בלבד"),
                     () => InspectSendmailQueueAsync("msp"), false, "check", "sendmail-queue-msp");
             }
             if (scope is "postfix" or "sidecar")
