@@ -254,10 +254,7 @@ internal sealed partial class MainForm
                 !inventory.ContextVerified || inventory.NativeTruncated == true || inventory.DisplayTruncated == true;
             heading.Text = endpoint.Host + ":" + endpoint.Port + " | " + name + " | " +
                 (!snapshotValid ? T("Требуется обновление", "Refresh required", "נדרש רענון") : QueueResultText(inventory.Result));
-            heading.BackColor = SystemInformation.HighContrast ? SystemColors.Window :
-                warning ? UiTheme.WarningSurface : UiTheme.InfoSurface;
-            heading.ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText :
-                warning ? UiTheme.WarningInk : UiTheme.Navy;
+            QueueVisuals.ApplyHeading(heading, warning, outcomeUncertain, quarantine);
             grid.Rows.Clear();
             if (!snapshotValid)
             {
@@ -275,20 +272,8 @@ internal sealed partial class MainForm
             {
                 int index = grid.Rows.Add(row.Reference, row.Group, SendmailState(row.State), row.Bytes,
                     row.NativeTime, QueueMessageReason(row.Reason));
-                if (!SystemInformation.HighContrast)
-                {
-                    grid.Rows[index].Cells[2].Style.ForeColor = row.State switch
-                    {
-                        "processing_mark" => UiTheme.Navy,
-                        "load_limited" => UiTheme.WarningInk,
-                        "too_young" => Color.DarkSlateBlue,
-                        _ => SystemColors.WindowText
-                    };
-                    if (row.Reason is "auth" or "tls" or "permanent" or "mixed")
-                        grid.Rows[index].Cells[5].Style.ForeColor = Color.Firebrick;
-                    else if (row.Reason != "no_reason")
-                        grid.Rows[index].Cells[5].Style.ForeColor = UiTheme.WarningInk;
-                }
+                QueueVisuals.ApplyState(grid.Rows[index].Cells["state"], row.State, quarantine);
+                QueueVisuals.ApplyReason(grid.Rows[index].Cells["reason"], row.Reason);
             }
             grid.CurrentCell = null;
             grid.ClearSelection();

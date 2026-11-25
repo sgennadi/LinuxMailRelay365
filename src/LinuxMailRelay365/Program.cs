@@ -325,6 +325,7 @@ internal static class Program
             ("Native recovery center adaptive visibility", NativeRecoveryVisibility.SelfTest),
             ("Verified archive inventory and explicit selection", VerifiedArchiveListing.SelfTest),
             ("Privacy-safe native mail queue sample", MailQueueSample.SelfTest),
+            ("Shared queue visual semantics and readable color contrast", QueueVisuals.SelfTest),
             ("Bounded private message inventory and filters", QueueMessageInventory.SelfTest),
             ("Read-only selected Retry review receipt", QueueRetryReview.SelfTest),
             ("Selected Retry preparation and apply receipts", QueueRetryApplyReceipt.SelfTest),

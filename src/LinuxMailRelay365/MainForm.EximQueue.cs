@@ -113,8 +113,7 @@ internal sealed partial class MainForm
             bool warning = !snapshotValid || outcomeUncertain || inventory.Truncated == true || !inventory.ContextVerified;
             heading.Text = endpoint.Host + ":" + endpoint.Port + " | Exim | " +
                 (snapshotValid ? QueueResultText(inventory.Result) : T("Требуется обновление", "Refresh required", "נדרש רענון"));
-            heading.BackColor = SystemInformation.HighContrast ? SystemColors.Window : warning ? UiTheme.WarningSurface : UiTheme.InfoSurface;
-            heading.ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText : warning ? UiTheme.WarningInk : UiTheme.Navy;
+            QueueVisuals.ApplyHeading(heading, warning, outcomeUncertain);
             grid.Rows.Clear();
             if (!snapshotValid)
             {
@@ -128,8 +127,7 @@ internal sealed partial class MainForm
             {
                 int index = grid.Rows.Add(row.Reference, row.State == "frozen" ? "Frozen" : "Queued",
                     row.AgeMinutes, row.NativeSize, row.PendingLines, row.DeliveredLines);
-                if (!SystemInformation.HighContrast && row.State == "frozen")
-                    grid.Rows[index].Cells[1].Style.ForeColor = Color.DarkOrange;
+                QueueVisuals.ApplyState(grid.Rows[index].Cells["state"], row.State);
             }
             grid.CurrentCell = null;
             grid.ClearSelection();

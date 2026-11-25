@@ -383,8 +383,7 @@ internal sealed partial class MainForm
             bool warning = !snapshotValid || outcomeUncertain || inventory.Truncated == true || inventory.RetryState != "review_only";
             heading.Text = endpoint.Host + ":" + endpoint.Port + " | " + QueueScopeName(inventory.Scope) + " | " +
                 (snapshotValid ? QueueResultText(inventory.Result) : T("Требуется обновление", "Refresh required", "נדרש רענון"));
-            heading.BackColor = SystemInformation.HighContrast ? SystemColors.Window : warning ? UiTheme.WarningSurface : UiTheme.InfoSurface;
-            heading.ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText : warning ? UiTheme.WarningInk : UiTheme.Navy;
+            QueueVisuals.ApplyHeading(heading, warning, outcomeUncertain);
             if (!snapshotValid)
             {
                 grid.Rows.Clear();
@@ -417,8 +416,8 @@ internal sealed partial class MainForm
                     {
                         int index = grid.Rows.Add(item.Reference, QueueMessageState(item.State), item.AgeMinutes,
                             item.Bytes, item.RecipientCount, QueueMessageReason(item.Reason));
-                        if (!SystemInformation.HighContrast && item.State is "deferred" or "held")
-                            grid.Rows[index].Cells[1].Style.ForeColor = Color.DarkOrange;
+                        QueueVisuals.ApplyState(grid.Rows[index].Cells["state"], item.State);
+                        QueueVisuals.ApplyReason(grid.Rows[index].Cells["reason"], item.Reason);
                     }
                 grid.CurrentCell = null;
                 grid.ClearSelection();

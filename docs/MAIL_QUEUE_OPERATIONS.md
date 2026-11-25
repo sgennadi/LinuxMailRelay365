@@ -54,3 +54,18 @@ https://sendmail-doc.sendmaid.org/op_8.17.2.html
   and physical TPM acceptance also remain separate.
 
 The new EL tests must pass before describing their results as verified.
+
+## Shared visual semantics
+
+All three message managers share the same color mapping. Blue indicates
+native active/incoming/processing markers, amber indicates delay or a
+warning, violet indicates hold/freeze/quarantine, slate indicates waiting,
+and red indicates authentication/TLS/permanent/mixed delay categories or
+an unknown operation outcome. Unmarked ordinary rows inherit Windows grid
+colors. None of these colors proves that delivery succeeded.
+
+Colors supplement existing text labels. The selected row always uses
+Windows highlight colors; high contrast uses native system colors.
+The Windows self-test checks state/diagnostic mapping and every custom
+foreground/background pair for at least 4.5:1 contrast. This does not replace
+visual checks at 100%/200% DPI, including Hebrew layout and high contrast.
