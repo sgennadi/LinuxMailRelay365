@@ -40,6 +40,7 @@
     <EmbeddedResource Include="../../linux/manage-multi-mailbox-proof-timer.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-proof-timer.py" />
     <EmbeddedResource Include="../../linux/audit-oauth-sender-map.py" LogicalName="LinuxMailRelay365.linux.oauth-sender-map-audit.py" />
     <EmbeddedResource Include="../../linux/inspect-multi-mailbox-identities.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-identity-inventory.py" />
+    <EmbeddedResource Include="../../linux/edit-multi-mailbox-source.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-source-editor.py" />
     <EmbeddedResource Include="../../linux/audit-oauth-ingress.py" LogicalName="LinuxMailRelay365.linux.oauth-ingress-audit.py" />
     <EmbeddedResource Include="../../linux/audit-oauth-identity-signing.py" LogicalName="LinuxMailRelay365.linux.oauth-identity-signing-audit.py" />
     <EmbeddedResource Include="../../linux/m365_hardware_signer.py" LogicalName="LinuxMailRelay365.linux.hardware-signer.py" />

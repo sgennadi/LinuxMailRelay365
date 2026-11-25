@@ -391,3 +391,20 @@ The administrator may need separate Graph and EXO device-code sign-ins;
 no new write permissions, tokens on disk, changes or mail sending are added.
 Local certificate validity, key possession and actual provider SMTP AUTH
 or delivery are still not verified. Real tenant acceptance remains open.
+
+## Prepared source-map editor backend (pending CI)
+
+The editor modifies only oauth-senders.tsv, never the runtime map, identity
+files, cloud objects, services or queues. Add/Edit bind an existing exact
+identity, by filename or unique valid mailbox match; Remove deletes only
+the selected source row. The last row and noncanonical source files require
+separate manual review. All remaining identities/public certificates must
+pass the inventory guard. A preview binds old/new map SHA-256 and identity
+evidence; saving requires the same plan and typed approval. The existing
+sidecar installation lock is shared, a root-private backup with manifest
+is synced before atomic replacement, and committed bytes are read back.
+An existing SELinux label is preserved; initial creation on an SELinux
+system is refused until policy-aware creation is separately implemented.
+Other root administrators must not edit the source concurrently. The
+backup directory is /etc/linuxmailrelay365/oauth-source-backups; automatic
+restore, identity creation and live activation are separate operations.
