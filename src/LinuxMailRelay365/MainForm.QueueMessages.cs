@@ -147,9 +147,14 @@ internal sealed partial class MainForm
             "מחיקת הודעה מוחזקת (בלתי הפיכה)..."), false, "trash");
         deleteHeld.Enabled = false;
         footer.Controls.Add(deleteHeld);
+        var reload = UiTheme.Action(T("Обновить очередь", "Refresh queue", "רענון תור"), true, "refresh");
+        footer.Controls.Add(reload);
         bool attempted = false;
         bool reviewing = false;
         bool closed = false;
+        bool snapshotValid = inventory.Result == "ok", outcomeUncertain = false;
+        DateTime lastRead = DateTime.Now;
+        var retryNote = UiTheme.Text("");
         QueueMessageRow? SelectedRow()
         {
             if (grid.SelectedRows.Count != 1 ||
@@ -159,12 +164,15 @@ internal sealed partial class MainForm
         }
         void UpdateRetry()
         {
-            retry.Enabled = !closed && !attempted && !reviewing && inventory.SampledAt.HasValue &&
+            bool available = !closed && !attempted && !reviewing && snapshotValid && !outcomeUncertain &&
+                inventory.Result == "ok" && inventory.SampledAt.HasValue;
+            reload.Enabled = !closed && !reviewing;
+            retry.Enabled = available &&
                 inventory.RetryState == "review_only" && SelectedRow() is { State: "deferred" } selected &&
                 QueueRetryReview.ValidSha(selected.Fingerprint);
             applyRetry.Enabled = retry.Enabled;
             var candidate = SelectedRow();
-            holdRelease.Enabled = !closed && !attempted && !reviewing && inventory.SampledAt.HasValue &&
+            holdRelease.Enabled = available &&
                 inventory.RetryState == "review_only" && candidate is not null &&
                 candidate.State is "deferred" or "held" && QueueRetryReview.ValidSha(candidate.Fingerprint);
             deleteHeld.Enabled = holdRelease.Enabled && candidate?.State == "held";
@@ -180,7 +188,7 @@ internal sealed partial class MainForm
             if (reviewing || selected is null || !retry.Enabled || inventory.SampledAt is not long sampledAt)
                 return;
             reviewing = true;
-            deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            reload.Enabled = deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 var current = RequireSameArchiveConnection(endpoint);
@@ -195,6 +203,7 @@ internal sealed partial class MainForm
                 if (!QueueScopeDiscovered(inventory.Scope))
                     throw new InvalidOperationException("Discovery changed during Retry review.");
                 var plan = QueueRetryReview.Parse(reply.StdOut, inventory.Scope, sampledAt, selected);
+                if (!plan.Candidate) snapshotValid = false;
                 string message = plan.Candidate
                     ? T("Выбранное отложенное сообщение повторно найдено. Запись не разрешена.",
                         "Selected deferred message was reidentified. No queue operation is authorized.",
@@ -208,6 +217,7 @@ internal sealed partial class MainForm
             }
             catch (Exception)
             {
+                snapshotValid = false;
                 // Never log a malformed reply, fingerprint or native identity.
                 WriteLine("Read-only Retry review failed; refresh the sample. No queue operation requested.");
                 MessageBox.Show(dialog, T("Проверка не завершилась. Обновите список.",
@@ -218,7 +228,7 @@ internal sealed partial class MainForm
             {
                 reviewing = false;
                 close.Enabled = filters.Enabled = grid.Enabled = true;
-                UpdateRetry();
+                if (!snapshotValid) RefreshRows(); else UpdateRetry();
             }
         };
         applyRetry.Click += async (_, _) =>
@@ -228,7 +238,7 @@ internal sealed partial class MainForm
                 inventory.SampledAt is not long sampledAt)
                 return;
             reviewing = true;
-            deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            reload.Enabled = deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 var current = RequireSameArchiveConnection(endpoint);
@@ -242,6 +252,7 @@ internal sealed partial class MainForm
                 var plan = QueueRetryApplyReceipt.ParsePrepare(reply.StdOut, inventory.Scope, sampledAt, selected);
                 if (!plan.Review.Candidate || plan.PreparedAt is not long preparedAt || plan.PlanSha is not string planSha)
                 {
+                    snapshotValid = false;
                     MessageBox.Show(dialog, T("Подготовка Retry отклонена. Обновите список.",
                         "Retry preparation refused. Refresh the inventory.", "הכנת ניסיון חוזר נדחתה. רעננו את הרשימה.") +
                         "\r\n" + plan.Review.Result, "LinuxMailRelay365 | Retry", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -267,6 +278,8 @@ internal sealed partial class MainForm
                     throw new InvalidOperationException("Selected message context changed.");
                 // Once dispatched, never reuse this sample, even if the reply is lost.
                 attempted = true;
+                snapshotValid = false;
+                outcomeUncertain = true;
                 var result = await SshRemote.RunRootScriptAsync(confirmed,
                     EmbeddedAssets.BuildQueueRetryApplyBundle(inventory.Scope, nonce, sampledAt,
                         selected.Fingerprint, preparedAt, planSha), TimeSpan.FromMinutes(3));
@@ -274,6 +287,7 @@ internal sealed partial class MainForm
                 RequireSameArchiveConnection(confirmed);
                 var receipt = QueueRetryApplyReceipt.ParseApply(result.StdOut, inventory.Scope, sampledAt,
                     selected.Fingerprint, preparedAt, planSha);
+                outcomeUncertain = receipt.Outcome == "outcome_unknown";
                 WriteLine("Selected Retry outcome: " + receipt.Outcome + "; " + receipt.Reason +
                     ". Delivery unverified. Refresh queue.");
                 string message = receipt.Outcome switch
@@ -289,6 +303,8 @@ internal sealed partial class MainForm
             }
             catch (Exception)
             {
+                snapshotValid = false;
+                if (attempted) outcomeUncertain = true;
                 WriteLine(attempted ? "Selected Retry outcome unknown; do not automatically retry." :
                     "Selected Retry preparation failed; no write dispatched.");
                 MessageBox.Show(dialog, attempted
@@ -301,29 +317,35 @@ internal sealed partial class MainForm
             {
                 reviewing = false;
                 close.Enabled = filters.Enabled = grid.Enabled = true;
-                UpdateRetry();
-                if (attempted) dialog.Close();
+                RefreshRows();
             }
         };
+        void OnMaintenanceDispatch()
+        {
+            attempted = true;
+            snapshotValid = false;
+            outcomeUncertain = true;
+        }
+        void OnMaintenanceReceipt(string outcome) => outcomeUncertain = outcome == "outcome_unknown";
         holdRelease.Click += async (_, _) =>
         {
             var selected = SelectedRow();
             if (!holdRelease.Enabled || reviewing || attempted || selected is null ||
                 inventory.SampledAt is not long sampledAt) return;
             reviewing = true;
-            deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            reload.Enabled = deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 await RunQueueMaintenanceAsync(endpoint, inventory.Scope,
                     selected.State == "held" ? "release" : "hold", nonce, sampledAt,
-                    selected, dialog, () => SelectedRow() == selected, () => attempted = true);
+                    selected, dialog, () => SelectedRow() == selected, OnMaintenanceDispatch, OnMaintenanceReceipt);
             }
             finally
             {
+                snapshotValid = false;
                 reviewing = false;
                 close.Enabled = filters.Enabled = grid.Enabled = true;
-                UpdateRetry();
-                if (attempted) dialog.Close();
+                RefreshRows();
             }
         };
         deleteHeld.Click += async (_, _) =>
@@ -332,35 +354,52 @@ internal sealed partial class MainForm
             if (!deleteHeld.Enabled || reviewing || attempted || selected is not { State: "held" } ||
                 inventory.SampledAt is not long sampledAt) return;
             reviewing = true;
-            deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            reload.Enabled = deleteHeld.Enabled = holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 await RunQueueMaintenanceAsync(endpoint, inventory.Scope, "delete", nonce, sampledAt,
-                    selected, dialog, () => SelectedRow() == selected, () => attempted = true);
+                    selected, dialog, () => SelectedRow() == selected, OnMaintenanceDispatch, OnMaintenanceReceipt);
             }
             finally
             {
+                snapshotValid = false;
                 reviewing = false;
                 close.Enabled = filters.Enabled = grid.Enabled = true;
-                UpdateRetry();
-                if (attempted) dialog.Close();
+                RefreshRows();
             }
         };
         var notes = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
         notes.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         notes.Controls.Add(status, 0, 0);
         notes.Controls.Add(explanation, 0, 1);
-        var retryNote = UiTheme.Text(inventory.RetryState == "review_only"
+        notes.Controls.Add(retryNote, 0, 2);
+
+        string UnknownOutcomeText() => T(
+            "Результат предыдущей операции неизвестен. В этом окне доступен только просмотр; проверьте журналы.",
+            "Previous operation outcome unknown. This window is read-only; inspect server logs.",
+            "תוצאת הפעולה הקודמת אינה ידועה. חלון זה לקריאה בלבד; בדקו יומני שרת.");
+        void RefreshRows()
+        {
+            bool warning = !snapshotValid || outcomeUncertain || inventory.Truncated == true || inventory.RetryState != "review_only";
+            heading.Text = endpoint.Host + ":" + endpoint.Port + " | " + QueueScopeName(inventory.Scope) + " | " +
+                (snapshotValid ? QueueResultText(inventory.Result) : T("Требуется обновление", "Refresh required", "נדרש רענון"));
+            heading.BackColor = SystemInformation.HighContrast ? SystemColors.Window : warning ? UiTheme.WarningSurface : UiTheme.InfoSurface;
+            heading.ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText : warning ? UiTheme.WarningInk : UiTheme.Navy;
+            if (!snapshotValid)
+            {
+                grid.Rows.Clear();
+                retryNote.Text = T("Снимок недействителен. Обновите очередь.", "Snapshot invalid. Refresh the queue.", "הדגימה אינה תקפה. יש לרענן את התור.");
+                status.Text = outcomeUncertain ? UnknownOutcomeText() : retryNote.Text;
+                UpdateRetry();
+                return;
+            }
+            retryNote.Text = inventory.RetryState == "review_only"
             ? T("Retry Plan: только выбранные отложенные сообщения с длинным Queue ID; снимок действителен до 5 минут.",
                 "Retry Plan: deferred long-ID messages only; sample expires after five minutes. Experimental Apply requires a new 60-second plan and confirmation.",
                 "תוכנית ניסיון חוזר: הודעות מושהות עם מזהים ארוכים בלבד; הדגימה תקפה לחמש דקות.")
             : T("Retry Plan недоступен: длинные идентификаторы отключены или контекст не подтверждён.",
                 "Retry Plan unavailable: long IDs are disabled or instance context is unverified.",
-                "תוכנית ניסיון חוזר אינה זמינה: מזהים ארוכים כבויים או שההקשר לא אומת."));
-        notes.Controls.Add(retryNote, 0, 2);
-
-        void RefreshRows()
-        {
+                "תוכנית ניסיון חוזר אינה זמינה: מזהים ארוכים כבויים או שההקשר לא אומת.");
             string? stateKey = state.SelectedIndex <= 0 ? null : QueueMessageInventory.States[state.SelectedIndex - 1];
             string? reasonKey = reason.SelectedIndex <= 0 ? null : QueueMessageInventory.Reasons[reason.SelectedIndex - 1];
             int? selectedReference = null;
@@ -381,16 +420,63 @@ internal sealed partial class MainForm
                         if (!SystemInformation.HighContrast && item.State is "deferred" or "held")
                             grid.Rows[index].Cells[1].Style.ForeColor = Color.DarkOrange;
                     }
+                grid.CurrentCell = null;
                 grid.ClearSelection();
                 UpdateRetry();
                 status.Text = T("Показано / получено / всего: ", "Shown / sampled / total: ", "מוצגות / נדגמו / סך הכל: ") +
                     grid.Rows.Count + " / " + inventory.Rows.Length + " / " +
                     (inventory.Total?.ToString() ?? T("Неизвестно", "Unknown", "לא ידוע")) +
                     (inventory.Truncated == true ? " — " + T("частичный список", "partial listing", "רשימה חלקית") : "") +
-                    (!validReference ? " — " + T("Некорректный номер", "Invalid reference", "מספר לא תקין") : "");
+                    (!validReference ? " — " + T("Некорректный номер", "Invalid reference", "מספר לא תקין") : "") +
+                    " | " + T("Получено: ", "Read at (local time): ", "נקרא: ") + lastRead.ToString("yyyy-MM-dd HH:mm:ss") +
+                    (outcomeUncertain ? " | " + UnknownOutcomeText() : "");
             }
             finally { grid.ResumeLayout(); }
         }
+        async Task ReloadAsync()
+        {
+            if (closed || reviewing) return;
+            reviewing = true;
+            snapshotValid = false;
+            close.Enabled = filters.Enabled = grid.Enabled = false;
+            RefreshRows();
+            status.Text = T("Обновление очереди...", "Reading a fresh queue snapshot...", "קורא דגימת תור חדשה...");
+            try
+            {
+                var current = RequireSameArchiveConnection(endpoint);
+                string scope = inventory.Scope;
+                if (!QueueScopeDiscovered(scope)) throw new InvalidOperationException("Postfix discovery changed.");
+                string freshNonce = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+                var response = await SshRemote.RunRootScriptAsync(current,
+                    EmbeddedAssets.BuildMailQueueInspectionBundle(scope, messages: true, selectionNonce: freshNonce),
+                    TimeSpan.FromMinutes(3));
+                if (response.ExitCode != 0) throw new IOException("Postfix queue refresh failed.");
+                RequireSameArchiveConnection(current);
+                if (!QueueScopeDiscovered(scope)) throw new InvalidOperationException("Postfix discovery changed.");
+                inventory = QueueMessageInventory.Parse(response.StdOut, scope, requireReviewContext: true);
+                nonce = freshNonce;
+                lastRead = DateTime.Now;
+                reference.Clear();
+                snapshotValid = inventory.Result == "ok";
+                if (snapshotValid && !outcomeUncertain) attempted = false;
+                WriteLine("Postfix queue refresh: " + scope + "; " + inventory.Result +
+                    "; listed=" + inventory.Rows.Length + ". Metadata only.");
+            }
+            catch (Exception)
+            {
+                snapshotValid = false;
+                WriteLine("Postfix queue refresh failed; previous sample invalidated. No write requested.");
+                MessageBox.Show(dialog, T("Не удалось обновить очередь.", "Queue refresh failed.", "רענון התור נכשל."),
+                    "Postfix", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                reviewing = false;
+                close.Enabled = filters.Enabled = grid.Enabled = true;
+                RefreshRows();
+            }
+        }
+        reload.Click += async (_, _) => { if (reload.Enabled) await ReloadAsync(); };
         state.SelectedIndexChanged += (_, _) => RefreshRows();
         reason.SelectedIndexChanged += (_, _) => RefreshRows();
         age.ValueChanged += (_, _) => RefreshRows();

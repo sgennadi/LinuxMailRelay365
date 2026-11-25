@@ -13,7 +13,7 @@ internal sealed partial class MainForm
 
     private async Task RunQueueMaintenanceAsync(SshEndpoint endpoint, string scope, string action,
         string nonce, long sampledAt, QueueMessageRow? selected, IWin32Window owner,
-        Func<bool> sameSelection, Action onDispatch)
+        Func<bool> sameSelection, Action onDispatch, Action<string>? onReceipt = null)
     {
         bool dispatched = false;
         string fingerprint = selected?.Fingerprint ?? "-";
@@ -84,6 +84,7 @@ internal sealed partial class MainForm
             RequireSameArchiveConnection(confirmed);
             var receipt = QueueMaintenanceReceipt.Parse(result.StdOut, scope, action, nonce, sampledAt,
                 selected, plan.PreparedAt, plan.PlanSha);
+            onReceipt?.Invoke(receipt.Outcome);
             WriteLine("Queue maintenance " + action + ": " + receipt.Outcome + "; " + receipt.Reason +
                 ". Effect/delivery unverified; refresh queue.");
             string message = receipt.Outcome switch
