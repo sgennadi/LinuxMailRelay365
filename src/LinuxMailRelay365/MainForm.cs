@@ -3710,6 +3710,7 @@ internal sealed partial class MainForm : Form
                 }
                 AddAction(page, T("Резервные копии и Restore", "Backup & Restore", "גיבוי ושחזור"),
                     OpenBackupStepAsync, false, "shield", "backup");
+                AddMailQueueActions(page);
                 if (!HasMailDiscovery())
                 {
                     AddLine(page, MailFlowText(T(

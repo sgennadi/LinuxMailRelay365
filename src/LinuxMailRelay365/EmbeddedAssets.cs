@@ -46,6 +46,7 @@ internal static class EmbeddedAssets
     internal static string NetworkFirewall => Text("LinuxMailRelay365.linux.network-firewall.sh");
     internal static string ExistingSmtpAuditScript => Text("LinuxMailRelay365.linux.existing-smtp-audit.py");
     internal static string MailHostInspector => Text("LinuxMailRelay365.linux.inspect-mail-host.py");
+    internal static string MailQueueInspector => Text("LinuxMailRelay365.linux.inspect-mail-queue.py");
     internal static string MailSubmissionInspector => Text("LinuxMailRelay365.linux.inspect-mail-submission.sh");
     internal static string GoogleSmtpProbe => Text("LinuxMailRelay365.linux.check-google-smtp.py");
     internal static string CustomSmtpProbe => Text("LinuxMailRelay365.linux.check-custom-smtp.py");
@@ -849,6 +850,19 @@ internal static class EmbeddedAssets
 
     // Passing null inspects effective MTA configuration independently of the
     // selected wizard port; it does not silently substitute TCP 2525.
+    internal static string BuildMailQueueInspectionBundle(string scope)
+    {
+        if (scope is not ("postfix" or "exim" or "sendmail" or "sidecar"))
+            throw new ArgumentException("Unsupported native mail queue scope.");
+        return "set -Eeuo pipefail\numask 077\n" +
+            "export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C\n" +
+            "work=$(mktemp -d /tmp/lmr365-queue.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n" +
+            "base64 -d > \"$work/inspect-mail-queue.py\" <<'LMR365_QUEUE_READ'\n" +
+            Encode(MailQueueInspector) + "\nLMR365_QUEUE_READ\n" +
+            "python3 \"$work/inspect-mail-queue.py\" --scope " + scope + "\n";
+    }
+
     internal static string BuildMailHostInspectionBundle(int? selectedPort = null,
         string currentMta = "unknown")
     {

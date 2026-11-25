@@ -64,6 +64,7 @@
     <EmbeddedResource Include="../../linux/manage-public-smtp.py" LogicalName="LinuxMailRelay365.linux.public-smtp-manager.py" />
     <EmbeddedResource Include="../../linux/audit-existing-smtp.py" LogicalName="LinuxMailRelay365.linux.existing-smtp-audit.py" />
     <EmbeddedResource Include="../../linux/inspect-mail-host.py" LogicalName="LinuxMailRelay365.linux.inspect-mail-host.py" />
+    <EmbeddedResource Include="../../linux/inspect-mail-queue.py" LogicalName="LinuxMailRelay365.linux.inspect-mail-queue.py" />
     <EmbeddedResource Include="../../linux/inspect-mail-submission.sh" LogicalName="LinuxMailRelay365.linux.inspect-mail-submission.sh" />
     <EmbeddedResource Include="../../linux/check-google-smtp.py" LogicalName="LinuxMailRelay365.linux.check-google-smtp.py" />
     <EmbeddedResource Include="../../linux/check-custom-smtp.py" LogicalName="LinuxMailRelay365.linux.check-custom-smtp.py" />

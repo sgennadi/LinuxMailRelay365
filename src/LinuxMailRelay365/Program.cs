@@ -324,6 +324,7 @@ internal static class Program
             ("Sendmail v2 read-only recovery guidance and no-op classification", SendmailRecoveryGuidance.SelfTest),
             ("Native recovery center adaptive visibility", NativeRecoveryVisibility.SelfTest),
             ("Verified archive inventory and explicit selection", VerifiedArchiveListing.SelfTest),
+            ("Privacy-safe native mail queue sample", MailQueueSample.SelfTest),
             ("Experimental offline Exim Restore receipt and bounded apply bundle", EximNativeRestoreReceipt.SelfTest),
             ("Global interrupted native Restore receipt and read-only bundle", ForeignPendingInspection.SelfTest),
             ("Experimental Exim pending rollback reviewed plan and applied receipt", EximPendingRollbackPlan.SelfTest),
