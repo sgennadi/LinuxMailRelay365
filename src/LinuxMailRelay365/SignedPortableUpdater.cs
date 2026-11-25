@@ -798,6 +798,59 @@ internal static class SignedPortableUpdater
         throw new IOException("The EXE replacement could not finish.");
     }
 
+    // Hold these leases across the complete transaction, including catch and
+    // finally. A competing helper must not clear another helper's work file,
+    // rotate its backup, or publish a manual-review marker on its behalf.
+    private static FileStream? TryAcquireUpdateLock(string path)
+    {
+        if (File.Exists(path) || Directory.Exists(path)) RejectLinks(path);
+        FileStream lease;
+        try
+        {
+            lease = new FileStream(path, FileMode.OpenOrCreate,
+                FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33)
+        {
+            return null;
+        }
+        try
+        {
+            RejectLinks(path);
+            return lease;
+        }
+        catch
+        {
+            lease.Dispose();
+            throw;
+        }
+    }
+
+    private static void PrepareUpdateCopy(string candidate, string next)
+    {
+        // CreateNew refuses even an unexpected pre-existing work file. Never
+        // overwrite it or delete it in an unconditional finally block.
+        using var source = new FileStream(candidate, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var destination = new FileStream(next, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        source.CopyTo(destination);
+        destination.Flush(flushToDisk: true);
+    }
+
+    private static void RestoreApprovedBackup(string backup, string target, string next,
+        string approvedOldHash, string approvedNewHash)
+    {
+        RejectLinks(backup);
+        RejectLinks(target);
+        if (File.Exists(next) || Directory.Exists(next))
+            throw new InvalidDataException("Unexpected rollback work file; preserve recovery evidence.");
+        // Never recompute the expected digests from potentially changed inputs.
+        ReplaceWithVerifiedSharingRetry(backup, target, next,
+            approvedOldHash, approvedNewHash);
+        if (!string.Equals(FileSha256(target), approvedOldHash, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(FileSha256(next), approvedNewHash, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Restored EXE or retained candidate digest mismatch.");
+    }
+
     internal static int ApplyFromHelper(string[] args, bool unsignedPreview = false)
     {
         if (!OperatingSystem.IsWindows() || args.Length != 7 ||
@@ -835,13 +888,23 @@ internal static class SignedPortableUpdater
         bool movedPreviousBackup = false;
         bool replaced = false;
         bool rolledBack = false;
+        bool transactionStarted = false;
+        string? approvedOldHash = null;
+        FileStream? rootLease = null, targetLease = null;
         try
         {
             RejectLinks(stage);
             RejectLinks(candidate);
             RejectLinks(target);
             RejectLinks(Path.GetDirectoryName(target)!);
-            if (File.Exists(hold) || File.Exists(next) ||
+            // The root lease also protects the shared status/hold files when
+            // two different portable copies are being updated by one user.
+            rootLease = TryAcquireUpdateLock(Path.Combine(root, "helper.update.lock"));
+            if (rootLease is null) return 3;
+            targetLease = TryAcquireUpdateLock(target + ".update.lock");
+            if (targetLease is null) return 3;
+            if (File.Exists(hold) || Directory.Exists(hold) ||
+                File.Exists(next) || Directory.Exists(next) ||
                 !TrustedCandidate(Environment.ProcessPath!, UpdateCheck.Version,
                     args[4], unsignedPreview) ||
                 !TrustedCandidate(target, UpdateCheck.Version, args[4], unsignedPreview) ||
@@ -856,15 +919,18 @@ internal static class SignedPortableUpdater
             }
             catch (ArgumentException) { /* Already exited. */ }
             // All executable signature/hash checks are repeated AFTER waiting.
+            if (File.Exists(hold) || Directory.Exists(hold) ||
+                File.Exists(next) || Directory.Exists(next))
+                return 2;
             if (!TrustedCandidate(target, UpdateCheck.Version, args[4], unsignedPreview) ||
                 !TrustedCandidate(candidate, args[6], args[4], unsignedPreview) ||
                 !string.Equals(FileSha256(candidate), args[3], compare))
                 throw new InvalidDataException("Publisher or EXE changed while waiting.");
             // An atomic same-volume File.Replace cannot be performed from the
             // source EXE process; this helper is a signed verified copy.
-            using var mutex = new FileStream(target + ".update.lock", FileMode.OpenOrCreate,
-                FileAccess.ReadWrite, FileShare.None);
-            File.Copy(candidate, next, overwrite: false);
+            approvedOldHash = FileSha256(target);
+            transactionStarted = true;
+            PrepareUpdateCopy(candidate, next);
             if (!string.Equals(FileSha256(next), args[3], compare) ||
                 !TrustedCandidate(next, args[6], args[4], unsignedPreview))
                 throw new InvalidDataException("Prepared update copy changed.");
@@ -874,11 +940,12 @@ internal static class SignedPortableUpdater
                 File.Move(backup, previousBackup);
                 movedPreviousBackup = true;
             }
-            string approvedOldHash = FileSha256(target);
             ReplaceWithVerifiedSharingRetry(next, target, backup,
                 args[3], approvedOldHash);
             replaced = true;
-            if (RunInstalledHealth(target) != 0 ||
+            RejectLinks(backup);
+            if (!string.Equals(FileSha256(backup), approvedOldHash, compare) ||
+                RunInstalledHealth(target) != 0 ||
                 !string.Equals(FileSha256(target), args[3], compare))
                 throw new InvalidOperationException("Installed application health test failed.");
             var started = Process.Start(new ProcessStartInfo(target)
@@ -900,15 +967,16 @@ internal static class SignedPortableUpdater
         }
         catch (Exception)
         {
-            if (replaced && File.Exists(backup))
+            // No owned transaction means no writes to status, backup or work
+            // files. In particular a lock conflict is not a failed update.
+            if (!transactionStarted) return 2;
+            if (replaced && approvedOldHash is not null && File.Exists(backup))
             {
                 try
                 {
-                    // Windows File.Replace requires a non-empty backup pathname.
-                    // The previously consumed .update-new name is available and
-                    // will be removed in finally after restoring the old EXE.
-                    ReplaceWithVerifiedSharingRetry(backup, target, next,
-                        FileSha256(backup), FileSha256(target));
+                    if (!TrustedCandidate(backup, UpdateCheck.Version, args[4], unsignedPreview))
+                        throw new InvalidDataException("Backup publisher or version changed.");
+                    RestoreApprovedBackup(backup, target, next, approvedOldHash, args[3]);
                     rolledBack = true;
                 }
                 catch (Exception) { rolledBack = false; }
@@ -933,7 +1001,99 @@ internal static class SignedPortableUpdater
         }
         finally
         {
-            try { if (File.Exists(next)) File.Delete(next); }
+            // Only a verified rollback created this retained candidate.
+            // On refusal, failed preparation or ambiguous replace, preserve
+            // any work file for manual review; do not delete unknown bytes.
+            try
+            {
+                if (rolledBack && File.Exists(next))
+                {
+                    RejectLinks(next);
+                    if (string.Equals(FileSha256(next), args[3], compare))
+                        File.Delete(next);
+                }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            finally
+            {
+                try { targetLease?.Dispose(); }
+                finally { rootLease?.Dispose(); }
+            }
+        }
+    }
+
+    private static bool TransactionOwnershipSelfTest()
+    {
+        if (!OperatingSystem.IsWindows()) return true;
+        string folder = Path.Combine(Path.GetTempPath(),
+            "lmr365-updater-transaction-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            string lockPath = Path.Combine(folder, "helper.update.lock");
+            using (var first = TryAcquireUpdateLock(lockPath))
+            {
+                if (first is null) return false;
+                using var second = TryAcquireUpdateLock(lockPath);
+                if (second is not null) return false;
+            }
+            using (var reopened = TryAcquireUpdateLock(lockPath))
+                if (reopened is null) return false;
+
+            string candidate = Path.Combine(folder, "candidate.bin");
+            string target = Path.Combine(folder, "target.bin");
+            string backup = target + ".bak";
+            string next = target + ".update-new";
+            File.WriteAllText(candidate, "approved new fixture");
+            File.WriteAllText(target, "approved old fixture");
+            string oldHash = FileSha256(target), newHash = FileSha256(candidate);
+
+            // A stale/foreign work file must survive refusal unchanged.
+            File.WriteAllText(next, "foreign work file");
+            string foreignHash = FileSha256(next);
+            try { PrepareUpdateCopy(candidate, next); return false; }
+            catch (IOException) { }
+            if (FileSha256(next) != foreignHash || FileSha256(target) != oldHash)
+                return false;
+            File.Delete(next); // Own synthetic fixture only.
+
+            PrepareUpdateCopy(candidate, next);
+            ReplaceWithVerifiedSharingRetry(next, target, backup, newHash, oldHash);
+            if (FileSha256(backup) != oldHash || FileSha256(target) != newHash)
+                return false;
+
+            // Changed backup or changed installed bytes must not be blessed
+            // as a new expected digest and must not trigger a rollback.
+            File.WriteAllText(backup, "changed backup");
+            string changedBackup = FileSha256(backup);
+            try { RestoreApprovedBackup(backup, target, next, oldHash, newHash); return false; }
+            catch (InvalidDataException) { }
+            if (FileSha256(backup) != changedBackup || FileSha256(target) != newHash ||
+                File.Exists(next)) return false;
+
+            File.WriteAllText(backup, "approved old fixture");
+            File.WriteAllText(target, "changed installed fixture");
+            string changedTarget = FileSha256(target);
+            try { RestoreApprovedBackup(backup, target, next, oldHash, newHash); return false; }
+            catch (InvalidDataException) { }
+            if (FileSha256(backup) != oldHash || FileSha256(target) != changedTarget ||
+                File.Exists(next)) return false;
+
+            File.WriteAllText(target, "approved new fixture");
+            File.WriteAllText(next, "foreign rollback work file");
+            foreignHash = FileSha256(next);
+            try { RestoreApprovedBackup(backup, target, next, oldHash, newHash); return false; }
+            catch (InvalidDataException) { }
+            if (FileSha256(next) != foreignHash || FileSha256(backup) != oldHash ||
+                FileSha256(target) != newHash) return false;
+            File.Delete(next); // Own synthetic fixture only.
+            RestoreApprovedBackup(backup, target, next, oldHash, newHash);
+            return FileSha256(target) == oldHash && FileSha256(next) == newHash;
+        }
+        finally
+        {
+            try { Directory.Delete(folder, recursive: true); }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
         }
@@ -1073,6 +1233,7 @@ internal static class SignedPortableUpdater
                    "MANUAL_REVIEW_REQUIRED" &&
                ParseUpdateStatus("untrusted message\r\nDOWNLOADED") == "UNKNOWN" &&
                ReplaceSharingRetryContractSelfTest() &&
+               TransactionOwnershipSelfTest() &&
                ArchiveAndPeSafetySelfTest();
     }
 }

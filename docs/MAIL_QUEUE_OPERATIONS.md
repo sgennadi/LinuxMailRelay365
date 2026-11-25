@@ -115,3 +115,17 @@ source. Same-filesystem bind mounts are not reliably detected by Python
 os.path.ismount(). The combined queue/update baseline branch runs the
 same-commit VM gate as well as Windows update rehearsal; a failed VM step
 prints its synthetic phase markers for diagnosis and fails closed.
+
+## Updater transaction ownership (pending CI)
+
+The actual portable helper holds a per-user update-root lease and the
+existing target-specific lease throughout validation, replacement, rollback
+and cleanup. A competing helper refuses without deleting an existing
+.update-new file or changing recovery status. Prepared files use CreateNew;
+unknown work files survive manual-review failures. Rollback must match the
+old and new SHA-256 values captured before replacement, and verifies both
+restored and retained bytes. It never substitutes hashes freshly calculated
+from a changed backup or target. Built-in Windows tests exercise exclusive
+locks, unchanged foreign work files, altered backup/target rejection and
+successful rollback using disposable files. This is not yet interactive
+updater acceptance, and does not change signature/version requirements.

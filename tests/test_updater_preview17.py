@@ -45,6 +45,25 @@ class UpdaterPreview25Contracts(unittest.TestCase):
         self.assertIn("equal_version_file_replacement_rehearsal_only", smoke)
         self.assertIn("REAL_GUI_AND_HELPER_ACCEPTANCE=NOT_TESTED", smoke)
 
+    def test_transaction_owns_lock_and_rollback_evidence(self):
+        helper = UPDATER.split("internal static int ApplyFromHelper(", 1)[1].split(
+            "private static bool TransactionOwnershipSelfTest()", 1)[0]
+        self.assertLess(helper.index('rootLease = TryAcquireUpdateLock('),
+                        helper.index('targetLease = TryAcquireUpdateLock('))
+        self.assertLess(helper.index('targetLease = TryAcquireUpdateLock('),
+                        helper.index('transactionStarted = true;'))
+        self.assertIn("if (rootLease is null) return 3;", helper)
+        self.assertIn("if (targetLease is null) return 3;", helper)
+        self.assertIn("if (!transactionStarted) return 2;", helper)
+        self.assertIn("approvedOldHash = FileSha256(target);", helper)
+        self.assertIn("RestoreApprovedBackup(backup, target, next, approvedOldHash, args[3]);", helper)
+        self.assertIn("if (rolledBack && File.Exists(next))", helper)
+        self.assertNotIn("FileSha256(backup), FileSha256(target)", helper)
+        self.assertNotIn("if (File.Exists(next)) File.Delete(next);", helper)
+        self.assertGreater(helper.index("targetLease?.Dispose()"), helper.index("if (rolledBack && File.Exists(next))"))
+        self.assertIn("TransactionOwnershipSelfTest() &&", UPDATER)
+        self.assertIn("FileMode.CreateNew, FileAccess.Write, FileShare.None", UPDATER)
+
     def test_preview_does_not_bypass_stable_signature_requirement(self):
         for marker in ("CanInstallPreview", "IsNonElevatedWindowsProcess",
                        "TrustedCandidate", "VerifiedPublisher",
