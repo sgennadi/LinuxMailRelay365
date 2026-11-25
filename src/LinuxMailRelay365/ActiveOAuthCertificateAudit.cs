@@ -6,9 +6,28 @@ namespace LinuxMailRelay365;
 
 // Bounded public-only identity receipt. This correlates two configuration
 // observations, not a live signer, active Postfix route or SMTP session.
+internal sealed record OAuthPostfixRouteEvidence(string DefaultTransport, string RelayTransport,
+    string RoutingOverrides, string MasterPipe, string ServiceOverrides, string RecipientLimit)
+{
+    internal bool ExpectedConfiguration =>
+        DefaultTransport == "expected" && RelayTransport == "expected" &&
+        RoutingOverrides == "absent" && MasterPipe == "expected" &&
+        ServiceOverrides == "absent" && RecipientLimit == "expected";
+    internal string Describe() =>
+        "Default transport: " + DefaultTransport + Environment.NewLine +
+        "Relay transport: " + RelayTransport + Environment.NewLine +
+        "Routing maps / relayhost: " + RoutingOverrides + Environment.NewLine +
+        "XOAUTH2 master.cf pipe: " + MasterPipe + Environment.NewLine +
+        "Per-service overrides: " + ServiceOverrides + Environment.NewLine +
+        "Pipe recipient limit: " + RecipientLimit + Environment.NewLine +
+        "Postfix configuration: " + (ExpectedConfiguration ?
+            "expected default/relay XOAUTH2 pipe observed" : "review required") +
+        Environment.NewLine + "Local/virtual address classes, map keys and running process state not verified.";
+}
+
 internal sealed record ActiveOAuthCertificateAudit(string Target, string Mailbox,
     string Sha256, DateTimeOffset ValidFrom, DateTimeOffset ValidUntil,
-    string Status, DateTimeOffset ObservedAt)
+    string Status, DateTimeOffset ObservedAt, OAuthPostfixRouteEvidence Route)
 {
     internal static ActiveOAuthCertificateAudit Parse(string raw, string target,
         Guid tenant, Guid client, string mailbox, IReadOnlyList<CloudCredentialObject> credentials,
@@ -28,13 +47,24 @@ internal sealed record ActiveOAuthCertificateAudit(string Target, string Mailbox
         }
         string Read(string key) => fields.TryGetValue(key, out string? value) ? value :
             throw new InvalidDataException("Missing active OAuth receipt field.");
-        if (fields.Count != 12 || Read("VERSION") != "1" || Read("TARGET") != target ||
+        if (fields.Count != 18 || Read("VERSION") != "2" || Read("TARGET") != target ||
             Read("TENANT_ID") != tenant.ToString("D") || Read("CLIENT_ID") != client.ToString("D") ||
             !string.Equals(Read("MAILBOX"), mailbox, StringComparison.OrdinalIgnoreCase) ||
             Read("PRIVATE_KEY_EXPORTED") != "no" || Read("SIGNING_TESTED") != "no" ||
             Read("MAIL_SENT") != "no" || Read("CONFIG_CHANGED") != "no" ||
             !Regex.IsMatch(Read("IDENTITY_SHA256"), @"\A[a-f0-9]{64}\z"))
             throw new InvalidDataException("Active OAuth identity or flags mismatch.");
+        string State(string key, bool declaration = false)
+        {
+            string value = Read(key);
+            if (value == "unverified" || (declaration ?
+                value is "declared" or "absent" : value is "expected" or "different"))
+                return value;
+            throw new InvalidDataException("Invalid Postfix route evidence.");
+        }
+        var route = new OAuthPostfixRouteEvidence(State("DEFAULT_TRANSPORT"), State("RELAY_TRANSPORT"),
+            State("ROUTING_OVERRIDES", true), State("MASTER_PIPE"),
+            State("SERVICE_OVERRIDES", true), State("RECIPIENT_LIMIT"));
         byte[] der;
         try { der = Convert.FromBase64String(Read("CERT_DER_BASE64")); }
         catch (FormatException) { throw new InvalidDataException("Invalid public DER."); }
@@ -52,7 +82,7 @@ internal sealed record ActiveOAuthCertificateAudit(string Target, string Mailbox
         string status = matching.Any(c => localValid && c.ValidFrom <= now && now < c.ValidUntil) ? "match_current" :
             matching.Length > 0 ? "match_outside_validity" :
             eligible.Any(c => c.CertificateSha256 is null) ? "unverified_graph_public_key" : "not_found";
-        return new(target, mailbox, sha, from, until, status, now);
+        return new(target, mailbox, sha, from, until, status, now, route);
     }
 
     internal string Describe() => "Source: " + Target + " app.json (configured identity)" +
@@ -62,6 +92,7 @@ internal sealed record ActiveOAuthCertificateAudit(string Target, string Mailbox
         Environment.NewLine + "Comparison: " + Status +
         Environment.NewLine + "Linux sampled (UTC): " + ObservedAt.ToString("u") +
         Environment.NewLine + "Compared against the Graph inventory in this window, not a fresh cloud read." +
+        Environment.NewLine + Environment.NewLine + Route.Describe() +
         Environment.NewLine + "Private key not exported. Signing, effective Postfix routing, SMTP AUTH and delivery NOT tested.";
 
     internal static bool SelfTest()
@@ -78,19 +109,27 @@ internal sealed record ActiveOAuthCertificateAudit(string Target, string Mailbox
             "\nACTIVE_OAUTH_IDENTITY_SHA256=" + new string('a', 64) +
             "\nACTIVE_OAUTH_CERT_SHA256=" + sha +
             "\nACTIVE_OAUTH_CERT_DER_BASE64=" + Convert.ToBase64String(cert.RawData) +
-            "\nACTIVE_OAUTH_VERSION=1\nACTIVE_OAUTH_PRIVATE_KEY_EXPORTED=no\nACTIVE_OAUTH_SIGNING_TESTED=no\n" +
+            "\nACTIVE_OAUTH_VERSION=2\nACTIVE_OAUTH_PRIVATE_KEY_EXPORTED=no\nACTIVE_OAUTH_SIGNING_TESTED=no\n" +
+            "ACTIVE_OAUTH_DEFAULT_TRANSPORT=expected\nACTIVE_OAUTH_RELAY_TRANSPORT=expected\n" +
+            "ACTIVE_OAUTH_ROUTING_OVERRIDES=absent\nACTIVE_OAUTH_MASTER_PIPE=expected\n" +
+            "ACTIVE_OAUTH_SERVICE_OVERRIDES=absent\nACTIVE_OAUTH_RECIPIENT_LIMIT=expected\n" +
             "ACTIVE_OAUTH_MAIL_SENT=no\nACTIVE_OAUTH_CONFIG_CHANGED=no\n";
         var valid = new CloudCredentialObject(Guid.NewGuid(), "fixture", "AsymmetricX509Cert", "Verify",
             now.AddDays(-1), now.AddDays(1), sha);
         ActiveOAuthCertificateAudit Check(IReadOnlyList<CloudCredentialObject> keys, string? input = null) =>
             Parse(input ?? receipt, "primary", tenant, client, mailbox, keys, now);
-        if (Check([valid]).Status != "match_current" ||
+        if (!Check([valid]).Route.ExpectedConfiguration ||
+            Check([valid], receipt.Replace("ROUTING_OVERRIDES=absent", "ROUTING_OVERRIDES=declared")).Route.ExpectedConfiguration ||
+            Check([valid], receipt.Replace("MASTER_PIPE=expected", "MASTER_PIPE=unverified")).Route.ExpectedConfiguration ||
+            Check([valid]).Status != "match_current" ||
             Check([valid with { ValidUntil = now.AddSeconds(-1) }]).Status != "match_outside_validity" ||
             Check([valid with { CertificateSha256 = null }]).Status != "unverified_graph_public_key" ||
             Check([valid with { CertificateSha256 = new string('b', 64) }]).Status != "not_found") return false;
         foreach (string bad in new[] { receipt.Replace(mailbox, "other@example.org"),
             receipt.Replace(sha, new string('c', 64)), receipt.Replace("TARGET=primary", "TARGET=sidecar"),
-            receipt + "ACTIVE_OAUTH_VERSION=1\n", receipt.Replace("MAIL_SENT=no", "MAIL_SENT=yes") })
+            receipt + "ACTIVE_OAUTH_VERSION=2\n", receipt.Replace("MAIL_SENT=no", "MAIL_SENT=yes"),
+            receipt.Replace("RECIPIENT_LIMIT=expected", "RECIPIENT_LIMIT=unknown"),
+            receipt.Replace("ROUTING_OVERRIDES=absent", "ROUTING_OVERRIDES=expected") })
         {
             try { Check([valid], bad); return false; }
             catch (InvalidDataException) { }

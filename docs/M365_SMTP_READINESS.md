@@ -38,3 +38,21 @@ not a mismatch. A matching credential must also be within both validity
 windows. The comparison uses the cloud inventory in the open dialog, and
 is not proof of key possession, effective routing, SMTP AUTH or delivery.
 No new cloud permissions, provider changes, or mail sending are introduced.
+
+## Postfix XOAUTH2 pipe configuration correlation (pending CI)
+
+The certificate comparison now includes a separate read-only inspection
+of the fixed primary or sidecar configuration directory. It checks
+postconf default_transport, relay_transport, recipient limit, presence of
+transport/sender-dependent maps and relayhost, the exact expected managed
+m365xoauth2 pipe command, and presence of master.cf service overrides.
+The two configuration snapshots must match around the public certificate
+sample; root-owned configuration hashes are checked before and after
+postconf reads. Only coded findings leave Linux. Unavailable or changed
+configuration becomes unverified; the certificate result remains separate.
+Local/virtual recipient address classes, actual map-key lookups, live
+process state, signer operation, SMTP authorization and delivery are NOT
+proved. The green indication requires both an in-validity public certificate
+match and the expected default/relay pipe configuration, and is not a
+permission to apply or send. See https://www.postfix.org/postconf.5.html
+and https://www.postfix.org/postconf.1.html for precedence and readback.

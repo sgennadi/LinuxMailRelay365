@@ -447,7 +447,7 @@ internal sealed partial class MainForm
         {
             if (!compare.Enabled || SelectedIdentity() is not string target ||
                 tree.SelectedNode is not TreeNode node || inventory.Client is not Guid exactClient ||
-                inventory.MailboxAudit is not { } mailboxAudit) return;
+                inventory.MailboxAudit is not { } selectedMailboxAudit) return;
             comparing = true;
             compare.Enabled = close.Enabled = copy.Enabled = tree.Enabled = change.Enabled = operation.Enabled = false;
             modal.UseWaitCursor = true;
@@ -461,27 +461,30 @@ internal sealed partial class MainForm
                 if (!HasMailDiscovery() || lastReadOnlyCloudLinuxIdentity is null ||
                     lastReadOnlyCloudLinuxIdentity != TryCurrentIdentity() ||
                     !Guid.TryParse(tenant.Text.Trim(), out Guid chosenTenant) || chosenTenant != inventory.Tenant ||
-                    !string.Equals(mailbox.Text.Trim(), mailboxAudit.Mailbox, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(mailbox.Text.Trim(), selectedMailboxAudit.Mailbox, StringComparison.OrdinalIgnoreCase) ||
                     mailTransport.SelectedIndex != 0 ||
                     (existingAppId.Text.Trim().Length > 0 &&
                       (!Guid.TryParse(existingAppId.Text.Trim(), out Guid chosenClient) || chosenClient != exactClient)))
                     throw new InvalidOperationException("Cloud or Linux selection changed.");
                 var endpoint = Endpoint();
                 var reply = await SshRemote.RunRootScriptAsync(endpoint,
-                    EmbeddedAssets.BuildActiveOAuthCertificateBundle(target), TimeSpan.FromSeconds(90));
+                    EmbeddedAssets.BuildActiveOAuthCertificateBundle(target), TimeSpan.FromSeconds(150));
                 reply.EnsureSuccess();
                 RequireSameArchiveConnection(endpoint, allowFirstPin: true);
                 if (lastReadOnlyCloudLinuxIdentity != TryCurrentIdentity())
                     throw new InvalidOperationException("Linux connection changed.");
                 var result = ActiveOAuthCertificateAudit.Parse(reply.StdOut, target, inventory.Tenant,
-                    exactClient, mailboxAudit.Mailbox, inventory.Certificates, DateTimeOffset.UtcNow);
+                    exactClient, selectedMailboxAudit.Mailbox, inventory.Certificates, DateTimeOffset.UtcNow);
                 node.Tag = result;
                 node.Text = (target == "primary" ? "Primary Postfix" : "Isolated Postfix / Sidecar") +
-                    " | " + result.Status;
+                    " | " + result.Status + " | " + (result.Route.ExpectedConfiguration ? "PIPE CONFIG OK" : "ROUTE REVIEW");
                 if (!SystemInformation.HighContrast)
-                    node.ForeColor = result.Status == "match_current" ? Color.DarkGreen : UiTheme.WarningInk;
+                    node.ForeColor = result.Status == "match_current" && result.Route.ExpectedConfiguration ?
+                        Color.DarkGreen : UiTheme.WarningInk;
                 details.Text = result.Describe();
-                WriteLine("Linux/Entra certificate comparison: " + result.Status + ". Configuration only; no SMTP or signing test.");
+                WriteLine("Linux/Entra certificate comparison: " + result.Status +
+                    "; Postfix pipe configuration: " + (result.Route.ExpectedConfiguration ? "expected" : "review") +
+                    ". Configuration only; no SMTP or signing test.");
             }
             catch (Exception)
             {

@@ -101,6 +101,41 @@ class EntraPublicCertificateTests(unittest.TestCase):
         with self.assertRaisesRegex(M.Refused, "changed_during_review"):
             M.active_inventory("sidecar")
 
+    def test_route_policy_classifies_pipe_only_and_flags_overrides(self):
+        values = dict((key, "") for key in M.ROUTE_SETTINGS)
+        values.update(default_transport="m365xoauth2:", relay_transport="m365xoauth2:",
+                      m365xoauth2_destination_recipient_limit="1")
+        master = ("m365xoauth2 unix - n n - 2 pipe flags=q user=m365mailer "
+                  "argv=/usr/bin/python3 /usr/local/libexec/m365_xoauth2_transport.py "
+                  "--recipient $"+ "{recipient}")
+        report = M.classify_postfix_route("primary", values, master, "")
+        self.assertEqual(report, {
+            "DEFAULT_TRANSPORT": "expected", "RELAY_TRANSPORT": "expected",
+            "ROUTING_OVERRIDES": "absent", "MASTER_PIPE": "expected",
+            "SERVICE_OVERRIDES": "absent", "RECIPIENT_LIMIT": "expected"})
+        self.assertEqual(M.classify_postfix_route("sidecar", values, master, "")["MASTER_PIPE"], "different")
+        sidecar = master.replace("m365_xoauth2_transport.py",
+            "linuxmailrelay365-sidecar-transport.py --config /etc/linuxmailrelay365/sidecar-identity/app.json")
+        self.assertEqual(M.classify_postfix_route("sidecar", values, sidecar, "")["MASTER_PIPE"], "expected")
+        for key in ("transport_maps", "sender_dependent_default_transport_maps",
+                    "sender_dependent_relayhost_maps", "relayhost"):
+            changed = dict(values)
+            changed[key] = "private-config-never-exported"
+            report = M.classify_postfix_route("primary", changed, master, "")
+            self.assertEqual(report["ROUTING_OVERRIDES"], "declared")
+            self.assertNotIn("private-config", str(report))
+        self.assertEqual(M.classify_postfix_route("primary", values, master,
+            "smtp/inet/transport_maps=unknown")["SERVICE_OVERRIDES"], "declared")
+        values["m365xoauth2_destination_recipient_limit"] = "2"
+        self.assertEqual(M.classify_postfix_route("primary", values, master, "")["RECIPIENT_LIMIT"], "different")
+
+    def test_route_drift_never_becomes_positive(self):
+        with mock.patch.object(M, "active_inventory", return_value={"public": "fixture"}), \
+                mock.patch.object(M, "postfix_route_snapshot", side_effect=[("old",), ("new",)]):
+            identity, route = M.sample_configured_oauth("primary")
+        self.assertEqual(identity, {"public": "fixture"})
+        self.assertEqual(route, dict((key, "unverified") for key in M.ROUTE_FIELDS))
+
     def test_different_client_or_sender_refused(self):
         self.stage["mailbox"] = "different@example.org"
         with self.assertRaisesRegex(M.Refused, "mismatch"):

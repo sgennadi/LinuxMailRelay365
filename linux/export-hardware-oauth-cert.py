@@ -165,14 +165,110 @@ def active_inventory(target):
     return first
 
 
-def print_active_inventory(value):
+POSTFIX_CONFIGS = {
+    "primary": Path("/etc/postfix"),
+    "sidecar": Path("/etc/linuxmailrelay365/sidecar-postfix"),
+}
+ROUTE_SETTINGS = ("default_transport", "relay_transport", "transport_maps",
+                  "sender_dependent_default_transport_maps",
+                  "sender_dependent_relayhost_maps", "relayhost",
+                  "m365xoauth2_destination_recipient_limit")
+ROUTE_FIELDS = ("DEFAULT_TRANSPORT", "RELAY_TRANSPORT", "ROUTING_OVERRIDES",
+                "MASTER_PIPE", "SERVICE_OVERRIDES", "RECIPIENT_LIMIT")
+
+
+def classify_postfix_route(target, values, master, overrides):
+    """Configuration only. Never resolve an address class or evaluate a map."""
+    if target not in POSTFIX_CONFIGS:
+        raise Refused("unsupported_postfix_route_scope")
+    def expected(key, value):
+        return "expected" if values[key] == value else "different"
+    command = ("m365xoauth2 unix - n n - 2 pipe flags=q user=m365mailer "
+               "argv=/usr/bin/python3 ")
+    if target == "primary":
+        command += "/usr/local/libexec/m365_xoauth2_transport.py"
+    else:
+        command += ("/usr/local/libexec/linuxmailrelay365-sidecar-transport.py "
+                    "--config /etc/linuxmailrelay365/sidecar-identity/app.json")
+    command += " --recipient $"+ "{recipient}"
+    return {
+        "DEFAULT_TRANSPORT": expected("default_transport", "m365xoauth2:"),
+        "RELAY_TRANSPORT": expected("relay_transport", "m365xoauth2:"),
+        "ROUTING_OVERRIDES": "declared" if any(values[k] for k in
+            ("transport_maps", "sender_dependent_default_transport_maps",
+             "sender_dependent_relayhost_maps", "relayhost")) else "absent",
+        "MASTER_PIPE": "expected" if master.split() == command.split() else "different",
+        "SERVICE_OVERRIDES": "declared" if overrides.strip() else "absent",
+        "RECIPIENT_LIMIT": expected("m365xoauth2_destination_recipient_limit", "1"),
+    }
+
+
+def postfix_route_snapshot(target):
+    root = POSTFIX_CONFIGS[target]
+    trusted_directory(root)
+    binary = "/usr/sbin/postconf"
+    # Do not discover commands via a caller-controlled PATH.
+    resolved = Path(binary).resolve(strict=True)
+    trusted_directory(resolved.parent)
+    metadata = resolved.lstat()
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or
+            metadata.st_mode & 0o022 or not metadata.st_mode & 0o111):
+        raise Refused("untrusted_postconf")
+    def config_digest():
+        return tuple(digest(secure_read(root / name, 524288,
+                      modes=(0o600, 0o640, 0o644))) for name in ("main.cf", "master.cf"))
+    before = config_digest()
+
+    def run(*args):
+        p = subprocess.run([binary, "-c", str(root)] + list(args),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           timeout=5, check=False,
+                           env={"LC_ALL": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"})
+        if p.returncode or p.stderr.strip() or len(p.stdout) > 65536:
+            raise Refused("postconf_readback_unverified")
+        result = p.stdout.decode("utf-8").strip()
+        if "\0" in result or "\r" in result:
+            raise Refused("postconf_readback_unverified")
+        return result
+
+    values = {key: run("-h", key) for key in ROUTE_SETTINGS}
+    master = run("-M", "m365xoauth2/unix")
+    overrides = run("-P")
+    if config_digest() != before:
+        raise Refused("postfix_config_changed_during_read")
+    # Retain hashes and raw values only in memory for the second sample.
+    return before, values, master, overrides
+
+
+def sample_configured_oauth(target):
+    # An unavailable Postfix inspection must not suppress a valid public
+    # certificate review, and must never become a positive route finding.
+    try:
+        before = postfix_route_snapshot(target)
+    except (Refused, OSError, UnicodeError, ValueError, subprocess.TimeoutExpired):
+        before = None
+    identity = active_inventory(target)
+    route = dict((key, "unverified") for key in ROUTE_FIELDS)
+    if before is not None:
+        try:
+            after = postfix_route_snapshot(target)
+            if before == after:
+                route = classify_postfix_route(target, before[1], before[2], before[3])
+        except (Refused, OSError, UnicodeError, ValueError, subprocess.TimeoutExpired):
+            pass
+    return identity, route
+
+
+def print_active_inventory(value, route=None):
     for name, key in (("TARGET", "target"), ("TENANT_ID", "tenant"),
                       ("CLIENT_ID", "client"), ("MAILBOX", "mailbox"),
                       ("IDENTITY_SHA256", "identity_sha"),
                       ("CERT_SHA256", "certificate_sha"),
                       ("CERT_DER_BASE64", "certificate_der")):
         print("ACTIVE_OAUTH_{}={}".format(name, value[key]))
-    print("ACTIVE_OAUTH_VERSION=1")
+    print("ACTIVE_OAUTH_VERSION=2")
+    for key in ROUTE_FIELDS:
+        print("ACTIVE_OAUTH_{}={}".format(key, (route or {}).get(key, "unverified")))
     print("ACTIVE_OAUTH_PRIVATE_KEY_EXPORTED=no")
     print("ACTIVE_OAUTH_SIGNING_TESTED=no")
     print("ACTIVE_OAUTH_MAIL_SENT=no")
@@ -335,7 +431,8 @@ def main(argv=None):
         if (args.inventory or args.active_inventory) and any(x is not None for x in proofs):
             raise Refused("proof_arguments_not_allowed_in_inventory")
         if args.active_inventory:
-            print_active_inventory(active_inventory(args.target))
+            identity, route = sample_configured_oauth(args.target)
+            print_active_inventory(identity, route)
             return 0
         x = inventory(args.target)
         if args.inventory:
