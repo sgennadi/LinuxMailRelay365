@@ -42,7 +42,11 @@ https://sendmail-doc.sendmaid.org/op_8.17.2.html
 - The new EL matrix exercises actual RPM Sendmail packages on Rocky 8/9,
   AlmaLinux 9 and Oracle Linux 9. Each image is built before test execution;
   tests run in a disposable Docker overlay with no network and no mounted
-  host queues. They verify the package spool layout, synthetic submissions,
+  host queues. Image-mode RPMs are initialized with their own installed
+  sysusers/tmpfiles definitions, without starting systemd or Sendmail.
+  The EL client statistics file sm-client.st is accepted only when it is
+  a verified package-owned regular file. Actual queue entries must be absent.
+  Tests verify the package spool layout, synthetic submissions,
   independent class counts, refusal of changed plans, and quarantine/release.
   No successful Retry/Flush SMTP dispatch is attempted in that matrix.
 - Container tests are not SELinux Enforcing or real systemd VM evidence.

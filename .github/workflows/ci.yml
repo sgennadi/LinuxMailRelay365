@@ -363,7 +363,21 @@ jobs:
           cat > "$context/Dockerfile" <<'DOCKER'
           ARG BASE_IMAGE
           FROM ${BASE_IMAGE}
-          RUN dnf -y install python3 hostname sendmail && dnf clean all
+          RUN dnf -y install python3 hostname sendmail systemd && dnf clean all
+          # EL9 image-mode RPMs declare ghost spool directories and service
+          # users; the systemd boot initialization never runs in Docker.
+          # Use only the installed package's own initialization definitions.
+          RUN set -eu; \
+              if test -f /usr/lib/sysusers.d/sendmail.conf; then \
+                systemd-sysusers /usr/lib/sysusers.d/sendmail.conf; \
+              fi; \
+              if test -f /usr/lib/tmpfiles.d/sendmail.conf; then \
+                systemd-tmpfiles --create /usr/lib/tmpfiles.d/sendmail.conf; \
+              fi; \
+              rpm -q sendmail; \
+              test -d /var/spool/mqueue; \
+              test -d /var/spool/clientmqueue; \
+              stat -c 'EL_SENDMAIL_PACKAGE_SPOOL=%n:%U:%G:%a' /var/spool/mqueue /var/spool/clientmqueue
           COPY linux/inspect-mail-queue.py /opt/lmr365/linux/inspect-mail-queue.py
           COPY tests/smoke_native_sendmail_queue_preview.py /opt/lmr365/tests/smoke_native_sendmail_queue_preview.py
           DOCKER

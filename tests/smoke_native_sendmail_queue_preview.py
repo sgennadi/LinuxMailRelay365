@@ -115,7 +115,7 @@ def isolated_spools():
               ":owner=" + pwd.getpwuid(meta.st_uid).pw_name +
               ":group=" + grp.getgrgid(meta.st_gid).gr_name +
               ":mode=" + format(stat.S_IMODE(meta.st_mode), "o"), flush=True)
-    for _, path in QUEUES.values():
+    for queue, (_, path) in QUEUES.items():
         meta = os.lstat(path)
         require(stat.S_ISDIR(meta.st_mode) and not meta.st_mode & 0o007,
                 "unexpected_package_queue_directory")
@@ -127,7 +127,23 @@ def isolated_spools():
                     == "tmpfs", "fixture_spool_not_mounted")
         else:
             require(not os.path.ismount(path), "external_queue_mount_refused")
-        require(not list(Path(path).iterdir()), "fixture_spool_not_empty")
+        entries = list(Path(path).iterdir())
+        if container and queue == "msp" and path == "/var/spool/clientmqueue":
+            # EL RPMs ship sm-client.st (client statistics), not a message.
+            # Keep it intact, verify package ownership and regular-file metadata.
+            # Never remove, ignore or seed any actual queue file.
+            for entry in entries:
+                st = entry.lstat()
+                require(entry.name == "sm-client.st" and stat.S_ISREG(st.st_mode)
+                        and st.st_nlink == 1 and st.st_uid == meta.st_uid
+                        and st.st_gid == meta.st_gid and not st.st_mode & 0o007,
+                        "unexpected_package_spool_artifact")
+                owner = run(["rpm", "-qf", "--qf", "%{NAME}", str(entry)]).stdout.strip()
+                require(owner == "sendmail", "unowned_package_spool_artifact")
+            print("NATIVE_SENDMAIL_FIXTURE_MSP_STATISTICS=" +
+                  ("package_verified" if entries else "absent"), flush=True)
+        else:
+            require(not entries, "fixture_spool_not_empty:" + queue)
     print("NATIVE_SENDMAIL_FIXTURE_PRIVATE_MOUNTS=" +
           ("disposable_overlay" if container else "ready"), flush=True)
     spec = importlib.util.spec_from_file_location("sendmail_fixture_product", str(HELPER))
@@ -179,7 +195,7 @@ def inventory(queue, count):
 
 
 def snapshot():
-    # Only synthetic files under the two private tmpfs mounts.
+    # Only synthetic files and native package statistics under isolated spools.
     return {queue: {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                     for p in Path(path).iterdir() if p.is_file() and not p.is_symlink()}
             for queue, (_, path) in QUEUES.items()}
