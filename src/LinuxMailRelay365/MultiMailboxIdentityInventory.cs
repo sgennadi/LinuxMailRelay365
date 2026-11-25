@@ -60,7 +60,7 @@ internal sealed record MultiMailboxIdentityInventory(MultiMailboxIdentityMap Sou
             throw new InvalidDataException("Invalid OAuth identity ID.");
         return parsed;
     }
-    private static MultiMailboxIdentityMap Map(JsonElement item)
+    internal static MultiMailboxIdentityMap Map(JsonElement item)
     {
         Object(item, 3);
         string status = Code(item, "status", "ok", "absent", "unverified"), sha = Read(item, "sha256");

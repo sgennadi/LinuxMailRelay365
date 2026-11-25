@@ -408,3 +408,13 @@ system is refused until policy-aware creation is separately implemented.
 Other root administrators must not edit the source concurrently. The
 backup directory is /etc/linuxmailrelay365/oauth-source-backups; automatic
 restore, identity creation and live activation are separate operations.
+
+The GUI exposes Add mailbox, Edit mailbox and Remove row on Source only.
+A typed confirmation is tied to an exact preview (including existing
+identity metadata and certificate digest). The saved receipt must match
+the preview and a newly read source inventory. Cached cloud observations
+and reviewed install/restore plans are invalidated before saving. An
+uncertain save locks source editing for the current window, even after
+Refresh, and directs the operator to the root-private backup. Runtime
+remains read-only in this dialog. Add/Edit reuse an existing identity;
+new identity provisioning and backup restore are not implemented here.
