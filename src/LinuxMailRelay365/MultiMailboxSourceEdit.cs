@@ -165,6 +165,80 @@ internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha,
         var restoration = Parse(RestoreReceipt(false), restore).Plan;
         if (Parse(RestoreReceipt(true), restore, restoration).BackupId != "source-ijklmnop") return false;
         try { Parse(RestoreReceipt(true).Replace("source-abcdefgh", "source-zzzzzzzz"), restore, restoration); return false; }
-        catch (InvalidDataException) { return true; }
+        catch (InvalidDataException) { return MultiMailboxSourceBackupCatalog.SelfTest(); }
+    }
+}
+
+internal sealed record MultiMailboxSourceBackup(string BackupId, string MapSha, int RowCount);
+
+internal sealed record MultiMailboxSourceBackupCatalog(int Scanned, MultiMailboxSourceBackup[] Backups)
+{
+    internal static string Request(string sha, string nonce)
+    {
+        if (!MultiMailboxSourceEditRequest.IsSha(sha) || !MultiMailboxSourceEditRequest.IsSha(nonce))
+            throw new InvalidDataException("Invalid backup catalog context.");
+        return JsonSerializer.Serialize(new { action = "list_backups", base_sha = sha, nonce });
+    }
+
+    internal static MultiMailboxSourceBackupCatalog Parse(string json, string sha, int count, string nonce)
+    {
+        _ = Request(sha, nonce);
+        if (count is < 1 or > 64 || json.Length > 16384 || json.Contains('\0'))
+            throw new InvalidDataException("Invalid backup catalog receipt.");
+        using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 5 });
+        var root = doc.RootElement;
+        static bool Exact(JsonElement obj, params string[] fields) =>
+            obj.ValueKind == JsonValueKind.Object &&
+            obj.EnumerateObject().Select(p => p.Name).OrderBy(p => p, StringComparer.Ordinal)
+                .SequenceEqual(fields.OrderBy(p => p, StringComparer.Ordinal));
+        if (!Exact(root, "version", "action", "status", "nonce", "base_sha", "old_count",
+            "scanned", "backups", "changes", "runtime_changed", "mail_sent", "cloud_changed") ||
+            root.GetProperty("version").GetInt32() != 1 ||
+            root.GetProperty("action").GetString() != "list_backups" ||
+            root.GetProperty("status").GetString() != "catalog" ||
+            root.GetProperty("nonce").GetString() != nonce ||
+            root.GetProperty("base_sha").GetString() != sha ||
+            root.GetProperty("old_count").GetInt32() != count ||
+            new[] { "changes", "runtime_changed", "mail_sent", "cloud_changed" }
+                .Any(k => root.GetProperty(k).ValueKind != JsonValueKind.False))
+            throw new InvalidDataException("Backup catalog context or scope mismatch.");
+        int scanned = root.GetProperty("scanned").GetInt32();
+        var entries = root.GetProperty("backups");
+        if (scanned is < 0 or > 256 || entries.ValueKind != JsonValueKind.Array ||
+            entries.GetArrayLength() > Math.Min(scanned, 64))
+            throw new InvalidDataException("Invalid backup catalog bounds.");
+        var result = new List<MultiMailboxSourceBackup>();
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in entries.EnumerateArray())
+        {
+            if (!Exact(entry, "backup_id", "map_sha", "row_count"))
+                throw new InvalidDataException("Unexpected backup catalog entry.");
+            string id = entry.GetProperty("backup_id").GetString() ?? "";
+            string map = entry.GetProperty("map_sha").GetString() ?? "";
+            int rows = entry.GetProperty("row_count").GetInt32();
+            if (!MultiMailboxSourceEditRequest.IsBackup(id) || !ids.Add(id) ||
+                !MultiMailboxSourceEditRequest.IsSha(map) || map == sha || rows is < 1 or > 64)
+                throw new InvalidDataException("Invalid backup catalog entry.");
+            result.Add(new(id, map, rows));
+        }
+        return new(scanned, result.OrderBy(x => x.BackupId, StringComparer.Ordinal).ToArray());
+    }
+
+    internal static bool SelfTest()
+    {
+        string sha = new('a', 64), nonce = new('b', 64);
+        string json = JsonSerializer.Serialize(new { version = 1, action = "list_backups", status = "catalog",
+            nonce, base_sha = sha, old_count = 1, scanned = 2,
+            backups = new[] { new { backup_id = "source-abcdefgh", map_sha = new string('c', 64), row_count = 2 } },
+            changes = false, runtime_changed = false, mail_sent = false, cloud_changed = false });
+        if (Parse(json, sha, 1, nonce).Backups.Single().RowCount != 2) return false;
+        foreach (string bad in new[] { json.Replace("source-abcdefgh", "../unsafe"),
+            json.Replace("\"changes\":false", "\"changes\":true"), json.Replace(nonce, sha),
+            json.Replace("\"scanned\":2", "\"scanned\":0") })
+        {
+            try { Parse(bad, sha, 1, nonce); return false; }
+            catch (InvalidDataException) { }
+        }
+        return true;
     }
 }

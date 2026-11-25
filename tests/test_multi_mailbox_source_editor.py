@@ -91,6 +91,14 @@ class SourceEditorTests(unittest.TestCase):
             with self.assertRaises(M.Refused):
                 M.request(M.encode(bad))
 
+    def test_catalog_request_is_read_only_and_exact(self):
+        req = dict(action="list_backups", base_sha="b"*64, nonce="a"*64)
+        self.assertEqual(M.request(M.encode(req)), req)
+        for bad in (dict(req, approval="c"*64), dict(req, backup_id="source-abcdefgh"),
+                    dict(req, base_sha=""), dict(req, nonce="bad")):
+            with self.assertRaises(M.Refused):
+                M.request(M.encode(bad))
+
     @unittest.skipUnless(os.geteuid() == 0 and os.environ.get("GITHUB_ACTIONS") == "true"
                          and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
                          "requires disposable root CI")
@@ -118,6 +126,14 @@ class SourceEditorTests(unittest.TestCase):
                 self.assertEqual(source.stat().st_mode & 0o777, 0o600)
                 restore = dict(self.req("add", M.A.parse_map(changed)), action="restore",
                                backup_id=saved["backup_id"])
+                catalog_req = dict(action="list_backups", base_sha=restore["base_sha"], nonce="a"*64)
+                with mock.patch.object(M.I, "identity_row", side_effect=AssertionError("catalog must not open identities")):
+                    catalog = M.backup_catalog(catalog_req)
+                self.assertEqual(catalog["backups"], [dict(backup_id=saved["backup_id"],
+                    map_sha=M.I.digest(original), row_count=2)])
+                self.assertFalse(catalog["changes"])
+                self.assertEqual(source.read_bytes(), changed)
+                self.assertEqual(len(list(backups.iterdir())), 1)
                 _, restored, reviewed = M.plan(restore, 10)
                 self.assertEqual(restored, original)
                 self.assertEqual(source.read_bytes(), changed)
@@ -126,13 +142,18 @@ class SourceEditorTests(unittest.TestCase):
                 self.assertEqual(source.read_bytes(), changed)
                 backup_file = backups/saved["backup_id"]/"oauth-senders.tsv"
                 backup_file.write_bytes(b"tampered")
+                self.assertEqual(M.backup_catalog(catalog_req)["backups"], [])
                 with self.assertRaisesRegex(M.Refused, "backup_digest_mismatch"):
                     M.plan(restore, 10)
                 self.assertEqual(source.read_bytes(), changed)
                 backup_file.write_bytes(original)
+                (backups/"source-zzzzzzzz").symlink_to(backups/saved["backup_id"], target_is_directory=True)
+                self.assertEqual(len(M.backup_catalog(catalog_req)["backups"]), 1)
                 # Prove a concurrent writer cannot be overwritten by a
                 # previously approved restore, even if the backup is valid.
                 source.write_bytes(M.render([rows[1]]))
+                with self.assertRaisesRegex(M.Refused, "source_changed"):
+                    M.backup_catalog(catalog_req)
                 with self.assertRaisesRegex(M.Refused, "source_changed"):
                     M.apply(dict(restore, approval=reviewed["plan_sha"], confirm=M.RESTORE_CONFIRM), 10)
                 self.assertEqual(source.read_bytes(), M.render([rows[1]]))

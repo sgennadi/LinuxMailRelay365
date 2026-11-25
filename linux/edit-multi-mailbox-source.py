@@ -40,6 +40,12 @@ def request(raw):
     need(1 <= len(raw) <= 4096, "request_size")
     obj = I.decode(raw)
     need(isinstance(obj, dict), "request_fields")
+    if obj.get("action") == "list_backups":
+        need(set(obj) == {"action", "base_sha", "nonce"} and
+             all(isinstance(v, str) for v in obj.values()) and
+             I.SHA.fullmatch(obj["base_sha"]) and I.SHA.fullmatch(obj["nonce"]),
+             "backup_catalog_context")
+        return obj
     fields = {"action", "base_sha", "old_mailbox", "login", "mailbox",
               "identity_file", "nonce", "approval", "confirm"}
     restoring = obj.get("action") == "restore"
@@ -114,10 +120,8 @@ def identity_path(req, previous, gid):
     return matches[0]
 
 
-def restore_plan(req, gid):
-    old, current = read_source()
-    need(old is not None and I.digest(old) == req["base_sha"],
-         "source_changed_since_inventory")
+def restore_backup(req):
+    """Verify backup metadata and canonical bytes without reading identities."""
     need(BACKUP_ID.fullmatch(req["backup_id"]), "invalid_backup_id")
     E.trusted_directory(BACKUPS)
     folder = BACKUPS / req["backup_id"]
@@ -143,6 +147,46 @@ def restore_plan(req, gid):
     new = E.secure_read(folder / "oauth-senders.tsv", A.MAX_MAP, modes=(0o600,))
     need(I.digest(new) == manifest["old_sha256"], "backup_digest_mismatch")
     rows = canonical_rows(new)
+    return new, rows, manifest_raw
+
+
+def backup_catalog(req):
+    old, current = read_source()
+    need(old is not None and I.digest(old) == req["base_sha"],
+         "source_changed_since_inventory")
+    items = []
+    scanned = 0
+    try:
+        BACKUPS.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        E.trusted_directory(BACKUPS)
+        need(stat.S_IMODE(BACKUPS.lstat().st_mode) == 0o700, "backup_root_not_private")
+        with os.scandir(str(BACKUPS)) as entries:
+            for entry in entries:
+                scanned += 1
+                need(scanned <= 256, "backup_catalog_limit")
+                if not BACKUP_ID.fullmatch(entry.name):
+                    continue
+                try:
+                    new, rows, _ = restore_backup(dict(req, backup_id=entry.name))
+                except (Refused, A.Refused, E.Refused, OSError, KeyError, ValueError, TypeError, UnicodeError):
+                    continue
+                items.append(dict(backup_id=entry.name, map_sha=I.digest(new), row_count=len(rows)))
+                need(len(items) <= 64, "backup_catalog_match_limit")
+    need(read_source() == (old, current), "source_changed_during_catalog")
+    return dict(version=1, action="list_backups", status="catalog", nonce=req["nonce"],
+                base_sha=req["base_sha"], old_count=len(current), scanned=scanned,
+                backups=sorted(items, key=lambda item: item["backup_id"]), changes=False,
+                runtime_changed=False, mail_sent=False, cloud_changed=False)
+
+
+def restore_plan(req, gid):
+    old, current = read_source()
+    need(old is not None and I.digest(old) == req["base_sha"],
+         "source_changed_since_inventory")
+    new, rows, manifest_raw = restore_backup(req)
     evidence = [I.identity_row(*row, gid) for row in rows]
     need(all(row["status"] == "public_certificate_read" for row in evidence),
          "restore_identity_or_certificate_unverified")
@@ -311,6 +355,9 @@ def main():
     try:
         need(os.geteuid() == 0, "root_required")
         req = request(sys.stdin.buffer.read(4097))
+        if req["action"] == "list_backups":
+            print(json.dumps(backup_catalog(req), sort_keys=True, separators=(",", ":")))
+            return 0
         gid = grp.getgrnam("m365mailer").gr_gid
         if req["approval"]:
             result = apply(req, gid)

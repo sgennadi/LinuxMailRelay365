@@ -7,14 +7,15 @@ namespace LinuxMailRelay365;
 internal sealed partial class MainForm
 {
     private MultiMailboxSourceEditRequest? PromptMultiMailboxSourceEdit(Form owner,
-        string action, MultiMailboxIdentityMap map, MultiMailboxIdentityRow? row)
+        string action, MultiMailboxIdentityMap map, MultiMailboxIdentityRow? row,
+        MultiMailboxSourceBackupCatalog? catalog = null)
     {
         if (action is not ("add" or "edit" or "remove" or "restore") || map.Status is not ("ok" or "absent") ||
             (action is "edit" or "remove" && (row is null || !map.Rows.Contains(row)))) return null;
         string nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         if (action == "restore")
         {
-            if (map.Status != "ok") return null;
+            if (map.Status != "ok" || catalog is null) return null;
             using var restore = new Form { Text = "LinuxMailRelay365 | Restore planned mailbox map",
                 StartPosition = FormStartPosition.CenterParent, AutoScaleMode = AutoScaleMode.Dpi,
                 ClientSize = PreferredDialogSize(Screen.FromControl(owner).WorkingArea.Size, owner.DeviceDpi, 680, 360),
@@ -27,10 +28,20 @@ internal sealed partial class MainForm
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             var text = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical, Text =
-                "Enter the exact backup ID from the save result or /etc/linuxmailrelay365/oauth-source-backups." +
-                Environment.NewLine + "Only a backup whose recorded successor matches the current source map can be restored." +
+                "Select a backup whose recorded successor matches the current source map, or enter an exact backup ID for manual review." +
+                Environment.NewLine + "Compatible maps: " + catalog.Backups.Length + " / " + catalog.Scanned + " entries inspected." +
+                Environment.NewLine + "Preview rechecks the backup bytes and all required identities and certificates." +
                 Environment.NewLine + "The current map will be backed up again. Runtime, keys, mailboxes and services remain unchanged." };
-            var id = new TextBox { Dock = DockStyle.Fill, MaxLength = 15, PlaceholderText = "source-abcdefgh" };
+            var id = new ComboBox { Dock = DockStyle.Fill, MaxLength = 15, DropDownStyle = ComboBoxStyle.DropDown };
+            foreach (var item in catalog.Backups) id.Items.Add(item.BackupId);
+            var count = new Label { AutoSize = true, Dock = DockStyle.Fill };
+            void UpdateCount()
+            {
+                var choice = catalog.Backups.FirstOrDefault(x => x.BackupId == id.Text.Trim());
+                count.Text = choice is null ? "Manual ID / no selection; preview required." :
+                    "Stored map: " + choice.RowCount + " mailbox(es). Identity verification pending preview.";
+            }
+            UpdateCount();
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true,
                 FlowDirection = FlowDirection.RightToLeft };
             var abort = new Button { Text = T("Отмена", "Cancel", "ביטול"), AutoSize = true, DialogResult = DialogResult.Cancel };
@@ -38,9 +49,12 @@ internal sealed partial class MainForm
                 DialogResult = DialogResult.OK, Enabled = false };
             MultiMailboxSourceEditRequest RequestRestore() => new("restore", map.Sha256, map.Rows.Length,
                 "", "", "", "", nonce, id.Text.Trim());
-            id.TextChanged += (_, _) => review.Enabled = RequestRestore().Valid;
+            id.TextChanged += (_, _) => { UpdateCount(); review.Enabled = RequestRestore().Valid; };
             buttons.Controls.Add(abort); buttons.Controls.Add(review);
-            layout.Controls.Add(text, 0, 0); layout.Controls.Add(id, 0, 1); layout.Controls.Add(buttons, 0, 2);
+            var picker = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 1 };
+            picker.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            picker.Controls.Add(id, 0, 0); picker.Controls.Add(count, 0, 1);
+            layout.Controls.Add(text, 0, 0); layout.Controls.Add(picker, 0, 1); layout.Controls.Add(buttons, 0, 2);
             restore.Controls.Add(layout); restore.CancelButton = abort; restore.AcceptButton = review;
             return restore.ShowDialog(owner) == DialogResult.OK && RequestRestore().Valid ? RequestRestore() : null;
         }

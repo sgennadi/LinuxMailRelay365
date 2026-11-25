@@ -24,6 +24,17 @@ class SourceEditorGui(unittest.TestCase):
         self.assertNotIn("InstallMultiMailbox", flow)
         self.assertNotIn("ApplyMultiMailbox", flow)
 
+    def test_backup_catalog_is_read_only_and_still_requires_preview(self):
+        flow = UI.split("async Task EditSourceAsync", 1)[1].split("addMailbox.Click", 1)[0]
+        self.assertLess(flow.index("MultiMailboxSourceBackupCatalog.Parse"), flow.index("PromptMultiMailboxSourceEdit"))
+        self.assertLess(flow.index("PromptMultiMailboxSourceEdit"), flow.index("Execute(null)"))
+        catalog = HELPER.split("def backup_catalog(", 1)[1].split("def restore_plan(", 1)[0]
+        self.assertIn("restore_backup(", catalog)
+        self.assertNotIn("identity_row(", catalog)
+        self.assertNotIn("write_new(", catalog)
+        self.assertNotIn("os.replace(", catalog)
+        self.assertIn('req["action"] == "list_backups"', HELPER)
+
     def test_receipt_requires_exact_plan_and_no_runtime_change(self):
         for marker in ("plan != approved", '"runtime_changed", "mail_sent", "cloud_changed"',
                        'Read("nonce") != req.Nonce', 'Read("base_sha") != req.BaseSha',

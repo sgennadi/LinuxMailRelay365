@@ -216,8 +216,6 @@ internal sealed partial class MainForm
             if (reading || !inventoryValid || saveUncertain || SelectedScope() != "source") return;
             var oldMap = inventory.Source;
             var selected = action is "add" or "restore" ? null : Selected();
-            var request = PromptMultiMailboxSourceEdit(dialog, action, oldMap, selected);
-            if (request is null) return;
             reading = true;
             refresh.Enabled = close.Enabled = tabs.Enabled = verify.Enabled = false;
             EditingActions();
@@ -231,6 +229,21 @@ internal sealed partial class MainForm
                     if (context != CurrentMultiMailboxContext() || !HasMailDiscovery())
                         throw new InvalidOperationException("Linux or source selection changed.");
                 }
+                MultiMailboxSourceBackupCatalog? catalog = null;
+                if (action == "restore")
+                {
+                    ValidateContext();
+                    heading.Text = "Reading compatible source-map backups; no changes...";
+                    string nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+                    var reply = await SshRemote.RunRootScriptAsync(endpoint,
+                        EmbeddedAssets.BuildMultiMailboxSourceEditBundle(
+                            MultiMailboxSourceBackupCatalog.Request(oldMap.Sha256, nonce)), TimeSpan.FromMinutes(3));
+                    ValidateContext();
+                    if (reply.ExitCode != 0) throw new IOException("Backup catalog unavailable or changed.");
+                    catalog = MultiMailboxSourceBackupCatalog.Parse(reply.StdOut, oldMap.Sha256, oldMap.Rows.Length, nonce);
+                }
+                var request = PromptMultiMailboxSourceEdit(dialog, action, oldMap, selected, catalog);
+                if (request is null) { Render(); return; }
                 async Task<(MultiMailboxSourceEditPlan Plan, string BackupId)> Execute(
                     MultiMailboxSourceEditPlan? approved)
                 {

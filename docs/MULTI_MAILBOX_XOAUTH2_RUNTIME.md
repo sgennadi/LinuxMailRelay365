@@ -436,4 +436,20 @@ inventory; installed runtime, cloud objects and keys are untouched. The
 Linux CI additionally exercises real root-owned temporary files, manifest
 checks, atomic save/restore, stale-map and tampered-backup refusal. Signer
 and identity checks use synthetic fixtures. This is not yet live SELinux
-or tenant acceptance. No automatic backup browsing or deletion is added.
+or tenant acceptance. No automatic backup deletion is added.
+
+## Read-only compatible backup catalog
+
+Restore source map now discovers compatible root-private backups before
+showing the picker, with an optional exact-ID manual entry. The bounded
+catalog inspects at most 256 directory entries and returns at most 64
+matching backups; it refuses overflow rather than returning a partial
+list. Each listed backup has a valid private manifest, canonical source
+bytes, verified digest and a recorded successor equal to the current
+source SHA. The catalog contains only IDs, stored map digests and row
+counts; it does not read OAuth identity JSON, keys or certificates.
+Missing, stale, malformed and unsafe backup entries are not offered.
+The catalog is not a restore approval: selecting an ID still requires
+the existing fresh identity/certificate checks, exact plan, typed
+approval, shared lock and readback. No production services, runtime
+routes, cloud objects, queues or backups are changed by browsing.
