@@ -46,6 +46,10 @@ internal sealed partial class MainForm : Form
     private readonly ComboBox backupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private readonly ComboBox foreignBackupSelector = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 690 };
     private string? foreignBackupListContext;
+    private string? postfixBackupListIdentity;
+    private string? sidecarBackupListIdentity;
+    private int sidecarBackupTotal;
+    private bool archiveDetailsExpanded;
     private bool backupMaintenanceOpen;
     private bool renderedBackupMaintenanceOpen;
     // Sampled read-only UI evidence, never persisted or used for authorization.
@@ -499,6 +503,16 @@ internal sealed partial class MainForm : Form
         foreach (var connectionField in new[] { host, sshPort, sshUser, sshKey, sshPassword, sudoPassword, sshFingerprint })
             connectionField.TextChanged += (_, _) => ClearNativeRecoverySample(collapseTools: true);
         sshAuthMode.SelectedIndexChanged += (_, _) => ClearNativeRecoverySample(collapseTools: true);
+        foreach (var connectionField in new[] { host, sshPort, sshUser, sshKey, sshPassword, sudoPassword, sshFingerprint })
+            connectionField.TextChanged += (_, _) => ClearArchiveSelections();
+        sshAuthMode.SelectedIndexChanged += (_, _) => ClearArchiveSelections();
+        foreach (var selector in new[] { backupSelector, foreignBackupSelector, sidecarBackupSelector })
+            selector.SelectionChangeCommitted += (_, _) =>
+            {
+                if (selector == sidecarBackupSelector) ClearSidecarRestoreReview();
+                if (selector == foreignBackupSelector) archiveDetailsExpanded = false;
+                if (!busy && !renderingPage && step is 3 or 4) RenderPage();
+            };
         mailTransport.SelectedIndexChanged += (_, _) => {
             if (!routingLoading) {
                 ResetMultiMailboxRouteReview();
@@ -4456,11 +4470,7 @@ internal sealed partial class MainForm : Form
             allowExisting.Checked = false;
             inspectedMail = null;
             inspectedServerIdentity = null;
-            backupSelector.Items.Clear();
-            sidecarBackupSelector.Items.Clear();
-            reviewedSidecarRestoreSha = null;
-            reviewedSidecarRestoreId = null;
-            reviewedSidecarRestoreIdentity = null;
+            ClearArchiveSelections();
             existingSmtpAudit = null;
             existingSmtpAuditIdentity = null;
             discoveredIsolatedRelay = null;
@@ -6530,6 +6540,10 @@ internal sealed partial class MainForm : Form
 
     private async Task BackupSidecarConfigAsync()
     {
+        sidecarBackupListIdentity = null;
+        sidecarBackupTotal = 0;
+        sidecarBackupSelector.Items.Clear();
+        ClearSidecarRestoreReview();
         var result = await SshRemote.RunRootScriptAsync(Endpoint(),
             EmbeddedAssets.BuildSidecarConfigRecoveryBundle("--backup"),
             TimeSpan.FromMinutes(5));
@@ -6545,31 +6559,31 @@ internal sealed partial class MainForm : Form
 
     private async Task ListSidecarConfigBackupsAsync()
     {
-        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+        var endpoint = Endpoint();
+        sidecarBackupListIdentity = null;
+        sidecarBackupTotal = 0;
+        sidecarBackupSelector.Items.Clear();
+        ClearSidecarRestoreReview();
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildSidecarConfigRecoveryBundle("--list"),
             TimeSpan.FromMinutes(5));
         result.EnsureSuccess();
-        sidecarBackupSelector.Items.Clear();
-        foreach (string line in result.StdOut.Split('\n'))
-        {
-            var match = System.Text.RegularExpressions.Regex.Match(line.Trim(),
-                @"\ASIDECAR_BACKUP_ID=([0-9]{8}T[0-9]{6}Z-[a-f0-9]{12})\z");
-            if (match.Success)
-                sidecarBackupSelector.Items.Add(match.Groups[1].Value);
-        }
+        var listing = VerifiedArchiveListing.Parse(result.StdOut, sidecar: true);
+        var current = RequireSameArchiveConnection(endpoint, allowFirstPin: true);
+        sidecarBackupSelector.Items.AddRange(listing.Ids);
         sidecarBackupSelector.SelectedIndex = -1;
-        reviewedSidecarRestoreSha = null;
-        reviewedSidecarRestoreId = null;
+        sidecarBackupListIdentity = SecurityOptionsStore.Identity(current);
+        sidecarBackupTotal = listing.Total;
         WriteLine("Verified independent Relay configuration archives: " +
-                  sidecarBackupSelector.Items.Count + ". Queue and external dependencies are excluded.");
+                  listing.Ids.Length + " listed of " + listing.Total + ". Queue and external dependencies are excluded.");
         RenderPage();
     }
 
     private async Task PreviewSidecarConfigRestoreAsync()
     {
-        if (sidecarBackupSelector.SelectedItem is not string backupId)
-            throw new InvalidOperationException("List and select a verified isolated Relay backup first.");
+        ClearSidecarRestoreReview();
         var endpoint = Endpoint();
+        string backupId = RequireArchiveSelection(sidecarBackupSelector, sidecarBackupListIdentity, endpoint);
         var result = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildSidecarConfigRecoveryBundle("--preview-restore", backupId),
             TimeSpan.FromMinutes(5));
@@ -6580,9 +6594,12 @@ internal sealed partial class MainForm : Form
             !result.StdOut.Contains("SIDECAR_RESTORE_PREVIEW=", StringComparison.Ordinal) ||
             !result.StdOut.Contains("CHANGES_APPLIED=no", StringComparison.Ordinal))
             throw new InvalidDataException("Isolated Restore Preview did not provide a verified current SHA-256.");
+        var reviewed = RequireSameArchiveConnection(endpoint);
+        if (RequireArchiveSelection(sidecarBackupSelector, sidecarBackupListIdentity, reviewed) != backupId)
+            throw new InvalidOperationException("Selected isolated Relay archive changed during Preview.");
         reviewedSidecarRestoreSha = sha.Groups[1].Value;
         reviewedSidecarRestoreId = backupId;
-        reviewedSidecarRestoreIdentity = SecurityOptionsStore.Identity(endpoint);
+        reviewedSidecarRestoreIdentity = SecurityOptionsStore.Identity(reviewed);
         WriteLine(result.StdOut);
         WriteLine("The preview DOES NOT stop the Relay or prove an empty queue. Before restoring, stop ONLY " +
             "linuxmailrelay365-sidecar.service, linuxmailrelay365-smtp-auth.service, " +
@@ -6592,11 +6609,13 @@ internal sealed partial class MainForm : Form
 
     private async Task RestoreSidecarConfigAsync()
     {
-        if (sidecarBackupSelector.SelectedItem is not string backupId ||
-            reviewedSidecarRestoreId != backupId ||
+        var endpoint = Endpoint();
+        string backupId = RequireArchiveSelection(sidecarBackupSelector, sidecarBackupListIdentity, endpoint);
+        if (reviewedSidecarRestoreId != backupId ||
             reviewedSidecarRestoreSha is null ||
-            reviewedSidecarRestoreIdentity != SecurityOptionsStore.Identity(Endpoint()))
+            reviewedSidecarRestoreIdentity != SecurityOptionsStore.Identity(endpoint))
             throw new InvalidOperationException("Run an isolated Relay Restore Preview for this exact server and backup first.");
+        string expected = reviewedSidecarRestoreSha;
         if (!ConfirmDestructive("LinuxMailRelay365 | OFFLINE isolated SMTP Relay restore",
             T("Опасное действие: восстановить отдельную конфигурацию Relay из архива " + backupId +
               ". Все службы Relay и мониторинга должны быть ОСТАНОВЛЕНЫ, очередь должна быть ПУСТОЙ. " +
@@ -6608,21 +6627,26 @@ internal sealed partial class MainForm : Form
               "An emergency snapshot is created. No services restart automatically. The primary MTA is untouched.",
               "שחזור תצורת הממסר המבודד בלבד כשהשירותים עצורים והתור ריק."),
             "RESTORE ISOLATED RELAY")) return;
-        string expected = reviewedSidecarRestoreSha;
-        reviewedSidecarRestoreSha = null;
-        reviewedSidecarRestoreId = null;
-        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
-            EmbeddedAssets.BuildSidecarConfigRecoveryBundle("--restore", backupId, expected),
-            TimeSpan.FromMinutes(8));
-        result.EnsureSuccess();
-        if (!result.StdOut.Contains("SIDECAR_RESTORED_BACKUP_ID=" + backupId, StringComparison.Ordinal) ||
-            !result.StdOut.Contains("SIDECAR_SERVICES_STARTED=no", StringComparison.Ordinal))
-            throw new InvalidDataException("Independent Relay configuration restoration was not confirmed.");
-        WriteLine(result.StdOut);
-        inspectedMail = null;
-        inspectedServerIdentity = null;
-        sidecarBackupSelector.Items.Clear();
-        WriteLine("Restored files ONLY. Recheck certificates, DNS, M365 delivery and Relay configuration BEFORE manually starting isolated services.");
+        var confirmed = RequireSameArchiveConnection(endpoint);
+        if (RequireArchiveSelection(sidecarBackupSelector, sidecarBackupListIdentity, confirmed) != backupId ||
+            reviewedSidecarRestoreId != backupId || reviewedSidecarRestoreSha != expected ||
+            reviewedSidecarRestoreIdentity != SecurityOptionsStore.Identity(confirmed))
+            throw new InvalidOperationException("Isolated Relay archive or reviewed state changed after confirmation.");
+        ClearSidecarRestoreReview();
+        try
+        {
+            var result = await SshRemote.RunRootScriptAsync(confirmed,
+                EmbeddedAssets.BuildSidecarConfigRecoveryBundle("--restore", backupId, expected),
+                TimeSpan.FromMinutes(8));
+            result.EnsureSuccess();
+            RequireSameArchiveConnection(confirmed);
+            if (!result.StdOut.Contains("SIDECAR_RESTORED_BACKUP_ID=" + backupId, StringComparison.Ordinal) ||
+                !result.StdOut.Contains("SIDECAR_SERVICES_STARTED=no", StringComparison.Ordinal))
+                throw new InvalidDataException("Independent Relay configuration restoration was not confirmed.");
+            WriteLine(result.StdOut);
+            WriteLine("Restored files ONLY. Recheck certificates, DNS, M365 delivery and Relay configuration BEFORE manually starting isolated services.");
+        }
+        finally { InvalidateAfterArchiveWrite(); }
     }
 
     private void RequirePostfixBackup()
@@ -6743,6 +6767,7 @@ internal sealed partial class MainForm : Form
         string mta = ConfirmedForeignBackupMta(allowStopped: true);
         foreignBackupListContext = null;
         foreignBackupSelector.Items.Clear();
+        archiveDetailsExpanded = false;
         var response = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildForeignMtaBackupBundle(mta, "list"),
             TimeSpan.FromMinutes(2));
@@ -6761,13 +6786,13 @@ internal sealed partial class MainForm : Form
         foreach (System.Text.RegularExpressions.Match item in matches)
             if (!unique.Add(item.Groups[1].Value))
                 throw new InvalidDataException("Duplicate foreign MTA backup ID.");
-        foreach (string id in unique)
+        foreach (string id in unique.Reverse())
             foreignBackupSelector.Items.Add(id);
-        if (foreignBackupSelector.Items.Count > 0)
-            foreignBackupSelector.SelectedIndex = 0;
-        foreignBackupListContext = SecurityOptionsStore.Identity(endpoint) + "|" + mta;
+        foreignBackupSelector.SelectedIndex = -1;
+        var current = RequireSameArchiveConnection(endpoint, allowFirstPin: true);
+        foreignBackupListContext = SecurityOptionsStore.Identity(current) + "|" + mta;
         WriteLine("Verified primary " + mta + " config archives: " + matches.Count +
-            ". Contents stay on Linux. Only separately confirmed experimental offline Exim Restore is available.");
+            ". Choose an archive explicitly. Contents stay on Linux. Exim and scoped Sendmail v2 Restore require separate offline review and approval.");
         RenderPage();
     }
 
@@ -7232,6 +7257,8 @@ internal sealed partial class MainForm : Form
     private async Task BackupNowAsync()
     {
         RequirePostfixBackup();
+        postfixBackupListIdentity = null;
+        backupSelector.Items.Clear();
         var result = await SshRemote.RunRootScriptAsync(Endpoint(),
             EmbeddedAssets.BuildRecoveryBundle("--backup"), TimeSpan.FromMinutes(3));
         result.EnsureSuccess();
@@ -7242,18 +7269,19 @@ internal sealed partial class MainForm : Form
     private async Task ListBackupsAsync()
     {
         RequirePostfixBackup();
-        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+        var endpoint = Endpoint();
+        postfixBackupListIdentity = null;
+        backupSelector.Items.Clear();
+        var result = await SshRemote.RunRootScriptAsync(endpoint,
             EmbeddedAssets.BuildRecoveryBundle("--list"), TimeSpan.FromMinutes(2));
         result.EnsureSuccess();
-        backupSelector.Items.Clear();
-        foreach (var line in result.StdOut.Split('\n'))
-        {
-            var match = System.Text.RegularExpressions.Regex.Match(line.Trim(),
-                @"^BACKUP_ID=([0-9]{8}T[0-9]{6}Z-[a-f0-9]{12})$");
-            if (match.Success) backupSelector.Items.Add(match.Groups[1].Value);
-        }
+        var listing = VerifiedArchiveListing.Parse(result.StdOut, sidecar: false);
+        var current = RequireSameArchiveConnection(endpoint, allowFirstPin: true);
+        RequirePostfixBackup();
+        backupSelector.Items.AddRange(listing.Ids);
         backupSelector.SelectedIndex = -1;
-        WriteLine("Verified Linux backups: " + backupSelector.Items.Count +
+        postfixBackupListIdentity = SecurityOptionsStore.Identity(current);
+        WriteLine("Verified Linux backups: " + listing.Total +
             ". Select a backup explicitly before Restore.");
         RenderPage();
     }
@@ -7261,8 +7289,13 @@ internal sealed partial class MainForm : Form
     private async Task RestoreBackupAsync()
     {
         RequirePostfixBackup();
-        if (backupSelector.SelectedItem is not string backupId)
-            throw new InvalidOperationException("List backups and select one verified backup before restoring.");
+        var endpoint = Endpoint();
+        string backupId = RequireArchiveSelection(backupSelector, postfixBackupListIdentity, endpoint);
+        // Reverify the archive before asking for the destructive confirmation.
+        await VerifySelectedPostfixArchiveAsync();
+        var reviewed = RequireSameArchiveConnection(endpoint);
+        if (RequireArchiveSelection(backupSelector, postfixBackupListIdentity, reviewed) != backupId)
+            throw new InvalidOperationException("Selected Postfix archive changed during verification.");
         if (!ConfirmDestructive("LinuxMailRelay365 | Restore Postfix",
             T("Существующая конфигурация /etc/postfix будет заменена резервной копией " + backupId +
               ". Postfix будет перезапущен. Доставка почты может прерваться. Перед восстановлением создаётся ещё одна резервная копия. Пакеты не откатываются.",
@@ -7270,16 +7303,23 @@ internal sealed partial class MainForm : Form
               ", restarts Postfix and may interrupt mail. A safety backup is made first. Installed packages are NOT reverted.",
               "השחזור יחליף את הגדרות Postfix ועשוי לשבש דואר."),
             "RESTORE POSTFIX")) return;
+        var confirmed = RequireSameArchiveConnection(reviewed);
+        RequirePostfixBackup();
+        if (RequireArchiveSelection(backupSelector, postfixBackupListIdentity, confirmed) != backupId)
+            throw new InvalidOperationException("Selected Postfix archive changed after confirmation.");
         WriteLine("Restoring verified Postfix backup: " + backupId);
-        var result = await SshRemote.RunRootScriptAsync(Endpoint(),
-            EmbeddedAssets.BuildRecoveryBundle("--restore", backupId), TimeSpan.FromMinutes(6));
-        result.EnsureSuccess();
-        WriteLine(result.StdOut);
-        inspectedMail = null;
-        inspectedServerIdentity = null;
-        allowExisting.Checked = false;
-        backupSelector.Items.Clear();
-        WriteLine("Restore complete. Re-run the MTA inspection before any further modifications.");
+        try
+        {
+            var result = await SshRemote.RunRootScriptAsync(confirmed,
+                EmbeddedAssets.BuildRecoveryBundle("--restore", backupId), TimeSpan.FromMinutes(6));
+            result.EnsureSuccess();
+            RequireSameArchiveConnection(confirmed);
+            if (!result.StdOut.Replace("\r\n", "\n").Split('\n').Contains("RESTORED_BACKUP_ID=" + backupId))
+                throw new InvalidDataException("Postfix Restore receipt did not identify the selected archive.");
+            WriteLine(result.StdOut);
+            WriteLine("Restore complete. Re-run the MTA inspection before any further modifications.");
+        }
+        finally { InvalidateAfterArchiveWrite(); }
     }
 
     private void ShowBackupMaintenance(TableLayoutPanel page, bool includeSidecar)
@@ -7389,16 +7429,23 @@ internal sealed partial class MainForm : Form
             AddAction(page, T("Показать проверенные архивы Postfix",
                 "List verified Postfix backups", "הצג גיבויי Postfix"),
                 ListBackupsAsync, false, "refresh", "backup");
-            if (backupSelector.Items.Count > 0)
+            ShowArchiveChoice(page, backupSelector, postfixBackupListIdentity == identity,
+                backupSelector.Items.Count);
+            if (postfixBackupListIdentity == identity && backupSelector.SelectedItem is string)
             {
-                AddLine(page, UiTheme.Text(T("Выберите резервную копию Postfix",
-                    "Select a verified Postfix backup", "בחר גיבוי Postfix")));
-                AddLine(page, backupSelector);
+                AddAction(page, T("Проверить выбранный архив Postfix",
+                    "Verify selected Postfix archive (read-only)", "אמת גיבוי Postfix נבחר"),
+                    VerifySelectedPostfixArchiveAsync, false, "check", "backup");
+                AddLine(page, MailFlowText(T(
+                    "Restore заменяет конфигурацию Postfix и может перезапустить службу. Проверка архива не является проверкой доставки.",
+                    "Restore replaces Postfix configuration and may restart its service. Archive verification is not delivery acceptance.",
+                    "שחזור מחליף תצורת Postfix ועלול להפעיל מחדש את השירות."),
+                    recoveryWidth, warning: true));
+                AddAction(page, T("Восстановить выбранный Postfix...",
+                    "Restore selected Postfix configuration...",
+                    "שחזור תצורת Postfix"),
+                    RestoreBackupAsync, false, "back", "restore");
             }
-            AddAction(page, T("Восстановить выбранный Postfix...",
-                "Restore selected Postfix configuration...",
-                "שחזור תצורת Postfix"),
-                RestoreBackupAsync, false, "back", "restore");
         }
         else if (verifiedPrimary && (inspectedMail?.Mta is "exim" or "sendmail"))
         {
@@ -7427,15 +7474,28 @@ internal sealed partial class MainForm : Form
                 "List verified Exim/Sendmail archives",
                 "הצג גיבויי Exim/Sendmail"),
                 ListForeignMtaBackupsAsync, false, "refresh", "foreign-backup-list");
-            if (foreignBackupSelector.Items.Count > 0)
+            bool foreignListCurrent = foreignBackupListContext == identity + "|" + inspectedMail.Mta;
+            ShowArchiveChoice(page, foreignBackupSelector, foreignListCurrent, foreignBackupSelector.Items.Count);
+            if (foreignListCurrent && foreignBackupSelector.SelectedItem is string)
             {
-                AddLine(page, UiTheme.Text(T("Выберите архив для повторной проверки",
-                    "Select archive to verify", "בחר גיבוי לאימות")));
-                AddLine(page, foreignBackupSelector);
                 AddAction(page, T("Проверить SHA-256 и содержимое архива",
                     "Verify archive SHA-256 and contents",
                     "אמת SHA-256 ותוכן הגיבוי"),
                     VerifyForeignMtaBackupAsync, false, "check", "foreign-backup-verify");
+                var toggleArchiveDetails = UiTheme.Action(archiveDetailsExpanded
+                    ? T("Скрыть дополнительные проверки архива", "Hide additional archive checks", "הסתר בדיקות גיבוי נוספות")
+                    : T("Показать дополнительные проверки архива", "Show additional archive checks", "הצג בדיקות גיבוי נוספות"),
+                    false, "check");
+                toggleArchiveDetails.Enabled = !busy;
+                toggleArchiveDetails.Click += (_, _) =>
+                {
+                    if (busy) return;
+                    archiveDetailsExpanded = !archiveDetailsExpanded;
+                    RenderPage();
+                };
+                AddLine(page, toggleArchiveDetails);
+                if (archiveDetailsExpanded)
+                {
                 AddAction(page, T("Сравнить текущую конфигурацию с архивом (без изменений)",
                     "Compare active configuration with snapshot (read-only)",
                     "השווה תצורה נוכחית לגיבוי ללא שינוי"),
@@ -7450,6 +7510,7 @@ internal sealed partial class MainForm : Form
                     "Проверяются служба, процессы, очереди и неизменность архива. Даже успешный аудит НЕ разрешает автоматический Restore или перезапуск MTA.",
                     "Checks service, processes, queues and archive SHA. Even a clean audit NEVER authorizes automatic Restore or service restart.",
                     "הבדיקה אינה מאשרת שחזור אוטומטי או הפעלת שירות.")));
+                }
                 AddAction(page, T("Проверить точный план восстановления (только чтение)",
                     "Review exact native Restore Plan (read-only)",
                     "בדיקת תוכנית שחזור מדויקת ללא שינוי"),
@@ -7503,22 +7564,28 @@ internal sealed partial class MainForm : Form
                               "List isolated Relay backups",
                               "רשימת גיבויי ממסר"),
                 ListSidecarConfigBackupsAsync, false, "refresh", "sidecar-config-list");
-            if (sidecarBackupSelector.Items.Count > 0)
+            bool sidecarListCurrent = identity is not null && sidecarBackupListIdentity == identity;
+            ShowArchiveChoice(page, sidecarBackupSelector, sidecarListCurrent, sidecarBackupTotal);
+            if (sidecarListCurrent && sidecarBackupSelector.SelectedItem is string selectedSidecar)
             {
-                AddLine(page, UiTheme.Text(T(
-                    "Архив отдельного Relay (не основной MTA)",
-                    "Isolated Relay backup (not primary MTA)",
-                    "גיבוי ממסר מבודד")));
-                AddLine(page, sidecarBackupSelector);
+                AddAction(page, T("Проверить восстановление отдельного Relay",
+                                  "Preview isolated Relay offline restore",
+                                  "בדיקת שחזור ממסר מבודד"),
+                    PreviewSidecarConfigRestoreAsync, false, "check", "sidecar-config-restore-preview");
+                if (reviewedSidecarRestoreId == selectedSidecar && reviewedSidecarRestoreSha is not null &&
+                    reviewedSidecarRestoreIdentity == identity)
+                {
+                    AddLine(page, MailFlowText(T(
+                        "План проверен. Состояние очереди не подтверждено; требуется отдельное подтверждение и проверка перед записью.",
+                        "Preview recorded. Queue readiness is not verified; separate confirmation and live offline checks are required.",
+                        "התוכנית נבדקה; נדרש אימות תור ואישור נפרד."),
+                        recoveryWidth, warning: true));
+                    AddAction(page, T("Восстановить конфигурацию отдельного Relay...",
+                                      "Restore isolated Relay config (offline)...",
+                                      "שחזור תצורת ממסר מבודד"),
+                        RestoreSidecarConfigAsync, false, "shield", "sidecar-config-restore");
+                }
             }
-            AddAction(page, T("Проверить восстановление отдельного Relay",
-                              "Preview isolated Relay offline restore",
-                              "בדיקת שחזור ממסר מבודד"),
-                PreviewSidecarConfigRestoreAsync, false, "check", "sidecar-config-restore-preview");
-            AddAction(page, T("Восстановить конфигурацию отдельного Relay...",
-                              "Restore isolated Relay config (offline)...",
-                              "שחזור תצורת ממסר מבודד"),
-                RestoreSidecarConfigAsync, false, "shield", "sidecar-config-restore");
         }
     }
 
