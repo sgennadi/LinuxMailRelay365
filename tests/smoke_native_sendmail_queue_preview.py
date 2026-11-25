@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """CI-only real Sendmail queue previews. No delivery or host spool writes."""
 import hashlib
+import importlib.util
 import os
+import pwd
+import grp
 from pathlib import Path
 import re
 import secrets
@@ -67,6 +70,8 @@ def isolated_spools():
         meta = os.lstat(path)
         print("NATIVE_SENDMAIL_FIXTURE_LAYOUT=" + queue + ":" + path +
               ":uid=" + str(meta.st_uid) + ":gid=" + str(meta.st_gid) +
+              ":owner=" + pwd.getpwuid(meta.st_uid).pw_name +
+              ":group=" + grp.getgrgid(meta.st_gid).gr_name +
               ":mode=" + format(stat.S_IMODE(meta.st_mode), "o"), flush=True)
     for _, path in QUEUES.values():
         meta = os.lstat(path)
@@ -79,6 +84,17 @@ def isolated_spools():
                 == "tmpfs", "fixture_spool_not_mounted")
         require(not list(Path(path).iterdir()), "fixture_spool_not_empty")
     print("NATIVE_SENDMAIL_FIXTURE_PRIVATE_MOUNTS=ready", flush=True)
+    spec = importlib.util.spec_from_file_location("sendmail_fixture_product", HELPER)
+    product = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(product)
+    for queue in QUEUES:
+        stages = []
+        try:
+            product.sendmail_action_context(queue, diagnostic=stages.append)
+        except product.Unavailable as error:
+            raise AssertionError("native_context_refused:" + queue + ":" +
+                                 (stages[-1] if stages else "unknown") + ":" + error.result)
+    print("NATIVE_SENDMAIL_FIXTURE_PACKAGE_CONTEXT=verified", flush=True)
 
 
 def fields(*args):

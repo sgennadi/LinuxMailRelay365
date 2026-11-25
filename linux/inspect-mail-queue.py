@@ -834,11 +834,54 @@ def sm_config_queue(text, expected):
     return path
 
 
-def sendmail_action_context(queue):
+def sm_queue_directory(mode, path, info, msp_path):
+    """Validate fixed package spool ownership, not arbitrary service accounts."""
+    if (mode not in SM_ALLOWED_QUEUE_PATHS or path not in SM_ALLOWED_QUEUE_PATHS[mode]
+            or msp_path not in SM_ALLOWED_QUEUE_PATHS["msp"]
+            or not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o007):
+        raise Unavailable("scope_unverified")
+    permissions = stat.S_IMODE(info.st_mode)
+    if mode == "mta":
+        # Keep the upstream/RHEL root-owned layout supported.
+        if info.st_uid == 0 and not permissions & 0o022:
+            return
+        # Ubuntu/Debian native MTA queue is smmta:smmsp 2750. Accept
+        # this exact package layout only with the Debian client spool.
+        if msp_path == "/var/spool/mqueue-client" and permissions == 0o2750:
+            account = pwd.getpwnam("smmta")
+            group = grp.getgrnam("smmsp")
+            if account.pw_uid != 0 and group.gr_gid != 0 and (
+                    info.st_uid, info.st_gid) == (account.pw_uid, group.gr_gid):
+                return
+    else:
+        if path != msp_path:
+            raise Unavailable("scope_unverified")
+        account = pwd.getpwnam("smmsp")
+        if account.pw_uid == 0 or info.st_uid != account.pw_uid:
+            raise Unavailable("scope_unverified")
+        if path == "/var/spool/mqueue-client":
+            # Debian's setgid client queue deliberately grants the native
+            # submission group access, but never arbitrary group/world access.
+            group = grp.getgrnam("smmsp")
+            if group.gr_gid != 0 and info.st_gid == group.gr_gid and permissions == 0o2770:
+                return
+        elif info.st_gid == account.pw_gid and account.pw_gid != 0:
+            return
+    raise Unavailable("scope_unverified")
+
+
+def sendmail_action_context(queue, diagnostic=None):
     if queue not in SM_PATHS:
         raise ValueError("invalid_sendmail_queue")
+    # The optional callback receives constant stage names for isolated CI
+    # diagnostics only. CLI receipts remain privacy-safe and fail closed.
+    def stage(name):
+        if diagnostic is not None:
+            diagnostic(name)
     try:
+        stage("etc")
         secure_directory("/etc")
+        stage("mail_directory")
         mail = os.lstat("/etc/mail")
         # Match the existing package backup trust boundary: Debian's
         # smmta/smmsp 2755 directory is not silently treated as arbitrary root.
@@ -850,22 +893,20 @@ def sendmail_action_context(queue):
                 raise Unavailable("scope_unverified")
             if mail.st_gid not in (account.pw_gid, grp.getgrnam("smmsp").gr_gid):
                 raise Unavailable("scope_unverified")
+        stage("spool_parent")
         secure_directory("/var/spool")
-        configs, roots = [], []
+        configs, roots, paths = [], [], {}
+        # Resolve both compiled configs before accepting either spool.
         for mode, (name, _, _) in sorted(SM_PATHS.items()):
+            stage("config_" + mode)
             text, evidence = sm_config(Path("/etc/mail") / name)
             path = sm_config_queue(text, SM_ALLOWED_QUEUE_PATHS[mode])
             configs.append((mode, evidence, path))
+            paths[mode] = path
+        for mode, path in sorted(paths.items()):
+            stage("spool_" + mode)
             directory = os.lstat(path)
-            if not stat.S_ISDIR(directory.st_mode) or directory.st_mode & 0o007:
-                raise Unavailable("scope_unverified")
-            if mode == "mta":
-                if directory.st_uid != 0 or directory.st_mode & 0o022:
-                    raise Unavailable("scope_unverified")
-            else:
-                msp = pwd.getpwnam("smmsp")
-                if directory.st_uid != msp.pw_uid or directory.st_gid != msp.pw_gid:
-                    raise Unavailable("scope_unverified")
+            sm_queue_directory(mode, path, directory, paths["msp"])
             # Split queue-file directories and links are intentionally not
             # supported by write scope. Never inspect message file contents.
             if any(os.path.lexists(os.path.join(path, sub)) for sub in ("qf", "df", "xf")):
@@ -874,7 +915,9 @@ def sendmail_action_context(queue):
                           directory.st_gid, directory.st_mode))
         if roots[0][1:3] == roots[1][1:3]:
             raise Unavailable("scope_unverified")
+        stage("native_binary")
         binary = native_binary("sendmail")
+        stage("boot_id")
         boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
         if not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", boot):
             raise Unavailable("scope_unverified")

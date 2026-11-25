@@ -2,6 +2,8 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+import stat
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -112,6 +114,34 @@ class SendmailActions(unittest.TestCase):
                 q.sm_config_queue("O QueueDirectory=" + value, allowed["msp"])
         self.assertEqual(q.sm_config_queue("O QueueDirectory=/var/spool/mqueue", allowed["mta"]),
                          "/var/spool/mqueue")
+
+    def test_trusted_package_spool_ownership_and_modes(self):
+        deb = "/var/spool/mqueue-client"
+        rhel = "/var/spool/clientmqueue"
+        mta = "/var/spool/mqueue"
+        def metadata(uid, gid, mode, kind=stat.S_IFDIR):
+            return SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=kind | mode)
+        users = {"smmta": SimpleNamespace(pw_uid=112, pw_gid=117),
+                 "smmsp": SimpleNamespace(pw_uid=113, pw_gid=118)}
+        with patch.object(q.pwd, "getpwnam", side_effect=users.__getitem__), \
+                patch.object(q.grp, "getgrnam", return_value=SimpleNamespace(gr_gid=118)):
+            q.sm_queue_directory("mta", mta, metadata(112, 118, 0o2750), deb)
+            q.sm_queue_directory("msp", deb, metadata(113, 118, 0o2770), deb)
+            q.sm_queue_directory("mta", mta, metadata(0, 0, 0o700), rhel)
+            q.sm_queue_directory("msp", rhel, metadata(113, 118, 0o770), rhel)
+            for queue, path, info, msp in (
+                    ("mta", mta, metadata(112, 118, 0o2750), rhel),
+                    ("mta", mta, metadata(112, 118, 0o2770), deb),
+                    ("mta", mta, metadata(112, 117, 0o2750), deb),
+                    ("mta", mta, metadata(113, 118, 0o2750), deb),
+                    ("mta", mta, metadata(0, 0, 0o720), rhel),
+                    ("msp", deb, metadata(113, 117, 0o2770), deb),
+                    ("msp", deb, metadata(113, 118, 0o2777), deb),
+                    ("msp", deb, metadata(0, 118, 0o2770), deb),
+                    ("msp", deb, metadata(113, 118, 0o2770, stat.S_IFLNK), deb),
+                    ("msp", deb, metadata(113, 118, 0o2770), rhel)):
+                with self.subTest(queue=queue, path=path, mode=info.st_mode), self.assertRaises(q.Unavailable):
+                    q.sm_queue_directory(queue, path, info, msp)
 
     def test_fixed_native_modes_and_no_quarantine_or_periodic_command(self):
         with patch.object(q, "native_binary", return_value="/usr/sbin/sendmail"), \
