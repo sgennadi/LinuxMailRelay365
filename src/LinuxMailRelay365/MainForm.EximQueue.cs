@@ -84,25 +84,45 @@ internal sealed partial class MainForm
         var delete = UiTheme.Action(T("Удалить Frozen...", "Delete frozen...", "מחיקת הודעה קפואה..."), false, "trash");
         footer.Controls.Add(close); footer.Controls.Add(change); footer.Controls.Add(retry);
         footer.Controls.Add(delete); footer.Controls.Add(flush);
-        bool working = false, attempted = false;
+        var reload = UiTheme.Action(T("Обновить очередь", "Refresh queue", "רענון תור"), true, "refresh");
+        footer.Controls.Add(reload);
+        bool working = false, attempted = false, snapshotValid = inventory.Result == "ok", outcomeUncertain = false;
+        DateTime lastRead = DateTime.Now;
         EximQueueRow? Selected() => grid.SelectedRows.Count == 1 &&
             grid.SelectedRows[0].Cells["ref"].Value is int number
             ? inventory.Rows.SingleOrDefault(row => row.Reference == number) : null;
         void Update()
         {
             var row = Selected();
-            change.Enabled = !working && !attempted && inventory.ContextVerified && row is not null &&
-                QueueRetryReview.ValidSha(row.Fingerprint);
+            bool available = !working && !attempted && snapshotValid && !outcomeUncertain &&
+                inventory.ContextVerified && inventory.Result == "ok";
+            change.Enabled = available && row is not null && QueueRetryReview.ValidSha(row.Fingerprint);
             change.Text = row?.State == "frozen" ? "Thaw (experimental)..." : "Freeze (experimental)...";
             retry.Enabled = change.Enabled && row?.State == "queued";
             delete.Enabled = change.Enabled && row?.State == "frozen";
             // A fresh whole-queue plan, not a visible-row selection, controls Flush.
-            flush.Enabled = !working && !attempted && inventory.ContextVerified &&
-                inventory.Result == "ok" && inventory.Total > 0;
+            flush.Enabled = available && inventory.Total > 0;
+            reload.Enabled = !working;
         }
+        string UnknownOutcomeText() => T(
+            "Результат неизвестен. В этом окне доступен только просмотр; проверьте журналы.",
+            "Previous operation outcome unknown. This window is read-only; inspect server logs.",
+            "תוצאת הפעולה אינה ידועה. חלון זה לקריאה בלבד; בדקו יומני שרת.");
         void Refresh()
         {
+            bool warning = !snapshotValid || outcomeUncertain || inventory.Truncated == true || !inventory.ContextVerified;
+            heading.Text = endpoint.Host + ":" + endpoint.Port + " | Exim | " +
+                (snapshotValid ? QueueResultText(inventory.Result) : T("Требуется обновление", "Refresh required", "נדרש רענון"));
+            heading.BackColor = SystemInformation.HighContrast ? SystemColors.Window : warning ? UiTheme.WarningSurface : UiTheme.InfoSurface;
+            heading.ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText : warning ? UiTheme.WarningInk : UiTheme.Navy;
             grid.Rows.Clear();
+            if (!snapshotValid)
+            {
+                status.Text = T("Снимок недействителен. Обновите очередь.", "Snapshot invalid. Refresh the queue.", "הדגימה אינה תקפה. יש לרענן את התור.") +
+                    (outcomeUncertain ? " | " + UnknownOutcomeText() : "");
+                Update();
+                return;
+            }
             foreach (var row in inventory.Rows.Where(row => (states.SelectedIndex == 0 ||
                 row.State == (states.SelectedIndex == 1 ? "queued" : "frozen")) && row.AgeMinutes >= age.Value))
             {
@@ -111,13 +131,56 @@ internal sealed partial class MainForm
                 if (!SystemInformation.HighContrast && row.State == "frozen")
                     grid.Rows[index].Cells[1].Style.ForeColor = Color.DarkOrange;
             }
+            grid.CurrentCell = null;
             grid.ClearSelection();
             status.Text = T("Показано / получено / всего: ", "Shown / sampled / total: ", "מוצגות / נדגמו / סך הכל: ") +
                 grid.Rows.Count + " / " + inventory.Rows.Length + " / " + (inventory.Total?.ToString() ?? "unknown") +
                 (inventory.Truncated == true ? " | partial" : "") +
-                (!inventory.ContextVerified ? " | " + T("Изменения недоступны", "Actions unavailable", "פעולות אינן זמינות") : "");
+                (!inventory.ContextVerified ? " | " + T("Изменения недоступны", "Actions unavailable", "פעולות אינן זמינות") : "") +
+                " | " + T("Получено: ", "Read at (local time): ", "נקרא: ") + lastRead.ToString("yyyy-MM-dd HH:mm:ss") +
+                (outcomeUncertain ? " | " + UnknownOutcomeText() : "");
             Update();
         }
+        async Task ReloadAsync()
+        {
+            if (working) return;
+            working = true;
+            snapshotValid = false;
+            close.Enabled = filters.Enabled = grid.Enabled = false;
+            Refresh();
+            status.Text = T("Обновление очереди...", "Reading a fresh queue snapshot...", "קורא דגימת תור חדשה...");
+            try
+            {
+                var current = RequireSameArchiveConnection(endpoint);
+                if (!QueueScopeDiscovered("exim")) throw new InvalidOperationException("Exim discovery changed.");
+                string freshNonce = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+                var reply = await SshRemote.RunRootScriptAsync(current,
+                    EmbeddedAssets.BuildEximQueueInventoryBundle(freshNonce), TimeSpan.FromMinutes(3));
+                if (reply.ExitCode != 0) throw new IOException("Exim refresh failed.");
+                RequireSameArchiveConnection(current);
+                if (!QueueScopeDiscovered("exim")) throw new InvalidOperationException("Exim discovery changed.");
+                inventory = EximQueueInventory.Parse(reply.StdOut, freshNonce);
+                nonce = freshNonce;
+                lastRead = DateTime.Now;
+                snapshotValid = inventory.Result == "ok";
+                if (snapshotValid && !outcomeUncertain) attempted = false;
+                WriteLine("Exim queue refresh: " + inventory.Result + "; listed=" + inventory.Rows.Length + ". Metadata only.");
+            }
+            catch (Exception)
+            {
+                snapshotValid = false;
+                WriteLine("Exim queue refresh failed; previous sample invalidated. No write requested.");
+                MessageBox.Show(dialog, T("Не удалось обновить очередь.", "Queue refresh failed.", "רענון התור נכשל."),
+                    "Exim", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                working = false;
+                close.Enabled = filters.Enabled = grid.Enabled = true;
+                Refresh();
+            }
+        }
+        reload.Click += async (_, _) => { if (reload.Enabled) await ReloadAsync(); };
         grid.SelectionChanged += (_, _) => Update();
         states.SelectedIndexChanged += (_, _) => Refresh();
         age.ValueChanged += (_, _) => Refresh();
@@ -125,7 +188,7 @@ internal sealed partial class MainForm
         async Task ExecuteAsync(string action, EximQueueRow? row)
         {
             bool wholeQueue = action == "flush";
-            if (working || attempted || !inventory.ContextVerified ||
+            if (working || attempted || !snapshotValid || outcomeUncertain || !inventory.ContextVerified ||
                 (wholeQueue ? !flush.Enabled || row is not null : row is null ||
                  !QueueRetryReview.ValidSha(row.Fingerprint) || Selected() != row)) return;
             long sampled = wholeQueue ? 0 : inventory.SampledAt;
@@ -134,7 +197,7 @@ internal sealed partial class MainForm
                 ? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant()
                 : nonce;
             working = true;
-            change.Enabled = retry.Enabled = flush.Enabled = delete.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            reload.Enabled = change.Enabled = retry.Enabled = flush.Enabled = delete.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 var initial = RequireSameArchiveConnection(endpoint);
@@ -147,6 +210,7 @@ internal sealed partial class MainForm
                 var plan = EximQueueAction.Parse(reply.StdOut, action, actionNonce, sampled, row);
                 if (plan.Outcome != "candidate")
                 {
+                    snapshotValid = false;
                     MessageBox.Show(dialog, plan.Reason, "Exim | Preview refused", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
@@ -180,6 +244,8 @@ internal sealed partial class MainForm
                 if (!QueueScopeDiscovered("exim") || (!wholeQueue && Selected() != row))
                     throw new InvalidOperationException("Exim selected message changed.");
                 attempted = true;
+                snapshotValid = false;
+                outcomeUncertain = true;
                 var result = await SshRemote.RunRootScriptAsync(confirmed,
                     EmbeddedAssets.BuildEximQueueActionBundle(action, actionNonce, sampled, fingerprint,
                         plan.PreparedAt, plan.PlanSha), TimeSpan.FromMinutes(3));
@@ -187,6 +253,7 @@ internal sealed partial class MainForm
                 RequireSameArchiveConnection(confirmed);
                 var receipt = EximQueueAction.Parse(result.StdOut, action, actionNonce, sampled,
                     row, plan.PreparedAt, plan.PlanSha);
+                outcomeUncertain = receipt.Outcome == "outcome_unknown";
                 WriteLine("Exim " + action + ": " + receipt.Outcome + "; " + receipt.Reason + ". Effect unverified.");
                 string message = receipt.Outcome switch
                 {
@@ -201,6 +268,8 @@ internal sealed partial class MainForm
             }
             catch (Exception)
             {
+                snapshotValid = false;
+                if (attempted) outcomeUncertain = true;
                 WriteLine(attempted ? "Exim action outcome unknown; inspect before any further action." :
                     "Exim action preview failed; no command dispatched.");
                 MessageBox.Show(dialog, attempted ? "Outcome unknown. Refresh queue and inspect logs." :
@@ -210,8 +279,7 @@ internal sealed partial class MainForm
             {
                 working = false;
                 close.Enabled = filters.Enabled = grid.Enabled = true;
-                Update();
-                if (attempted) dialog.Close();
+                Refresh();
             }
         }
         change.Click += async (_, _) =>
