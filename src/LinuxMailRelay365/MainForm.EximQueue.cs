@@ -21,7 +21,8 @@ internal sealed partial class MainForm
         ShowEximQueue(current, nonce, inventory);
     }
 
-    private void ShowEximQueue(SshEndpoint endpoint, string nonce, EximQueueInventory inventory)
+    private void ShowEximQueue(SshEndpoint endpoint, string nonce, EximQueueInventory inventory,
+        Action<Form, Panel, DataGridView, FlowLayoutPanel>? capture = null)
     {
         var work = Screen.FromControl(this).WorkingArea.Size;
         using var dialog = new Form
@@ -94,7 +95,7 @@ internal sealed partial class MainForm
         void Update()
         {
             var row = Selected();
-            bool available = !working && !attempted && snapshotValid && !outcomeUncertain &&
+            bool available = capture is null && !working && !attempted && snapshotValid && !outcomeUncertain &&
                 inventory.ContextVerified && inventory.Result == "ok";
             change.Enabled = available && row is not null && QueueRetryReview.ValidSha(row.Fingerprint);
             change.Text = row?.State == "frozen" ? "Thaw (experimental)..." : "Freeze (experimental)...";
@@ -102,7 +103,7 @@ internal sealed partial class MainForm
             delete.Enabled = change.Enabled && row?.State == "frozen";
             // A fresh whole-queue plan, not a visible-row selection, controls Flush.
             flush.Enabled = available && inventory.Total > 0;
-            reload.Enabled = !working;
+            reload.Enabled = capture is null && !working;
         }
         string UnknownOutcomeText() => T(
             "Результат неизвестен. В этом окне доступен только просмотр; проверьте журналы.",
@@ -141,7 +142,7 @@ internal sealed partial class MainForm
         }
         async Task ReloadAsync()
         {
-            if (working) return;
+            if (capture is not null || working) return;
             working = true;
             snapshotValid = false;
             close.Enabled = filters.Enabled = grid.Enabled = false;
@@ -186,7 +187,7 @@ internal sealed partial class MainForm
         async Task ExecuteAsync(string action, EximQueueRow? row)
         {
             bool wholeQueue = action == "flush";
-            if (working || attempted || !snapshotValid || outcomeUncertain || !inventory.ContextVerified ||
+            if (capture is not null || working || attempted || !snapshotValid || outcomeUncertain || !inventory.ContextVerified ||
                 (wholeQueue ? !flush.Enabled || row is not null : row is null ||
                  !QueueRetryReview.ValidSha(row.Fingerprint) || Selected() != row)) return;
             long sampled = wholeQueue ? 0 : inventory.SampledAt;
@@ -297,12 +298,10 @@ internal sealed partial class MainForm
         flush.Click += async (_, _) => { if (flush.Enabled) await ExecuteAsync("flush", null); };
         root.Controls.Add(heading, 0, 0); root.Controls.Add(filters, 0, 1);
         root.Controls.Add(grid, 0, 2); root.Controls.Add(notes, 0, 3); root.Controls.Add(footer, 0, 4);
-        dialog.Controls.Add(root);
-        void Fit() { heading.MaximumSize = help.MaximumSize = status.MaximumSize =
-            new Size(Math.Max(240, root.ClientSize.Width - 36), 0); }
-        dialog.ClientSizeChanged += (_, _) => Fit();
-        Fit(); Refresh();
+        var viewport = QueueDialogLayout.Attach(dialog, root, heading, help, status);
+        Refresh();
         dialog.CancelButton = close;
-        dialog.ShowDialog(this);
+        if (capture is null) dialog.ShowDialog(this);
+        else capture(dialog, viewport, grid, footer);
     }
 }

@@ -599,6 +599,40 @@ jobs:
           name: LinuxMailRelay365-actual-wizard-screenshots
           path: out/wizard-screenshots/
           if-no-files-found: error
+      - name: Capture actual Windows queue dialogs in three languages (CI-only)
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $exe = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
+          $folder = Join-Path (Get-Location) 'out/queue-screenshots'
+          New-Item -ItemType Directory -Force -Path $folder | Out-Null
+          $result = Start-Process -FilePath $exe -ArgumentList @('--capture-queue-screens', ('"{0}"' -f $folder)) -Wait -PassThru
+          if (Test-Path -LiteralPath (Join-Path $folder 'capture-error.txt')) {
+            Get-Content -LiteralPath (Join-Path $folder 'capture-error.txt')
+          }
+          if ($result.ExitCode -ne 0) { throw "Queue screenshot capture failed: exit $($result.ExitCode)" }
+          $images = @(Get-ChildItem -LiteralPath $folder -Filter '*.png')
+          if ($images.Count -ne 42) { throw "Expected 42 actual queue PNG captures; found $($images.Count)" }
+          foreach ($locale in @('ru','en','he')) {
+            foreach ($view in @('postfix','sidecar','exim','sendmail-mta-normal','sendmail-mta-quarantine','sendmail-msp-normal','sendmail-msp-quarantine')) {
+              foreach ($region in @('compact-table','compact-actions')) {
+                $file = Join-Path $folder "$locale-$view-$region.png"
+                if (-not (Test-Path -LiteralPath $file)) { throw "Queue capture missing: $locale-$view-$region" }
+              }
+            }
+          }
+          foreach ($image in $images) {
+            if ($image.Length -lt 3000) { throw "Empty or invalid queue PNG: $($image.Name)" }
+          }
+          Get-Content -LiteralPath (Join-Path $folder 'README.txt')
+          Write-Host 'ACTUAL_WINDOWS_QUEUE_SCREENS=42'
+      - name: Upload actual queue screenshots and layout diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: LinuxMailRelay365-actual-queue-screenshots
+          path: out/queue-screenshots/
+          if-no-files-found: warn
       - name: Build portable single EXE ARM64
         shell: pwsh
         run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-arm64 --self-contained true -p:UseSharedUpdater=false -o out/win-arm64

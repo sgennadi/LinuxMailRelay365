@@ -326,6 +326,7 @@ internal static class Program
             ("Verified archive inventory and explicit selection", VerifiedArchiveListing.SelfTest),
             ("Privacy-safe native mail queue sample", MailQueueSample.SelfTest),
             ("Shared queue visual semantics and readable color contrast", QueueVisuals.SelfTest),
+            ("Queue viewport sizing at 100/150/200 percent DPI", QueueDialogLayout.SelfTest),
             ("Bounded private message inventory and filters", QueueMessageInventory.SelfTest),
             ("Read-only selected Retry review receipt", QueueRetryReview.SelfTest),
             ("Selected Retry preparation and apply receipts", QueueRetryApplyReceipt.SelfTest),
@@ -533,6 +534,29 @@ internal static class Program
                 {
                     // No credential, path, tenant, or confidential exception
                     // material is written to the artifacts.
+                    result = 1;
+                }
+                finally { form.Close(); }
+            }));
+            Application.Run(form);
+            return result;
+        }
+        if (args.Length > 0 && args[0] == "--capture-queue-screens")
+        {
+            if (args.Length != 2 ||
+                Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
+                Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT") != "github-hosted" ||
+                string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("RUNNER_TEMP")))
+                return 2;
+            int result = 0;
+            using var form = new MainForm();
+            form.Shown += (_, _) => form.BeginInvoke(new Action(() =>
+            {
+                try { if (form.CaptureQueueScreens(args[1]) != 42) result = 1; }
+                catch (Exception ex)
+                {
+                    // Only synthetic capture data; avoid logging exception paths.
+                    File.WriteAllText(Path.Combine(args[1], "capture-error.txt"), ex.GetType().Name);
                     result = 1;
                 }
                 finally { form.Close(); }

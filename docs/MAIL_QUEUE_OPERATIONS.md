@@ -69,3 +69,16 @@ Windows highlight colors; high contrast uses native system colors.
 The Windows self-test checks state/diagnostic mapping and every custom
 foreground/background pair for at least 4.5:1 contrast. This does not replace
 visual checks at 100%/200% DPI, including Hebrew layout and high contrast.
+
+## Compact queue windows and DPI acceptance
+
+The three queue managers share a scrollable viewport and a DPI-scaled
+minimum table height. Long translations, warning text and wrapped buttons
+can increase content height without collapsing the grid. The user can
+scroll to the controls. The pure sizing self-test covers 96, 144 and 192 DPI.
+A separate CI capture exercises seven actual WinForms queue dialogs in
+English, Russian and Hebrew, checking normal/compact geometry, scroll
+reachability and action isolation. It saves 42 compact PNGs (table and
+actions) and records actual runner DPI. All data are synthetic, remote
+operations are disabled, and the screenshots do not establish physical
+200% DPI acceptance. This new CI test must pass before claiming validation.

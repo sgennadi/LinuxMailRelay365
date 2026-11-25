@@ -31,7 +31,8 @@ internal sealed partial class MainForm
         _ => T("В очереди, без отметки", "Queued, no status mark", "בתור ללא סימון")
     };
 
-    private void ShowSendmailQueue(SshEndpoint endpoint, SendmailQueueInventory inventory, string nonce)
+    private void ShowSendmailQueue(SshEndpoint endpoint, SendmailQueueInventory inventory, string nonce,
+        Action<Form, Panel, DataGridView, FlowLayoutPanel>? capture = null)
     {
         var work = Screen.FromControl(this).WorkingArea.Size;
         bool quarantine = inventory.Quarantine;
@@ -125,13 +126,13 @@ internal sealed partial class MainForm
             ? inventory.Rows.SingleOrDefault(row => row.Reference == n) : null;
         void UpdateActions()
         {
-            bool available = !working && !attempted && snapshotValid && !outcomeUncertain &&
+            bool available = capture is null && !working && !attempted && snapshotValid && !outcomeUncertain &&
                 inventory.Result == "ok" && inventory.ContextVerified && inventory.SampledAt.HasValue;
             bool selected = Selected() is { } row && QueueRetryReview.ValidSha(row.Fingerprint);
             retry.Enabled = !quarantine && available && selected;
             flush.Enabled = !quarantine && available && inventory.Total > 0;
             transition.Enabled = available && selected;
-            reload.Enabled = !working;
+            reload.Enabled = capture is null && !working;
         }
         dialog.FormClosing += (_, args) => { if (working) args.Cancel = true; };
         grid.SelectionChanged += (_, _) => UpdateActions();
@@ -139,7 +140,7 @@ internal sealed partial class MainForm
         {
             bool whole = action == "flush";
             bool moving = action is "quarantine" or "release";
-            if (action is not ("retry" or "flush" or "quarantine" or "release") ||
+            if (capture is not null || action is not ("retry" or "flush" or "quarantine" or "release") ||
                 quarantine != (action == "release") || working || attempted || !snapshotValid || outcomeUncertain ||
                 !inventory.ContextVerified || !inventory.SampledAt.HasValue ||
                 (whole ? !flush.Enabled || row is not null :
@@ -296,7 +297,7 @@ internal sealed partial class MainForm
             "תוצאת הפעולה הקודמת אינה ידועה. חלון זה לקריאה בלבד; בדקו יומני שרת.");
         async Task ReloadAsync()
         {
-            if (working) return;
+            if (capture is not null || working) return;
             working = true;
             snapshotValid = false;
             grid.Enabled = filters.Enabled = close.Enabled = false;
@@ -356,10 +357,10 @@ internal sealed partial class MainForm
         reasons.SelectedIndexChanged += (_, _) => Refresh();
         root.Controls.Add(heading, 0, 0); root.Controls.Add(filters, 0, 1);
         root.Controls.Add(grid, 0, 2); root.Controls.Add(notes, 0, 3); root.Controls.Add(footer, 0, 4);
-        dialog.Controls.Add(root);
-        void Fit() { heading.MaximumSize = help.MaximumSize = status.MaximumSize =
-            new Size(Math.Max(240, root.ClientSize.Width - 36), 0); }
-        dialog.ClientSizeChanged += (_, _) => Fit();
-        Fit(); Refresh(); dialog.CancelButton = close; dialog.ShowDialog(this);
+        var viewport = QueueDialogLayout.Attach(dialog, root, heading, help, status);
+        Refresh();
+        dialog.CancelButton = close;
+        if (capture is null) dialog.ShowDialog(this);
+        else capture(dialog, viewport, grid, footer);
     }
 }

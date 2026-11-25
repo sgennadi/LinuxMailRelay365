@@ -51,7 +51,8 @@ internal sealed partial class MainForm
         _ => "—"
     };
 
-    private void ShowQueueMessages(SshEndpoint endpoint, QueueMessageInventory inventory, string nonce)
+    private void ShowQueueMessages(SshEndpoint endpoint, QueueMessageInventory inventory, string nonce,
+        Action<Form, Panel, DataGridView, FlowLayoutPanel>? capture = null)
     {
         var work = Screen.FromControl(this).WorkingArea.Size;
         using var dialog = new Form
@@ -164,9 +165,9 @@ internal sealed partial class MainForm
         }
         void UpdateRetry()
         {
-            bool available = !closed && !attempted && !reviewing && snapshotValid && !outcomeUncertain &&
+            bool available = capture is null && !closed && !attempted && !reviewing && snapshotValid && !outcomeUncertain &&
                 inventory.Result == "ok" && inventory.SampledAt.HasValue;
-            reload.Enabled = !closed && !reviewing;
+            reload.Enabled = capture is null && !closed && !reviewing;
             retry.Enabled = available &&
                 inventory.RetryState == "review_only" && SelectedRow() is { State: "deferred" } selected &&
                 QueueRetryReview.ValidSha(selected.Fingerprint);
@@ -184,6 +185,7 @@ internal sealed partial class MainForm
         dialog.FormClosing += (_, args) => { if (reviewing) args.Cancel = true; else closed = true; };
         retry.Click += async (_, _) =>
         {
+            if (capture is not null) return; // CI fixtures never connect to SSH.
             var selected = SelectedRow();
             if (reviewing || selected is null || !retry.Enabled || inventory.SampledAt is not long sampledAt)
                 return;
@@ -233,6 +235,7 @@ internal sealed partial class MainForm
         };
         applyRetry.Click += async (_, _) =>
         {
+            if (capture is not null) return; // CI fixtures never connect to SSH.
             var selected = SelectedRow();
             if (reviewing || attempted || selected is null || !applyRetry.Enabled ||
                 inventory.SampledAt is not long sampledAt)
@@ -329,6 +332,7 @@ internal sealed partial class MainForm
         void OnMaintenanceReceipt(string outcome) => outcomeUncertain = outcome == "outcome_unknown";
         holdRelease.Click += async (_, _) =>
         {
+            if (capture is not null) return; // CI fixtures never connect to SSH.
             var selected = SelectedRow();
             if (!holdRelease.Enabled || reviewing || attempted || selected is null ||
                 inventory.SampledAt is not long sampledAt) return;
@@ -350,6 +354,7 @@ internal sealed partial class MainForm
         };
         deleteHeld.Click += async (_, _) =>
         {
+            if (capture is not null) return; // CI fixtures never connect to SSH.
             var selected = SelectedRow();
             if (!deleteHeld.Enabled || reviewing || attempted || selected is not { State: "held" } ||
                 inventory.SampledAt is not long sampledAt) return;
@@ -434,7 +439,7 @@ internal sealed partial class MainForm
         }
         async Task ReloadAsync()
         {
-            if (closed || reviewing) return;
+            if (capture is not null || closed || reviewing) return;
             reviewing = true;
             snapshotValid = false;
             close.Enabled = filters.Enabled = grid.Enabled = false;
@@ -485,16 +490,10 @@ internal sealed partial class MainForm
         root.Controls.Add(grid, 0, 2);
         root.Controls.Add(notes, 0, 3);
         root.Controls.Add(footer, 0, 4);
-        dialog.Controls.Add(root);
-        void ResizeNotes()
-        {
-            int width = Math.Max(240, root.ClientSize.Width - root.Padding.Horizontal - 12);
-            heading.MaximumSize = explanation.MaximumSize = status.MaximumSize = retryNote.MaximumSize = new Size(width, 0);
-        }
-        dialog.ClientSizeChanged += (_, _) => ResizeNotes();
-        ResizeNotes();
+        var viewport = QueueDialogLayout.Attach(dialog, root, heading, explanation, status, retryNote);
         RefreshRows();
         dialog.CancelButton = close;
-        dialog.ShowDialog(this);
+        if (capture is null) dialog.ShowDialog(this);
+        else capture(dialog, viewport, grid, footer);
     }
 }
