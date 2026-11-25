@@ -46,7 +46,8 @@ def request(raw):
          "request_types")
     I.guid(obj["tenant"])
     I.guid(obj["client"])
-    need(I.valid_mailbox(obj["mailbox"]) and I.SHA.fullmatch(obj["nonce"]) and
+    need(I.valid_mailbox(obj["mailbox"]) and A.EMAIL.fullmatch(obj["mailbox"]) and
+         I.SHA.fullmatch(obj["nonce"]) and
          (obj["source_sha"] == "" or I.SHA.fullmatch(obj["source_sha"])),
          "identity_context")
     need((obj["approval"] == "" and obj["confirm"] == "") or

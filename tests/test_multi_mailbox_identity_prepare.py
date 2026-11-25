@@ -23,6 +23,7 @@ class PrepareTests(unittest.TestCase):
         req = self.req()
         self.assertEqual(M.request(M.encode(req)), req)
         for bad in (dict(req, days=True), dict(req, days=366), dict(req, mailbox="../bad"),
+                    dict(req, mailbox="alice%bad@example.org"),
                     dict(req, approval="b"*64), dict(req, key_path="/tmp/key"),
                     dict(req, tenant="00000000-0000-0000-0000-000000000000")):
             with self.assertRaises((M.Refused, ValueError)):

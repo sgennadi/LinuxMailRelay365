@@ -33,7 +33,8 @@ internal sealed partial class MainForm
         AddField(fields, "Microsoft Entra Tenant ID", tenantField);
         AddField(fields, "Existing application (Client) ID", clientField);
         AddField(fields, "Microsoft 365 mailbox", mailboxField);
-        AddField(fields, "Certificate validity (days)", days);
+        AddLine(fields, UiTheme.Text("Certificate validity (days)"));
+        AddLine(fields, days);
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true,
             FlowDirection = FlowDirection.RightToLeft };
         var cancel = new Button { Text = T("Отмена", "Cancel", "ביטול"), AutoSize = true, DialogResult = DialogResult.Cancel };
