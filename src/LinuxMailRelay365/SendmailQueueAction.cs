@@ -8,11 +8,13 @@ internal sealed record SendmailQueueAction(string Outcome, string Reason, long P
     {
         "retry" => "RETRY_SELECTED_SENDMAIL_MESSAGE",
         "flush" => "RUN_SELECTED_SENDMAIL_QUEUE_ONCE",
+        "quarantine" => "QUARANTINE_SELECTED_SENDMAIL_MESSAGE",
+        "release" => "RELEASE_SELECTED_SENDMAIL_MESSAGE",
         _ => throw new ArgumentException("Invalid Sendmail action.")
     };
     internal static void Validate(string queue, string action, string nonce, long sampled, string fingerprint)
     {
-        if (queue is not ("mta" or "msp") || action is not ("retry" or "flush") ||
+        if (queue is not ("mta" or "msp") || action is not ("retry" or "flush" or "quarantine" or "release") ||
             !QueueRetryReview.ValidSha(nonce) || (action == "flush" ? sampled != 0 || fingerprint != "-" :
                 sampled is < 1 or > 9999999999 || !QueueRetryReview.ValidSha(fingerprint)))
             throw new ArgumentException("Invalid Sendmail queue action context.");
@@ -29,21 +31,28 @@ internal sealed record SendmailQueueAction(string Outcome, string Reason, long P
         f.Exact("SAMPLED_AT", sampled.ToString(CultureInfo.InvariantCulture));
         f.Exact("FINGERPRINT", fingerprint); f.Exact("PHASE", apply ? "apply" : "prepare");
         long prepared = EximQueueFields.Number(f.Take("PREPARED_AT", "[1-9][0-9]{0,9}"), 9999999999);
-        string outcome = f.Take("OUTCOME", apply ? "command_completed|not_requested|outcome_unknown" : "candidate|not_requested");
+        bool transition = action is "quarantine" or "release";
+        string outcome = f.Take("OUTCOME", apply ?
+            (transition ? "transition_verified|not_requested|outcome_unknown" : "command_completed|not_requested|outcome_unknown") :
+            "candidate|not_requested");
         string sha = f.Take("PLAN_SHA256", apply || outcome == "candidate" ? "[a-f0-9]{64}" : "-");
         if ((apply && (prepared != expectedTime || sha != expectedSha)) ||
-            ((apply || outcome == "candidate") && action == "retry" && (prepared < sampled || prepared - sampled > 300)))
+            ((apply || outcome == "candidate") && action != "flush" && (prepared < sampled || prepared - sampled > 300)))
             throw new InvalidDataException("Sendmail approval changed.");
-        string reason = f.Take("REASON", outcome is "candidate" or "command_completed" ? "none" :
+        string reason = f.Take("REASON", outcome is "candidate" or "command_completed" or "transition_verified" ? "none" :
             outcome == "outcome_unknown" ? "native_result_unconfirmed" :
             "expired|plan_changed|no_queued_messages|" + EximQueueFields.Failures);
         string raw = f.Take("TARGET_COUNT", outcome == "candidate" ? "[1-9][0-9]{0,4}" : "unknown");
         int? count = raw == "unknown" ? null : (int)EximQueueFields.Number(raw, 50000);
-        if (outcome == "candidate" && action == "retry" && count != 1)
-            throw new InvalidDataException("Selected Retry must target one message.");
-        f.Exact("COMMAND_COUNT", outcome == "command_completed" ? "1" : outcome == "outcome_unknown" ? "unknown" : "0");
-        foreach (string flag in new[] {"DELIVERY_VERIFIED", "EFFECT_VERIFIED", "ATOMIC", "DELETE_REQUESTED",
-            "QUARANTINE_CHANGED", "CONFIG_CHANGED", "SERVICE_CHANGED"}) f.Exact(flag, "no");
+        if (outcome == "candidate" && action != "flush" && count != 1)
+            throw new InvalidDataException("Selected action must target one message.");
+        f.Exact("COMMAND_COUNT", outcome is "command_completed" or "transition_verified" ? "1" :
+            outcome == "outcome_unknown" ? "unknown" : "0");
+        foreach (string flag in new[] {"DELIVERY_VERIFIED", "ATOMIC", "DELETE_REQUESTED",
+            "CONFIG_CHANGED", "SERVICE_CHANGED"}) f.Exact(flag, "no");
+        f.Exact("EFFECT_VERIFIED", outcome == "transition_verified" ? "yes" : "no");
+        f.Exact("QUARANTINE_CHANGED", outcome == "transition_verified" ? "yes" :
+            transition && outcome == "outcome_unknown" ? "unknown" : "no");
         f.End();
         return new(outcome, reason, prepared, sha, count);
     }
@@ -66,6 +75,13 @@ internal sealed record SendmailQueueAction(string Outcome, string Reason, long P
         if (!Reject(() => Parse(preview.Replace("TARGET_COUNT=1", "TARGET_COUNT=2"), "msp", "retry", nonce, 1000, token)) ||
             !Reject(() => Parse(preview, "mta", "retry", nonce, 1000, token)) ||
             !Reject(() => Parse(apply.Replace("DELIVERY_VERIFIED=no", "DELIVERY_VERIFIED=yes"), "msp", "retry", nonce, 1000, token, 1060, sha))) return false;
+        string moved = apply.Replace("ACTION=retry", "ACTION=release")
+            .Replace("OUTCOME=command_completed", "OUTCOME=transition_verified")
+            .Replace("EFFECT_VERIFIED=no", "EFFECT_VERIFIED=yes")
+            .Replace("QUARANTINE_CHANGED=no", "QUARANTINE_CHANGED=yes");
+        if (Parse(moved, "msp", "release", nonce, 1000, token, 1060, sha).Outcome != "transition_verified" ||
+            !Reject(() => Parse(moved.Replace("EFFECT_VERIFIED=yes", "EFFECT_VERIFIED=no"),
+                "msp", "release", nonce, 1000, token, 1060, sha))) return false;
         string bundle = EmbeddedAssets.BuildSendmailQueueActionBundle("msp", "retry", nonce, 1000, token, 1060, sha);
         return bundle.Contains(" --sendmail-action retry --sendmail-queue msp ", StringComparison.Ordinal) &&
             bundle.Contains(" --confirm RETRY_SELECTED_SENDMAIL_MESSAGE\n", StringComparison.Ordinal);

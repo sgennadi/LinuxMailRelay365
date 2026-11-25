@@ -760,8 +760,6 @@ def sendmail_inventory(queue, nonce, runner=run_native, quarantine=False):
 
 def sendmail_inventory_lines(queue, nonce, result, total, groups, native_listed, truncated, rows,
                              sampled=None, context=None, quarantine=False):
-    if quarantine and (sampled is not None or context is not None):
-        raise ValueError("quarantine_inventory_is_read_only")
     values = (("VERSION", 1 if sampled is None else 2), ("SCOPE", "sendmail"), ("QUEUE", queue), ("NONCE", nonce),
               ("RESULT", result), ("TOTAL", "unknown" if total is None else total),
               ("GROUPS", "unknown" if groups is None else groups),
@@ -784,7 +782,11 @@ def sendmail_inventory_lines(queue, nonce, result, total, groups, native_listed,
 SM_ACTIONS = {
     "retry": "RETRY_SELECTED_SENDMAIL_MESSAGE",
     "flush": "RUN_SELECTED_SENDMAIL_QUEUE_ONCE",
+    "quarantine": "QUARANTINE_SELECTED_SENDMAIL_MESSAGE",
+    "release": "RELEASE_SELECTED_SENDMAIL_MESSAGE",
 }
+SM_TRANSITIONS = ("quarantine", "release")
+SM_QUARANTINE_REASON = "LinuxMailRelay365 operator quarantine"
 SM_PATHS = {"mta": ("sendmail.cf", "/var/spool/mqueue", "-Am"),
             "msp": ("submit.cf", "/var/spool/clientmqueue", "-Ac")}
 # Debian-family packages use mqueue-client; upstream/RHEL use clientmqueue.
@@ -944,8 +946,11 @@ def sendmail_action_context(queue, diagnostic=None):
         raise Unavailable("scope_unverified")
 
 
-def sm_native_rows(queue, runner):
-    return sendmail_rows(runner("sendmail", [SM_PATHS[queue][2], "-bp"]), private=True)
+def sm_native_rows(queue, runner, quarantine=False):
+    args = [SM_PATHS[queue][2], "-bp"]
+    if quarantine:
+        args.append("-qQ")
+    return sendmail_rows(runner("sendmail", args), private=True, quarantine=quarantine)
 
 
 def sm_complete(data):
@@ -966,7 +971,14 @@ def sm_retryable(row, rows):
             and sum(ident in other[0] for other in rows) == 1)
 
 
-def sendmail_review_inventory(queue, nonce, runner=run_native, context_check=sendmail_action_context, now=None):
+def sm_selection_token(row, context, nonce, sampled, quarantine):
+    # Quarantine and normal inventory tokens are never interchangeable.
+    return sm_token(["quarantine" if quarantine else "normal", row],
+                    context, nonce, sampled)
+
+
+def sendmail_review_inventory(queue, nonce, runner=run_native, context_check=sendmail_action_context,
+                              now=None, quarantine=False):
     if queue not in SM_PATHS or not SHA.fullmatch(nonce):
         raise ValueError("invalid_sendmail_review_context")
     sampled = int(time.time()) if now is None else now
@@ -976,13 +988,14 @@ def sendmail_review_inventory(queue, nonce, runner=run_native, context_check=sen
     except Unavailable:
         pass
     try:
-        data = sm_native_rows(queue, runner)
+        data = sm_native_rows(queue, runner, quarantine)
         total, groups, listed, truncated, rows = data
         if context is not None and context_check(queue) != context:
             raise Unavailable("scope_unverified")
         verified = context is not None and sm_complete(data)
         public = [(i + 1,) + tuple(row[1]) +
-                  (sm_token(row, context, nonce, sampled) if verified and sm_retryable(row, rows) else "-",)
+                  (sm_selection_token(row, context, nonce, sampled, quarantine)
+                   if verified and sm_retryable(row, rows) else "-",)
                   for i, row in enumerate(rows[:MAX_VISIBLE_MESSAGES])]
         return "ok", total, groups, listed, truncated, public, sampled, "verified" if verified else "unverified"
     except Unavailable as error:
@@ -1001,7 +1014,8 @@ def sm_candidate(queue, action, nonce, sampled, token, now, runner, context_chec
         return "expired", None, None, None
     try:
         context = context_check(queue)
-        data = sm_native_rows(queue, runner)
+        quarantine = action == "release"
+        data = sm_native_rows(queue, runner, quarantine)
         if context_check(queue) != context or not sm_complete(data):
             raise Unavailable("scope_unverified")
         rows = data[-1]
@@ -1014,10 +1028,23 @@ def sm_candidate(queue, action, nonce, sampled, token, now, runner, context_chec
             digest = sm_token(evidence, context, nonce, 0)
             return "candidate", None, (context, digest), len(rows)
         matches = [row for row in rows[:MAX_VISIBLE_MESSAGES]
-                   if sm_retryable(row, rows) and hmac.compare_digest(sm_token(row, context, nonce, sampled), token)]
+                   if sm_retryable(row, rows) and hmac.compare_digest(
+                       sm_selection_token(row, context, nonce, sampled, quarantine), token)]
         if len(matches) != 1:
             return "sample_changed", None, None, None
-        return "candidate", matches[0][0], (context, token), 1
+        ident = matches[0][0]
+        if action in SM_TRANSITIONS:
+            destination = sm_native_rows(queue, runner, not quarantine)
+            if not sm_complete(destination) or context_check(queue) != context:
+                raise Unavailable("scope_unverified")
+            if any(ident == row[0] for row in destination[-1]):
+                return "sample_changed", None, None, None
+            # Bind the entire pair of class inventories to the approval. A
+            # changed destination or source invalidates the reviewed plan.
+            pair = (sorted(rows, key=lambda row: row[0]),
+                    sorted(destination[-1], key=lambda row: row[0]))
+            return "candidate", ident, (context, token, sm_token(pair, context, nonce, sampled)), 1
+        return "candidate", ident, (context, token), 1
     except Unavailable as error:
         return error.result, None, None, None
 
@@ -1042,12 +1069,18 @@ def sm_prepare(queue, action, nonce, sampled, token, runner=run_native,
 def sm_execute(queue, action, ident):
     if queue not in SM_PATHS or action not in SM_ACTIONS or (
         action == "flush" and ident is not None) or (
-        action == "retry" and (not isinstance(ident, str) or not SM_ID.fullmatch(ident))):
+        action != "flush" and (not isinstance(ident, str) or not SM_ID.fullmatch(ident))):
         raise ValueError("invalid_native_sendmail_target")
     binary = native_binary("sendmail")
-    args = [binary, SM_PATHS[queue][2], "-qf"]
-    if action == "retry":
-        args.append("-qI" + ident)
+    args = [binary, SM_PATHS[queue][2]]
+    if action == "quarantine":
+        args += ["-Q" + SM_QUARANTINE_REASON, "-qI" + ident]
+    elif action == "release":
+        args += ["-qQ", "-Q", "-qI" + ident]
+    else:
+        args.append("-qf")
+        if action == "retry":
+            args.append("-qI" + ident)
     try:
         completed = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, timeout=60, check=False,
@@ -1089,8 +1122,28 @@ def sm_apply(queue, action, nonce, sampled, token, prepared, approved, confirmat
         result = executor(queue, action, ident)
     except Unavailable as error:
         return "not_requested", error.result
-    return (("command_completed", "none") if result == "command_completed"
-            else ("outcome_unknown", "native_result_unconfirmed"))
+    if result != "command_completed":
+        return "outcome_unknown", "native_result_unconfirmed"
+    if action in SM_TRANSITIONS:
+        # Exit zero is not proof of a transition: native Sendmail may skip
+        # locked entries. Inspect both classes on the same verified spool.
+        # A released message can be delivered immediately by a live runner;
+        # if the effect cannot be observed, never claim success or retry.
+        try:
+            before_context = evidence[0]
+            if context_check(queue) != before_context:
+                raise Unavailable("scope_unverified")
+            source = sm_native_rows(queue, runner, action == "release")
+            destination = sm_native_rows(queue, runner, action == "quarantine")
+            if (context_check(queue) != before_context or not sm_complete(source)
+                    or not sm_complete(destination)
+                    or any(ident == row[0] for row in source[-1])
+                    or sum(ident == row[0] for row in destination[-1]) != 1):
+                raise Unavailable("scope_unverified")
+        except Unavailable:
+            return "outcome_unknown", "native_result_unconfirmed"
+        return "transition_verified", "none"
+    return "command_completed", "none"
 
 
 def sm_action_lines(queue, action, nonce, sampled, token, phase, prepared, digest, outcome, reason, count=None):
@@ -1098,10 +1151,13 @@ def sm_action_lines(queue, action, nonce, sampled, token, phase, prepared, diges
               ("NONCE", nonce), ("SAMPLED_AT", sampled), ("FINGERPRINT", token), ("PHASE", phase),
               ("PREPARED_AT", prepared), ("PLAN_SHA256", digest), ("OUTCOME", outcome), ("REASON", reason),
               ("TARGET_COUNT", "unknown" if count is None else count),
-              ("COMMAND_COUNT", "1" if outcome == "command_completed" else
+              ("COMMAND_COUNT", "1" if outcome in ("command_completed", "transition_verified") else
                "unknown" if outcome == "outcome_unknown" else "0"),
-              ("DELIVERY_VERIFIED", "no"), ("EFFECT_VERIFIED", "no"), ("ATOMIC", "no"),
-              ("DELETE_REQUESTED", "no"), ("QUARANTINE_CHANGED", "no"),
+              ("DELIVERY_VERIFIED", "no"),
+              ("EFFECT_VERIFIED", "yes" if outcome == "transition_verified" else "no"), ("ATOMIC", "no"),
+              ("DELETE_REQUESTED", "no"),
+              ("QUARANTINE_CHANGED", "yes" if outcome == "transition_verified" else
+               "unknown" if action in SM_TRANSITIONS and outcome == "outcome_unknown" else "no"),
               ("CONFIG_CHANGED", "no"), ("SERVICE_CHANGED", "no"))
     for key, value in values:
         yield "SENDMAIL_ACTION_" + key + "=" + str(value)
@@ -1685,8 +1741,8 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         return 2
-    if args.sendmail_quarantine and (args.sendmail_inventory is None or args.sendmail_reviewable):
-        parser.error("quarantine requires a separate read-only Sendmail inventory")
+    if args.sendmail_quarantine and args.sendmail_inventory is None:
+        parser.error("quarantine flag requires a separate Sendmail inventory")
     if args.sendmail_action is not None:
         if (args.scope != "sendmail" or args.sendmail_queue is None or args.sendmail_inventory is not None
                 or args.sendmail_reviewable or args.messages or args.exim_inventory
@@ -1731,7 +1787,8 @@ def main():
                     args.target_fingerprint, args.prepared_at, args.approve_sha256, args.confirm)) or
                 not SHA.fullmatch(args.selection_nonce or "")):
             parser.error("Sendmail inventory is read-only and requires one normal queue")
-        values = (sendmail_review_inventory(args.sendmail_inventory, args.selection_nonce)
+        values = (sendmail_review_inventory(args.sendmail_inventory, args.selection_nonce,
+                                             quarantine=args.sendmail_quarantine)
                   if args.sendmail_reviewable else sendmail_inventory(args.sendmail_inventory, args.selection_nonce,
                                                                       quarantine=args.sendmail_quarantine))
         for line in sendmail_inventory_lines(args.sendmail_inventory, args.selection_nonce, *values,

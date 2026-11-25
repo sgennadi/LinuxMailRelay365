@@ -18,10 +18,10 @@ internal sealed record SendmailQueueInventory(string Queue, string Result, int? 
     internal static SendmailQueueInventory Parse(string output, string queue, string nonce, bool requireReviewable = false,
         bool quarantine = false)
     {
-        if (queue is not ("mta" or "msp") || !QueueRetryReview.ValidSha(nonce) || (quarantine && requireReviewable))
+        if (queue is not ("mta" or "msp") || !QueueRetryReview.ValidSha(nonce))
             throw new ArgumentException("Invalid Sendmail queue request.");
         var f = new EximQueueFields(output, "SENDMAIL_ITEMS_", rows: true);
-        bool reviewable = f.Take("VERSION", quarantine ? "1" : requireReviewable ? "2" : "1|2") == "2";
+        bool reviewable = f.Take("VERSION", requireReviewable ? "2" : "1|2") == "2";
         f.Exact("SCOPE", "sendmail");
         f.Exact("QUEUE", queue); f.Exact("NONCE", nonce);
         f.Exact("REFERENCE_KIND", "sample_ordinal_only");

@@ -917,7 +917,7 @@ internal static class EmbeddedAssets
     internal static string BuildSendmailQueueInventoryBundle(string queue, string nonce, bool reviewable = false,
         bool quarantine = false)
     {
-        if (queue is not ("mta" or "msp") || !QueueRetryReview.ValidSha(nonce) || (quarantine && reviewable))
+        if (queue is not ("mta" or "msp") || !QueueRetryReview.ValidSha(nonce))
             throw new ArgumentException("Invalid Sendmail queue inventory context.");
         return BuildQueueReadOnlyBundle("sendmail", " --sendmail-inventory " + queue + " --selection-nonce " + nonce +
             (reviewable ? " --sendmail-reviewable" : "") + (quarantine ? " --sendmail-quarantine" : ""));
@@ -929,11 +929,11 @@ internal static class EmbeddedAssets
         SendmailQueueAction.Validate(queue, action, nonce, sampled, fingerprint);
         if ((prepared is null) != (sha is null) || (prepared is long time &&
             (time < Math.Max(1, sampled) || time > 9999999999 ||
-             (action == "retry" && time - sampled > 300) || !QueueRetryReview.ValidSha(sha))))
+             (action != "flush" && time - sampled > 300) || !QueueRetryReview.ValidSha(sha))))
             throw new ArgumentException("Invalid Sendmail approval.");
         var culture = System.Globalization.CultureInfo.InvariantCulture;
         string args = " --sendmail-action " + action + " --sendmail-queue " + queue + " --selection-nonce " + nonce;
-        if (action == "retry")
+        if (action != "flush")
             args += " --sampled-at " + sampled.ToString(culture) + " --target-fingerprint " + fingerprint;
         if (prepared is long t)
             args += " --sendmail-apply --prepared-at " + t.ToString(culture) + " --approve-sha256 " +

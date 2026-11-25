@@ -212,18 +212,42 @@ def main():
                     f.get("SENDMAIL_ITEMS_TOTAL") == str(expected) and
                     f.get("SENDMAIL_ITEMS_LISTED") == str(expected) and
                     "SENDMAIL_ITEMS_CONTEXT" not in f, "quarantine_inventory_mismatch:" + queue)
-            require("fixture-private-quarantine" not in str(f), "raw_quarantine_reason_disclosed")
+            require("LinuxMailRelay365 operator quarantine" not in str(f), "raw_quarantine_reason_disclosed")
         held_count(0)
         candidates = [p.name[2:] for p in Path(path).iterdir() if p.name.startswith("qf")]
         require(len(candidates) == 1 and re.fullmatch(r"[A-Za-z0-9]{8}[0-9]{5,56}", candidates[0]),
                 "fixture_quarantine_id_invalid")
         ident = candidates[0]
         other_before = snapshot()[other]
-        run(["/usr/sbin/sendmail", mode, "-Qfixture-private-quarantine", "-qI" + ident])
+        def transition(action, quarantine):
+            nonce = secrets.token_hex(32)
+            flags = ["--sendmail-inventory", queue, "--sendmail-reviewable",
+                     "--selection-nonce", nonce]
+            if quarantine:
+                flags.append("--sendmail-quarantine")
+            sample = fields(*flags)
+            require(sample.get("SENDMAIL_ITEMS_CONTEXT") == "verified" and
+                    sample.get("SENDMAIL_ITEMS_TOTAL") == "1", "transition_inventory_unverified")
+            token = sample["SENDMAIL_ITEMS_ROW"].split("|")[6]
+            args = ["--sendmail-action", action, "--sendmail-queue", queue,
+                    "--selection-nonce", nonce, "--sampled-at", sample["SENDMAIL_ITEMS_SAMPLED_AT"],
+                    "--target-fingerprint", token]
+            plan = fields(*args)
+            require(plan.get("SENDMAIL_ACTION_OUTCOME") == "candidate" and
+                    plan.get("SENDMAIL_ACTION_TARGET_COUNT") == "1", "transition_plan_refused")
+            receipt = fields(*args, "--sendmail-apply", "--prepared-at", plan["SENDMAIL_ACTION_PREPARED_AT"],
+                "--approve-sha256", plan["SENDMAIL_ACTION_PLAN_SHA256"], "--confirm",
+                ("QUARANTINE" if action == "quarantine" else "RELEASE") + "_SELECTED_SENDMAIL_MESSAGE")
+            require(receipt.get("SENDMAIL_ACTION_OUTCOME") == "transition_verified" and
+                    receipt.get("SENDMAIL_ACTION_EFFECT_VERIFIED") == "yes" and
+                    receipt.get("SENDMAIL_ACTION_QUARANTINE_CHANGED") == "yes" and
+                    receipt.get("SENDMAIL_ACTION_DELIVERY_VERIFIED") == "no",
+                    "native_product_transition_unverified:" + action)
+        transition("quarantine", False)
         held_count(1)
         inventory(queue, 0)
         require(snapshot()[other] == other_before, "quarantine_other_queue_changed")
-        run(["/usr/sbin/sendmail", mode, "-qQ", "-Q", "-qI" + ident])
+        transition("release", True)
         held_count(0)
         inventory(queue, 1)
         require(snapshot()[other] == other_before, "release_other_queue_changed")

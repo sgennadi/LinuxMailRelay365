@@ -12,11 +12,11 @@ internal sealed partial class MainForm
         var initial = Endpoint();
         string nonce = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         var reply = await SshRemote.RunRootScriptAsync(initial,
-            EmbeddedAssets.BuildSendmailQueueInventoryBundle(queue, nonce, reviewable: !quarantine, quarantine: quarantine), TimeSpan.FromMinutes(3));
+            EmbeddedAssets.BuildSendmailQueueInventoryBundle(queue, nonce, reviewable: true, quarantine: quarantine), TimeSpan.FromMinutes(3));
         if (reply.ExitCode != 0) throw new IOException("Sendmail normal queue inventory failed.");
         var current = RequireSameArchiveConnection(initial, allowFirstPin: true);
         if (!QueueScopeDiscovered("sendmail")) throw new InvalidOperationException("Sendmail discovery changed.");
-        var inventory = SendmailQueueInventory.Parse(reply.StdOut, queue, nonce, requireReviewable: !quarantine, quarantine: quarantine);
+        var inventory = SendmailQueueInventory.Parse(reply.StdOut, queue, nonce, requireReviewable: true, quarantine: quarantine);
         WriteLine("Sendmail " + queue.ToUpperInvariant() + (quarantine ? " quarantine: " : " normal queue: ") + inventory.Result +
             "; listed=" + inventory.Rows.Length + "; total=" + (inventory.Total?.ToString() ?? "unknown") +
             ". Metadata only; no native IDs.");
@@ -94,9 +94,9 @@ internal sealed partial class MainForm
         notes.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var status = UiTheme.Text("");
         var help = UiTheme.Text(quarantine ? T(
-            "Только карантин выбранной очереди. Показаны безопасные метаданные; исходные причины карантина, адреса и ID скрыты. Retry, Flush и удаление недоступны.",
-            "Quarantine only, for the selected queue. Metadata only; raw quarantine reasons, addresses and IDs are hidden. Retry, Flush and deletion are unavailable.",
-            "הסגר בלבד בתור הנבחר. מטא-נתונים בלבד; סיבות מקוריות, כתובות ומזהים מוסתרים. אין פעולות כתיבה.") : T(
+            "Карантин выбранной очереди. Исходные причины, адреса и ID скрыты. Release возвращает выбранное письмо в обычную очередь после подтверждения; удаление недоступно.",
+            "Quarantine for the selected queue. Raw reasons, addresses and IDs are hidden. Release returns one selected message to the normal queue after confirmation; deletion is unavailable.",
+            "הסגר בתור הנבחר. סיבות מקוריות, כתובות ומזהים מוסתרים. שחרור הודעה אחת דורש אישור; מחיקה אינה זמינה.") : T(
             "Только обычная очередь (не Lost и не Quarantine). Не более 500 записей в нативном порядке. " +
             "Номера строк и групп действуют только в снимке. Время без года/часового пояса; точный возраст неизвестен. " +
             "Отсутствие * не доказывает отсутствие обработки. Причины приблизительные; адреса и ID скрыты. Retry/Flush экспериментальны.",
@@ -113,8 +113,11 @@ internal sealed partial class MainForm
         var retry = UiTheme.Action(T("Retry выбранного...", "Retry selected (experimental)...", "ניסיון חוזר לנבחרת..."), false, "refresh");
         var flush = UiTheme.Action(T("Flush очереди...", "Run this queue once (experimental)...", "הפעלת תור זה פעם אחת..."), false, "refresh");
         var reload = UiTheme.Action(T("Обновить очередь", "Refresh queue", "רענון תור"), true, "refresh");
+        var transition = UiTheme.Action(quarantine ?
+            T("Вернуть из карантина...", "Release selected...", "שחרור מהסגר...") :
+            T("В карантин...", "Quarantine selected...", "העברה להסגר..."), false, "check");
         if (!quarantine) { footer.Controls.Add(retry); footer.Controls.Add(flush); }
-        footer.Controls.Add(reload);
+        footer.Controls.Add(transition); footer.Controls.Add(reload);
         bool working = false, attempted = false, snapshotValid = true, outcomeUncertain = false;
         DateTime lastRead = DateTime.Now;
         SendmailQueueRow? Selected() => grid.SelectedRows.Count == 1 &&
@@ -122,10 +125,12 @@ internal sealed partial class MainForm
             ? inventory.Rows.SingleOrDefault(row => row.Reference == n) : null;
         void UpdateActions()
         {
-            bool available = !quarantine && !working && !attempted && snapshotValid && !outcomeUncertain &&
+            bool available = !working && !attempted && snapshotValid && !outcomeUncertain &&
                 inventory.Result == "ok" && inventory.ContextVerified && inventory.SampledAt.HasValue;
-            retry.Enabled = available && Selected() is { } row && QueueRetryReview.ValidSha(row.Fingerprint);
-            flush.Enabled = available && inventory.Total > 0;
+            bool selected = Selected() is { } row && QueueRetryReview.ValidSha(row.Fingerprint);
+            retry.Enabled = !quarantine && available && selected;
+            flush.Enabled = !quarantine && available && inventory.Total > 0;
+            transition.Enabled = available && selected;
             reload.Enabled = !working;
         }
         dialog.FormClosing += (_, args) => { if (working) args.Cancel = true; };
@@ -133,11 +138,14 @@ internal sealed partial class MainForm
         async Task ExecuteAsync(string action, SendmailQueueRow? row)
         {
             bool whole = action == "flush";
-            if (quarantine || working || attempted || !snapshotValid || outcomeUncertain ||
+            bool moving = action is "quarantine" or "release";
+            if (action is not ("retry" or "flush" or "quarantine" or "release") ||
+                quarantine != (action == "release") || working || attempted || !snapshotValid || outcomeUncertain ||
                 !inventory.ContextVerified || !inventory.SampledAt.HasValue ||
-                (whole ? !flush.Enabled || row is not null : !retry.Enabled || row is null || Selected() != row)) return;
+                (whole ? !flush.Enabled || row is not null :
+                    !(moving ? transition.Enabled : retry.Enabled) || row is null || Selected() != row)) return;
             working = true;
-            reload.Enabled = retry.Enabled = flush.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            reload.Enabled = retry.Enabled = flush.Enabled = transition.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             string operationNonce = whole
                 ? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant()
                 : nonce;
@@ -163,7 +171,15 @@ internal sealed partial class MainForm
                     "\r\n" + (whole ? "Fresh normal queue: " + plan.TargetCount : "Sample #" + row!.Reference + " | Bytes: " + row.Bytes) +
                     "\r\n\r\n" + T("Только тестовый сервер. План действует 60 секунд.",
                         "Disposable test host only. Plan expires after 60 seconds.", "לשרת בדיקה בלבד. התוכנית תקפה ל-60 שניות.") +
-                    "\r\n\r\n" + (whole
+                    "\r\n\r\n" + (moving
+                    ? action == "release"
+                        ? T("Возврат одного письма в обычную очередь. Возможна немедленная доставка штатным обработчиком.",
+                            "Return one message to the normal queue. The existing queue runner may deliver it immediately.",
+                            "החזרת הודעה אחת לתור הרגיל; תיתכן מסירה מיידית.")
+                        : T("Перемещение одного письма в карантин с фиксированной служебной причиной. Письмо не удаляется.",
+                            "Quarantine one message with a fixed operator reason. The message is not deleted.",
+                            "העברת הודעה אחת להסגר עם סיבה קבועה; ההודעה לא תימחק.")
+                    : whole
                     ? T("Один проход выбранной обычной очереди. Не удаляет письма и не запускает периодический runner.",
                         "One foreground run of the selected normal queue, not deletion or a periodic runner.",
                         "מעבר יחיד בתור הרגיל הנבחר, ללא מחיקה או הפעלה מחזורית.")
@@ -199,11 +215,14 @@ internal sealed partial class MainForm
                 {
                     "command_completed" => T("Команда завершилась. Проверьте очередь и журналы.",
                         "Native command completed. Refresh queue and inspect logs.", "הפקודה הסתיימה. בדקו תור ויומנים."),
+                    "transition_verified" => T("Перемещение подтверждено в обеих очередях. Обновите список.",
+                        "Message transition observed in both queue classes. Refresh the inventory.",
+                        "המעבר אומת בשני סוגי התורים. יש לרענן את הרשימה."),
                     "not_requested" => receipt.Reason,
                     _ => T("Результат неизвестен. Не повторяйте автоматически.",
                         "Outcome unknown. Do not repeat automatically.", "תוצאה לא ידועה; אין לחזור אוטומטית.")
                 }, "Sendmail | " + action, MessageBoxButtons.OK,
-                    receipt.Outcome == "command_completed" ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                    receipt.Outcome is "command_completed" or "transition_verified" ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
             }
             catch (Exception)
             {
@@ -225,10 +244,14 @@ internal sealed partial class MainForm
         }
         retry.Click += async (_, _) => { if (retry.Enabled) await ExecuteAsync("retry", Selected()); };
         flush.Click += async (_, _) => { if (flush.Enabled) await ExecuteAsync("flush", null); };
+        transition.Click += async (_, _) =>
+        {
+            if (transition.Enabled) await ExecuteAsync(quarantine ? "release" : "quarantine", Selected());
+        };
         void Refresh()
         {
             bool warning = !snapshotValid || outcomeUncertain || inventory.Result != "ok" ||
-                (!quarantine && !inventory.ContextVerified) || inventory.NativeTruncated == true || inventory.DisplayTruncated == true;
+                !inventory.ContextVerified || inventory.NativeTruncated == true || inventory.DisplayTruncated == true;
             heading.Text = endpoint.Host + ":" + endpoint.Port + " | " + name + " | " +
                 (!snapshotValid ? T("Требуется обновление", "Refresh required", "נדרש רענון") : QueueResultText(inventory.Result));
             heading.BackColor = SystemInformation.HighContrast ? SystemColors.Window :
@@ -276,8 +299,7 @@ internal sealed partial class MainForm
                 " | " + T("Групп: ", "Groups: ", "קבוצות: ") + (inventory.Groups?.ToString() ?? "unknown") +
                 (inventory.NativeTruncated == true ? " | " + T("Нативный лимит", "Native print limit", "מגבלת תצוגה מקורית") : "") +
                 (inventory.DisplayTruncated == true ? " | " + T("Лимит GUI", "GUI limit", "מגבלת GUI") : "") +
-                (quarantine ? " | " + T("Только чтение", "Read-only", "קריאה בלבד") :
-                    !inventory.ContextVerified ? " | " + T("Операции недоступны", "Actions unavailable", "פעולות אינן זמינות") : "") +
+                (!inventory.ContextVerified ? " | " + T("Операции недоступны", "Actions unavailable", "פעולות אינן זמינות") : "") +
                 " | " + T("Получено (локальное время): ", "Read at (local time): ", "נקרא (זמן מקומי): ") +
                 lastRead.ToString("yyyy-MM-dd HH:mm:ss") +
                 (outcomeUncertain ? " | " + UnknownOutcomeText() : "");
@@ -303,13 +325,13 @@ internal sealed partial class MainForm
                 string queue = inventory.Queue;
                 string freshNonce = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
                 var reply = await SshRemote.RunRootScriptAsync(current,
-                    EmbeddedAssets.BuildSendmailQueueInventoryBundle(queue, freshNonce, reviewable: !quarantine, quarantine: quarantine),
+                    EmbeddedAssets.BuildSendmailQueueInventoryBundle(queue, freshNonce, reviewable: true, quarantine: quarantine),
                     TimeSpan.FromMinutes(3));
                 if (reply.ExitCode != 0) throw new IOException("Sendmail refresh failed.");
                 RequireSameArchiveConnection(current);
                 if (!QueueScopeDiscovered("sendmail"))
                     throw new InvalidOperationException("Sendmail discovery changed.");
-                var next = SendmailQueueInventory.Parse(reply.StdOut, queue, freshNonce, requireReviewable: !quarantine, quarantine: quarantine);
+                var next = SendmailQueueInventory.Parse(reply.StdOut, queue, freshNonce, requireReviewable: true, quarantine: quarantine);
                 inventory = next;
                 nonce = freshNonce;
                 lastRead = DateTime.Now;

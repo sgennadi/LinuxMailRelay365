@@ -143,6 +143,44 @@ class SendmailActions(unittest.TestCase):
                 with self.subTest(queue=queue, path=path, mode=info.st_mode), self.assertRaises(q.Unavailable):
                     q.sm_queue_directory(queue, path, info, msp)
 
+    def test_selected_quarantine_release_requires_both_classes_and_observed_effect(self):
+        empty = "Mail queue is empty\n"
+        normal = self.raw
+        held = normal.replace("                                    <recipient",
+                              " QUARANTINE: private reason\n                                    <recipient")
+        state = {"normal": normal, "held": empty}
+        self.runner.side_effect = lambda tool, args: state["held" if "-qQ" in args else "normal"]
+        token = self.inventory()[5][0][-1]
+        result, prepared, digest, count = self.plan("quarantine", token, 1000)
+        self.assertEqual((result, count), ("candidate", 1))
+        # A valid command exit without a visible transition is not success.
+        self.assertEqual(self.apply("quarantine", prepared, digest, token, 1000),
+                         ("outcome_unknown", "native_result_unconfirmed"))
+        def move(queue, action, ident):
+            self.assertEqual((queue, ident), ("msp", ID))
+            state.update(normal=empty, held=held) if action == "quarantine" else state.update(normal=normal, held=empty)
+            return "command_completed"
+        self.execute.side_effect = move
+        self.assertEqual(self.apply("quarantine", prepared, digest, token, 1000),
+                         ("transition_verified", "none"))
+        report = q.sendmail_review_inventory("msp", self.nonce, self.runner, self.context,
+                                            now=1000, quarantine=True)
+        held_token = report[5][0][-1]
+        self.assertNotEqual(held_token, token)
+        result, prepared, digest, count = self.plan("release", held_token, 1000)
+        self.assertEqual((result, count), ("candidate", 1))
+        state["normal"] = normal
+        self.assertEqual(self.apply("release", prepared, digest, held_token, 1000),
+                         ("not_requested", "sample_changed"))
+        state["normal"] = empty
+        self.assertEqual(self.apply("release", prepared, digest, held_token, 1000),
+                         ("transition_verified", "none"))
+        receipt = "\n".join(q.sm_action_lines("msp", "release", self.nonce, 1000, held_token,
+                            "apply", prepared, digest, "transition_verified", "none"))
+        self.assertIn("SENDMAIL_ACTION_EFFECT_VERIFIED=yes", receipt)
+        self.assertIn("SENDMAIL_ACTION_QUARANTINE_CHANGED=yes", receipt)
+        self.assertNotIn(ID, receipt)
+
     def test_fixed_native_modes_and_no_quarantine_or_periodic_command(self):
         with patch.object(q, "native_binary", return_value="/usr/sbin/sendmail"), \
                 patch.object(q.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
@@ -156,6 +194,10 @@ class SendmailActions(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     q.sm_execute(queue, action, ident)
             self.assertEqual(run.call_count, 4)
+            self.assertEqual(q.sm_execute("msp", "quarantine", ID), "command_completed")
+            self.assertEqual(run.call_args[0][0], ["/usr/sbin/sendmail", "-Ac", "-Q" + q.SM_QUARANTINE_REASON, "-qI" + ID])
+            self.assertEqual(q.sm_execute("msp", "release", ID), "command_completed")
+            self.assertEqual(run.call_args[0][0], ["/usr/sbin/sendmail", "-Ac", "-qQ", "-Q", "-qI" + ID])
             self.assertFalse(q.allowed_args("sendmail", ["-Am", "-qf"]))
 
 

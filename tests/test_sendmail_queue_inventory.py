@@ -68,8 +68,12 @@ class SendmailInventoryTests(unittest.TestCase):
         self.assertTrue(q.allowed_args("sendmail", ["-Ac", "-bp", "-qQ"]))
         for args in (["-Ac", "-qQ"], ["-Am", "-qQ", "-Q"], ["-Ac", "-bp", "-qQ", "-qI123"]):
             self.assertFalse(q.allowed_args("sendmail", args))
-        with self.assertRaises(ValueError):
-            list(q.sendmail_inventory_lines("mta", NONCE, *data, sampled=1000, context="verified", quarantine=True))
+        review = q.sendmail_review_inventory("mta", NONCE, runner,
+            context_check=lambda queue: ("context", queue), now=1000, quarantine=True)
+        report = "\n".join(q.sendmail_inventory_lines("mta", NONCE, *review, quarantine=True))
+        self.assertIn("SENDMAIL_ITEMS_VERSION=2", report)
+        self.assertIn("SENDMAIL_ITEMS_QUEUE_CLASS=quarantine", report)
+        self.assertNotIn("secret reason", report)
 
     def test_reject_unknown_or_inconsistent_nonempty_listing(self):
         valid = "/var/spool/mqueue (1 request)\n" + HEADER + row()
@@ -138,9 +142,9 @@ class SendmailInventoryTests(unittest.TestCase):
         self.assertIn('InspectSendmailQueueAsync("msp")', main)
         self.assertIn('InspectSendmailQueueAsync("mta", quarantine: true)', main)
         self.assertIn('InspectSendmailQueueAsync("msp", quarantine: true)', main)
-        self.assertIn("bool available = !quarantine", ui)
-        self.assertIn("if (quarantine || working", ui)
-        self.assertIn("reviewable: !quarantine, quarantine: quarantine", ui)
+        self.assertIn("retry.Enabled = !quarantine", ui)
+        self.assertIn('quarantine != (action == "release")', ui)
+        self.assertIn("reviewable: true, quarantine: quarantine", ui)
 
 
 if __name__ == "__main__":
