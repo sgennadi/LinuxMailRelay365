@@ -453,3 +453,27 @@ The catalog is not a restore approval: selecting an ID still requires
 the existing fresh identity/certificate checks, exact plan, typed
 approval, shared lock and readback. No production services, runtime
 routes, cloud objects, queues or backups are changed by browsing.
+
+
+## Prepare an unbound local OAuth identity (experimental)
+
+Source / planned now offers New OAuth identity. Enter an existing Entra
+Tenant ID, application Client ID, mailbox and validity (1–365 days).
+The read-only preview binds the new unique filename, current source/runtime
+map digests, directory metadata, service group and OpenSSL version. Apply
+requires the same reviewed plan and typed confirmation. The local RSA 3072
+private key, public certificate and identity JSON are root:m365mailer 0640;
+the JSON is published last after a real service-account PS256 signature
+and certificate verification. The private key is never transferred. Export
+only the public DER certificate (.cer) from the GUI; register it and review
+Exchange permissions separately, then bind via Add mailbox. No cloud
+application or mailbox is created; no route, map, queue or service changes.
+No overwrite or automatic deletion of partially published files is allowed.
+An interrupted apply requires manual review of the printed unique basename.
+Requires existing trusted /etc/linuxmailrelay365 and m365mailer account.
+A missing oauth-identities directory is created root:m365mailer 0750;
+existing directories must already match that policy. SELinux-active hosts
+are refused pending policy-aware creation; TPM is not yet offered here.
+The real disposable CI test uses RSA/OpenSSL and a local service account,
+not a real Microsoft 365 tenant. Existing bound mailbox rotation remains
+separate.

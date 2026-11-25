@@ -451,6 +451,7 @@ internal static class Program
             ("Multi-mailbox source/runtime identity inventory", MultiMailboxIdentityInventory.SelfTest),
             ("Selected multi-mailbox cloud observation identity binding", MultiMailboxCloudObservation.SelfTest),
             ("Prepared multi-mailbox source edit receipt and backup binding", MultiMailboxSourceEditPlan.SelfTest),
+            ("Unbound multi-mailbox identity preparation receipts", MultiMailboxIdentityPrepareReceipt.SelfTest),
             ("Active Linux OAuth certificate / Graph public key correlation", ActiveOAuthCertificateAudit.SelfTest),
             ("Microsoft 365 object inspector embedded", () =>
                 EmbeddedAssets.CloudObjectsInspector.Contains("M365_OBJECT_INSPECT=read_only", StringComparison.Ordinal) &&

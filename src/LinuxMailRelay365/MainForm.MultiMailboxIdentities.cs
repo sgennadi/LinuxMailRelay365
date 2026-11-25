@@ -69,6 +69,8 @@ internal sealed partial class MainForm
         var restoreSource = UiTheme.Action(T("Восстановить карту...", "Restore source map...", "שחזור מפת מקור..."), false, "restore");
         footer.Controls.Add(addMailbox); footer.Controls.Add(editMailbox); footer.Controls.Add(removeMailbox);
         footer.Controls.Add(restoreSource);
+        var prepareIdentity = UiTheme.Action(T("Новый OAuth-идентификатор...", "New OAuth identity...", "זהות OAuth חדשה..."), false, "add");
+        footer.Controls.Add(prepareIdentity);
         DataGridView Grid(TabPage tab)
         {
             var grid = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true,
@@ -108,6 +110,7 @@ internal sealed partial class MainForm
             editMailbox.Enabled = source && Selected() is not null;
             removeMailbox.Enabled = source && Selected() is not null && inventory.Source.Rows.Length > 1;
             restoreSource.Enabled = source && inventory.Source.Status == "ok";
+            prepareIdentity.Enabled = source && inventory.Runtime.Status is "ok" or "absent";
         }
         void Detail()
         {
@@ -316,6 +319,118 @@ internal sealed partial class MainForm
                 Detail();
             }
         }
+        prepareIdentity.Click += async (_, _) =>
+        {
+            if (reading || !inventoryValid || saveUncertain || SelectedScope() != "source") return;
+            var req = PromptUnboundMailboxIdentity(dialog, inventory.Source.Sha256);
+            if (req is null) return;
+            var before = inventory;
+            reading = true;
+            refresh.Enabled = close.Enabled = tabs.Enabled = verify.Enabled = false;
+            EditingActions();
+            bool attempted = false;
+            MultiMailboxIdentityPrepareReceipt? saved = null;
+            try
+            {
+                void ValidateContext()
+                {
+                    RequireSameArchiveConnection(endpoint);
+                    if (context != CurrentMultiMailboxContext() || !HasMailDiscovery())
+                        throw new InvalidOperationException("Linux selection changed.");
+                }
+                async Task<MultiMailboxIdentityPrepareReceipt> Execute(MultiMailboxIdentityPrepareReceipt? approved)
+                {
+                    ValidateContext();
+                    var reply = await SshRemote.RunRootScriptAsync(endpoint,
+                        EmbeddedAssets.BuildMultiMailboxIdentityPrepareBundle(req.Serialize(approved?.PlanSha ?? "")),
+                        TimeSpan.FromMinutes(4));
+                    ValidateContext();
+                    if (reply.ExitCode != 0) throw new IOException("Identity preparation refused or requires review.");
+                    return MultiMailboxIdentityPrepareReceipt.Parse(reply.StdOut, req, approved);
+                }
+                void CheckMaps(MultiMailboxIdentityInventory sample)
+                {
+                    if (sample.Source.Status != before.Source.Status || sample.Source.Sha256 != before.Source.Sha256 ||
+                        sample.Runtime.Status != before.Runtime.Status || sample.Runtime.Sha256 != before.Runtime.Sha256 ||
+                        sample.InstalledBinding != before.InstalledBinding ||
+                        !sample.Source.Rows.SequenceEqual(before.Source.Rows) ||
+                        !sample.Runtime.Rows.SequenceEqual(before.Runtime.Rows))
+                        throw new InvalidDataException("Source or runtime inventory changed.");
+                }
+                heading.Text = "Checking Linux prerequisites for an unbound OAuth identity...";
+                CheckMaps(await ReadAsync());
+                var preview = await Execute(null);
+                if (preview.RuntimeSha != before.Runtime.Sha256)
+                    throw new InvalidDataException("Runtime map changed.");
+                if (!ConfirmDestructive("LinuxMailRelay365 | Prepare new local identity",
+                    "Tenant: " + req.Tenant + Environment.NewLine + "Existing application: " + req.Client +
+                    Environment.NewLine + "Mailbox: " + req.Mailbox +
+                    Environment.NewLine + "RSA 3072, validity: " + req.Days + " days" +
+                    Environment.NewLine + "New file: " + req.IdentityFile +
+                    Environment.NewLine + "Plan SHA-256: " + preview.PlanSha +
+                    Environment.NewLine + "Only new local protected identity files will be created. No mailbox, cloud permissions, source map, runtime, service or mail changes.",
+                    MultiMailboxIdentityPrepareRequest.Confirmation, dialog))
+                { Render(); return; }
+                CheckMaps(await ReadAsync());
+                ValidateContext();
+                ResetMultiMailboxRouteReview();
+                observations.Clear();
+                attempted = true;
+                heading.Text = "Preparing RSA key and verifying local service-account signature...";
+                saved = await Execute(preview);
+                var latest = await ReadAsync();
+                CheckMaps(latest);
+                inventory = latest;
+                Render();
+                WriteLine("Unbound local OAuth identity prepared: " + req.IdentityFile +
+                    "; public certificate SHA-256: " + saved.CertificateSha + ". No route or cloud changes.");
+                MessageBox.Show(dialog, "Identity prepared: " + req.IdentityFile +
+                    Environment.NewLine + "Public certificate SHA-256: " + saved.CertificateSha +
+                    Environment.NewLine + "Save the public certificate, register it with the exact Entra application, review Exchange permissions, then use Add mailbox to bind this identity. No live route changed.",
+                    "Unbound identity prepared", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception)
+            {
+                if (attempted) saveUncertain = true;
+                Invalidate(attempted ? "Identity creation outcome requires review; editing locked." :
+                    "Identity preview refused or stale. Check prerequisites and refresh.");
+                if (attempted)
+                {
+                    details.Text = "Do not retry blindly. Inspect the protected directory for " + req.IdentityFile +
+                        " and its matching .key/.crt files. No route activation requested.";
+                    WriteLine("Identity preparation outcome requires manual review: " + req.IdentityFile);
+                }
+                else WriteLine("Identity preparation preview refused. Check OpenSSL, service account, directory permissions and SELinux.");
+            }
+            finally
+            {
+                reading = false;
+                refresh.Enabled = close.Enabled = tabs.Enabled = true;
+                Detail();
+            }
+            if (saved is not null)
+            {
+                // Only public DER was returned; never download the private key.
+                using var export = new SaveFileDialog { Filter = "Public X.509 certificate (*.cer)|*.cer",
+                    FileName = Path.GetFileNameWithoutExtension(req.IdentityFile) + ".cer", AddExtension = true,
+                    DefaultExt = "cer", OverwritePrompt = true };
+                if (export.ShowDialog(dialog) == DialogResult.OK)
+                {
+                    try
+                    {
+                        using var output = new FileStream(export.FileName, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                        output.Write(saved.PublicDer);
+                        output.Flush(true);
+                        WriteLine("Public certificate exported. Private key remains on Linux.");
+                    }
+                    catch (Exception)
+                    {
+                        MessageBox.Show(dialog, "Public certificate was not saved. Choose a new filename or export the public .crt from Linux separately.",
+                            "Public certificate export", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                }
+            }
+        };
         addMailbox.Click += async (_, _) => await EditSourceAsync("add");
         editMailbox.Click += async (_, _) => await EditSourceAsync("edit");
         removeMailbox.Click += async (_, _) => await EditSourceAsync("remove");
