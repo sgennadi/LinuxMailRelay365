@@ -351,3 +351,23 @@ systemd/timer acceptance test on a host with the full multi-mailbox stack.
 Any production release still requires real client-to-Postfix SMTP AUTH,
 the per-mailbox token/SMTP submission acceptance, Exchange message trace,
 DPI/GUI checks and managed credential/signing validation.
+
+## Source/runtime identity inventory (post-RC19, pending CI)
+
+The Multi-mailbox identities and certificates dialog lists the prepared
+root-only oauth-senders.tsv and installed oauth-runtime-senders.tsv on
+separate tabs. It checks each exact login/sender/mailbox, protected identity
+JSON, canonical tenant and application IDs, configured signer type and
+referenced public PEM digest. It never opens a private key, invokes a
+signer, obtains a token, sends mail, or changes a service. Both samples
+must agree, and source/runtime SHA-256 values are compared independently.
+The installed recovery marker is compared to the runtime map and current
+main.cf/master.cf digests; this is not evidence of a running sidecar.
+If an exact Graph/Exchange inventory was previously read on this same
+Linux connection, certificate digests are compared only for the same
+Tenant ID and Client ID; cached mailbox RBAC requires an exact mailbox as
+well. The UI explicitly marks these observations as previous samples.
+No certificate validity or key possession is inferred from local PEM bytes.
+An absent, unsupported, malformed or changed configuration never becomes
+a successful audit. Full live cloud per-mailbox inspection and protected
+source-map editing remain separate development steps.

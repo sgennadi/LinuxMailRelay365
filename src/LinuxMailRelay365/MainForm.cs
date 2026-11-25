@@ -3079,6 +3079,11 @@ internal sealed partial class MainForm : Form
                             "בדיקת מיפוי משתמשים ותיבות (קריאה בלבד)"),
                             InspectOAuthSenderMapAsync, false, "check", "oauth-sender-map-audit");
                         AddAction(page, T(
+                            "Почтовые ящики и сертификаты Multi-mailbox...",
+                            "Multi-mailbox identities and certificates...",
+                            "זהויות ותעודות Multi-mailbox..."),
+                            InspectMultiMailboxIdentitiesAsync, false, "check", "multi-mailbox-identities");
+                        AddAction(page, T(
                             "Сравнить карту с SMTP AUTH и From Guard на Linux (только чтение)",
                             "Compare sender map with installed SMTP AUTH and From Guard (read-only)",
                             "השוואת המפה עם SMTP AUTH ו-From Guard (קריאה בלבד)"),

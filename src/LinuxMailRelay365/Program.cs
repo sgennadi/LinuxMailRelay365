@@ -448,6 +448,7 @@ internal static class Program
                 catch (ArgumentException) { return true; }
             }),
             ("Microsoft 365 read-only inventory parser", CloudObjectsInventory.SelfTest),
+            ("Multi-mailbox source/runtime identity inventory", MultiMailboxIdentityInventory.SelfTest),
             ("Active Linux OAuth certificate / Graph public key correlation", ActiveOAuthCertificateAudit.SelfTest),
             ("Microsoft 365 object inspector embedded", () =>
                 EmbeddedAssets.CloudObjectsInspector.Contains("M365_OBJECT_INSPECT=read_only", StringComparison.Ordinal) &&

@@ -22,6 +22,7 @@ internal static class EmbeddedAssets
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
     internal static string OAuthSenderMapAudit => Text("LinuxMailRelay365.linux.oauth-sender-map-audit.py");
+    internal static string MultiMailboxIdentityInspector => Text("LinuxMailRelay365.linux.multi-mailbox-identity-inventory.py");
     internal static string OAuthIngressAudit => Text("LinuxMailRelay365.linux.oauth-ingress-audit.py");
     internal static string OAuthIdentitySigningAudit => Text("LinuxMailRelay365.linux.oauth-identity-signing-audit.py");
     internal static string HardwareSigner => Text("LinuxMailRelay365.linux.hardware-signer.py");
@@ -576,6 +577,22 @@ internal static class EmbeddedAssets
         return "set -Eeuo pipefail\numask 077\n" +
                "python3 /opt/linuxmailrelay365/multi-oauth/manage-multi-mailbox-postfix.py " +
                parameters + "\n";
+    }
+
+    internal static string BuildMultiMailboxIdentityInventoryBundle(string nonce)
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(nonce, @"\A[a-f0-9]{64}\z"))
+            throw new ArgumentException("Invalid identity inventory nonce.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-multi-identities.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/audit-oauth-sender-map.py\" <<'LMR365_MULTI_IDENTITY_MAP'\n" +
+               Encode(OAuthSenderMapAudit) + "\nLMR365_MULTI_IDENTITY_MAP\n" +
+               "base64 -d > \"$work/export-hardware-oauth-cert.py\" <<'LMR365_MULTI_IDENTITY_CERT'\n" +
+               Encode(EntraPublicCertificateExporter) + "\nLMR365_MULTI_IDENTITY_CERT\n" +
+               "base64 -d > \"$work/inspect-multi-mailbox-identities.py\" <<'LMR365_MULTI_IDENTITY_READ'\n" +
+               Encode(MultiMailboxIdentityInspector) + "\nLMR365_MULTI_IDENTITY_READ\n" +
+               "printf '%s' '" + nonce + "' | python3 \"$work/inspect-multi-mailbox-identities.py\"\n";
     }
 
     internal static string BuildOAuthSenderMapAuditBundle(string mapPath)
