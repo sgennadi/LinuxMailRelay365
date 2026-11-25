@@ -124,6 +124,61 @@ def read_identity(path, root, group):
     return raw, obj
 
 
+def active_inventory(target):
+    """Public certificate referenced by app.json; no staged key or signing."""
+    if os.geteuid() != 0 or target not in ("primary", "sidecar"):
+        raise Refused("active_inventory_scope_invalid")
+    root = ROOTS[target]
+    trusted_directory(root)
+    try:
+        group = grp.getgrnam("m365mailer").gr_gid
+    except KeyError:
+        raise Refused("m365mailer_group_missing")
+    def sample():
+        # Use the existing fixed-root ownership and no-symlink checks.
+        raw, identity = read_identity(root / "app.json", root, group)
+        # Reject duplicate JSON properties: the running transport and the
+        # audit must not interpret ambiguous identity records differently.
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise Refused("duplicate_identity_property")
+                result[key] = value
+            return result
+        parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+        if parsed != identity:
+            raise Refused("identity_parse_mismatch")
+        mailbox = identity["mailbox"].lower()
+        if (len(mailbox) > 254 or ".." in mailbox or not re.fullmatch(
+                r"[a-z0-9.!#$%&'*+/=?^_\x60{|}~-]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", mailbox)):
+            raise Refused("active_mailbox_invalid")
+        der = der_from_pem(secure_read(identity["certificate"], MAX_PEM,
+                                      modes=(0o640, 0o644)))
+        return {"target": target, "tenant": identity["tenant_id"],
+                "client": identity["client_id"], "mailbox": mailbox,
+                "identity_sha": digest(raw), "certificate_sha": digest(der),
+                "certificate_der": base64.b64encode(der).decode("ascii")}
+    first = sample()
+    if sample() != first:
+        raise Refused("active_identity_changed_during_review")
+    return first
+
+
+def print_active_inventory(value):
+    for name, key in (("TARGET", "target"), ("TENANT_ID", "tenant"),
+                      ("CLIENT_ID", "client"), ("MAILBOX", "mailbox"),
+                      ("IDENTITY_SHA256", "identity_sha"),
+                      ("CERT_SHA256", "certificate_sha"),
+                      ("CERT_DER_BASE64", "certificate_der")):
+        print("ACTIVE_OAUTH_{}={}".format(name, value[key]))
+    print("ACTIVE_OAUTH_VERSION=1")
+    print("ACTIVE_OAUTH_PRIVATE_KEY_EXPORTED=no")
+    print("ACTIVE_OAUTH_SIGNING_TESTED=no")
+    print("ACTIVE_OAUTH_MAIL_SENT=no")
+    print("ACTIVE_OAUTH_CONFIG_CHANGED=no")
+
+
 def inventory(target):
     if os.geteuid() != 0:
         raise Refused("root_required")
@@ -263,6 +318,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--target", choices=sorted(ROOTS), required=True)
     ap.add_argument("--inventory", action="store_true")
+    ap.add_argument("--active-inventory", action="store_true")
     ap.add_argument("--proof", action="store_true")
     ap.add_argument("--object-id")
     ap.add_argument("--expected-active-sha")
@@ -271,13 +327,16 @@ def main(argv=None):
     ap.add_argument("--expected-candidate-cert-sha")
     args = ap.parse_args(argv)
     try:
-        if args.inventory == args.proof:
-            raise Refused("select_inventory_or_proof")
+        if sum((args.inventory, args.active_inventory, args.proof)) != 1:
+            raise Refused("select_one_certificate_operation")
         proofs = (args.object_id, args.expected_active_sha,
                   args.expected_stage_sha, args.expected_active_cert_sha,
                   args.expected_candidate_cert_sha)
-        if args.inventory and any(x is not None for x in proofs):
+        if (args.inventory or args.active_inventory) and any(x is not None for x in proofs):
             raise Refused("proof_arguments_not_allowed_in_inventory")
+        if args.active_inventory:
+            print_active_inventory(active_inventory(args.target))
+            return 0
         x = inventory(args.target)
         if args.inventory:
             print_inventory(x)

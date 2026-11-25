@@ -9,7 +9,7 @@ internal sealed record CloudConnectorObject(
 
 internal sealed record CloudCredentialObject(
     Guid KeyId, string Name, string Type, string Usage,
-    DateTimeOffset ValidFrom, DateTimeOffset ValidUntil);
+    DateTimeOffset ValidFrom, DateTimeOffset ValidUntil, string? CertificateSha256 = null);
 
 internal sealed record CloudScopeObject(string Name, string Filter);
 internal sealed record CloudAssignmentObject(string Name, string Role, string Scope);

@@ -103,6 +103,18 @@ internal static class EmbeddedAssets
 
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
 
+    internal static string BuildActiveOAuthCertificateBundle(string target)
+    {
+        if (target is not ("primary" or "sidecar"))
+            throw new ArgumentException("Select the exact installed OAuth identity.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-active-oauth.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/export-hardware-oauth-cert.py\" <<'LMR365_ACTIVE_OAUTH'\n" +
+               Encode(EntraPublicCertificateExporter) + "\nLMR365_ACTIVE_OAUTH\n" +
+               "python3 \"$work/export-hardware-oauth-cert.py\" --target " + target + " --active-inventory\n";
+    }
+
     internal static string BuildEntraPublicCertificateBundle(string target,
         string? objectId = null, string? activeSha = null,
         string? stageSha = null, string? activeCertificateSha = null,

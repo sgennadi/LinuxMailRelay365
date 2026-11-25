@@ -171,7 +171,7 @@ internal sealed partial class MainForm
                     ServicePrincipalObjectId = nativeGraph.EnterpriseObjectId,
                     Certificates = nativeGraph.Certificates.Select(c =>
                         new CloudCredentialObject(c.KeyId, c.Label, c.Type,
-                            c.Usage, c.ValidFrom, c.ValidUntil)).ToArray()
+                            c.Usage, c.ValidFrom, c.ValidUntil, c.CertificateSha256)).ToArray()
                 };
             }
             ValidateCloudInventorySelection(
@@ -292,6 +292,11 @@ internal sealed partial class MainForm
                 readiness.ForeColor = mailboxAudit.ScopedConfigurationObserved ? Color.DarkGreen : UiTheme.WarningInk;
         }
         else readiness.Text += " | NOT VERIFIED";
+        var activeIdentities = tree.Nodes.Add(T("Сертификат Linux / Entra", "Linux / Entra certificate match", "התאמת תעודת Linux / Entra"));
+        var primaryIdentity = activeIdentities.Nodes.Add("Primary Postfix");
+        var sidecarIdentity = activeIdentities.Nodes.Add("Isolated Postfix / Sidecar");
+        primaryIdentity.Tag = "primary";
+        sidecarIdentity.Tag = "sidecar";
         var certificates = tree.Nodes.Add("OAuth certificates (" + inventory.Certificates.Count + ")");
         foreach (var certificate in inventory.Certificates)
             AddChild(certificates, certificate.Name + " | " + certificate.ValidUntil.ToString("yyyy-MM-dd"), certificate);
@@ -322,12 +327,18 @@ internal sealed partial class MainForm
                     T("Проверка конфигурации, не SMTP-входа. Права Entra, Conditional Access и доставка не проверены.",
                       "Exchange configuration only, not SMTP login. Separate Entra grants, Conditional Access and delivery are not verified.",
                       "בדיקת תצורה בלבד, לא כניסת SMTP. הרשאות Entra נפרדות, גישה מותנית ומסירה לא אומתו."),
+                ActiveOAuthCertificateAudit a => a.Describe(),
+                string target when target is "primary" or "sidecar" => T(
+                    "Выбран источник app.json. Нажмите Compare active certificate. Только чтение; SMTP и подпись не проверяются.",
+                    "Selected app.json source. Choose Compare active certificate. Read-only; SMTP and signing are not tested.",
+                    "נבחר מקור app.json. בדקו התאמת תעודה; ללא שליחה או חתימה."),
                 CloudCredentialObject c => "Certificate credential: " + c.Name +
                     Environment.NewLine + "Key ID: " + c.KeyId +
                     Environment.NewLine + "Type: " + c.Type +
                     Environment.NewLine + "Usage: " + c.Usage +
                     Environment.NewLine + "Valid: " + c.ValidFrom.ToString("u") +
                     " to " + c.ValidUntil.ToString("u") +
+                    Environment.NewLine + "Public certificate SHA-256: " + (c.CertificateSha256 ?? "not returned / unverified") +
                     Environment.NewLine + "Private key: NOT exposed",
                 CloudConnectorObject c => "Connector: " + c.Name +
                     Environment.NewLine + "Identity: " + c.Identity +
@@ -424,8 +435,76 @@ internal sealed partial class MainForm
                                  c.Ownership == "verified";
             }
         };
+        var compare = UiTheme.Action(T("Сравнить сертификат...", "Compare active certificate...", "השוואת תעודה פעילה..."), false, "check");
+        bool comparing = false;
+        string? SelectedIdentity() => tree.SelectedNode == primaryIdentity ? "primary" :
+            tree.SelectedNode == sidecarIdentity ? "sidecar" : null;
+        void UpdateCompare() => compare.Enabled = !comparing && SelectedIdentity() is not null &&
+            inventory.MailboxAudit is not null && inventory.Client.HasValue &&
+            inventory.ApplicationStatus == "found";
+        tree.AfterSelect += (_, _) => UpdateCompare();
+        compare.Click += async (_, _) =>
+        {
+            if (!compare.Enabled || SelectedIdentity() is not string target ||
+                tree.SelectedNode is not TreeNode node || inventory.Client is not Guid exactClient ||
+                inventory.MailboxAudit is not { } mailboxAudit) return;
+            comparing = true;
+            compare.Enabled = close.Enabled = copy.Enabled = tree.Enabled = change.Enabled = operation.Enabled = false;
+            modal.UseWaitCursor = true;
+            modal.FormClosing += DuringComparison;
+            void DuringComparison(object? sender, FormClosingEventArgs e)
+            {
+                if (comparing) e.Cancel = true;
+            }
+            try
+            {
+                if (!HasMailDiscovery() || lastReadOnlyCloudLinuxIdentity is null ||
+                    lastReadOnlyCloudLinuxIdentity != TryCurrentIdentity() ||
+                    !Guid.TryParse(tenant.Text.Trim(), out Guid chosenTenant) || chosenTenant != inventory.Tenant ||
+                    !string.Equals(mailbox.Text.Trim(), mailboxAudit.Mailbox, StringComparison.OrdinalIgnoreCase) ||
+                    mailTransport.SelectedIndex != 0 ||
+                    (existingAppId.Text.Trim().Length > 0 &&
+                      (!Guid.TryParse(existingAppId.Text.Trim(), out Guid chosenClient) || chosenClient != exactClient)))
+                    throw new InvalidOperationException("Cloud or Linux selection changed.");
+                var endpoint = Endpoint();
+                var reply = await SshRemote.RunRootScriptAsync(endpoint,
+                    EmbeddedAssets.BuildActiveOAuthCertificateBundle(target), TimeSpan.FromSeconds(90));
+                reply.EnsureSuccess();
+                RequireSameArchiveConnection(endpoint, allowFirstPin: true);
+                if (lastReadOnlyCloudLinuxIdentity != TryCurrentIdentity())
+                    throw new InvalidOperationException("Linux connection changed.");
+                var result = ActiveOAuthCertificateAudit.Parse(reply.StdOut, target, inventory.Tenant,
+                    exactClient, mailboxAudit.Mailbox, inventory.Certificates, DateTimeOffset.UtcNow);
+                node.Tag = result;
+                node.Text = (target == "primary" ? "Primary Postfix" : "Isolated Postfix / Sidecar") +
+                    " | " + result.Status;
+                if (!SystemInformation.HighContrast)
+                    node.ForeColor = result.Status == "match_current" ? Color.DarkGreen : UiTheme.WarningInk;
+                details.Text = result.Describe();
+                WriteLine("Linux/Entra certificate comparison: " + result.Status + ". Configuration only; no SMTP or signing test.");
+            }
+            catch (Exception)
+            {
+                node.Tag = target;
+                node.Text = (target == "primary" ? "Primary Postfix" : "Isolated Postfix / Sidecar") + " | UNVERIFIED";
+                details.Text = T("Не удалось подтвердить точный источник или сертификат. Проверьте соединение и обновите Microsoft 365 Objects.",
+                    "Exact identity or certificate could not be verified. Check connection and refresh Microsoft 365 Objects.",
+                    "לא ניתן לאמת את הזהות או התעודה. בדקו חיבור ורעננו מלאי.");
+                WriteLine("Linux/Entra certificate comparison unverified. No changes requested.");
+            }
+            finally
+            {
+                comparing = false;
+                modal.FormClosing -= DuringComparison;
+                modal.UseWaitCursor = false;
+                close.Enabled = copy.Enabled = tree.Enabled = true;
+                UpdateCompare();
+            }
+        };
+        UpdateCompare();
         footer.Controls.Add(close);
         footer.Controls.Add(copy);
+        footer.Controls.Add(compare);
         footer.Controls.Add(change);
         footer.Controls.Add(operation);
         footer.Controls.Add(newName);

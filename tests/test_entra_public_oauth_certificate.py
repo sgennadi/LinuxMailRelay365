@@ -78,6 +78,29 @@ class EntraPublicCertificateTests(unittest.TestCase):
         self.assertNotIn("sender@example.org", report)
         self.assertNotIn("not-the-actual-key", report)
 
+    def test_active_inventory_reads_configured_certificate_without_stage_or_key(self):
+        active = dict(self.active, certificate=str(self.root / "app.rotation.fixture.crt"))
+        raw = json.dumps(active).encode("ascii")
+        self.read.side_effect = [(raw, active), (raw, active)]
+        M.secure_read.reset_mock()
+        M.secure_read.side_effect = lambda *args, **kwargs: pem(self.new_der)
+        result = M.active_inventory("sidecar")
+        self.assertEqual(result["certificate_sha"], M.digest(self.new_der))
+        self.assertEqual(self.read.call_count, 2)
+        self.assertTrue(all(call.args[0] == active["certificate"] for call in M.secure_read.call_args_list))
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            M.print_active_inventory(result)
+        self.assertIn("ACTIVE_OAUTH_PRIVATE_KEY_EXPORTED=no", buf.getvalue())
+        self.assertNotIn("app.rotation.fixture.crt", buf.getvalue())
+        self.assertNotIn("app.key", buf.getvalue())
+
+    def test_active_inventory_rejects_changed_snapshot(self):
+        changed = dict(self.active, mailbox="other@example.org")
+        self.read.side_effect = [(self.active_raw, self.active),
+            (json.dumps(changed).encode("ascii"), changed)]
+        with self.assertRaisesRegex(M.Refused, "changed_during_review"):
+            M.active_inventory("sidecar")
+
     def test_different_client_or_sender_refused(self):
         self.stage["mailbox"] = "different@example.org"
         with self.assertRaisesRegex(M.Refused, "mismatch"):

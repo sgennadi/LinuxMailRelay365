@@ -1,11 +1,13 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Microsoft.Identity.Client;
 
 namespace Microsoft365Auth;
 
-/// <summary>Read-only Graph inventory: no directory write scopes, no key bytes.</summary>
+/// <summary>Read-only Graph inventory: no directory write scopes; public X.509 digests only.</summary>
 public static class EntraGraphInventoryClient
 {
     private const int MaxBytes = 256_000;
@@ -51,7 +53,8 @@ public static class EntraGraphInventoryClient
                 !DateTimeOffset.TryParse(LimitedString(cert, "endDateTime", 64), out var until) ||
                 until <= from)
                 throw new EntraDiscoveryException("invalid_certificate_dates");
-            certificates.Add(new(keyId, label, type, usage, from.ToUniversalTime(), until.ToUniversalTime()));
+            certificates.Add(new(keyId, label, type, usage, from.ToUniversalTime(), until.ToUniversalTime(),
+                PublicCertificateSha256(cert, type, usage)));
         }
 
         Guid? enterpriseId = null;
@@ -101,6 +104,30 @@ public static class EntraGraphInventoryClient
         catch (HttpRequestException) { throw new EntraDiscoveryException("graph_connection_failed"); }
     }
 
+    // A single application GET with $select=keyCredentials may expose public
+    // certificate bytes. Null/omitted/malformed values remain unavailable;
+    // customKeyIdentifier and the display name are NOT certificate proof.
+    private static string? PublicCertificateSha256(JsonElement item, string type, string usage)
+    {
+        if (type != "AsymmetricX509Cert" || usage != "Verify" ||
+            !item.TryGetProperty("key", out var value) || value.ValueKind != JsonValueKind.String)
+            return null;
+        string? encoded = value.GetString();
+        if (encoded is null || encoded.Length > 32768) return null;
+        try
+        {
+            byte[] raw = Convert.FromBase64String(encoded);
+            if (raw.Length is < 250 or > 24576) return null;
+            using var cert = X509CertificateLoader.LoadCertificate(raw);
+            if (!raw.AsSpan().SequenceEqual(cert.RawData)) return null;
+            return Convert.ToHexString(SHA256.HashData(raw)).ToLowerInvariant();
+        }
+        catch (Exception ex) when (ex is FormatException or CryptographicException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
     private static Guid GuidProperty(JsonElement root, string key)
     {
         if (root.ValueKind != JsonValueKind.Object ||
@@ -130,7 +157,7 @@ public static class EntraGraphInventoryClient
 
 public sealed record EntraCertificateMetadata(
     Guid KeyId, string Label, string Type, string Usage,
-    DateTimeOffset ValidFrom, DateTimeOffset ValidUntil);
+    DateTimeOffset ValidFrom, DateTimeOffset ValidUntil, string? CertificateSha256 = null);
 
 public sealed record EntraApplicationInventory(
     Guid ClientId, Guid AppObjectId, string DisplayName,
