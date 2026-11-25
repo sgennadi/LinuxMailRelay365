@@ -115,6 +115,30 @@ def vm_isolation():
     print("NATIVE_SENDMAIL_VM_SELINUX=enforcing_verified", flush=True)
 
 
+def vm_mount_records(mountinfo, path):
+    """Exact mountpoint evidence, including same-filesystem bind mounts.
+
+    Queue paths are fixed ASCII paths with no mountinfo escape characters.
+    Reject a pre-existing stacked or nested mount instead of hiding it.
+    """
+    require(path in ("/var/spool/mqueue", "/var/spool/clientmqueue",
+                     "/var/spool/mqueue-client"), "vm_mount_path_unsupported")
+    matches = []
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        require(len(fields) >= 10 and "-" in fields and fields[0].isdigit(),
+                "vm_mountinfo_invalid")
+        separator = fields.index("-")
+        require(separator >= 6 and len(fields) >= separator + 4,
+                "vm_mountinfo_invalid")
+        mountpoint = fields[4]
+        require(not mountpoint.startswith(path + "/"), "vm_nested_queue_mount")
+        if mountpoint == path:
+            matches.append(int(fields[0]))
+    require(len(matches) <= 1, "vm_stacked_queue_mount")
+    return matches
+
+
 def vm_bind_empty_spool(path, metadata):
     """Bind a private, correctly labeled on-disk spool over the native path.
 
@@ -123,7 +147,9 @@ def vm_bind_empty_spool(path, metadata):
     The caller already holds private mount/network namespaces and has
     verified the disposable guest and inactive native Sendmail services.
     """
-    require(not os.path.ismount(path), "vm_native_queue_is_mount")
+    def mounted():
+        return vm_mount_records(Path("/proc/self/mountinfo").read_text(encoding="ascii"), path)
+    require(not mounted(), "vm_native_queue_is_mount")
     run(["matchpathcon", "-V", path])
     label = os.getxattr(path, "security.selinux", follow_symlinks=False)
     require(bool(label), "vm_native_queue_label_missing")
@@ -141,9 +167,24 @@ def vm_bind_empty_spool(path, metadata):
     run(["chcon", "--reference=" + path, private])
     require(os.getxattr(private, "security.selinux", follow_symlinks=False) == label,
             "vm_fixture_queue_label_mismatch")
+    private_stat = os.lstat(private)
+    require((private_stat.st_dev, private_stat.st_ino) !=
+            (metadata.st_dev, metadata.st_ino), "vm_fixture_aliases_original")
     run(["mount", "--bind", private, path])
-    require(os.path.ismount(path) and os.getxattr(path, "security.selinux",
-                follow_symlinks=False) == label, "vm_private_spool_not_verified")
+    # os.path.ismount() misses same-device bind mounts. Require an exact
+    # mountinfo entry AND the mounted directory's identity to match our
+    # private directory, not the original queue. No relaxed fallback.
+    require(len(mounted()) == 1, "vm_private_spool_mountinfo_unverified")
+    mounted_stat = os.lstat(path)
+    require(stat.S_ISDIR(mounted_stat.st_mode)
+            and (mounted_stat.st_dev, mounted_stat.st_ino) ==
+                (private_stat.st_dev, private_stat.st_ino)
+            and (mounted_stat.st_uid, mounted_stat.st_gid, stat.S_IMODE(mounted_stat.st_mode)) ==
+                (metadata.st_uid, metadata.st_gid, stat.S_IMODE(metadata.st_mode)),
+            "vm_private_spool_inode_unverified")
+    require(os.getxattr(path, "security.selinux", follow_symlinks=False) == label,
+            "vm_private_spool_not_verified")
+    print("NATIVE_SENDMAIL_VM_BIND_IDENTITY=verified", flush=True)
     run(["matchpathcon", "-V", path])
     require(not list(Path(path).iterdir()), "vm_private_spool_not_empty")
     # The disposable VM disk is discarded by the outer KVM harness. No

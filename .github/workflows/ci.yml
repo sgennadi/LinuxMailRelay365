@@ -1723,7 +1723,9 @@ jobs:
     name: Same-commit Rocky Enforcing VM gate for queue acceptance
     if: >-
       github.ref == 'refs/heads/feature/post-rc18-queue-enforcing-qa' ||
-      github.event.pull_request.head.ref == 'feature/post-rc18-queue-enforcing-qa'
+      github.event.pull_request.head.ref == 'feature/post-rc18-queue-enforcing-qa' ||
+      github.ref == 'refs/heads/feature/post-rc18-update-baseline' ||
+      github.event.pull_request.head.ref == 'feature/post-rc18-update-baseline'
     permissions:
       contents: read
     uses: ./.github/workflows/rocky-enforcing-vm.yml

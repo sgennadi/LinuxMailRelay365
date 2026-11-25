@@ -1,11 +1,32 @@
 """Guard the opt-in real Enforcing queue acceptance path, not a simulation."""
 from pathlib import Path
+import importlib.util
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class QueueVmContract(unittest.TestCase):
+    def test_mountinfo_recognizes_exact_same_device_bind(self):
+        spec = importlib.util.spec_from_file_location(
+            "queue_vm_fixture", ROOT / "tests/smoke_native_sendmail_queue_preview.py")
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        path = "/var/spool/mqueue"
+        root = "24 1 253:0 / / rw - xfs /dev/vda1 rw"
+        unrelated = "25 24 253:0 /var/spool/other /var/spool/mqueue-other rw - xfs /dev/vda1 rw"
+        bind = "26 24 253:0 /var/spool/lmr365-ci-queue-test /var/spool/mqueue rw - xfs /dev/vda1 rw"
+        self.assertEqual(fixture.vm_mount_records(root + "\n" + unrelated, path), [])
+        self.assertEqual(fixture.vm_mount_records(root + "\n" + bind, path), [26])
+        for record in (bind + "\n" + bind.replace("26 24", "27 24"),
+                       bind.replace(path + " rw", path + "/nested rw"),
+                       "broken"):
+            with self.assertRaises(AssertionError):
+                fixture.vm_mount_records(root + "\n" + record, path)
+        with self.assertRaises(AssertionError):
+            fixture.vm_mount_records(root, "/var/spool/arbitrary")
+
+
     def test_same_commit_vm_is_fail_closed(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         vm = (ROOT / ".github/workflows/rocky-enforcing-vm.yml").read_text(encoding="utf-8")
@@ -26,6 +47,12 @@ class QueueVmContract(unittest.TestCase):
                        'mount", "--bind"', 'chcon", "--reference=" + path',
                        'matchpathcon", "-V"', 'vm_private_spool_not_verified'):
             self.assertIn(marker, fixture)
+        self.assertIn("len(mounted()) == 1", fixture)
+        self.assertIn("(mounted_stat.st_dev, mounted_stat.st_ino)", fixture)
+        self.assertIn("(private_stat.st_dev, private_stat.st_ino)", fixture)
+        self.assertIn("vm_fixture_aliases_original", fixture)
+        self.assertIn("vm_private_spool_mountinfo_unverified", fixture)
+        self.assertIn("vm_private_spool_inode_unverified", fixture)
         self.assertNotIn("setenforce", fixture)
         self.assertNotIn("os.unlink(", fixture)
         self.assertNotIn("shutil.rmtree(", fixture)

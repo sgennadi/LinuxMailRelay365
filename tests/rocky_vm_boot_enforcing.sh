@@ -345,10 +345,15 @@ if test "${LMR365_KVM_QUEUE_ACCEPTANCE:-false}" = "true"; then
         ci@127.0.0.1:/home/ci/
     ssh "${ssh_opts[@]}" ci@127.0.0.1 \
         'sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-queue-test/linux /usr/local/libexec/lmr365-kvm-queue-test/tests && sudo install -o root -g root -m 0755 /home/ci/inspect-mail-queue.py /usr/local/libexec/lmr365-kvm-queue-test/linux/inspect-mail-queue.py && sudo install -o root -g root -m 0755 /home/ci/smoke_native_sendmail_queue_preview.py /usr/local/libexec/lmr365-kvm-queue-test/tests/smoke_native_sendmail_queue_preview.py && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-sendmail-queue-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-sendmail-queue-vm"'
-    ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+    if ! ssh "${ssh_opts[@]}" ci@127.0.0.1 \
         'sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted RUNNER_TEMP=/tmp LMR365_CI_KVM_QUEUE_FIXTURE=1 unshare --mount --net --propagation private python3 /usr/local/libexec/lmr365-kvm-queue-test/tests/smoke_native_sendmail_queue_preview.py' \
-        > "$work/sendmail-queue-enforcing"
+        > "$work/sendmail-queue-enforcing"; then
+        cat "$work/sendmail-queue-enforcing"
+        echo "LMR365_GUEST_SENDMAIL_QUEUE_ENFORCING=failed"
+        exit 1
+    fi
     cat "$work/sendmail-queue-enforcing"
+    test "$(grep -Fxc 'NATIVE_SENDMAIL_VM_BIND_IDENTITY=verified' "$work/sendmail-queue-enforcing")" = 2
     for expected in \
         'NATIVE_SENDMAIL_VM_SELINUX=enforcing_verified' \
         'NATIVE_SENDMAIL_FIXTURE_PRIVATE_MOUNTS=labeled_vm_bind' \

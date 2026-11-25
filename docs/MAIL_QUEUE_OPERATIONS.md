@@ -107,3 +107,11 @@ Preview 24 migration remains intact. Until the version is raised to RC19,
 this is a same-version file replacement rehearsal, not a newer-version
 update. Neither rehearsal proves interactive GUI updating or execution
 of the non-elevated updater helper. The signed Stable gate is unchanged.
+
+The VM fixture checks exact mountpoint records in /proc/self/mountinfo,
+rejects pre-existing or nested/stacked mounts, and compares the mounted
+directory's device/inode, owner, mode and SELinux label with its private
+source. Same-filesystem bind mounts are not reliably detected by Python
+os.path.ismount(). The combined queue/update baseline branch runs the
+same-commit VM gate as well as Windows update rehearsal; a failed VM step
+prints its synthetic phase markers for diagnosis and fails closed.
