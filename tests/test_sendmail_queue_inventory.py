@@ -69,15 +69,18 @@ class SendmailInventoryTests(unittest.TestCase):
         self.assertIn("SENDMAIL_ITEMS_NATIVE_TRUNCATED=no", receipt)
         self.assertIn("SENDMAIL_ITEMS_DISPLAY_TRUNCATED=yes", receipt)
 
-    def test_gui_has_separate_read_only_actions(self):
+    def test_gui_has_separate_inventory_and_confirmed_actions(self):
         src = ROOT / "src/LinuxMailRelay365"
         ui = (src / "MainForm.SendmailQueue.cs").read_text()
         for marker in ("SendmailQueueInventory.Parse", "RequireSameArchiveConnection",
-                       "inventory.Filter(", "ReadOnly = true", "No write actions.",
+                       "inventory.Filter(", "ReadOnly = true", "Retry/Flush are experimental and separately confirmed.",
                        "exact age is unknown", "Native print limit"):
             self.assertIn(marker, ui)
-        for forbidden in ("ConfirmDestructive(", "BuildQueueMaintenanceBundle", "BuildQueueRetryApplyBundle"):
+        for forbidden in ("BuildQueueMaintenanceBundle", "BuildQueueRetryApplyBundle"):
             self.assertNotIn(forbidden, ui)
+        self.assertLess(ui.index("SendmailQueueAction.Parse(reply.StdOut"), ui.index("ConfirmDestructive("))
+        self.assertLess(ui.index("ConfirmDestructive("), ui.index("attempted = true"))
+        self.assertIn("if (attempted) dialog.Close();", ui)
         main = (src / "MainForm.MailQueue.cs").read_text()
         self.assertIn('InspectSendmailQueueAsync("mta")', main)
         self.assertIn('InspectSendmailQueueAsync("msp")', main)

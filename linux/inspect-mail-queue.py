@@ -14,6 +14,8 @@ import hashlib
 import hmac
 import json
 import os
+import pwd
+import grp
 from pathlib import Path
 import re
 import select
@@ -112,7 +114,7 @@ def allowed_args(tool, args):
         return len(args) == 3 and args[0] == "-c" and args[1] in (CONFIG, SIDECAR_CONFIG) and args[2] == "-j"
     return (tool == "exim" and args in (["-bpc"], ["-bp"],
         ["-bP", "spool_directory"], ["-bP", "config_file"])) or (
-        tool == "sendmail" and args in (["-bp"], ["-Ac", "-bp"]))
+        tool == "sendmail" and args in (["-bp"], ["-Am", "-bp"], ["-Ac", "-bp"]))
 
 
 def run_native(tool, args, timeout=12, limit=LIMIT):
@@ -621,7 +623,7 @@ SM_ROW = re.compile(r"^[ ]{0,3}([A-Za-z0-9]{6,64})[ ]*([*X-]?)\s+([0-9]{1,13})\s
 SM_STATUS = {"": "queued", "*": "processing_mark", "X": "load_limited", "-": "too_young"}
 
 
-def sendmail_rows(output):
+def sendmail_rows(output, private=False):
     """Validate native per-group print counts, then discard all private text.
 
     A native listing may be incomplete due to MaxQueueRunSize. This is
@@ -637,6 +639,7 @@ def sendmail_rows(output):
     if group_count == "unknown":
         raise Unavailable("invalid_output")
     rows = []
+    private_rows = []
     seen = set()
     group = 0
     expected = 0
@@ -694,8 +697,10 @@ def sendmail_rows(output):
                 raise Unavailable("invalid_output")
             current = [group, SM_STATUS[mark], size, date, "no_reason"]
             rows.append(current)
+            private_rows.append([ident, current, [line]])
             printed += 1
         elif current is not None and line[:1].isspace():
+            private_rows[-1][2].append(line)
             # Only recognize the native status-line layout, not arbitrary
             # recipient text. A reason is a heuristic, never a raw string.
             diagnostic = re.fullmatch(r" .{10} \((.{1,16384})\)", line)
@@ -715,6 +720,9 @@ def sendmail_rows(output):
     finish_group()
     if group != group_count or len(rows) > total or ((len(rows) < total) != (native_truncated == "yes")):
         raise Unavailable("invalid_output")
+    if private:
+        # Only server-side action planning may consume native IDs and lines.
+        return total, group_count, len(rows), native_truncated, private_rows
     # Preserve native queue/group order; no year means no oldest-first claim.
     return total, group_count, len(rows), native_truncated, [
         (i + 1,) + tuple(row) for i, row in enumerate(rows[:MAX_VISIBLE_MESSAGES])]
@@ -731,8 +739,9 @@ def sendmail_inventory(queue, nonce, runner=run_native):
         return error.result, None, None, None, "unknown", []
 
 
-def sendmail_inventory_lines(queue, nonce, result, total, groups, native_listed, truncated, rows):
-    values = (("VERSION", 1), ("SCOPE", "sendmail"), ("QUEUE", queue), ("NONCE", nonce),
+def sendmail_inventory_lines(queue, nonce, result, total, groups, native_listed, truncated, rows,
+                             sampled=None, context=None):
+    values = (("VERSION", 1 if sampled is None else 2), ("SCOPE", "sendmail"), ("QUEUE", queue), ("NONCE", nonce),
               ("RESULT", result), ("TOTAL", "unknown" if total is None else total),
               ("GROUPS", "unknown" if groups is None else groups),
               ("NATIVE_LISTED", "unknown" if native_listed is None else native_listed),
@@ -744,8 +753,280 @@ def sendmail_inventory_lines(queue, nonce, result, total, groups, native_listed,
               ("ATOMIC", "no"), ("DELIVERY_VERIFIED", "no"))
     for key, value in values:
         yield "SENDMAIL_ITEMS_" + key + "=" + str(value)
+    if sampled is not None:
+        yield "SENDMAIL_ITEMS_SAMPLED_AT=" + str(sampled)
+        yield "SENDMAIL_ITEMS_CONTEXT=" + context
     for row in rows:
         yield "SENDMAIL_ITEMS_ROW=" + "|".join(str(value) for value in row)
+
+
+SM_ACTIONS = {
+    "retry": "RETRY_SELECTED_SENDMAIL_MESSAGE",
+    "flush": "RUN_SELECTED_SENDMAIL_QUEUE_ONCE",
+}
+SM_PATHS = {"mta": ("sendmail.cf", "/var/spool/mqueue", "-Am"),
+            "msp": ("submit.cf", "/var/spool/clientmqueue", "-Ac")}
+
+
+def sm_meta(st):
+    return (st.st_dev, st.st_ino, st.st_uid, st.st_gid, st.st_mode,
+            st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def sm_config(path):
+    """Read only bounded root-owned package configuration, never mail files."""
+    fd = None
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022 or st.st_size > 1024 * 1024:
+            raise Unavailable("scope_unverified")
+        raw = bytearray()
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            raw.extend(chunk)
+            if len(raw) > 1024 * 1024:
+                raise Unavailable("scope_unverified")
+        if (len(raw) != st.st_size or sm_meta(st) != sm_meta(os.fstat(fd)) or
+                sm_meta(st) != sm_meta(os.lstat(str(path)))):
+            raise Unavailable("scope_unverified")
+        return raw.decode("utf-8"), (sm_meta(st), hashlib.sha256(raw).hexdigest())
+    except (OSError, UnicodeError):
+        raise Unavailable("scope_unverified")
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def sm_config_queue(text, expected):
+    # First experimental write scope: one standard literal QueueDirectory,
+    # no extra queue groups, wildcard, or alternate queue root.
+    paths = []
+    for line in text.splitlines():
+        if re.match(r"^Q", line):
+            raise Unavailable("scope_unverified")
+        match = re.fullmatch(r"O\s+QueueDirectory\s*=\s*([^\s#]+)\s*(?:#.*)?", line, re.I)
+        if match:
+            paths.append(match.group(1))
+        elif re.match(r"^O\s+QueueDirectory\b|^OQ", line, re.I):
+            raise Unavailable("scope_unverified")
+    if paths != [expected]:
+        raise Unavailable("scope_unverified")
+
+
+def sendmail_action_context(queue):
+    if queue not in SM_PATHS:
+        raise ValueError("invalid_sendmail_queue")
+    try:
+        secure_directory("/etc")
+        mail = os.lstat("/etc/mail")
+        # Match the existing package backup trust boundary: Debian's
+        # smmta/smmsp 2755 directory is not silently treated as arbitrary root.
+        if not stat.S_ISDIR(mail.st_mode) or mail.st_mode & 0o022:
+            raise Unavailable("scope_unverified")
+        if mail.st_uid != 0:
+            account = pwd.getpwuid(mail.st_uid)
+            if account.pw_name not in ("smmta", "smmsp") or stat.S_IMODE(mail.st_mode) != 0o2755:
+                raise Unavailable("scope_unverified")
+            if mail.st_gid not in (account.pw_gid, grp.getgrnam("smmsp").gr_gid):
+                raise Unavailable("scope_unverified")
+        secure_directory("/var/spool")
+        configs, roots = [], []
+        for mode, (name, path, _) in sorted(SM_PATHS.items()):
+            text, evidence = sm_config(Path("/etc/mail") / name)
+            sm_config_queue(text, path)
+            configs.append((mode, evidence))
+            directory = os.lstat(path)
+            if not stat.S_ISDIR(directory.st_mode) or directory.st_mode & 0o007:
+                raise Unavailable("scope_unverified")
+            if mode == "mta":
+                if directory.st_uid != 0 or directory.st_mode & 0o022:
+                    raise Unavailable("scope_unverified")
+            else:
+                msp = pwd.getpwnam("smmsp")
+                if directory.st_uid != msp.pw_uid or directory.st_gid != msp.pw_gid:
+                    raise Unavailable("scope_unverified")
+            # Split queue-file directories and links are intentionally not
+            # supported by write scope. Never inspect message file contents.
+            if any(os.path.lexists(os.path.join(path, sub)) for sub in ("qf", "df", "xf")):
+                raise Unavailable("scope_unverified")
+            roots.append((mode, directory.st_dev, directory.st_ino, directory.st_uid,
+                          directory.st_gid, directory.st_mode))
+        if roots[0][1:3] == roots[1][1:3]:
+            raise Unavailable("scope_unverified")
+        binary = native_binary("sendmail")
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", boot):
+            raise Unavailable("scope_unverified")
+        return (queue, (mail.st_dev, mail.st_ino, mail.st_uid, mail.st_gid, mail.st_mode),
+                configs, roots, binary, sm_meta(os.stat(binary)), boot)
+    except (OSError, KeyError, UnicodeError):
+        raise Unavailable("scope_unverified")
+
+
+def sm_native_rows(queue, runner):
+    return sendmail_rows(runner("sendmail", [SM_PATHS[queue][2], "-bp"]), private=True)
+
+
+def sm_complete(data):
+    total, groups, listed, truncated, rows = data
+    return groups == 1 and listed == total and truncated == "no" and len(rows) == total
+
+
+def sm_token(row, context, nonce, sampled):
+    raw = json.dumps([context, sampled, row], ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    return hmac.new(bytes.fromhex(nonce), raw, hashlib.sha256).hexdigest()
+
+
+def sm_retryable(row, rows):
+    ident, public, _ = row
+    # -qI is SUBSTRING matching. Require a single full native ID match
+    # across the complete normal queue and avoid marked processing entries.
+    return (public[1] != "processing_mark" and re.fullmatch(r"[A-Za-z0-9]{12,64}", ident)
+            and sum(ident in other[0] for other in rows) == 1)
+
+
+def sendmail_review_inventory(queue, nonce, runner=run_native, context_check=sendmail_action_context, now=None):
+    if queue not in SM_PATHS or not SHA.fullmatch(nonce):
+        raise ValueError("invalid_sendmail_review_context")
+    sampled = int(time.time()) if now is None else now
+    context = None
+    try:
+        context = context_check(queue)
+    except Unavailable:
+        pass
+    try:
+        data = sm_native_rows(queue, runner)
+        total, groups, listed, truncated, rows = data
+        if context is not None and context_check(queue) != context:
+            raise Unavailable("scope_unverified")
+        verified = context is not None and sm_complete(data)
+        public = [(i + 1,) + tuple(row[1]) +
+                  (sm_token(row, context, nonce, sampled) if verified and sm_retryable(row, rows) else "-",)
+                  for i, row in enumerate(rows[:MAX_VISIBLE_MESSAGES])]
+        return "ok", total, groups, listed, truncated, public, sampled, "verified" if verified else "unverified"
+    except Unavailable as error:
+        return error.result, None, None, None, "unknown", [], sampled, "unverified"
+
+
+def sm_candidate(queue, action, nonce, sampled, token, now, runner, context_check):
+    if queue not in SM_PATHS or action not in SM_ACTIONS or not SHA.fullmatch(nonce):
+        raise ValueError("invalid_sendmail_action")
+    if action == "flush":
+        if sampled != 0 or token != "-":
+            raise ValueError("sendmail_flush_is_queue_wide")
+    elif not SHA.fullmatch(token) or type(sampled) is not int or sampled <= 0:
+        raise ValueError("sendmail_retry_requires_selection")
+    if action != "flush" and (now < sampled or now - sampled > REVIEW_TTL):
+        return "expired", None, None, None
+    try:
+        context = context_check(queue)
+        data = sm_native_rows(queue, runner)
+        if context_check(queue) != context or not sm_complete(data):
+            raise Unavailable("scope_unverified")
+        rows = data[-1]
+        if not rows:
+            return "no_queued_messages", None, None, None
+        if action == "flush":
+            # Entire listing, not just the 500 visible rows, is bound to
+            # approval. Native IDs/lines stay local.
+            evidence = sorted(rows, key=lambda row: row[0])
+            digest = sm_token(evidence, context, nonce, 0)
+            return "candidate", None, (context, digest), len(rows)
+        matches = [row for row in rows[:MAX_VISIBLE_MESSAGES]
+                   if sm_retryable(row, rows) and hmac.compare_digest(sm_token(row, context, nonce, sampled), token)]
+        if len(matches) != 1:
+            return "sample_changed", None, None, None
+        return "candidate", matches[0][0], (context, token), 1
+    except Unavailable as error:
+        return error.result, None, None, None
+
+
+def sm_plan_digest(queue, action, nonce, sampled, token, prepared, evidence, count):
+    return hashlib.sha256(json.dumps(["sendmail_queue_action_v1", queue, action, nonce,
+        sampled, token, prepared, evidence, count], ensure_ascii=True,
+        separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def sm_prepare(queue, action, nonce, sampled, token, runner=run_native,
+               context_check=sendmail_action_context, clock=time.time):
+    prepared = int(clock())
+    result, _, evidence, count = sm_candidate(queue, action, nonce, sampled, token,
+                                               prepared, runner, context_check)
+    if result != "candidate":
+        return result, prepared, "-", None
+    return result, prepared, sm_plan_digest(queue, action, nonce, sampled, token,
+                                            prepared, evidence, count), count
+
+
+def sm_execute(queue, action, ident):
+    if queue not in SM_PATHS or action not in SM_ACTIONS or (
+        action == "flush" and ident is not None) or (
+        action == "retry" and (not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9]{12,64}", ident))):
+        raise ValueError("invalid_native_sendmail_target")
+    binary = native_binary("sendmail")
+    args = [binary, SM_PATHS[queue][2], "-qf"]
+    if action == "retry":
+        args.append("-qI" + ident)
+    try:
+        completed = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=60, check=False,
+                                   env={"PATH": PATH, "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired):
+        return "outcome_unknown"
+    return "command_completed" if completed.returncode == 0 else "outcome_unknown"
+
+
+def sm_apply(queue, action, nonce, sampled, token, prepared, approved, confirmation,
+             runner=run_native, context_check=sendmail_action_context, executor=sm_execute,
+             clock=time.time, monotonic=time.monotonic):
+    if (action not in SM_ACTIONS or confirmation != SM_ACTIONS[action] or
+            not SHA.fullmatch(approved) or type(prepared) is not int or prepared <= 0 or prepared < sampled):
+        raise ValueError("sendmail_action_confirmation_required")
+    started = int(clock())
+    tick = monotonic()
+    def fresh():
+        now = int(clock())
+        elapsed = monotonic() - tick
+        return (0 <= elapsed <= RETRY_PLAN_TTL and abs(now - started - elapsed) <= 2
+                and prepared <= now <= prepared + RETRY_PLAN_TTL
+                and (action == "flush" or sampled <= prepared <= now <= sampled + REVIEW_TTL))
+    if not fresh():
+        return "not_requested", "expired"
+    ident = None
+    for _ in range(2):
+        result, found, evidence, count = sm_candidate(queue, action, nonce, sampled, token,
+                                                       int(clock()), runner, context_check)
+        if result != "candidate":
+            return "not_requested", result
+        digest = sm_plan_digest(queue, action, nonce, sampled, token, prepared, evidence, count)
+        if not hmac.compare_digest(digest, approved) or (ident is not None and found != ident):
+            return "not_requested", "plan_changed"
+        ident = found
+    if not fresh():
+        return "not_requested", "expired"
+    try:
+        result = executor(queue, action, ident)
+    except Unavailable as error:
+        return "not_requested", error.result
+    return (("command_completed", "none") if result == "command_completed"
+            else ("outcome_unknown", "native_result_unconfirmed"))
+
+
+def sm_action_lines(queue, action, nonce, sampled, token, phase, prepared, digest, outcome, reason, count=None):
+    values = (("VERSION", 1), ("SCOPE", "sendmail"), ("QUEUE", queue), ("ACTION", action),
+              ("NONCE", nonce), ("SAMPLED_AT", sampled), ("FINGERPRINT", token), ("PHASE", phase),
+              ("PREPARED_AT", prepared), ("PLAN_SHA256", digest), ("OUTCOME", outcome), ("REASON", reason),
+              ("TARGET_COUNT", "unknown" if count is None else count),
+              ("COMMAND_COUNT", "1" if outcome == "command_completed" else
+               "unknown" if outcome == "outcome_unknown" else "0"),
+              ("DELIVERY_VERIFIED", "no"), ("EFFECT_VERIFIED", "no"), ("ATOMIC", "no"),
+              ("DELETE_REQUESTED", "no"), ("QUARANTINE_CHANGED", "no"),
+              ("CONFIG_CHANGED", "no"), ("SERVICE_CHANGED", "no"))
+    for key, value in values:
+        yield "SENDMAIL_ACTION_" + key + "=" + str(value)
 
 
 def sample(scope, runner=run_native, scope_check=verify_postfix_scope):
@@ -1309,6 +1590,10 @@ def main():
     action.add_argument("--maintenance", choices=tuple(MAINTENANCE_CONFIRM))
     action.add_argument("--exim-action", choices=tuple(EXIM_ACTIONS))
     parser.add_argument("--sendmail-inventory", choices=("mta", "msp"))
+    parser.add_argument("--sendmail-reviewable", action="store_true")
+    action.add_argument("--sendmail-action", choices=tuple(SM_ACTIONS))
+    parser.add_argument("--sendmail-queue", choices=tuple(SM_PATHS))
+    parser.add_argument("--sendmail-apply", action="store_true")
     parser.add_argument("--exim-inventory", action="store_true")
     parser.add_argument("--exim-apply", action="store_true")
     parser.add_argument("--maintenance-apply", action="store_true")
@@ -1320,6 +1605,42 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         return 2
+    if args.sendmail_action is not None:
+        if (args.scope != "sendmail" or args.sendmail_queue is None or args.sendmail_inventory is not None
+                or args.sendmail_reviewable or args.messages or args.exim_inventory
+                or args.exim_apply or args.maintenance_apply or not SHA.fullmatch(args.selection_nonce or "")):
+            parser.error("invalid Sendmail action scope")
+        if args.sendmail_action == "flush":
+            if args.sampled_at is not None or args.target_fingerprint is not None:
+                parser.error("Sendmail Flush targets one selected queue")
+            sampled, token = 0, "-"
+        else:
+            if (args.sampled_at is None or not 0 < args.sampled_at <= 9999999999
+                    or not SHA.fullmatch(args.target_fingerprint or "")):
+                parser.error("selected Sendmail message required")
+            sampled, token = args.sampled_at, args.target_fingerprint
+        queue, operation, nonce = args.sendmail_queue, args.sendmail_action, args.selection_nonce
+        if args.sendmail_apply:
+            if (args.prepared_at is None or not max(1, sampled) <= args.prepared_at <= 9999999999
+                    or not SHA.fullmatch(args.approve_sha256 or "") or args.confirm != SM_ACTIONS[operation]):
+                parser.error("explicit Sendmail action approval required")
+            outcome, reason = sm_apply(queue, operation, nonce, sampled, token,
+                                       args.prepared_at, args.approve_sha256, args.confirm)
+            lines = sm_action_lines(queue, operation, nonce, sampled, token, "apply",
+                                    args.prepared_at, args.approve_sha256, outcome, reason)
+        else:
+            if any(value is not None for value in (args.prepared_at, args.approve_sha256, args.confirm)):
+                parser.error("approval not permitted during Sendmail preview")
+            result, prepared, digest, count = sm_prepare(queue, operation, nonce, sampled, token)
+            lines = sm_action_lines(queue, operation, nonce, sampled, token, "prepare", prepared, digest,
+                "candidate" if result == "candidate" else "not_requested",
+                "none" if result == "candidate" else result, count)
+        for line in lines:
+            print(line)
+        return 0
+    if args.sendmail_apply or args.sendmail_queue is not None or (
+            args.sendmail_reviewable and args.sendmail_inventory is None):
+        parser.error("explicit Sendmail operation required")
     if args.sendmail_inventory is not None:
         if (args.scope != "sendmail" or args.messages or args.exim_inventory or
                 args.exim_apply or args.maintenance_apply or
@@ -1328,7 +1649,8 @@ def main():
                     args.target_fingerprint, args.prepared_at, args.approve_sha256, args.confirm)) or
                 not SHA.fullmatch(args.selection_nonce or "")):
             parser.error("Sendmail inventory is read-only and requires one normal queue")
-        values = sendmail_inventory(args.sendmail_inventory, args.selection_nonce)
+        values = (sendmail_review_inventory(args.sendmail_inventory, args.selection_nonce)
+                  if args.sendmail_reviewable else sendmail_inventory(args.sendmail_inventory, args.selection_nonce))
         for line in sendmail_inventory_lines(args.sendmail_inventory, args.selection_nonce, *values):
             print(line)
         return 0

@@ -4,23 +4,24 @@ using System.Text.RegularExpressions;
 namespace LinuxMailRelay365;
 
 internal sealed record SendmailQueueRow(int Reference, int Group, string State,
-    long Bytes, string NativeTime, string Reason);
+    long Bytes, string NativeTime, string Reason, string Fingerprint = "-");
 
 // Normal-queue metadata only. Native IDs and reusable write handles are absent.
 internal sealed record SendmailQueueInventory(string Queue, string Result, int? Total,
     int? Groups, int? NativeListed, bool? NativeTruncated, bool? DisplayTruncated,
-    SendmailQueueRow[] Rows)
+    SendmailQueueRow[] Rows, long? SampledAt = null, bool ContextVerified = false)
 {
     internal static readonly string[] States = ["queued", "processing_mark", "load_limited", "too_young"];
     internal static readonly string[] Reasons = ["auth", "tls", "dns", "network", "temporary",
         "permanent", "mixed", "other_reason", "no_reason"];
 
-    internal static SendmailQueueInventory Parse(string output, string queue, string nonce)
+    internal static SendmailQueueInventory Parse(string output, string queue, string nonce, bool requireReviewable = false)
     {
         if (queue is not ("mta" or "msp") || !QueueRetryReview.ValidSha(nonce))
             throw new ArgumentException("Invalid Sendmail queue request.");
         var f = new EximQueueFields(output, "SENDMAIL_ITEMS_", rows: true);
-        f.Exact("VERSION", "1"); f.Exact("SCOPE", "sendmail");
+        bool reviewable = f.Take("VERSION", requireReviewable ? "2" : "1|2") == "2";
+        f.Exact("SCOPE", "sendmail");
         f.Exact("QUEUE", queue); f.Exact("NONCE", nonce);
         f.Exact("REFERENCE_KIND", "sample_ordinal_only");
         f.Exact("QUEUE_CLASS", "normal"); f.Exact("DATE_KIND", "native_local_no_year");
@@ -40,19 +41,22 @@ internal sealed record SendmailQueueInventory(string Queue, string Result, int? 
         int? total = Count("TOTAL"), groups = Count("GROUPS"), native = Count("NATIVE_LISTED");
         bool? nativeTruncated = Flag("NATIVE_TRUNCATED"), displayTruncated = Flag("DISPLAY_TRUNCATED");
         int listed = (int)EximQueueFields.Number(f.Take("LISTED", "0|[1-9][0-9]{0,2}"), 500);
+        long? sampled = reviewable ? EximQueueFields.Number(f.Take("SAMPLED_AT", "[1-9][0-9]{0,9}"), 9999999999) : null;
+        bool verified = reviewable && f.Take("CONTEXT", "verified|unverified") == "verified";
         f.End();
         bool ok = result == "ok";
         if (listed != f.Rows.Count || ok != total.HasValue || ok != groups.HasValue ||
             ok != native.HasValue || ok != nativeTruncated.HasValue || ok != displayTruncated.HasValue ||
-            (!ok && listed != 0) ||
+            (!ok && listed != 0) || (verified && (!ok || groups != 1 || nativeTruncated != false)) ||
             (ok && (groups < 1 || native > total || listed != Math.Min(native!.Value, 500) ||
                 nativeTruncated != (native < total) || displayTruncated != (native > listed))))
             throw new InvalidDataException("Inconsistent Sendmail queue counts.");
         var rows = new List<SendmailQueueRow>();
+        var tokens = new HashSet<string>(StringComparer.Ordinal);
         foreach (string line in f.Rows)
         {
             string[] p = line.Split('|');
-            if (p.Length != 6 || EximQueueFields.Number(p[0], 500) != rows.Count + 1 ||
+            if (p.Length != (reviewable ? 7 : 6) || EximQueueFields.Number(p[0], 500) != rows.Count + 1 ||
                 !States.Contains(p[2], StringComparer.Ordinal) ||
                 !Regex.IsMatch(p[3], @"\A(?:0|[1-9][0-9]{0,12})\z") ||
                 !long.TryParse(p[3], NumberStyles.None, CultureInfo.InvariantCulture, out long bytes) ||
@@ -62,9 +66,13 @@ internal sealed record SendmailQueueInventory(string Queue, string Result, int? 
             int group = (int)EximQueueFields.Number(p[1], groups!.Value);
             if (group < 1 || (rows.Count > 0 && group < rows[^1].Group))
                 throw new InvalidDataException("Invalid Sendmail queue group order.");
-            rows.Add(new(rows.Count + 1, group, p[2], bytes, p[4], p[5]));
+            string fingerprint = reviewable ? p[6] : "-";
+            if (fingerprint != "-" && (!verified || p[2] == "processing_mark" ||
+                !QueueRetryReview.ValidSha(fingerprint) || !tokens.Add(fingerprint)))
+                throw new InvalidDataException("Invalid Sendmail message correlation.");
+            rows.Add(new(rows.Count + 1, group, p[2], bytes, p[4], p[5], fingerprint));
         }
-        return new(queue, result, total, groups, native, nativeTruncated, displayTruncated, rows.ToArray());
+        return new(queue, result, total, groups, native, nativeTruncated, displayTruncated, rows.ToArray(), sampled, verified);
     }
 
     private static bool ValidNativeTime(string value)
