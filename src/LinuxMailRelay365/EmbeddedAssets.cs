@@ -914,6 +914,13 @@ internal static class EmbeddedAssets
         return BuildQueueBundle(scope, arguments);
     }
 
+    internal static string BuildSendmailQueueInventoryBundle(string queue, string nonce)
+    {
+        if (queue is not ("mta" or "msp") || !QueueRetryReview.ValidSha(nonce))
+            throw new ArgumentException("Invalid Sendmail normal queue inventory context.");
+        return BuildQueueReadOnlyBundle("sendmail", " --sendmail-inventory " + queue + " --selection-nonce " + nonce);
+    }
+
     internal static string BuildEximQueueInventoryBundle(string nonce)
     {
         if (!QueueRetryReview.ValidSha(nonce)) throw new ArgumentException("Invalid Exim nonce.");

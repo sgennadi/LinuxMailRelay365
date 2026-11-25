@@ -106,6 +106,17 @@ if test "${GITHUB_ACTIONS:-}" = true; then
   else
     grep -Fxq 'MAIL_QUEUE_CLIENT_RESULT=ok' "$log"
     grep -Fxq 'MAIL_QUEUE_CLIENT_TOTAL=0' "$log"
+    nonce="$(printf '%064d' 0)"
+    for queue in mta msp; do
+      sudo python3 linux/inspect-mail-queue.py --scope sendmail --sendmail-inventory "$queue" --selection-nonce "$nonce" > "$log"
+      grep -Fxq "SENDMAIL_ITEMS_QUEUE=$queue" "$log"
+      grep -Fxq 'SENDMAIL_ITEMS_RESULT=ok' "$log"
+      grep -Fxq 'SENDMAIL_ITEMS_TOTAL=0' "$log"
+      grep -Fxq 'SENDMAIL_ITEMS_LISTED=0' "$log"
+      grep -Fxq 'SENDMAIL_ITEMS_CHANGES_APPLIED=no' "$log"
+      grep -Fxq 'SENDMAIL_ITEMS_QUEUE_CLASS=normal' "$log"
+    done
+    echo "NATIVE_SENDMAIL_NORMAL_INVENTORIES=verified_independent_empty"
   fi
   echo "NATIVE_FOREIGN_MTA_QUEUE=verified_empty_sample_no_changes"
 fi

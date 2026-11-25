@@ -47,6 +47,7 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_selected_queue_retry.py
           python3 -m unittest discover -v -s tests -p test_queue_maintenance.py
           python3 -m unittest discover -v -s tests -p test_exim_queue_actions.py
+          python3 -m unittest discover -v -s tests -p test_sendmail_queue_inventory.py
           python3 -m py_compile tests/smoke_native_exim_queue_actions.py
           python3 -m py_compile tests/smoke_local_postfix_maintenance.py
           python3 linux/audit-mail-bindings.py --self-test

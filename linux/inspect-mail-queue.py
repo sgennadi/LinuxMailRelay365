@@ -610,6 +610,144 @@ def sendmail_count(output):
     return sendmail_summary(output)[0]
 
 
+# Normal non-verbose mailq (-bp) listing, LC_ALL=C. The printed date
+# has no year or timezone. Never manufacture a precise age from it.
+SM_GROUP = re.compile(r"(?:Mail [Qq]ueue|/[^\r\n]+?)\s+\(([0-9]{1,9}) requests?(?:, only ([0-9]{1,9}) printed)?\)")
+SM_EMPTY = re.compile(r"(?:Mail queue is empty|/[^\r\n]+ is empty)\.?", re.I)
+SM_HEADER = re.compile(r"-+Q-ID-+\s+-+Size-+\s+-+Q-Time-+\s+-+Sender/Recipient-+")
+SM_ROW = re.compile(r"^[ ]{0,3}([A-Za-z0-9]{6,64})[ ]*([*X-]?)\s+([0-9]{1,13})\s+"
+                    r"((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+                    r"\s+(?:[1-9]|[12][0-9]|3[01])\s+(?:[01][0-9]|2[0-3]):[0-5][0-9])\s+.*$")
+SM_STATUS = {"": "queued", "*": "processing_mark", "X": "load_limited", "-": "too_young"}
+
+
+def sendmail_rows(output):
+    """Validate native per-group print counts, then discard all private text.
+
+    A native listing may be incomplete due to MaxQueueRunSize. This is
+    distinct from the GUI's display cap. Unknown formats fail closed.
+    Normal -bp excludes lost/quarantined queue classes; no queue files
+    or message bodies are opened by this helper.
+    """
+    if len(output.encode("utf-8")) > LIMIT:
+        raise Unavailable("output_limit")
+    total, group_count, native_truncated = sendmail_summary(output)
+    if total > MAX_POSTFIX or (isinstance(group_count, int) and group_count > MAX_POSTFIX):
+        raise Unavailable("output_limit")
+    if group_count == "unknown":
+        raise Unavailable("invalid_output")
+    rows = []
+    seen = set()
+    group = 0
+    expected = 0
+    printed = 0
+    header = False
+    current = None
+
+    def finish_group():
+        if printed != expected or (expected and not header):
+            raise Unavailable("invalid_output")
+
+    for line in output.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        match = SM_GROUP.fullmatch(text)
+        if match or SM_EMPTY.fullmatch(text):
+            finish_group()
+            group += 1
+            expected = int(match.group(2) or match.group(1)) if match else 0
+            printed = 0
+            header = False
+            current = None
+            continue
+        if re.fullmatch(r"Total requests:\s*[0-9]{1,9}", text, re.I):
+            finish_group()
+            current = None
+            continue
+        if not group or not expected:
+            raise Unavailable("invalid_output")
+        if SM_HEADER.fullmatch(text):
+            if header or printed:
+                raise Unavailable("invalid_output")
+            header = True
+            continue
+        if not header:
+            raise Unavailable("invalid_output")
+        match = SM_ROW.fullmatch(line)
+        if match:
+            if printed >= expected:
+                raise Unavailable("invalid_output")
+            ident, mark, size, date = match.groups()
+            key = (group, ident)
+            if key in seen:
+                raise Unavailable("sample_changed")
+            seen.add(key)
+            size = int(size)
+            if size > MAX_MESSAGE_SIZE:
+                raise Unavailable("invalid_output")
+            # Canonical native date, containing no address or ID.
+            date = " ".join(date.split())
+            weekday, month, day, clock = date.split()
+            maximum = {"Feb": 29, "Apr": 30, "Jun": 30, "Sep": 30, "Nov": 30}.get(month, 31)
+            if int(day) > maximum:
+                raise Unavailable("invalid_output")
+            current = [group, SM_STATUS[mark], size, date, "no_reason"]
+            rows.append(current)
+            printed += 1
+        elif current is not None and line[:1].isspace():
+            # Only recognize the native status-line layout, not arbitrary
+            # recipient text. A reason is a heuristic, never a raw string.
+            diagnostic = re.fullmatch(r" .{10} \((.{1,16384})\)", line)
+            legacy = re.fullmatch(r"\s{1,20}Deferred:\s+(.{1,16384})", line)
+            if diagnostic or legacy:
+                category = reason_category((diagnostic or legacy).group(1))
+                if current[4] not in ("no_reason", category):
+                    current[4] = "mixed"
+                else:
+                    current[4] = category
+            elif len(line) > 16384 or any(ord(ch) < 32 and ch != "\t" for ch in line):
+                raise Unavailable("invalid_output")
+            # Sender, recipient, body-type and unrecognized continuation
+            # text stay local; no recipient count is guessed.
+        else:
+            raise Unavailable("invalid_output")
+    finish_group()
+    if group != group_count or len(rows) > total or ((len(rows) < total) != (native_truncated == "yes")):
+        raise Unavailable("invalid_output")
+    # Preserve native queue/group order; no year means no oldest-first claim.
+    return total, group_count, len(rows), native_truncated, [
+        (i + 1,) + tuple(row) for i, row in enumerate(rows[:MAX_VISIBLE_MESSAGES])]
+
+
+def sendmail_inventory(queue, nonce, runner=run_native):
+    if queue not in ("mta", "msp") or not SHA.fullmatch(nonce):
+        raise ValueError("invalid_sendmail_inventory_context")
+    args = ["-bp"] if queue == "mta" else ["-Ac", "-bp"]
+    try:
+        total, groups, native_listed, truncated, rows = sendmail_rows(runner("sendmail", args))
+        return "ok", total, groups, native_listed, truncated, rows
+    except Unavailable as error:
+        return error.result, None, None, None, "unknown", []
+
+
+def sendmail_inventory_lines(queue, nonce, result, total, groups, native_listed, truncated, rows):
+    values = (("VERSION", 1), ("SCOPE", "sendmail"), ("QUEUE", queue), ("NONCE", nonce),
+              ("RESULT", result), ("TOTAL", "unknown" if total is None else total),
+              ("GROUPS", "unknown" if groups is None else groups),
+              ("NATIVE_LISTED", "unknown" if native_listed is None else native_listed),
+              ("NATIVE_TRUNCATED", truncated), ("LISTED", len(rows)),
+              ("DISPLAY_TRUNCATED", "unknown" if native_listed is None else
+               "yes" if native_listed > len(rows) else "no"),
+              ("REFERENCE_KIND", "sample_ordinal_only"), ("QUEUE_CLASS", "normal"),
+              ("DATE_KIND", "native_local_no_year"), ("CHANGES_APPLIED", "no"),
+              ("ATOMIC", "no"), ("DELIVERY_VERIFIED", "no"))
+    for key, value in values:
+        yield "SENDMAIL_ITEMS_" + key + "=" + str(value)
+    for row in rows:
+        yield "SENDMAIL_ITEMS_ROW=" + "|".join(str(value) for value in row)
+
+
 def sample(scope, runner=run_native, scope_check=verify_postfix_scope):
     if scope not in ("postfix", "sidecar", "exim", "sendmail"):
         raise ValueError("unknown_queue_scope")
@@ -1170,6 +1308,7 @@ def main():
     action.add_argument("--retry-apply")
     action.add_argument("--maintenance", choices=tuple(MAINTENANCE_CONFIRM))
     action.add_argument("--exim-action", choices=tuple(EXIM_ACTIONS))
+    parser.add_argument("--sendmail-inventory", choices=("mta", "msp"))
     parser.add_argument("--exim-inventory", action="store_true")
     parser.add_argument("--exim-apply", action="store_true")
     parser.add_argument("--maintenance-apply", action="store_true")
@@ -1181,6 +1320,18 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         return 2
+    if args.sendmail_inventory is not None:
+        if (args.scope != "sendmail" or args.messages or args.exim_inventory or
+                args.exim_apply or args.maintenance_apply or
+                any(value is not None for value in (args.exim_action, args.maintenance,
+                    args.retry_plan, args.retry_prepare, args.retry_apply, args.sampled_at,
+                    args.target_fingerprint, args.prepared_at, args.approve_sha256, args.confirm)) or
+                not SHA.fullmatch(args.selection_nonce or "")):
+            parser.error("Sendmail inventory is read-only and requires one normal queue")
+        values = sendmail_inventory(args.sendmail_inventory, args.selection_nonce)
+        for line in sendmail_inventory_lines(args.sendmail_inventory, args.selection_nonce, *values):
+            print(line)
+        return 0
     if args.exim_inventory or args.exim_action is not None:
         if (args.scope != "exim" or args.messages or args.maintenance_apply or
                 args.maintenance is not None or args.retry_plan is not None or

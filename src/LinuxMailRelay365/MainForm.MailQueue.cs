@@ -31,8 +31,15 @@ internal sealed partial class MainForm
                     "Inspect " + name + " queue (read-only)", "בדיקת תור " + name + " ללא שינוי"),
                 () => InspectNativeQueueAsync(scope), false, "check", "mail-queue");
             if (scope == "exim")
-                AddAction(page, T("Сообщения Exim и Freeze / Thaw", "Exim messages and Freeze / Thaw", "הודעות Exim והקפאה / הפשרה"),
+                AddAction(page, T("Сообщения Exim и управление очередью", "Exim messages and queue actions", "הודעות Exim ופעולות תור"),
                     InspectEximQueueAsync, false, "check", "exim-queue-messages");
+            if (scope == "sendmail")
+            {
+                AddAction(page, T("Сообщения Sendmail — MTA", "Sendmail MTA messages (read-only)", "הודעות Sendmail MTA לקריאה בלבד"),
+                    () => InspectSendmailQueueAsync("mta"), false, "check", "sendmail-queue-mta");
+                AddAction(page, T("Сообщения Sendmail — MSP", "Sendmail MSP messages (read-only)", "הודעות Sendmail MSP לקריאה בלבד"),
+                    () => InspectSendmailQueueAsync("msp"), false, "check", "sendmail-queue-msp");
+            }
             if (scope is "postfix" or "sidecar")
             {
                 AddAction(page, T("Просмотреть сообщения " + name + " (без содержимого)",
