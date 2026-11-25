@@ -4,9 +4,12 @@ using System.Text.RegularExpressions;
 namespace LinuxMailRelay365;
 
 internal sealed record MultiMailboxSourceEditRequest(string Action, string BaseSha, int BaseCount,
-    string OldMailbox, string Login, string Mailbox, string IdentityFile, string Nonce)
+    string OldMailbox, string Login, string Mailbox, string IdentityFile, string Nonce, string BackupId = "")
 {
     internal const string Confirmation = "SAVE_PLANNED_MAILBOX_MAP";
+    internal const string RestoreConfirmation = "RESTORE_PLANNED_MAILBOX_MAP";
+    internal static bool IsBackup(string value) => Regex.IsMatch(value, @"\Asource-[a-z0-9_]{8}\z");
+    internal string ConfirmationPhrase => Action == "restore" ? RestoreConfirmation : Confirmation;
     internal static bool IsSha(string value) => Regex.IsMatch(value, @"\A[a-f0-9]{64}\z");
     internal static bool IsFile(string value) =>
         Regex.IsMatch(value, @"\A[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json\z");
@@ -14,16 +17,23 @@ internal sealed record MultiMailboxSourceEditRequest(string Action, string BaseS
     internal bool Valid =>
         IsSha(Nonce) && BaseCount is >= 0 and <= 64 &&
         (BaseCount == 0 ? BaseSha == "" : IsSha(BaseSha)) &&
+        (Action == "restore" ? BaseCount > 0 && IsBackup(BackupId) &&
+            OldMailbox == "" && Login == "" && Mailbox == "" && IdentityFile == "" :
+        BackupId == "" &&
         (Action == "add" ? OldMailbox == "" && BaseCount < 64 :
             Action is "edit" or "remove" && BaseCount > 0 && InstalledPostfixRoute.ValidAddress(OldMailbox)) &&
         (Action == "remove" ? BaseCount > 1 && Login == "" && Mailbox == "" && IdentityFile == "" :
             IsLogin(Login) && InstalledPostfixRoute.ValidAddress(Mailbox) &&
-            (IdentityFile == "" || IsFile(IdentityFile)));
+            (IdentityFile == "" || IsFile(IdentityFile))));
 
     internal string Serialize(string approval = "")
     {
         if (!Valid || (approval != "" && !IsSha(approval)))
             throw new InvalidDataException("Invalid source-map edit request.");
+        if (Action == "restore")
+            return JsonSerializer.Serialize(new { action = Action, base_sha = BaseSha,
+                old_mailbox = "", login = "", mailbox = "", identity_file = "", nonce = Nonce,
+                backup_id = BackupId, approval, confirm = approval == "" ? "" : RestoreConfirmation });
         return JsonSerializer.Serialize(new { action = Action, base_sha = BaseSha,
             old_mailbox = OldMailbox, login = Login, mailbox = Mailbox, identity_file = IdentityFile,
             nonce = Nonce, approval, confirm = approval == "" ? "" : Confirmation });
@@ -31,12 +41,14 @@ internal sealed record MultiMailboxSourceEditRequest(string Action, string BaseS
 }
 
 internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha, int NewCount,
-    MultiMailboxIdentityRow? Selected, string IdentityFile)
+    MultiMailboxIdentityRow? Selected, string IdentityFile, string RestoredFrom = "")
 {
     internal string Describe(MultiMailboxSourceEditRequest req) =>
         "Operation: " + req.Action.ToUpperInvariant() + Environment.NewLine +
         "Map: /etc/linuxmailrelay365/oauth-senders.tsv (Source / Planned only)" + Environment.NewLine +
         "Rows: " + req.BaseCount + " -> " + NewCount + Environment.NewLine +
+        (RestoredFrom.Length > 0 ? "Restore from: " + RestoredFrom + Environment.NewLine +
+            "Restore only the previous source-map bytes, preserving current source file metadata. Current map is backed up again." + Environment.NewLine : "") +
         (req.OldMailbox.Length > 0 ? "Previous mailbox: " + req.OldMailbox + Environment.NewLine : "") +
         (Selected is { } row ?
             "SMTP login: " + row.Login + Environment.NewLine +
@@ -59,8 +71,10 @@ internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha,
             throw new InvalidDataException("Invalid source-map edit receipt.");
         using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 8 });
         var root = doc.RootElement;
-        if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != 17 ||
-            root.EnumerateObject().Select(x => x.Name).Distinct(StringComparer.Ordinal).Count() != 17)
+        bool restoring = req.Action == "restore";
+        int fields = restoring ? 18 : 17;
+        if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != fields ||
+            root.EnumerateObject().Select(x => x.Name).Distinct(StringComparer.Ordinal).Count() != fields)
             throw new InvalidDataException("Unexpected source-map edit receipt shape.");
         string Read(string name) => root.GetProperty(name).GetString() ??
             throw new InvalidDataException("Missing source-map evidence.");
@@ -75,16 +89,19 @@ internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha,
             throw new InvalidDataException("Source-map edit context or scope mismatch.");
         string planSha = Read("plan_sha"), newSha = Read("new_sha"),
             file = Read("identity_file"), backup = Read("backup_id");
+        string restoredFrom = restoring ? Read("restored_from") : "";
+        if (restoring && restoredFrom != req.BackupId)
+            throw new InvalidDataException("Wrong selected backup.");
         int count = root.GetProperty("new_count").GetInt32();
         int expectedCount = req.BaseCount + (req.Action == "add" ? 1 : req.Action == "remove" ? -1 : 0);
         if (!MultiMailboxSourceEditRequest.IsSha(planSha) || !MultiMailboxSourceEditRequest.IsSha(newSha) ||
             newSha == req.BaseSha || root.GetProperty("old_count").GetInt32() != req.BaseCount ||
-            count != expectedCount || count is < 1 or > 64 ||
+            (!restoring && count != expectedCount) || count is < 1 or > 64 ||
             (saving ? !Regex.IsMatch(backup, @"\Asource-[a-z0-9_]{8}\z") : backup != ""))
             throw new InvalidDataException("Invalid map plan or backup evidence.");
         var selected = root.GetProperty("selected");
         MultiMailboxIdentityRow? row = null;
-        if (req.Action == "remove")
+        if (req.Action is "remove" or "restore")
         {
             if (selected.ValueKind != JsonValueKind.Null || file != "")
                 throw new InvalidDataException("Unexpected identity on removal.");
@@ -100,7 +117,7 @@ internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha,
                 row.Mailbox != req.Mailbox || row.Sender != req.Mailbox)
                 throw new InvalidDataException("Selected identity differs from the request.");
         }
-        var plan = new MultiMailboxSourceEditPlan(planSha, newSha, count, row, file);
+        var plan = new MultiMailboxSourceEditPlan(planSha, newSha, count, row, file, restoredFrom);
         if (saving && plan != approved)
             throw new InvalidDataException("Saved receipt differs from the explicitly approved preview.");
         return (plan, backup);
@@ -134,6 +151,20 @@ internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha,
             try { Parse(bad, req, preview); return false; }
             catch (InvalidDataException) { }
         }
-        return true;
+        var restore = new MultiMailboxSourceEditRequest("restore", sha, 1, "", "", "", "",
+            req.Nonce, "source-abcdefgh");
+        if (!restore.Valid || (restore with { BackupId = "../unsafe" }).Valid ||
+            !restore.Serialize(planSha).Contains("RESTORE_PLANNED_MAILBOX_MAP", StringComparison.Ordinal))
+            return false;
+        string RestoreReceipt(bool save) => JsonSerializer.Serialize(new { version = 1, action = "restore",
+            base_sha = sha, old_mailbox = "", nonce = req.Nonce, status = save ? "saved" : "preview",
+            changes = save, runtime_changed = false, mail_sent = false, cloud_changed = false,
+            plan_sha = planSha, new_sha = new string('f',64), identity_file = "",
+            backup_id = save ? "source-ijklmnop" : "", old_count = 1, new_count = 2,
+            selected = (object?)null, restored_from = restore.BackupId });
+        var restoration = Parse(RestoreReceipt(false), restore).Plan;
+        if (Parse(RestoreReceipt(true), restore, restoration).BackupId != "source-ijklmnop") return false;
+        try { Parse(RestoreReceipt(true).Replace("source-abcdefgh", "source-zzzzzzzz"), restore, restoration); return false; }
+        catch (InvalidDataException) { return true; }
     }
 }

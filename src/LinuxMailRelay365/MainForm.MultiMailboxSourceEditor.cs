@@ -9,9 +9,41 @@ internal sealed partial class MainForm
     private MultiMailboxSourceEditRequest? PromptMultiMailboxSourceEdit(Form owner,
         string action, MultiMailboxIdentityMap map, MultiMailboxIdentityRow? row)
     {
-        if (action is not ("add" or "edit" or "remove") || map.Status is not ("ok" or "absent") ||
-            (action != "add" && (row is null || !map.Rows.Contains(row)))) return null;
+        if (action is not ("add" or "edit" or "remove" or "restore") || map.Status is not ("ok" or "absent") ||
+            (action is "edit" or "remove" && (row is null || !map.Rows.Contains(row)))) return null;
         string nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        if (action == "restore")
+        {
+            if (map.Status != "ok") return null;
+            using var restore = new Form { Text = "LinuxMailRelay365 | Restore planned mailbox map",
+                StartPosition = FormStartPosition.CenterParent, AutoScaleMode = AutoScaleMode.Dpi,
+                ClientSize = PreferredDialogSize(Screen.FromControl(owner).WorkingArea.Size, owner.DeviceDpi, 680, 360),
+                Font = new Font("Segoe UI", 10f), MinimizeBox = false };
+            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3,
+                Padding = new Padding(12) };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var text = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical, Text =
+                "Enter the exact backup ID from the save result or /etc/linuxmailrelay365/oauth-source-backups." +
+                Environment.NewLine + "Only a backup whose recorded successor matches the current source map can be restored." +
+                Environment.NewLine + "The current map will be backed up again. Runtime, keys, mailboxes and services remain unchanged." };
+            var id = new TextBox { Dock = DockStyle.Fill, MaxLength = 15, PlaceholderText = "source-abcdefgh" };
+            var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true,
+                FlowDirection = FlowDirection.RightToLeft };
+            var abort = new Button { Text = T("Отмена", "Cancel", "ביטול"), AutoSize = true, DialogResult = DialogResult.Cancel };
+            var review = new Button { Text = T("Предпросмотр", "Preview", "תצוגה מקדימה"), AutoSize = true,
+                DialogResult = DialogResult.OK, Enabled = false };
+            MultiMailboxSourceEditRequest RequestRestore() => new("restore", map.Sha256, map.Rows.Length,
+                "", "", "", "", nonce, id.Text.Trim());
+            id.TextChanged += (_, _) => review.Enabled = RequestRestore().Valid;
+            buttons.Controls.Add(abort); buttons.Controls.Add(review);
+            layout.Controls.Add(text, 0, 0); layout.Controls.Add(id, 0, 1); layout.Controls.Add(buttons, 0, 2);
+            restore.Controls.Add(layout); restore.CancelButton = abort; restore.AcceptButton = review;
+            return restore.ShowDialog(owner) == DialogResult.OK && RequestRestore().Valid ? RequestRestore() : null;
+        }
         if (action == "remove")
         {
             var removal = new MultiMailboxSourceEditRequest(action, map.Sha256, map.Rows.Length,

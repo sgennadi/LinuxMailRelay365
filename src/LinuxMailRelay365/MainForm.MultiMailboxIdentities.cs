@@ -66,7 +66,9 @@ internal sealed partial class MainForm
         var addMailbox = UiTheme.Action(T("Добавить", "Add mailbox", "הוספת תיבה"), false, "add");
         var editMailbox = UiTheme.Action(T("Изменить", "Edit mailbox", "עריכת תיבה"), false, "edit");
         var removeMailbox = UiTheme.Action(T("Удалить запись", "Remove row", "הסרת שורה"), false, "delete");
+        var restoreSource = UiTheme.Action(T("Восстановить карту...", "Restore source map...", "שחזור מפת מקור..."), false, "restore");
         footer.Controls.Add(addMailbox); footer.Controls.Add(editMailbox); footer.Controls.Add(removeMailbox);
+        footer.Controls.Add(restoreSource);
         DataGridView Grid(TabPage tab)
         {
             var grid = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true,
@@ -105,6 +107,7 @@ internal sealed partial class MainForm
             addMailbox.Enabled = source && inventory.Source.Rows.Length < 64;
             editMailbox.Enabled = source && Selected() is not null;
             removeMailbox.Enabled = source && Selected() is not null && inventory.Source.Rows.Length > 1;
+            restoreSource.Enabled = source && inventory.Source.Status == "ok";
         }
         void Detail()
         {
@@ -212,7 +215,7 @@ internal sealed partial class MainForm
         {
             if (reading || !inventoryValid || saveUncertain || SelectedScope() != "source") return;
             var oldMap = inventory.Source;
-            var selected = action == "add" ? null : Selected();
+            var selected = action is "add" or "restore" ? null : Selected();
             var request = PromptMultiMailboxSourceEdit(dialog, action, oldMap, selected);
             if (request is null) return;
             reading = true;
@@ -254,7 +257,7 @@ internal sealed partial class MainForm
                     throw new InvalidOperationException("Source map or identity evidence changed.");
                 var preview = (await Execute(null)).Plan;
                 if (!ConfirmDestructive("LinuxMailRelay365 | Save planned mailbox map",
-                    preview.Describe(request), MultiMailboxSourceEditRequest.Confirmation, dialog))
+                    preview.Describe(request), request.ConfirmationPhrase, dialog))
                 {
                     Render();
                     return;
@@ -303,6 +306,7 @@ internal sealed partial class MainForm
         addMailbox.Click += async (_, _) => await EditSourceAsync("add");
         editMailbox.Click += async (_, _) => await EditSourceAsync("edit");
         removeMailbox.Click += async (_, _) => await EditSourceAsync("remove");
+        restoreSource.Click += async (_, _) => await EditSourceAsync("restore");
         verify.Click += async (_, _) =>
         {
             if (reading || !inventoryValid) return;

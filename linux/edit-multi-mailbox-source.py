@@ -25,6 +25,8 @@ BACKUPS = BASE / "oauth-source-backups"
 # Coordinate with the existing offline route installer.
 LOCK = Path("/run/linuxmailrelay365-sidecar-auth.lock")
 CONFIRM = "SAVE_PLANNED_MAILBOX_MAP"
+RESTORE_CONFIRM = "RESTORE_PLANNED_MAILBOX_MAP"
+BACKUP_ID = re.compile(r"source-[a-z0-9_]{8}\Z")
 FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json\Z")
 Refused = I.Refused
 need = I.need
@@ -37,9 +39,21 @@ def encode(value):
 def request(raw):
     need(1 <= len(raw) <= 4096, "request_size")
     obj = I.decode(raw)
-    need(isinstance(obj, dict) and set(obj) == {"action", "base_sha", "old_mailbox",
-        "login", "mailbox", "identity_file", "nonce", "approval", "confirm"} and
-        all(isinstance(v, str) for v in obj.values()), "request_fields")
+    need(isinstance(obj, dict), "request_fields")
+    fields = {"action", "base_sha", "old_mailbox", "login", "mailbox",
+              "identity_file", "nonce", "approval", "confirm"}
+    restoring = obj.get("action") == "restore"
+    if restoring:
+        fields.add("backup_id")
+    need(set(obj) == fields and all(isinstance(v, str) for v in obj.values()), "request_fields")
+    if restoring:
+        need(I.SHA.fullmatch(obj["base_sha"]) and I.SHA.fullmatch(obj["nonce"]) and
+             BACKUP_ID.fullmatch(obj["backup_id"]) and not any(obj[k] for k in
+                 ("old_mailbox", "login", "mailbox", "identity_file")), "restore_context")
+        need((obj["approval"] == "" and obj["confirm"] == "") or
+             (I.SHA.fullmatch(obj["approval"]) and obj["confirm"] == RESTORE_CONFIRM),
+             "restore_approval_context")
+        return obj
     need(obj["action"] in ("add", "edit", "remove") and I.SHA.fullmatch(obj["nonce"]) and
          (obj["base_sha"] == "" or I.SHA.fullmatch(obj["base_sha"])), "request_context")
     need((obj["approval"] == "" and obj["confirm"] == "") or
@@ -63,6 +77,10 @@ def read_source():
     raw = I.read_optional(SOURCE, A.MAX_MAP, (0o600,))
     if raw is None:
         return None, []
+    return raw, canonical_rows(raw)
+
+
+def canonical_rows(raw):
     rows = A.parse_map(raw)
     # Do not silently normalize/rewrite existing unrelated rows. An older
     # noncanonical file needs manual review before using this editor.
@@ -70,7 +88,7 @@ def read_source():
          all(I.LOGIN.fullmatch(r[0]) and I.valid_mailbox(r[1]) and r[1] == r[2] and
              Path(r[3]).parent == IDENTITIES and FILE.fullmatch(Path(r[3]).name)
              for r in rows), "source_requires_manual_review")
-    return raw, rows
+    return rows
 
 
 def identity_path(req, previous, gid):
@@ -96,7 +114,52 @@ def identity_path(req, previous, gid):
     return matches[0]
 
 
+def restore_plan(req, gid):
+    old, current = read_source()
+    need(old is not None and I.digest(old) == req["base_sha"],
+         "source_changed_since_inventory")
+    need(BACKUP_ID.fullmatch(req["backup_id"]), "invalid_backup_id")
+    E.trusted_directory(BACKUPS)
+    folder = BACKUPS / req["backup_id"]
+    E.trusted_directory(folder)
+    need(stat.S_IMODE(BACKUPS.lstat().st_mode) == 0o700 and
+         stat.S_IMODE(folder.lstat().st_mode) == 0o700, "backup_not_private")
+    manifest_raw = E.secure_read(folder / "manifest.json", 4096, modes=(0o600,))
+    manifest = I.decode(manifest_raw)
+    need(isinstance(manifest, dict) and set(manifest) == {"version", "source_was_present",
+         "old_sha256", "new_sha256", "plan_sha256"} and
+         type(manifest["version"]) is int and manifest["version"] == 1 and
+         type(manifest["source_was_present"]) is bool and
+         all(isinstance(manifest[k], str) for k in
+             ("old_sha256", "new_sha256", "plan_sha256")), "invalid_backup_manifest")
+    # A first-map creation backup intentionally contains no previous file.
+    # Restoring it would delete the only source map; require separate
+    # decommission review rather than silently implementing deletion.
+    need(manifest["source_was_present"], "absent_source_requires_decommission")
+    need(all(I.SHA.fullmatch(manifest[k]) for k in
+             ("old_sha256", "new_sha256", "plan_sha256")) and
+         manifest["old_sha256"] != manifest["new_sha256"], "invalid_backup_hash")
+    need(manifest["new_sha256"] == req["base_sha"], "backup_not_current_successor")
+    new = E.secure_read(folder / "oauth-senders.tsv", A.MAX_MAP, modes=(0o600,))
+    need(I.digest(new) == manifest["old_sha256"], "backup_digest_mismatch")
+    rows = canonical_rows(new)
+    evidence = [I.identity_row(*row, gid) for row in rows]
+    need(all(row["status"] == "public_certificate_read" for row in evidence),
+         "restore_identity_or_certificate_unverified")
+    review = dict(request={k:v for k,v in req.items() if k not in ("approval", "confirm")},
+                  manifest_sha=I.digest(manifest_raw), old_sha=req["base_sha"],
+                  new_sha=I.digest(new), old_count=len(current), new_count=len(rows),
+                  identities=evidence)
+    return old, new, dict(plan_sha=I.digest(encode(review)), base_sha=req["base_sha"],
+                          new_sha=review["new_sha"], old_count=len(current),
+                          new_count=len(rows), selected=None, identity_file="",
+                          action="restore", nonce=req["nonce"], old_mailbox="",
+                          restored_from=req["backup_id"])
+
+
 def plan(req, gid):
+    if req["action"] == "restore":
+        return restore_plan(req, gid)
     old, rows = read_source()
     old_sha = I.digest(old) if old is not None else ""
     need(req["base_sha"] == old_sha, "source_changed_since_inventory")

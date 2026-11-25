@@ -83,6 +83,8 @@ jobs:
           python3 linux/sidecar-from-owner-milter.py --self-test
           python3 -m unittest discover -v -s tests -p test_sidecar_from_owner_milter.py
           python3 -m unittest discover -v -s tests
+          # Real root-owned temporary map transaction; not a production spool.
+          sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted python3 -m unittest discover -v -s tests -p test_multi_mailbox_source_editor.py
           python3 -m unittest discover -v -s tests -p test_signed_release_gate.py
           python3 linux/mta-coexistence-doctor.py --self-test
           python3 linux/guard-foreign-mta.py --self-test

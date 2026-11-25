@@ -418,3 +418,22 @@ uncertain save locks source editing for the current window, even after
 Refresh, and directs the operator to the root-private backup. Runtime
 remains read-only in this dialog. Add/Edit reuse an existing identity;
 new identity provisioning and backup restore are not implemented here.
+
+## Planned source-map restore (pending CI)
+
+Restore source map accepts an exact backup ID from the previous save
+receipt or root-private backup directory. It reads the original manifest
+and verifies both the stored source digest and the recorded successor
+against the current source map; newer edits cannot be overwritten by an
+older backup. The original bytes must still form a valid canonical map
+with verified remaining public identity evidence. Restore has a separate
+typed approval, reuses the shared installer lock and creates a new backup
+of the current map before atomic replacement. The existing source file's
+ownership and SELinux label are preserved, not historic metadata. Backups
+representing an originally absent map are refused (decommission is a
+separate operation). The GUI verifies the saved receipt and new source
+inventory; installed runtime, cloud objects and keys are untouched. The
+Linux CI additionally exercises real root-owned temporary files, manifest
+checks, atomic save/restore, stale-map and tampered-backup refusal. Signer
+and identity checks use synthetic fixtures. This is not yet live SELinux
+or tenant acceptance. No automatic backup browsing or deletion is added.
