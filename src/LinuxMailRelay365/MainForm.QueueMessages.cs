@@ -126,7 +126,7 @@ internal sealed partial class MainForm
             "Только текущий снимок. Номера не являются Queue ID и меняются при новой проверке. " +
             "Фильтры применяются только к полученным строкам (до 500 старейших). Адреса и содержимое не показаны. Retry экспериментальный, с отдельным подтверждением.",
             "Current sample only. Numbers are not native Queue IDs and change on refresh. " +
-            "Filters cover only the returned rows (up to the oldest 500). No addresses or message content. Selected Retry is experimental and separately confirmed.",
+            "Filters cover only the returned rows (up to the oldest 500). No addresses or message content. Selected Retry is experimental and separately confirmed. Hold / Release also require separate approval.",
             "דגימה בלבד. המספרים אינם מזהי תור. הסינון חל על עד 500 ההודעות הוותיקות, ללא כתובות או תוכן. ניסיון חוזר ניסיוני דורש אישור נפרד."));
         var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true,
             FlowDirection = FlowDirection.RightToLeft, WrapContents = true };
@@ -140,6 +140,9 @@ internal sealed partial class MainForm
             "Retry selected message (experimental)...", "ניסיון חוזר להודעה נבחרת (ניסיוני)..."), false, "refresh");
         applyRetry.Enabled = false;
         footer.Controls.Add(applyRetry);
+        var holdRelease = UiTheme.Action("Hold / Release (experimental)...", false, "shield");
+        holdRelease.Enabled = false;
+        footer.Controls.Add(holdRelease);
         bool attempted = false;
         bool reviewing = false;
         bool closed = false;
@@ -156,6 +159,13 @@ internal sealed partial class MainForm
                 inventory.RetryState == "review_only" && SelectedRow() is { State: "deferred" } selected &&
                 QueueRetryReview.ValidSha(selected.Fingerprint);
             applyRetry.Enabled = retry.Enabled;
+            var candidate = SelectedRow();
+            holdRelease.Enabled = !closed && !attempted && !reviewing && inventory.SampledAt.HasValue &&
+                inventory.RetryState == "review_only" && candidate is not null &&
+                candidate.State is "deferred" or "held" && QueueRetryReview.ValidSha(candidate.Fingerprint);
+            holdRelease.Text = candidate?.State == "held"
+                ? T("Release (экспериментально)...", "Release (experimental)...", "שחרור (ניסיוני)...")
+                : T("Hold (экспериментально)...", "Hold (experimental)...", "השהיה (ניסיוני)...");
         }
         grid.SelectionChanged += (_, _) => UpdateRetry();
         dialog.FormClosing += (_, args) => { if (reviewing) args.Cancel = true; else closed = true; };
@@ -165,7 +175,7 @@ internal sealed partial class MainForm
             if (reviewing || selected is null || !retry.Enabled || inventory.SampledAt is not long sampledAt)
                 return;
             reviewing = true;
-            applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 var current = RequireSameArchiveConnection(endpoint);
@@ -213,7 +223,7 @@ internal sealed partial class MainForm
                 inventory.SampledAt is not long sampledAt)
                 return;
             reviewing = true;
-            applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             try
             {
                 var current = RequireSameArchiveConnection(endpoint);
@@ -281,6 +291,27 @@ internal sealed partial class MainForm
                         "Outcome unknown. Inspect queue and logs; do not automatically retry.", "תוצאה לא ידועה. בדקו תור ויומנים.")
                     : T("Подготовка не завершилась. Обновите список.", "Preparation failed. Refresh the inventory.", "ההכנה נכשלה. רעננו את הרשימה."),
                     "LinuxMailRelay365 | Retry", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                reviewing = false;
+                close.Enabled = filters.Enabled = grid.Enabled = true;
+                UpdateRetry();
+                if (attempted) dialog.Close();
+            }
+        };
+        holdRelease.Click += async (_, _) =>
+        {
+            var selected = SelectedRow();
+            if (!holdRelease.Enabled || reviewing || attempted || selected is null ||
+                inventory.SampledAt is not long sampledAt) return;
+            reviewing = true;
+            holdRelease.Enabled = applyRetry.Enabled = retry.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            try
+            {
+                await RunQueueMaintenanceAsync(endpoint, inventory.Scope,
+                    selected.State == "held" ? "release" : "hold", nonce, sampledAt,
+                    selected, dialog, () => SelectedRow() == selected, () => attempted = true);
             }
             finally
             {

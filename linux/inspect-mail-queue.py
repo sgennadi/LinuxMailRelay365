@@ -3,7 +3,8 @@
 
 Default actions are read-only. The separate experimental Retry Apply can
 request immediate delivery of one reidentified deferred long-ID message.
-No flush, deletion, new submission, body reading or service/config changes.
+Separate experimental Flush, Hold and Release require scoped fresh plans.
+No deletion, new submission, body reading or service/config changes.
 Native IDs, addresses and raw reasons stay on the server. No atomic
 compare-and-act or delivery guarantee; this is not Restore preflight.
 """
@@ -40,6 +41,7 @@ QUEUES = {"active": "active", "deferred": "deferred", "hold": "held",
 TOOLS = {
     "postconf": ("postconf",),
     "postqueue": ("postqueue",),
+    "postsuper": ("postsuper",),
     "exim": ("exim", "exim4"),
     "sendmail": ("sendmail", "sendmail.sendmail"),
 }
@@ -422,11 +424,8 @@ RETRY_PLAN_TTL = 60
 RETRY_CONFIRM = "RETRY_SELECTED_DEFERRED_MESSAGE"
 
 
-def retry_context(scope, runner, before):
+def instance_context(scope, runner, before):
     directory = before[0]
-    enabled = runner("postconf", ["-c", directory, "-h", "enable_long_queue_ids"]).strip()
-    if enabled != "yes":
-        raise Unavailable("long_ids_required")
     hostname = runner("postconf", ["-c", directory, "-h", "myhostname"]).strip()
     try:
         boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
@@ -438,8 +437,15 @@ def retry_context(scope, runner, before):
     return (scope, before, hostname, boot)
 
 
+def retry_context(scope, runner, before):
+    enabled = runner("postconf", ["-c", before[0], "-h", "enable_long_queue_ids"]).strip()
+    if enabled != "yes":
+        raise Unavailable("long_ids_required")
+    return instance_context(scope, runner, before)
+
+
 def message_fingerprint(item, context, nonce, sampled_at):
-    if (context is None or item["queue_name"] != "deferred" or
+    if (context is None or item["queue_name"] not in ("deferred", "hold") or
             not LONG_ID.fullmatch(item["queue_id"]) or item["arrival_time"] > sampled_at):
         return "-"
     sender = item.get("sender")
@@ -562,7 +568,8 @@ def reviewable_inventory(scope, nonce, runner=run_native, scope_check=verify_pos
                 None, [], now, "unverified")
 
 
-def _retry_candidate(scope, nonce, sampled_at, token, runner, scope_check, context_check, now):
+def _retry_candidate(scope, nonce, sampled_at, token, runner, scope_check, context_check, now,
+                     expected_state="deferred"):
     if (scope not in ("postfix", "sidecar") or not SHA.fullmatch(nonce)
             or not SHA.fullmatch(token) or type(sampled_at) is not int or sampled_at <= 0):
         raise ValueError("invalid_retry_review_context")
@@ -575,7 +582,8 @@ def _retry_candidate(scope, nonce, sampled_at, token, runner, scope_check, conte
                                          now, (context, nonce, sampled_at))
         if scope_check(scope, runner) != before or context_check(scope, runner, before) != context:
             raise Unavailable("scope_unverified")
-        matches = [(i + 1, row) for i, row in enumerate(rows) if hmac.compare_digest(row[-1], token)]
+        matches = [(i + 1, row) for i, row in enumerate(rows)
+                   if row[2] == expected_state and hmac.compare_digest(row[-1], token)]
         if len(matches) != 1:
             return "sample_changed", None, None, None
         index, row = matches[0]
@@ -680,6 +688,206 @@ def retry_apply(scope, nonce, sampled_at, token, prepared_at, approved, confirm,
         return "not_requested", error.result
 
 
+MAINTENANCE_CONFIRM = {
+    "flush": "FLUSH_SELECTED_POSTFIX_INSTANCE",
+    "hold": "HOLD_SELECTED_DEFERRED_MESSAGE",
+    "release": "RELEASE_SELECTED_HELD_MESSAGE",
+}
+MAINTENANCE_COUNTS = ("total", "active", "deferred", "held", "incoming", "maildrop", "other")
+
+
+def maintenance_config_identity(directory):
+    """Bind root-owned configuration bytes, without returning their contents."""
+    if directory not in (CONFIG, SIDECAR_CONFIG):
+        raise Unavailable("scope_unverified")
+    secure_directory(directory)
+    evidence = []
+    for name in ("main.cf", "master.cf"):
+        path = os.path.join(directory, name)
+        fd = None
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            st = os.fstat(fd)
+            if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022
+                    or st.st_size > 1024 * 1024):
+                raise Unavailable("scope_unverified")
+            raw = bytearray()
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                raw.extend(chunk)
+                if len(raw) > 1024 * 1024:
+                    raise Unavailable("scope_unverified")
+            end = os.fstat(fd)
+            current = os.lstat(path)
+            def identity(meta):
+                return (meta.st_dev, meta.st_ino, meta.st_size, meta.st_mtime_ns,
+                        meta.st_ctime_ns, meta.st_uid, meta.st_mode)
+            if identity(st) != identity(end) or identity(st) != identity(current) or len(raw) != st.st_size:
+                raise Unavailable("scope_unverified")
+            evidence.append((name, identity(st), hashlib.sha256(raw).hexdigest()))
+        except OSError:
+            raise Unavailable("scope_unverified")
+        finally:
+            if fd is not None:
+                os.close(fd)
+    return evidence
+
+
+def maintenance_sample(action, scope, nonce, sampled_at, token, now, runner=run_native,
+                       scope_check=verify_postfix_scope, context_check=retry_context,
+                       instance_check=instance_context, config_check=maintenance_config_identity):
+    if (action not in MAINTENANCE_CONFIRM or scope not in ("postfix", "sidecar")
+            or not SHA.fullmatch(nonce)):
+        raise ValueError("invalid_maintenance_context")
+    if action == "flush":
+        if sampled_at != 0 or token != "-":
+            raise ValueError("flush_is_instance_wide")
+    elif not SHA.fullmatch(token) or sampled_at <= 0:
+        raise ValueError("selected_message_required")
+    try:
+        before = scope_check(scope, runner)
+        directory = SIDECAR_CONFIG if scope == "sidecar" else CONFIG
+        if before[0] != directory:
+            raise Unavailable("scope_unverified")
+        config = config_check(directory)
+        if action == "flush":
+            context = instance_check(scope, runner, before)
+            output = runner("postqueue", ["-c", directory, "-j"])
+            counts = postfix_counts(output, now)
+            # Require a useful deferred queue; never start a periodic flush.
+            if counts["deferred"] == 0:
+                return "no_deferred_messages", None, None
+            # Bind the complete validated bounded native listing, independent
+            # of its order. Raw queue IDs, envelopes and reasons never leave.
+            objects = [json.loads(line, object_pairs_hook=unique_json)
+                       for line in output.splitlines() if line.strip()]
+            canonical = json.dumps(sorted(objects, key=lambda item: item["queue_id"]),
+                                   sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+            queue_digest = hmac.new(bytes.fromhex(nonce), canonical, hashlib.sha256).hexdigest()
+            public = [counts[key] for key in MAINTENANCE_COUNTS]
+            evidence = [context, config, queue_digest, public]
+            native_id = None
+            if instance_check(scope, runner, before) != context:
+                raise Unavailable("scope_unverified")
+        else:
+            state = "deferred" if action == "hold" else "held"
+            result, row, native_id, context = _retry_candidate(
+                scope, nonce, sampled_at, token, runner, scope_check, context_check, now,
+                expected_state=state)
+            if result != "candidate_review_only":
+                return result, None, None
+            if context[1] != before:
+                raise Unavailable("scope_unverified")
+            public = [row[1], row[3], row[4]]
+            evidence = [context, config, token, public, row[5]]
+        if scope_check(scope, runner) != before or config_check(directory) != config:
+            raise Unavailable("scope_unverified")
+        return "candidate", (public, evidence), native_id
+    except Unavailable as error:
+        return error.result, None, None
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        return "invalid_output", None, None
+
+
+def maintenance_digest(action, scope, nonce, sampled_at, token, prepared_at, evidence):
+    return hashlib.sha256(json.dumps(
+        ["queue_maintenance_v1", action, scope, nonce, sampled_at, token, prepared_at, evidence],
+        separators=(",", ":"), ensure_ascii=True).encode("ascii")).hexdigest()
+
+
+def maintenance_prepare(action, scope, nonce, sampled_at, token, clock=time.time, **sample_options):
+    prepared = int(clock())
+    result, sample_data, _ = maintenance_sample(
+        action, scope, nonce, sampled_at, token, prepared, **sample_options)
+    if result != "candidate":
+        return result, prepared, "-", "-"
+    public, evidence = sample_data
+    plan = maintenance_digest(action, scope, nonce, sampled_at, token, prepared, evidence)
+    return result, prepared, plan, "|".join(str(value) for value in public)
+
+
+def execute_maintenance(action, directory, native_id):
+    if directory not in (CONFIG, SIDECAR_CONFIG) or action not in MAINTENANCE_CONFIRM:
+        raise ValueError("invalid_maintenance_target")
+    if action == "flush":
+        if native_id is not None:
+            raise ValueError("flush_target_must_be_instance")
+        args = [native_binary("postqueue"), "-c", directory, "-f"]
+    else:
+        if not isinstance(native_id, str) or not LONG_ID.fullmatch(native_id):
+            raise ValueError("invalid_selected_message")
+        args = [native_binary("postsuper"), "-c", directory,
+                "-h" if action == "hold" else "-H", native_id,
+                "deferred" if action == "hold" else "hold"]
+    try:
+        result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=12, check=False,
+                                env={"PATH": PATH, "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired):
+        return "outcome_unknown"
+    # postsuper success can mean the target vanished; no movement or delivery
+    # is claimed from a zero exit code alone.
+    return "command_completed" if result.returncode == 0 else "outcome_unknown"
+
+
+def maintenance_apply(action, scope, nonce, sampled_at, token, prepared_at, approved, confirm,
+                      executor=execute_maintenance, clock=time.time, monotonic=time.monotonic,
+                      **sample_options):
+    if (action not in MAINTENANCE_CONFIRM or confirm != MAINTENANCE_CONFIRM[action]
+            or not SHA.fullmatch(approved) or prepared_at <= 0 or
+            (action != "flush" and prepared_at < sampled_at)):
+        raise ValueError("maintenance_confirmation_required")
+    started = int(clock())
+    tick = monotonic()
+
+    def fresh():
+        current = int(clock())
+        elapsed = monotonic() - tick
+        return (0 <= elapsed <= RETRY_PLAN_TTL and abs(current - started - elapsed) <= 2
+                and prepared_at <= current <= prepared_at + RETRY_PLAN_TTL
+                and (action == "flush" or sampled_at <= prepared_at <= current <= sampled_at + REVIEW_TTL))
+
+    if not fresh():
+        return "not_requested", "expired"
+    native_id = None
+    for _ in range(2):
+        result, sample_data, found = maintenance_sample(
+            action, scope, nonce, sampled_at, token, int(clock()), **sample_options)
+        if result != "candidate":
+            return "not_requested", result
+        _, evidence = sample_data
+        digest = maintenance_digest(action, scope, nonce, sampled_at, token, prepared_at, evidence)
+        if not hmac.compare_digest(digest, approved) or (native_id is not None and found != native_id):
+            return "not_requested", "plan_changed"
+        native_id = found
+    if not fresh():
+        return "not_requested", "expired"
+    directory = SIDECAR_CONFIG if scope == "sidecar" else CONFIG
+    try:
+        result = executor(action, directory, native_id)
+    except Unavailable as error:
+        return "not_requested", error.result
+    return (("command_completed", "none") if result == "command_completed"
+            else ("outcome_unknown", "native_result_unconfirmed"))
+
+
+def maintenance_lines(action, scope, nonce, sampled_at, token, phase, prepared, plan,
+                      outcome, detail, reason):
+    values = (("VERSION", 1), ("ACTION", action), ("SCOPE", scope), ("NONCE", nonce),
+              ("SAMPLED_AT", sampled_at), ("FINGERPRINT", token), ("PHASE", phase),
+              ("PREPARED_AT", prepared), ("PLAN_SHA256", plan), ("OUTCOME", outcome),
+              ("DETAIL", detail), ("REASON", reason),
+              ("COMMAND_COUNT", "1" if outcome == "command_completed" else
+               "unknown" if outcome == "outcome_unknown" else "0"),
+              ("EFFECT_VERIFIED", "no"), ("DELIVERY_VERIFIED", "no"), ("ATOMIC", "no"),
+              ("CONFIG_CHANGED", "no"), ("SERVICE_CHANGED", "no"),
+              ("DELETE_REQUESTED", "no"), ("NEW_MESSAGE_SUBMITTED", "no"))
+    for key, value in values:
+        yield "MAIL_MAINT_" + key + "=" + str(value)
+
+
 def retry_apply_lines(scope, token, sampled_at, prepared_at, approved, outcome, reason):
     for key, value in (("VERSION", 1), ("SCOPE", scope), ("FINGERPRINT", token),
                        ("SAMPLED_AT", sampled_at), ("PREPARED_AT", prepared_at),
@@ -716,6 +924,9 @@ def main():
     action.add_argument("--retry-plan")
     action.add_argument("--retry-prepare")
     action.add_argument("--retry-apply")
+    action.add_argument("--maintenance", choices=tuple(MAINTENANCE_CONFIRM))
+    parser.add_argument("--maintenance-apply", action="store_true")
+    parser.add_argument("--target-fingerprint")
     parser.add_argument("--sampled-at", type=int)
     parser.add_argument("--prepared-at", type=int)
     parser.add_argument("--approve-sha256")
@@ -723,6 +934,38 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         return 2
+    if args.maintenance is not None:
+        operation = args.maintenance
+        sampled_at = args.sampled_at if args.sampled_at is not None else 0
+        target = args.target_fingerprint if args.target_fingerprint is not None else "-"
+        if (args.messages or args.scope not in ("postfix", "sidecar") or
+                not SHA.fullmatch(args.selection_nonce or "") or
+                (operation == "flush" and (sampled_at != 0 or target != "-")) or
+                (operation != "flush" and (not 0 < sampled_at <= 9999999999 or
+                                           not SHA.fullmatch(target)))):
+            parser.error("invalid maintenance selection")
+        if args.maintenance_apply:
+            if (args.prepared_at is None or not 0 < args.prepared_at <= 9999999999 or
+                    not SHA.fullmatch(args.approve_sha256 or "") or
+                    args.confirm != MAINTENANCE_CONFIRM[operation]):
+                parser.error("maintenance approval required")
+            outcome, reason = maintenance_apply(operation, args.scope, args.selection_nonce,
+                sampled_at, target, args.prepared_at, args.approve_sha256, args.confirm)
+            lines = maintenance_lines(operation, args.scope, args.selection_nonce, sampled_at,
+                target, "apply", args.prepared_at, args.approve_sha256, outcome, "-", reason)
+        else:
+            if any(value is not None for value in (args.prepared_at, args.approve_sha256, args.confirm)):
+                parser.error("approval not permitted during maintenance preview")
+            status, prepared, plan, detail = maintenance_prepare(
+                operation, args.scope, args.selection_nonce, sampled_at, target)
+            lines = maintenance_lines(operation, args.scope, args.selection_nonce, sampled_at,
+                target, "prepare", prepared, plan, "candidate" if status == "candidate" else "not_requested",
+                detail, "none" if status == "candidate" else status)
+        for line in lines:
+            print(line)
+        return 0
+    if args.maintenance_apply or args.target_fingerprint is not None:
+        parser.error("explicit maintenance action required")
     token = args.retry_plan or args.retry_prepare or args.retry_apply
     apply_fields = (args.prepared_at, args.approve_sha256, args.confirm)
     if token is not None:

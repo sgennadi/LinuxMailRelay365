@@ -328,6 +328,7 @@ internal static class Program
             ("Bounded private message inventory and filters", QueueMessageInventory.SelfTest),
             ("Read-only selected Retry review receipt", QueueRetryReview.SelfTest),
             ("Selected Retry preparation and apply receipts", QueueRetryApplyReceipt.SelfTest),
+            ("Scoped queue maintenance prepare and outcome receipts", QueueMaintenanceReceipt.SelfTest),
             ("Experimental offline Exim Restore receipt and bounded apply bundle", EximNativeRestoreReceipt.SelfTest),
             ("Global interrupted native Restore receipt and read-only bundle", ForeignPendingInspection.SelfTest),
             ("Experimental Exim pending rollback reviewed plan and applied receipt", EximPendingRollbackPlan.SelfTest),

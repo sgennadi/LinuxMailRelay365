@@ -31,14 +31,19 @@ internal sealed partial class MainForm
                     "Inspect " + name + " queue (read-only)", "בדיקת תור " + name + " ללא שינוי"),
                 () => InspectNativeQueueAsync(scope), false, "check", "mail-queue");
             if (scope is "postfix" or "sidecar")
+            {
                 AddAction(page, T("Просмотреть сообщения " + name + " (без содержимого)",
                     "View " + name + " messages (metadata only)", "הצגת הודעות " + name + " (מטא-נתונים בלבד)"),
                     () => InspectQueueMessagesAsync(scope), false, "check", "mail-queue-messages");
+                AddAction(page, T("Flush всей очереди " + name + " (экспериментально)...",
+                    "Flush entire " + name + " queue (experimental)...", "ניסיון מסירה לכל תור " + name + " (ניסיוני)..."),
+                    () => FlushPostfixQueueAsync(scope), false, "refresh", "mail-queue-maintenance");
+            }
         }
         if (available)
             AddLine(page, UiTheme.Text(T(
                 "Статистика без адресов, идентификаторов и текста писем. Не отправляет сообщения и не очищает очередь.",
-                "Statistics and bounded metadata: no addresses, native message IDs or content. No mail submission or queue clearing.",
+                "Statistics and bounded metadata omit private addresses and native IDs. Experimental queue actions require separate explicit approval; Flush is not deletion.",
                 "סטטיסטיקה בלבד, ללא כתובות או תוכן הודעות, ללא שליחה או ניקוי תור.")));
     }
 

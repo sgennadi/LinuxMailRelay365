@@ -49,7 +49,7 @@ internal sealed record QueueMessageInventory(string Scope, string Result, int? T
                     throw new InvalidDataException("Queue sample order is inconsistent.");
                 rowFields = parts.Length;
                 string fingerprint = parts.Length == 7 ? parts[6] : "-";
-                if (fingerprint != "-" && (parts[1] != "deferred" || !QueueRetryReview.ValidSha(fingerprint)))
+                if (fingerprint != "-" && (parts[1] is not ("deferred" or "held") || !QueueRetryReview.ValidSha(fingerprint)))
                     throw new InvalidDataException("Invalid Retry fingerprint.");
                 rows.Add(new(rows.Count + 1, parts[1], age, Number(parts[3], 1099511627776),
                     (int)Number(parts[4], 10000), parts[5], fingerprint));

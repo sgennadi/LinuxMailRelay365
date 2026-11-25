@@ -895,6 +895,25 @@ internal static class EmbeddedAssets
             " --approve-sha256 " + planSha + " --confirm " + QueueRetryApplyReceipt.Confirmation);
     }
 
+    internal static string BuildQueueMaintenanceBundle(string scope, string action, string nonce,
+        long sampledAt, string fingerprint, long? preparedAt = null, string? planSha = null)
+    {
+        QueueMaintenanceReceipt.ValidateContext(scope, action, nonce, sampledAt, fingerprint);
+        if ((preparedAt is null) != (planSha is null) ||
+            (preparedAt is long time && (time < 1 || time > 9999999999 ||
+                time < sampledAt || (action != "flush" && time - sampledAt > 300) ||
+                !QueueRetryReview.ValidSha(planSha))))
+            throw new ArgumentException("Invalid queue maintenance approval.");
+        var culture = System.Globalization.CultureInfo.InvariantCulture;
+        string arguments = " --maintenance " + action + " --selection-nonce " + nonce;
+        if (action != "flush")
+            arguments += " --sampled-at " + sampledAt.ToString(culture) + " --target-fingerprint " + fingerprint;
+        if (preparedAt is long prepared)
+            arguments += " --maintenance-apply --prepared-at " + prepared.ToString(culture) +
+                " --approve-sha256 " + planSha + " --confirm " + QueueMaintenanceReceipt.Confirmation(action);
+        return BuildQueueBundle(scope, arguments);
+    }
+
     private static string BuildQueueReadOnlyBundle(string scope, string fixedArguments) =>
         BuildQueueBundle(scope, fixedArguments);
 
