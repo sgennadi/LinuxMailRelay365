@@ -98,3 +98,12 @@ match byte for byte. No original spool, MTA configuration or service is
 modified by this queue fixture; its temporary disk is discarded with the VM.
 This does not claim live external SMTP delivery or SELinux acceptance until
 CI passes, nor does it prove real physical TPM or 200% hardware DPI.
+
+## Update acceptance
+
+Windows CI now also rehearses binary replacement, backup and rollback
+using the published RC18 x64 ZIP as a pinned SHA-256 baseline. The prior
+Preview 24 migration remains intact. Until the version is raised to RC19,
+this is a same-version file replacement rehearsal, not a newer-version
+update. Neither rehearsal proves interactive GUI updating or execution
+of the non-elevated updater helper. The signed Stable gate is unchanged.

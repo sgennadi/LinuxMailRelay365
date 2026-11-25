@@ -1,6 +1,6 @@
 #requires -Version 7.0
 <#
-CI-only disposable migration smoke for published Preview 24 -> reviewed candidate.
+CI-only disposable migration smoke for published Preview 24 or RC18 -> reviewed candidate.
 Exercises real release binaries and a replace/backup/rollback transaction.
 This does NOT prove the interactive GUI or non-elevated updater helper.
 No production files, registry, tenant, SMTP or Linux service is modified.
@@ -9,7 +9,9 @@ No production files, registry, tenant, SMTP or Linux service is modified.
 param(
     [Parameter(Mandatory=$true)][string]$CandidateExe,
     [ValidatePattern('^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:preview|rc)\.(?:0|[1-9][0-9]*))?$')]
-    [string]$ExpectedCandidateVersion = '0.1.1-rc.3'
+    [string]$ExpectedCandidateVersion = '0.1.1-rc.3',
+    [ValidateSet('v0.1.0-preview.24', 'v0.1.1-rc.18')]
+    [string]$SourceTag = 'v0.1.0-preview.24'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -84,18 +86,22 @@ function Invoke-VerifiedFileReplace(
 $root = Join-Path $env:RUNNER_TEMP ("LMRPreviewUpgrade-" + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($root) | Out-Null
 try {
-    $releaseJson = gh api 'repos/sgennadi/LinuxMailRelay365/releases/tags/v0.1.0-preview.24'
-    if ($LASTEXITCODE -ne 0) { throw 'Could not query the published Preview 24.' }
+    $releaseJson = gh api "repos/sgennadi/LinuxMailRelay365/releases/tags/$SourceTag"
+    if ($LASTEXITCODE -ne 0) { throw 'Could not query the selected published source.' }
     $release = ($releaseJson -join [Environment]::NewLine) | ConvertFrom-Json
-    Assert ($release.prerelease -eq $true -and $release.draft -eq $false) 'Previous release is not a published Preview.'
+    Assert ($release.tag_name -ceq $SourceTag -and $release.prerelease -eq $true -and $release.draft -eq $false) 'Previous release is not the selected published prerelease.'
     $assetName = 'LinuxMailRelay365-win-x64.zip'
     $assets = @($release.assets | Where-Object { $_.name -ceq $assetName })
     Assert ($assets.Count -eq 1) 'Previous x64 release asset missing or duplicated.'
     $asset = $assets[0]
+    if ($SourceTag -ceq 'v0.1.1-rc.18') {
+        Assert ($asset.digest -ceq 'sha256:d778c2107c88eb5dadfb1b2a105be09bd034843e8f7b9c9bae21c0ad9669ae67') 'Published RC18 asset differs from the pinned baseline.'
+        Assert ($ExpectedCandidateVersion -cin @('0.1.1-rc.18', '0.1.1-rc.19')) 'RC18 source requires RC18 rehearsal or RC19 candidate.'
+    }
     Assert ($asset.digest -cmatch '^sha256:[a-f0-9]{64}$') 'Missing source-reported SHA256.'
-    Assert ($asset.browser_download_url -ceq "https://github.com/sgennadi/LinuxMailRelay365/releases/download/v0.1.0-preview.24/$assetName") 'Untrusted asset URL.'
+    Assert ($asset.browser_download_url -ceq "https://github.com/sgennadi/LinuxMailRelay365/releases/download/$SourceTag/$assetName") 'Untrusted asset URL.'
     $zipPath = Join-Path $root $assetName
-    gh release download 'v0.1.0-preview.24' --repo sgennadi/LinuxMailRelay365 --pattern $assetName --dir $root
+    gh release download $SourceTag --repo sgennadi/LinuxMailRelay365 --pattern $assetName --dir $root
     if ($LASTEXITCODE -ne 0) { throw 'Previous release download failed.' }
     Assert ((Get-Item -LiteralPath $zipPath).Length -eq $asset.size) 'Previous ZIP size mismatch.'
     Assert ((Sha $zipPath) -ceq $asset.digest.Substring(7)) 'Previous ZIP SHA256 mismatch.'
@@ -108,7 +114,8 @@ try {
     }
     finally { $archive.Dispose() }
     $oldExe = Join-Path $oldFolder 'LinuxMailRelay365.exe'
-    Assert ((Version $oldExe) -match '^0\.1\.0-preview\.24(?:\+.*)?$') 'Incorrect old version.'
+    $sourceVersion = $SourceTag.Substring(1)
+    Assert ((Version $oldExe) -match ('^' + [regex]::Escape($sourceVersion) + '(?:\+.*)?$')) 'Incorrect old version.'
     Assert ((Version $CandidateExe) -match ('^' + [regex]::Escape($ExpectedCandidateVersion) + '(?:\+.*)?$')) 'Incorrect new version.'
     Assert ((PeMachine $oldExe) -eq 0x8664) 'Previous EXE is not x64.'
     Assert ((PeMachine $CandidateExe) -eq 0x8664) 'Candidate EXE is not x64.'
@@ -137,6 +144,12 @@ try {
     Assert ((Sha $target) -ceq $oldHash) 'Rollback digest mismatch.'
     Invoke-SelfTest $target
     Write-Output 'CANDIDATE_TO_PUBLISHED_PREVIEW_DISPOSABLE_ROLLBACK=PASS'
+    Write-Output "PUBLISHED_SOURCE_TAG=$SourceTag"
+    if ($sourceVersion -ceq $ExpectedCandidateVersion) {
+        Write-Output 'UPDATE_VERSION_TRANSITION=equal_version_file_replacement_rehearsal_only'
+    } else {
+        Write-Output "UPDATE_VERSION_TRANSITION=$sourceVersion->$ExpectedCandidateVersion"
+    }
     Write-Output 'REAL_GUI_AND_HELPER_ACCEPTANCE=NOT_TESTED'
 }
 finally {

@@ -37,6 +37,14 @@ class UpdaterPreview25Contracts(unittest.TestCase):
         self.assertIn("tag='v0.1.0-preview.25'", WORKFLOW)
         self.assertIn("Test-LinuxMailRelay365PreviewUpgrade.ps1", WORKFLOW)
 
+    def test_published_rc18_baseline_rehearsal(self):
+        smoke = (ROOT / "scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1").read_text(encoding="utf-8")
+        self.assertIn("-SourceTag 'v0.1.1-rc.18'", WORKFLOW)
+        self.assertIn("[ValidateSet('v0.1.0-preview.24', 'v0.1.1-rc.18')]", smoke)
+        self.assertIn("d778c2107c88eb5dadfb1b2a105be09bd034843e8f7b9c9bae21c0ad9669ae67", smoke)
+        self.assertIn("equal_version_file_replacement_rehearsal_only", smoke)
+        self.assertIn("REAL_GUI_AND_HELPER_ACCEPTANCE=NOT_TESTED", smoke)
+
     def test_preview_does_not_bypass_stable_signature_requirement(self):
         for marker in ("CanInstallPreview", "IsNonElevatedWindowsProcess",
                        "TrustedCandidate", "VerifiedPublisher",
