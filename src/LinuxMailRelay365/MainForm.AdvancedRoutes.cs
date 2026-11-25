@@ -158,6 +158,10 @@ internal sealed partial class MainForm
             "עריכת כללים מקומית בלבד; הכנת מפות אינה מפעילה ניתוב או משלוח דואר."),
             width, warning: true));
 
+        if (QueueScopeDiscovered("postfix") || QueueScopeDiscovered("sidecar"))
+            AddAction(page, T("Проверить установленный маршрут...", "Inspect installed Postfix route...",
+                "בדיקת נתיב Postfix קיים..."), InspectInstalledPostfixRouteAsync, false, "check", "diagnostics");
+
         string mta = inspectedMail?.Mta ?? "unknown";
         if (mta == "postfix")
         {

@@ -31,6 +31,7 @@ internal static class EmbeddedAssets
     internal static string DeliveryAcceptance => Text("LinuxMailRelay365.linux.delivery-acceptance.py");
     internal static string TpmOauthProvision => Text("LinuxMailRelay365.linux.tpm-oauth-provision.py");
     internal static string EntraPublicCertificateExporter => Text("LinuxMailRelay365.linux.entra-public-cert-export.py");
+    internal static string InstalledPostfixRouteInspector => Text("LinuxMailRelay365.linux.inspect-postfix-route.py");
     internal static string PrimaryOAuthRotator => Text("LinuxMailRelay365.linux.primary-oauth-rotation.py");
     internal static string EntraCertificateManager => Text("LinuxMailRelay365.windows.entra-oauth-cert-manager.ps1");
     internal static string Recovery => Text("LinuxMailRelay365.linux.recovery.sh");
@@ -102,6 +103,19 @@ internal static class EmbeddedAssets
     internal static string CloudConnectorManager => Text("LinuxMailRelay365.windows.cloud-connector-manager.ps1");
 
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+
+    internal static string BuildInstalledPostfixRouteBundle(string request)
+    {
+        if (request.Length > 4096) throw new ArgumentException("Route request too large.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-route-inspect.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/export-hardware-oauth-cert.py\" <<'LMR365_ROUTE_SUPPORT'\n" +
+               Encode(EntraPublicCertificateExporter) + "\nLMR365_ROUTE_SUPPORT\n" +
+               "base64 -d > \"$work/inspect-postfix-route.py\" <<'LMR365_ROUTE_INSPECTOR'\n" +
+               Encode(InstalledPostfixRouteInspector) + "\nLMR365_ROUTE_INSPECTOR\n" +
+               "printf '%s' '" + Encode(request) + "' | base64 -d | python3 \"$work/inspect-postfix-route.py\"\n";
+    }
 
     internal static string BuildActiveOAuthCertificateBundle(string target)
     {

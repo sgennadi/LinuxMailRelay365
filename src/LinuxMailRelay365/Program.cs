@@ -86,6 +86,7 @@ internal static class Program
             ("Mail intent and evidence-gated scenario ranking", MailFlowIntent.SelfTest),
             ("Offline sender/domain route planner rejects overlap, invalid and fake precedence", AdvancedRoutePlanner.SelfTest),
             ("Read-only Postfix sender/transport/local-delivery policy audit", PostfixRoutePolicyAudit.SelfTest),
+            ("Installed Postfix route lookup receipt and provider checks", InstalledPostfixRoute.SelfTest),
             ("In-memory Postfix sender and recipient candidate key review", PostfixConditionalMapPreview.SelfTest),
             ("Conditional map staged-only SSH bundle and strict receipt validation", ConditionalStageClient.SelfTest),
             ("Read-only conditional recovery SSH inventory and strict receipts", ConditionalRecoveryClient.SelfTest),

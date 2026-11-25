@@ -56,3 +56,23 @@ proved. The green indication requires both an in-validity public certificate
 match and the expected default/relay pipe configuration, and is not a
 permission to apply or send. See https://www.postfix.org/postconf.5.html
 and https://www.postfix.org/postconf.1.html for precedence and readback.
+
+## Installed Postfix route lookup (development)
+
+The advanced routing page includes Inspect installed Postfix route. Choose
+the discovered primary instance or sidecar and enter a non-null envelope
+sender and recipient. Expanded postconf readback and actual postmap -q
+queries against private snapshots of allowlisted, single local hash/LMDB
+routing databases identify matching key shapes. Recipient transport keys
+are checked before sender-dependent default transports; sender-dependent
+relayhost is a next-hop fallback, not a universal transport override.
+Literal local, virtual and relay classes are distinguished. Unsupported
+maps, rewriting, service overrides, malformed values and snapshot drift
+produce a review/unverified result, not an assumed route. Only a validated
+single SMTP host/port is shown, never arbitrary map values or credentials.
+No live database is queried or rebuilt, no message is submitted, no
+service is changed, and no configuration or TLS/authentication acceptance
+is implied. The candidate describes a sampled configuration only.
+
+Reference: https://www.postfix.org/transport.5.html and
+https://www.postfix.org/postconf.5.html (address classes and lookup precedence).
