@@ -94,7 +94,22 @@ class SendmailInventoryTests(unittest.TestCase):
             self.assertNotIn(forbidden, ui)
         self.assertLess(ui.index("SendmailQueueAction.Parse(reply.StdOut"), ui.index("ConfirmDestructive("))
         self.assertLess(ui.index("ConfirmDestructive("), ui.index("attempted = true"))
-        self.assertIn("if (attempted) dialog.Close();", ui)
+        # A dispatched action invalidates the displayed sample. The dialog
+        # now supports explicit read-only reload, but an unknown result
+        # remains latched for the life of this dialog.
+        self.assertNotIn("if (attempted) dialog.Close();", ui)
+        self.assertIn("snapshotValid = false;", ui)
+        self.assertIn("outcomeUncertain = true;", ui)
+        self.assertIn("if (snapshotValid && !outcomeUncertain) attempted = false;", ui)
+        self.assertIn("!snapshotValid || outcomeUncertain", ui)
+        reload = ui.split("async Task ReloadAsync()", 1)[1].split("reload.Click +=", 1)[0]
+        self.assertIn("BuildSendmailQueueInventoryBundle(queue, freshNonce", reload)
+        self.assertIn("SendmailQueueInventory.Parse(reply.StdOut, queue, freshNonce", reload)
+        self.assertIn("nonce = freshNonce;", reload)
+        self.assertIn("groups.SelectedIndex = 0;", reload)
+        self.assertNotIn("BuildSendmailQueueActionBundle", reload)
+        self.assertNotIn("outcomeUncertain = false", reload)
+        self.assertIn("grid.CurrentCell = null;", ui)
         main = (src / "MainForm.MailQueue.cs").read_text()
         self.assertIn('InspectSendmailQueueAsync("mta")', main)
         self.assertIn('InspectSendmailQueueAsync("msp")', main)

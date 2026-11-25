@@ -107,26 +107,31 @@ internal sealed partial class MainForm
         close.DialogResult = DialogResult.OK; footer.Controls.Add(close);
         var retry = UiTheme.Action(T("Retry выбранного...", "Retry selected (experimental)...", "ניסיון חוזר לנבחרת..."), false, "refresh");
         var flush = UiTheme.Action(T("Flush очереди...", "Run this queue once (experimental)...", "הפעלת תור זה פעם אחת..."), false, "refresh");
-        footer.Controls.Add(retry); footer.Controls.Add(flush);
-        bool working = false, attempted = false;
+        var reload = UiTheme.Action(T("Обновить очередь", "Refresh queue", "רענון תור"), true, "refresh");
+        footer.Controls.Add(retry); footer.Controls.Add(flush); footer.Controls.Add(reload);
+        bool working = false, attempted = false, snapshotValid = true, outcomeUncertain = false;
+        DateTime lastRead = DateTime.Now;
         SendmailQueueRow? Selected() => grid.SelectedRows.Count == 1 &&
             grid.SelectedRows[0].Cells["ref"].Value is int n
             ? inventory.Rows.SingleOrDefault(row => row.Reference == n) : null;
         void UpdateActions()
         {
-            bool available = !working && !attempted && inventory.ContextVerified && inventory.SampledAt.HasValue;
+            bool available = !working && !attempted && snapshotValid && !outcomeUncertain &&
+                inventory.Result == "ok" && inventory.ContextVerified && inventory.SampledAt.HasValue;
             retry.Enabled = available && Selected() is { } row && QueueRetryReview.ValidSha(row.Fingerprint);
             flush.Enabled = available && inventory.Total > 0;
+            reload.Enabled = !working;
         }
         dialog.FormClosing += (_, args) => { if (working) args.Cancel = true; };
         grid.SelectionChanged += (_, _) => UpdateActions();
         async Task ExecuteAsync(string action, SendmailQueueRow? row)
         {
             bool whole = action == "flush";
-            if (working || attempted || !inventory.ContextVerified || !inventory.SampledAt.HasValue ||
+            if (working || attempted || !snapshotValid || outcomeUncertain ||
+                !inventory.ContextVerified || !inventory.SampledAt.HasValue ||
                 (whole ? !flush.Enabled || row is not null : !retry.Enabled || row is null || Selected() != row)) return;
             working = true;
-            retry.Enabled = flush.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
+            reload.Enabled = retry.Enabled = flush.Enabled = close.Enabled = filters.Enabled = grid.Enabled = false;
             string operationNonce = whole
                 ? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant()
                 : nonce;
@@ -144,6 +149,7 @@ internal sealed partial class MainForm
                 var plan = SendmailQueueAction.Parse(reply.StdOut, inventory.Queue, action, operationNonce, sampled, fingerprint);
                 if (plan.Outcome != "candidate")
                 {
+                    snapshotValid = false;
                     MessageBox.Show(dialog, plan.Reason, "Sendmail | Preview refused", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
@@ -169,6 +175,10 @@ internal sealed partial class MainForm
                 if (!QueueScopeDiscovered("sendmail") || (!whole && Selected() != row))
                     throw new InvalidOperationException("Sendmail selection changed.");
                 attempted = true;
+                snapshotValid = false;
+                // Until a strictly validated receipt arrives, the outcome is
+                // unknown. A later read-only refresh must not unlock writes.
+                outcomeUncertain = true;
                 var response = await SshRemote.RunRootScriptAsync(confirmed,
                     EmbeddedAssets.BuildSendmailQueueActionBundle(inventory.Queue, action, operationNonce, sampled,
                         fingerprint, plan.PreparedAt, plan.PlanSha), TimeSpan.FromMinutes(3));
@@ -176,6 +186,7 @@ internal sealed partial class MainForm
                 RequireSameArchiveConnection(confirmed);
                 var receipt = SendmailQueueAction.Parse(response.StdOut, inventory.Queue, action, operationNonce,
                     sampled, fingerprint, plan.PreparedAt, plan.PlanSha);
+                outcomeUncertain = receipt.Outcome == "outcome_unknown";
                 WriteLine("Sendmail " + inventory.Queue + " " + action + ": " + receipt.Outcome +
                     "; " + receipt.Reason + ". Delivery unverified.");
                 MessageBox.Show(dialog, receipt.Outcome switch
@@ -190,6 +201,8 @@ internal sealed partial class MainForm
             }
             catch (Exception)
             {
+                snapshotValid = false;
+                if (attempted) outcomeUncertain = true;
                 WriteLine(attempted ? "Sendmail action outcome unknown; no automatic repeat." :
                     "Sendmail action preparation failed; no write dispatched.");
                 MessageBox.Show(dialog, attempted ? "Outcome unknown. Inspect queue and logs." :
@@ -199,25 +212,56 @@ internal sealed partial class MainForm
             {
                 working = false;
                 close.Enabled = filters.Enabled = grid.Enabled = true;
-                UpdateActions();
-                if (attempted) dialog.Close();
+                Refresh();
+                // Never automatically repeat an action or reuse its sample.
+                // Refresh is read-only, even after an unknown result.
             }
         }
         retry.Click += async (_, _) => { if (retry.Enabled) await ExecuteAsync("retry", Selected()); };
         flush.Click += async (_, _) => { if (flush.Enabled) await ExecuteAsync("flush", null); };
         void Refresh()
         {
+            bool warning = !snapshotValid || outcomeUncertain || inventory.Result != "ok" ||
+                !inventory.ContextVerified || inventory.NativeTruncated == true || inventory.DisplayTruncated == true;
+            heading.Text = endpoint.Host + ":" + endpoint.Port + " | " + name + " | " +
+                (!snapshotValid ? T("Требуется обновление", "Refresh required", "נדרש רענון") : QueueResultText(inventory.Result));
+            heading.BackColor = SystemInformation.HighContrast ? SystemColors.Window :
+                warning ? UiTheme.WarningSurface : UiTheme.InfoSurface;
+            heading.ForeColor = SystemInformation.HighContrast ? SystemColors.WindowText :
+                warning ? UiTheme.WarningInk : UiTheme.Navy;
+            grid.Rows.Clear();
+            if (!snapshotValid)
+            {
+                status.Text = T("Снимок устарел. Обновите очередь перед дальнейшими действиями.",
+                    "Snapshot is stale. Refresh the queue before further actions.",
+                    "הדגימה אינה עדכנית. יש לרענן לפני פעולות נוספות.") +
+                    (outcomeUncertain ? " | " + UnknownOutcomeText() : "");
+                UpdateActions();
+                return;
+            }
             string? state = states.SelectedIndex <= 0 ? null : SendmailQueueInventory.States[states.SelectedIndex - 1];
             string? reason = reasons.SelectedIndex <= 0 ? null : SendmailQueueInventory.Reasons[reasons.SelectedIndex - 1];
             int? group = groups.SelectedItem is int n ? n : null;
-            grid.Rows.Clear();
             foreach (var row in inventory.Filter(state, group, reason))
             {
                 int index = grid.Rows.Add(row.Reference, row.Group, SendmailState(row.State), row.Bytes,
                     row.NativeTime, QueueMessageReason(row.Reason));
-                if (!SystemInformation.HighContrast && row.State != "queued")
-                    grid.Rows[index].Cells[2].Style.ForeColor = Color.DarkOrange;
+                if (!SystemInformation.HighContrast)
+                {
+                    grid.Rows[index].Cells[2].Style.ForeColor = row.State switch
+                    {
+                        "processing_mark" => UiTheme.Navy,
+                        "load_limited" => UiTheme.WarningInk,
+                        "too_young" => Color.DarkSlateBlue,
+                        _ => SystemColors.WindowText
+                    };
+                    if (row.Reason is "auth" or "tls" or "permanent" or "mixed")
+                        grid.Rows[index].Cells[5].Style.ForeColor = Color.Firebrick;
+                    else if (row.Reason != "no_reason")
+                        grid.Rows[index].Cells[5].Style.ForeColor = UiTheme.WarningInk;
+                }
             }
+            grid.CurrentCell = null;
             grid.ClearSelection();
             status.Text = T("Показано / получено / нативный список / всего: ",
                 "Shown / sampled / native listed / total: ", "מוצגות / נדגמו / רשימה מקורית / סך הכל: ") +
@@ -226,9 +270,73 @@ internal sealed partial class MainForm
                 " | " + T("Групп: ", "Groups: ", "קבוצות: ") + (inventory.Groups?.ToString() ?? "unknown") +
                 (inventory.NativeTruncated == true ? " | " + T("Нативный лимит", "Native print limit", "מגבלת תצוגה מקורית") : "") +
                 (inventory.DisplayTruncated == true ? " | " + T("Лимит GUI", "GUI limit", "מגבלת GUI") : "") +
-                (!inventory.ContextVerified ? " | " + T("Операции недоступны", "Actions unavailable", "פעולות אינן זמינות") : "");
+                (!inventory.ContextVerified ? " | " + T("Операции недоступны", "Actions unavailable", "פעולות אינן זמינות") : "") +
+                " | " + T("Получено (локальное время): ", "Read at (local time): ", "נקרא (זמן מקומי): ") +
+                lastRead.ToString("yyyy-MM-dd HH:mm:ss") +
+                (outcomeUncertain ? " | " + UnknownOutcomeText() : "");
             UpdateActions();
         }
+        string UnknownOutcomeText() => T(
+            "Результат предыдущей операции неизвестен. В этом окне доступны только просмотры; проверьте журналы.",
+            "Previous operation outcome unknown. This window is read-only; inspect server logs.",
+            "תוצאת הפעולה הקודמת אינה ידועה. חלון זה לקריאה בלבד; בדקו יומני שרת.");
+        async Task ReloadAsync()
+        {
+            if (working) return;
+            working = true;
+            snapshotValid = false;
+            grid.Enabled = filters.Enabled = close.Enabled = false;
+            Refresh();
+            status.Text = T("Получение нового снимка очереди...", "Reading a fresh queue snapshot...", "קורא דגימת תור חדשה...");
+            try
+            {
+                var current = RequireSameArchiveConnection(endpoint);
+                if (!QueueScopeDiscovered("sendmail"))
+                    throw new InvalidOperationException("Sendmail discovery changed.");
+                string queue = inventory.Queue;
+                string freshNonce = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+                var reply = await SshRemote.RunRootScriptAsync(current,
+                    EmbeddedAssets.BuildSendmailQueueInventoryBundle(queue, freshNonce, reviewable: true),
+                    TimeSpan.FromMinutes(3));
+                if (reply.ExitCode != 0) throw new IOException("Sendmail refresh failed.");
+                RequireSameArchiveConnection(current);
+                if (!QueueScopeDiscovered("sendmail"))
+                    throw new InvalidOperationException("Sendmail discovery changed.");
+                var next = SendmailQueueInventory.Parse(reply.StdOut, queue, freshNonce, requireReviewable: true);
+                inventory = next;
+                nonce = freshNonce;
+                lastRead = DateTime.Now;
+                // Row and group ordinals have meaning only in the old sample.
+                // Do not retain the old group selection or selected message.
+                groups.BeginUpdate();
+                try
+                {
+                    groups.Items.Clear();
+                    groups.Items.Add(all);
+                    groups.Items.AddRange(inventory.Rows.Select(row => row.Group).Distinct().Select(n => (object)n).ToArray());
+                    groups.SelectedIndex = 0;
+                }
+                finally { groups.EndUpdate(); }
+                snapshotValid = inventory.Result == "ok";
+                if (snapshotValid && !outcomeUncertain) attempted = false;
+                WriteLine("Sendmail " + queue.ToUpperInvariant() + " refresh: " + inventory.Result +
+                    "; listed=" + inventory.Rows.Length + ". Metadata only.");
+            }
+            catch (Exception)
+            {
+                snapshotValid = false;
+                WriteLine("Sendmail queue refresh failed; previous sample invalidated. No write requested.");
+                MessageBox.Show(dialog, T("Не удалось обновить очередь.", "Queue refresh failed.", "רענון התור נכשל."),
+                    "Sendmail", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                working = false;
+                close.Enabled = filters.Enabled = grid.Enabled = true;
+                Refresh();
+            }
+        }
+        reload.Click += async (_, _) => { if (reload.Enabled) await ReloadAsync(); };
         states.SelectedIndexChanged += (_, _) => Refresh();
         groups.SelectedIndexChanged += (_, _) => Refresh();
         reasons.SelectedIndexChanged += (_, _) => Refresh();
