@@ -29,6 +29,12 @@ def main():
             if name=="openssl":
                 r=subprocess.run([binary,"list","-providers"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=15,env=env)
                 report["openssl_provider_listing_available"]=r.returncode==0
+                if r.returncode==0 and report["tpm2_verified"]:
+                    probe=subprocess.run([binary,"list","-providers","-provider","default","-provider","tpm2"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=20,env=env)
+                    report["tpm2_provider_loadable"]=probe.returncode==0 and any(line.strip()==b"tpm2" for line in probe.stdout.splitlines())
+                    if report["tpm2_provider_loadable"]:
+                        algorithms=subprocess.run([binary,"list","-signature-algorithms","-provider","default","-provider","tpm2","-propquery","provider=tpm2"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=20,env=env)
+                        report["tpm2_signature_algorithms_observed"]=algorithms.returncode==0 and b"@ tpm2" in algorithms.stdout
         except Exception:
             report["tools"].setdefault(name,False)
     print(json.dumps(report,sort_keys=True))
