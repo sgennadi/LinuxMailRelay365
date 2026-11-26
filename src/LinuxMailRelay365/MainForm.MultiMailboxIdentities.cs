@@ -129,7 +129,7 @@ internal sealed partial class MainForm
                 SelectedScope() == "source" && Selected() is { Status: "public_certificate_read" };
             registerIdentity.Enabled = !loading && !reading && inventoryValid && !saveUncertain &&
                 inventory.Source.Status is "ok" or "absent" && inventory.Runtime.Status is "ok" or "absent" &&
-                Selected() is { Signer: "software", Status: "public_certificate_read" };
+                Selected() is { Signer: "software" or "hardware", Status: "public_certificate_read" };
         }
         void Detail()
         {
@@ -631,7 +631,7 @@ internal sealed partial class MainForm
                 MessageBox.Show(dialog, "Identity prepared: " + req.IdentityFile +
                     Environment.NewLine + "Public certificate SHA-256: " + saved.CertificateSha +
                     Environment.NewLine + (handle is null ? "" : "TPM persistent handle: "+handle+
-                        ". Hardware attestation is not verified. Import this public certificate manually; automated prepared-certificate registration currently requires software identities."+Environment.NewLine) +
+                        ". Hardware attestation is not verified. Register prepared certificate supports managed TPM identities with a valid existing app certificate."+Environment.NewLine) +
                     "Save the public certificate, register it with the exact Entra application, review Exchange permissions, then use Add mailbox to bind this identity. No live route changed.",
                     "Unbound identity prepared", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
@@ -735,8 +735,8 @@ internal sealed partial class MainForm
                     Environment.NewLine + "Tenant: " + pair.Evidence.TenantId +
                     Environment.NewLine + "Client ID: " + pair.Evidence.ClientId +
                     Environment.NewLine + "App Registration object ID: " + objectId +
-                    Environment.NewLine + "Existing proof mailbox: " + donor.Mailbox +
-                    Environment.NewLine + "Prepared mailbox: " + pair.CandidateMailbox +
+                    Environment.NewLine + "Existing proof mailbox: " + donor.Mailbox + " ("+donor.Signer+")" +
+                    Environment.NewLine + "Prepared mailbox: " + pair.CandidateMailbox + " ("+pair.CandidateSigner+")" +
                     Environment.NewLine + "New public certificate SHA-256: " + pair.Evidence.CandidateCertSha +
                     Environment.NewLine + "Graph plan SHA-256: " + plan +
                     Environment.NewLine + "The new credential can authenticate as the same app and inherits its existing authority. " +
@@ -757,7 +757,7 @@ internal sealed partial class MainForm
                 ValidateContext();
                 var proofReply = await SshRemote.RunRootScriptAsync(endpoint,
                     EmbeddedAssets.BuildMultiMailboxGraphPairBundle(req.Serialize(pair.PairSha, objectId)),
-                    TimeSpan.FromMinutes(2));
+                    TimeSpan.FromMinutes(4));
                 ValidateContext();
                 // Never log the ephemeral proof or include SSH output in exceptions.
                 if (proofReply.ExitCode != 0) throw new IOException("Local proof signing failed.");

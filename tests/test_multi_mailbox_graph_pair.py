@@ -30,6 +30,41 @@ class PairTests(unittest.TestCase):
             with self.assertRaises(M.Refused):
                 M.request(M.encode(bad))
 
+    def test_hardware_rs256_fixed_claims_and_no_pem_fallback(self):
+        from types import SimpleNamespace
+        handle="handle:0x81010001"
+        spec=dict(type="openssl-provider",provider="tpm2",key_ref=handle,provider_config="/fixed/donor.tpm2.cnf")
+        context=dict(active={"signer":spec},active_der=b"public DER",group=123)
+        app="33333333-3333-4333-8333-333333333333"
+        calls=[]
+        def command(argv,**kwargs):
+            calls.append((argv,kwargs))
+            if "pkeyutl" in argv:
+                self.assertEqual(argv[argv.index("-inkey")+1],handle)
+                self.assertIn("rsa_padding_mode:pkcs1",argv)
+                self.assertNotIn("rsa_padding_mode:pss",argv)
+                return b"x"*256
+            if "x509" in argv:
+                self.assertEqual(kwargs["input_data"],context["active_der"])
+                return b"-----BEGIN PUBLIC KEY-----"
+            self.assertIn("-verify",argv)
+            return b"Verified OK"
+        with mock.patch.object(M,"tpm_service_prefix",return_value=["/usr/sbin/runuser","-u","m365mailer","--"]), \
+             mock.patch.object(M.T,"check_hardware"),mock.patch.object(M.T,"check_runtime_files"), \
+             mock.patch.object(M.T,"provider_ready"),mock.patch.object(M.T,"read_capabilities",return_value={handle[7:]}), \
+             mock.patch.object(M.T,"run_command",side_effect=command):
+            jwt=M.tpm_proof(context,app,now=1000)
+            head,payload,sig=jwt.split(".")
+            def decode(s):
+                return base64.urlsafe_b64decode(s+"="*((-len(s))%4))
+            self.assertEqual(json.loads(decode(head))["alg"],"RS256")
+            self.assertEqual(json.loads(decode(payload)),dict(aud=M.E.POP_AUDIENCE,iss=app,nbf=970,exp=1570))
+            self.assertEqual(calls[0][0][:4],["/usr/sbin/runuser","-u","m365mailer","--"])
+            self.assertEqual(calls[0][1]["input_data"],(head+"."+payload).encode("ascii"))
+            self.assertEqual(calls[0][1]["env"]["OPENSSL_CONF"],spec["provider_config"])
+            self.assertEqual(len(calls),3)
+            self.assertEqual(decode(sig),b"x"*256)
+
     @unittest.skipUnless(os.geteuid() == 0 and os.environ.get("GITHUB_ACTIONS") == "true"
                          and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
                          "requires disposable root CI")
@@ -66,6 +101,7 @@ class PairTests(unittest.TestCase):
                 with mock.patch.object(M.E, "make_proof", side_effect=AssertionError("preview must not sign")):
                     receipt, _ = M.inspect(req, os.getgid())
                 self.assertEqual(receipt["candidate_mailbox"], "bob@example.org")
+                self.assertEqual((receipt["donor_signer"],receipt["candidate_signer"]),("software","software"))
                 proof_req = dict(req, action="proof", pair_sha=receipt["pair_sha"],
                                  object_id="33333333-3333-4333-8333-333333333333", confirm=M.CONFIRM)
                 with self.assertRaisesRegex(M.Refused, "pair_changed"):
@@ -88,6 +124,33 @@ class PairTests(unittest.TestCase):
                 self.assertEqual(before, {p: p.read_bytes() for p in identities.iterdir()})
                 self.assertEqual(source.read_bytes(), raw)
                 self.assertFalse(runtime.exists())
+                # Convert the candidate into a managed TPM identity. The
+                # fixture software key is removed; hardware calls are mocked.
+                software=json.loads(candidate.read_bytes())
+                candidate.with_suffix(".key").unlink()
+                conf=candidate.with_suffix(".tpm2.cnf")
+                conf.write_bytes(M.T.PROVIDER_TEMPLATE.encode("ascii"))
+                conf.chmod(0o640)
+                os.chown(str(conf),0,os.getgid())
+                hardware=dict(software)
+                del hardware["private_key"]
+                hardware["signer"]=dict(type="openssl-provider",provider="tpm2",
+                    key_ref="handle:0x81010001",provider_config=str(conf))
+                candidate.write_bytes(M.encode(hardware))
+                with mock.patch.object(M,"candidate_tpm_proof",side_effect=AssertionError("preview cannot sign")):
+                    mixed,_=M.inspect(req,os.getgid())
+                self.assertEqual(mixed["candidate_signer"],"hardware")
+                self.assertNotEqual(mixed["pair_sha"],receipt["pair_sha"])
+                with self.assertRaisesRegex(M.Refused,"pair_changed"):
+                    M.proof(proof_req,os.getgid())
+                mixed_req=dict(proof_req,pair_sha=mixed["pair_sha"])
+                with mock.patch.object(M,"candidate_tpm_proof") as candidate_check:
+                    self.assertEqual(len(M.proof(mixed_req,os.getgid()).split(".")),3)
+                    candidate_check.assert_called_once()
+                conf.write_bytes(b"unreviewed provider")
+                with self.assertRaisesRegex(M.Refused,"managed_tpm_provider_config_required"):
+                    M.inspect(req,os.getgid())
+                conf.write_bytes(M.T.PROVIDER_TEMPLATE.encode("ascii"))
                 changed = json.loads(candidate.read_bytes())
                 changed["client_id"] = "44444444-4444-4444-8444-444444444444"
                 candidate.write_bytes(M.encode(changed))

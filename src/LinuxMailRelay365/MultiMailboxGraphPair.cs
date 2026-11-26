@@ -14,7 +14,7 @@ internal sealed record MultiMailboxGraphPairRequest(string Scope, string SourceS
         (SourceSha == "" || MultiMailboxSourceEditRequest.IsSha(SourceSha)) &&
         (RuntimeSha == "" || MultiMailboxSourceEditRequest.IsSha(RuntimeSha)) &&
         (Scope == "source" ? SourceSha != "" : RuntimeSha != "") &&
-        Donor.Status == "public_certificate_read" && Donor.Signer == "software" &&
+        Donor.Status == "public_certificate_read" && Donor.Signer is "software" or "hardware" &&
         Donor.Tenant is Guid tenant && tenant != Guid.Empty && Donor.Client is Guid client && client != Guid.Empty &&
         InstalledPostfixRoute.ValidAddress(Donor.Mailbox) && Donor.Sender == Donor.Mailbox &&
         MultiMailboxSourceEditRequest.IsSha(Donor.IdentitySha) &&
@@ -35,7 +35,7 @@ internal sealed record MultiMailboxGraphPairRequest(string Scope, string SourceS
     }
 }
 
-internal sealed record MultiMailboxGraphPair(string PairSha, string CandidateMailbox, EntraCertificateEvidence Evidence)
+internal sealed record MultiMailboxGraphPair(string PairSha, string CandidateMailbox, EntraCertificateEvidence Evidence, string CandidateSigner)
 {
     internal static MultiMailboxGraphPair Parse(string json, MultiMailboxGraphPairRequest req)
     {
@@ -44,7 +44,7 @@ internal sealed record MultiMailboxGraphPair(string PairSha, string CandidateMai
         using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 4 });
         var root = doc.RootElement;
         string[] fields = ["version", "status", "nonce", "scope", "source_sha", "runtime_sha", "tenant",
-            "client", "donor_mailbox", "candidate_mailbox", "candidate_file", "donor_sha",
+            "client", "donor_mailbox", "candidate_mailbox", "candidate_file", "donor_signer", "candidate_signer", "donor_sha",
             "candidate_sha", "donor_cert_sha", "candidate_cert_sha", "donor_der", "candidate_der",
             "changes", "mail_sent", "cloud_changed", "private_key_exported", "pair_sha"];
         if (root.ValueKind != JsonValueKind.Object ||
@@ -60,6 +60,7 @@ internal sealed record MultiMailboxGraphPair(string PairSha, string CandidateMai
             Read("client") != req.Donor.Client!.Value.ToString("D") ||
             Read("donor_mailbox") != req.Donor.Mailbox || Read("donor_sha") != req.Donor.IdentitySha ||
             Read("donor_cert_sha") != req.Donor.CertificateSha || Read("candidate_file") != req.CandidateFile ||
+            Read("donor_signer") != req.Donor.Signer || Read("candidate_signer") is not ("software" or "hardware") ||
             new[] {"changes", "mail_sent", "cloud_changed", "private_key_exported"}
                 .Any(k => root.GetProperty(k).ValueKind != JsonValueKind.False))
             throw new InvalidDataException("Graph pair scope or context mismatch.");
@@ -87,7 +88,7 @@ internal sealed record MultiMailboxGraphPair(string PairSha, string CandidateMai
         CheckDer(newDer, candidateCertSha);
         return new(pair, candidate, new(req.Donor.Tenant.Value, req.Donor.Client.Value,
             req.Donor.IdentitySha, candidateSha, req.Donor.CertificateSha, candidateCertSha, oldDer, newDer,
-            EntraGraphCertificateAddKeyClient.MultiMailboxLabel));
+            EntraGraphCertificateAddKeyClient.MultiMailboxLabel), Read("candidate_signer"));
     }
 
     internal static bool SelfTest()
@@ -108,6 +109,7 @@ internal sealed record MultiMailboxGraphPair(string PairSha, string CandidateMai
             scope=req.Scope, source_sha=req.SourceSha, runtime_sha=req.RuntimeSha,
             tenant=donor.Tenant!.Value.ToString("D"), client=donor.Client!.Value.ToString("D"),
             donor_mailbox=donor.Mailbox, candidate_mailbox="bob@example.org", candidate_file=req.CandidateFile,
+            donor_signer="software", candidate_signer="software",
             donor_sha=donor.IdentitySha, candidate_sha=new string('e',64), donor_cert_sha=donor.CertificateSha,
             candidate_cert_sha=Hash(next.RawData), donor_der=Convert.ToBase64String(old.RawData),
             candidate_der=Convert.ToBase64String(next.RawData), changes=false, mail_sent=false,
@@ -124,6 +126,11 @@ internal sealed record MultiMailboxGraphPair(string PairSha, string CandidateMai
             try { Parse(bad, req); return false; }
             catch (InvalidDataException) { }
         }
+        string hardwareJson=json.Replace("\"candidate_signer\":\"software\"","\"candidate_signer\":\"hardware\"")
+            .Replace("\"donor_signer\":\"software\"","\"donor_signer\":\"hardware\"");
+        var hardwareReq=req with { Donor=donor with { Signer="hardware" } };
+        if (!hardwareReq.Valid || Parse(hardwareJson,hardwareReq).CandidateSigner!="hardware") return false;
+        try { Parse(hardwareJson,req);return false; } catch(InvalidDataException) { }
         return true;
     }
 }

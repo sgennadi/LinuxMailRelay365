@@ -677,6 +677,8 @@ internal static class EmbeddedAssets
                Encode(EntraPublicCertificateExporter) + "\nLMR365_SOURCE_CERT\n" +
                "base64 -d > \"$work/inspect-multi-mailbox-identities.py\" <<'LMR365_SOURCE_INVENTORY'\n" +
                Encode(MultiMailboxIdentityInspector) + "\nLMR365_SOURCE_INVENTORY\n" +
+               "base64 -d > \"$work/manage-tpm-oauth-key.py\" <<'LMR365_GRAPH_TPM'\n" +
+               Encode(TpmOauthProvision) + "\nLMR365_GRAPH_TPM\n" +
                "base64 -d > \"$work/review-multi-mailbox-graph-pair.py\" <<'LMR365_SOURCE_EDITOR'\n" +
                Encode(MultiMailboxGraphPairReviewer) + "\nLMR365_SOURCE_EDITOR\n" +
                "printf '%s' '" + Encode(request) + "' | base64 -d | python3 \"$work/review-multi-mailbox-graph-pair.py\"\n";

@@ -23,7 +23,8 @@ internal sealed partial class MainForm
                 "Tenant: " + donor.Tenant + Environment.NewLine + "Application: " + donor.Client +
                 Environment.NewLine + Environment.NewLine +
                 "Enter the prepared mbx-...json identity for another mailbox in the SAME Entra application. " +
-                "The selected existing software certificate must still be registered and valid. " +
+                "The selected existing software or managed TPM certificate must still be registered and valid. " +
+                "TPM keys remain on Linux; unsupported hardware providers are refused. " +
                 "Graph addKey appends only a public certificate. The new key can authenticate as the same app and inherits its existing authority. " +
                 "No mailbox permission is granted or narrowed here. For a new app without a valid certificate, " +
                 "export and upload the first certificate manually in Entra; no credential collection replacement is attempted." };

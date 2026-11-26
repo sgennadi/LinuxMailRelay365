@@ -680,3 +680,23 @@ TPM, confined systemd-domain, live Enforcing VM and tenant acceptance remain
 open. The Windows new-app self-test now mutates certificate JSON fields
 structurally instead of replacing potentially escaped Base64 text; production
 receipt checks are not weakened.
+
+
+## Register managed TPM public certificates in existing Entra applications
+
+Register prepared certificate now accepts software and LinuxMailRelay365-managed
+TPM identities on either side of the same-app pair. Only the exact per-identity
+provider configuration and managed persistent handle range are accepted;
+PKCS#11, wrapped blobs and arbitrary provider configs remain manual. Preview
+is public evidence only and binds both signer types, identity hashes and
+certificate digests. After explicit approval, a TPM candidate must pass a
+fresh local PS256 check and a TPM donor signs the fixed short-lived Graph
+RS256 proof as m365mailer, using PKCS#1 v1.5 (not transport PS256). The local
+signature is verified against reviewed DER and native C# independently
+verifies proof, current Graph certificate and plan before addKey. The
+software donor path remains intact. No private key export, fallback, credential
+replacement, SMTP or route changes. Primary/sidecar hardware donor support
+is not changed. Existing valid registered donor certificate is required;
+real TPM/provider and live tenant acceptance remain open. Tests cover mixed
+pair approval, config tampering, read-only preview and mocked RS256 TPM
+commands; these are not a physical TPM signature test.
