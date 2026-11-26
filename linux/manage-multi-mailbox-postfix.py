@@ -29,6 +29,8 @@ RUNTIME = Path("/etc/linuxmailrelay365/oauth-runtime-senders.tsv")
 RECOVERY = Path("/var/backups/linuxmailrelay365-multi-oauth")
 LOCK = Path("/run/linuxmailrelay365-sidecar-auth.lock")
 ACTIVE = RECOVERY / "active.json"
+SELINUX = Path("/sys/fs/selinux/enforce")
+LABEL_ATTR = "security.selinux"
 FILES = ("audit-oauth-sender-map.py", "audit-oauth-ingress.py",
          "m365_xoauth2_transport.py", "m365_hardware_signer.py",
          "m365-multi-mailbox-transport.py",
@@ -82,6 +84,176 @@ def read(path, maximum, modes=(0o600, 0o640, 0o644, 0o755)):
         return st, raw
     finally:
         os.close(fd)
+
+
+def selinux_mode():
+    try:
+        value = SELINUX.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return "inactive"
+    if value not in ("0","1"):
+        raise Refused("selinux_mode_unverified")
+    return "enforcing" if value == "1" else "permissive"
+
+
+def checked_context(raw):
+    if raw.endswith(b"\0"):
+        raw = raw[:-1]
+    if len(raw) > 256 or not re.fullmatch(
+            rb"[A-Za-z0-9_]+:object_r:[A-Za-z0-9_]+:s[0-9][A-Za-z0-9_:.,-]*", raw):
+        raise Refused("selinux_context_invalid")
+    if raw.split(b":")[2] in (b"default_t",b"unlabeled_t",b"file_t",b"tmp_t",b"user_tmp_t",b"unconfined_t"):
+        raise Refused("selinux_unsafe_context_type")
+    return raw.decode("ascii")
+
+
+def expected_label(path, directory=False):
+    for candidate in (Path("/usr/sbin/matchpathcon"),Path("/usr/bin/matchpathcon")):
+        try:
+            tool = candidate.resolve(strict=True)
+        except FileNotFoundError:
+            continue
+        secure_dir(tool.parent)
+        st = tool.lstat()
+        if not stat.S_ISREG(st.st_mode) or st.st_uid or st.st_mode & 0o022 or not st.st_mode & 0o111:
+            raise Refused("selinux_untrusted_policy_tool")
+        reply = subprocess.run([str(tool),"-N","-n","-m","dir" if directory else "file",str(path)],
+                               stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=15,
+                               env={"LC_ALL":"C","PATH":"/usr/sbin:/usr/bin:/sbin:/bin"},check=False)
+        if reply.returncode or len(reply.stdout)>512 or len(reply.stdout.splitlines())!=1:
+            raise Refused("selinux_policy_lookup_failed")
+        return checked_context(reply.stdout.splitlines()[0])
+    raise Refused("selinux_matchpathcon_required")
+
+
+def label_fd(fd):
+    if set(os.listxattr(fd)) != {LABEL_ATTR}:
+        raise Refused("selinux_missing_label_or_foreign_xattrs")
+    return checked_context(os.getxattr(fd,LABEL_ATTR))
+
+
+def verify_label(path, expected, directory=False):
+    secure_dir(path if directory else path.parent)
+    fd = os.open(str(path),os.O_RDONLY|getattr(os,"O_NOFOLLOW",0)|
+                 (os.O_DIRECTORY if directory else os.O_NONBLOCK))
+    try:
+        st, live = os.fstat(fd), path.lstat()
+        if (not (stat.S_ISDIR(st.st_mode) if directory else stat.S_ISREG(st.st_mode) and st.st_nlink==1)
+                or st.st_uid or st.st_mode & 0o022 or (st.st_dev,st.st_ino)!=(live.st_dev,live.st_ino)
+                or label_fd(fd)!=expected):
+            raise Refused("selinux_existing_context_mismatch")
+    finally:
+        os.close(fd)
+
+
+def set_label(fd, expected):
+    if not set(os.listxattr(fd)) <= {LABEL_ATTR}:
+        raise Refused("selinux_foreign_xattrs")
+    os.setxattr(fd,LABEL_ATTR,expected.encode("ascii")+b"\0")
+    if label_fd(fd)!=expected:
+        raise Refused("selinux_new_context_not_verified")
+
+
+def present(path):
+    return os.path.lexists(str(path))
+
+
+def policy_snapshot(targets):
+    # All callers supply fixed managed paths or a verified private backup.
+    mode = selinux_mode()
+    labels = {}
+    if mode != "inactive":
+        for path,directory in targets:
+            expected = expected_label(path,directory)
+            if present(path):
+                verify_label(path,expected,directory)
+            labels[str(path)] = [directory,expected]
+    if selinux_mode()!=mode:
+        raise Refused("selinux_mode_changed")
+    return {"mode":mode,"labels":labels}
+
+
+def require_policy(policy):
+    targets = [(Path(name),item[0]) for name,item in policy["labels"].items()]
+    if policy_snapshot(targets)!=policy:
+        raise Refused("selinux_policy_changed")
+
+
+def route_policy_targets():
+    return [(CONF,True),(CONF/"main.cf",False),(CONF/"master.cf",False),
+            (RUNTIME.parent,True),(RUNTIME,False),(TARGET.parent,True),(TARGET,True),
+            (RECOVERY.parent,True),(RECOVERY,True),(ACTIVE,False)] + \
+           [(TARGET/name,False) for name in FILES]
+
+
+def policy_evidence(policy):
+    if policy["mode"]=="inactive":
+        return {}
+    return {"selinux_mode":policy["mode"],"selinux_policy_sha256":
+            digest(json.dumps(policy,sort_keys=True,separators=(",",":")).encode("ascii"))}
+
+
+def reviewed_label(policy,path):
+    if policy["mode"]=="inactive":
+        return None
+    return policy["labels"][str(path)][1]
+
+
+def sync_dir(path):
+    fd=os.open(str(path),os.O_RDONLY|os.O_DIRECTORY|getattr(os,"O_NOFOLLOW",0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def label_new_directory(path,destination,mode):
+    if mode=="inactive":
+        return
+    if selinux_mode()!=mode:
+        raise Refused("selinux_mode_changed")
+    expected=expected_label(destination,True)
+    fd=os.open(str(path),os.O_RDONLY|os.O_DIRECTORY|getattr(os,"O_NOFOLLOW",0))
+    try:
+        st,live=os.fstat(fd),path.lstat()
+        if st.st_uid or st.st_mode & 0o022 or (st.st_dev,st.st_ino)!=(live.st_dev,live.st_ino):
+            raise Refused("unsafe_new_directory")
+        set_label(fd,expected)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    verify_label(path,expected,True)
+
+
+def write_new(path,data,mode,permission=0o600,group=None,destination=None):
+    # Exclusive new inode. A staged runtime file gets its final path label.
+    expected=expected_label(destination or path) if mode!="inactive" else None
+    if selinux_mode()!=mode:
+        raise Refused("selinux_mode_changed")
+    fd=os.open(str(path),os.O_CREAT|os.O_EXCL|os.O_WRONLY|getattr(os,"O_NOFOLLOW",0),0o600)
+    with os.fdopen(fd,"wb") as stream:
+        if group is not None:
+            os.fchown(stream.fileno(),0,group)
+        if expected is not None:
+            set_label(stream.fileno(),expected)
+        os.fchmod(stream.fileno(),permission)
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    if expected is not None:
+        verify_label(path,expected)
+    st,actual=read(path,max(len(data),1),(permission,))
+    if actual!=data or (group is not None and st.st_gid!=group):
+        raise Refused("new_route_file_readback_failed")
+
+
+def verify_backup(folder,names,mode):
+    if mode=="inactive":
+        return
+    if selinux_mode()!=mode:
+        raise Refused("selinux_mode_changed")
+    for path,directory in [(RECOVERY,True),(folder,True)]+[(folder/name,False) for name in names]:
+        verify_label(path,expected_label(path,directory),directory)
 
 
 def import_checked(path, label):
@@ -246,9 +418,12 @@ def plan():
                 "config": {key: digest(item[1]) for key, item in originals.items()},
                 "identities": sorted(identities), "primary": primary,
                 "mailboxes": len(set(row[2] for row in rows))}
+    policy = policy_snapshot(route_policy_targets()+[(MAP,False)])
+    evidence.update(policy_evidence(policy))
+    require_policy(policy)
     plan_sha = digest(json.dumps(evidence, sort_keys=True,
                                  separators=(",", ":")).encode("ascii"))
-    return {"sha": plan_sha, "evidence": evidence, "source": source,
+    return {"sha": plan_sha, "evidence": evidence, "policy": policy, "source": source,
             "map": source_map, "originals": originals,
             "main": replace_settings(originals["main.cf"][1]),
             "master": master_service(originals["master.cf"][1],
@@ -257,24 +432,42 @@ def plan():
 
 def replace_file(path, data, original):
     metadata, _ = original
+    mode=selinux_mode()
+    expected=expected_label(path) if mode!="inactive" else None
+    if expected is not None:
+        verify_label(path,expected)
     attrs = os.listxattr(str(path), follow_symlinks=False)
-    if any(x != "security.selinux" for x in attrs):
+    if any(x != LABEL_ATTR for x in attrs):
         raise Refused("unsupported_extended_config_attributes")
     handle, temporary = tempfile.mkstemp(prefix=".lmr365-multi-", dir=str(path.parent))
     try:
         os.fchown(handle, metadata.st_uid, metadata.st_gid)
         os.fchmod(handle, stat.S_IMODE(metadata.st_mode))
-        if "security.selinux" in attrs:
-            label = os.getxattr(str(path), "security.selinux",
-                                follow_symlinks=False)
-            os.setxattr(temporary, "security.selinux", label)
+        if expected is not None:
+            set_label(handle,expected)
+        elif LABEL_ATTR in attrs:
+            label = os.getxattr(str(path), LABEL_ATTR, follow_symlinks=False)
+            os.setxattr(handle, LABEL_ATTR, label)
         with os.fdopen(handle, "wb", closefd=False) as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        if selinux_mode()!=mode:
+            raise Refused("selinux_mode_changed")
+        if expected is not None:
+            if expected_label(path)!=expected or label_fd(handle)!=expected:
+                raise Refused("selinux_policy_changed")
+            verify_label(path,expected)
+        current,current_data=read(path,1048576)
+        if (current.st_dev,current.st_ino,current.st_ctime_ns,current.st_gid,current.st_mode,current_data)!=(
+                metadata.st_dev,metadata.st_ino,metadata.st_ctime_ns,metadata.st_gid,metadata.st_mode,original[1]):
+            raise Refused("config_changed_before_replace")
         os.close(handle)
         handle = -1
         os.replace(temporary, str(path))
+        sync_dir(path.parent)
+        if expected is not None:
+            verify_label(path,expected)
         if digest(read(path, 1048576)[1]) != digest(data):
             raise Refused("config_write_verification_failed")
     finally:
@@ -304,54 +497,74 @@ def apply_offline(review_sha, confirm):
         offline()
         if plan()["sha"] != review_sha:
             raise Refused("plan_changed_after_shutdown")
+        policy=plan_data["policy"]
+        mode=policy["mode"]
+        require_policy(policy)
         secure_dir(RECOVERY.parent)
-        RECOVERY.mkdir(mode=0o700, exist_ok=True)
+        if not present(RECOVERY):
+            RECOVERY.mkdir(mode=0o700)
+            label_new_directory(RECOVERY,RECOVERY,mode)
+            sync_dir(RECOVERY.parent)
         secure_dir(RECOVERY)
         if stat.S_IMODE(RECOVERY.lstat().st_mode) != 0o700:
             raise Refused("backup_root_not_private")
         safety = Path(tempfile.mkdtemp(prefix="pre-multi-", dir=str(RECOVERY)))
+        label_new_directory(safety,safety,mode)
         for name, (_, raw) in plan_data["originals"].items():
-            with (safety / name).open("xb") as stream:
-                os.chmod(str(safety / name), 0o600)
-                stream.write(raw)
-                stream.flush()
-                os.fsync(stream.fileno())
-        with (safety / "manifest.json").open("x", encoding="ascii") as stream:
-            os.chmod(str(safety / "manifest.json"), 0o600)
-            json.dump(plan_data["evidence"], stream, sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
+            write_new(safety/name,raw,mode)
+        manifest=json.dumps(plan_data["evidence"],sort_keys=True).encode("ascii")
+        write_new(safety/"manifest.json",manifest,mode)
+        verify_backup(safety,("main.cf","master.cf","manifest.json"),mode)
+        sync_dir(safety)
+        sync_dir(RECOVERY)
+        require_policy(policy)
+        if plan()["sha"]!=review_sha:
+            raise Refused("plan_changed_during_safety_backup")
         print("MULTI_OAUTH_SAFETY_BACKUP=" + str(safety), flush=True)
         print("MULTI_OAUTH_RESTORE_BACKUP_ID=" + safety.name, flush=True)
         staging = Path(tempfile.mkdtemp(prefix=".multi-oauth-", dir=str(TARGET.parent)))
         try:
-            os.chmod(str(staging), 0o755)
-            for name, data in plan_data["source"].items():
-                with (staging / name).open("xb") as stream:
-                    os.chmod(str(staging / name), 0o644)
-                    stream.write(data)
-                    stream.flush()
-                    os.fsync(stream.fileno())
+            label_new_directory(staging,TARGET,mode)
+            for name,data in plan_data["source"].items():
+                write_new(staging/name,data,mode,0o644,destination=TARGET/name)
+            require_policy(policy)
+            if mode!="inactive":
+                verify_label(staging,reviewed_label(policy,TARGET),True)
+                for name in FILES:
+                    verify_label(staging/name,reviewed_label(policy,TARGET/name))
+            if present(TARGET):
+                raise Refused("runtime_target_appeared")
+            os.chmod(str(staging),0o755)
+            sync_dir(staging)
             staging.rename(TARGET)
             modified.append(("target", TARGET))
+            sync_dir(TARGET.parent)
+            require_policy(policy)
         finally:
             if staging.exists():
                 shutil.rmtree(str(staging))
-        group = grp.getgrnam("m365mailer").gr_gid
-        mapfd = os.open(str(RUNTIME), os.O_CREAT | os.O_EXCL | os.O_WRONLY |
-                        getattr(os, "O_NOFOLLOW", 0), 0o640)
-        modified.append(("map", RUNTIME))
-        with os.fdopen(mapfd, "wb") as stream:
-            os.fchown(stream.fileno(), 0, group)
-            os.fchmod(stream.fileno(), 0o640)
-            stream.write(plan_data["map"])
-            stream.flush()
-            os.fsync(stream.fileno())
-        if digest(read(RUNTIME, 65536, (0o640,))[1]) != \
-                plan_data["evidence"]["map_sha256"]:
+        group=grp.getgrnam("m365mailer").gr_gid
+        require_policy(policy)
+        # Create under a private scratch name, then atomically publish without
+        # clobbering any runtime map that appeared since the review.
+        mapstage=Path(tempfile.mkdtemp(prefix=".multi-map-",dir=str(RUNTIME.parent)))
+        try:
+            write_new(mapstage/"map",plan_data["map"],mode,0o640,group,RUNTIME)
+            require_policy(policy)
+            if mode!="inactive":
+                verify_label(mapstage/"map",reviewed_label(policy,RUNTIME))
+            os.link(str(mapstage/"map"),str(RUNTIME),follow_symlinks=False)
+            modified.append(("map",RUNTIME))
+            (mapstage/"map").unlink()
+            sync_dir(RUNTIME.parent)
+        finally:
+            shutil.rmtree(str(mapstage))
+        require_policy(policy)
+        if digest(read(RUNTIME,65536,(0o640,))[1])!=plan_data["evidence"]["map_sha256"]:
             raise Refused("runtime_map_changed")
         for name in ("main.cf", "master.cf"):
             offline()
+            require_policy(policy)
             current = read(CONF / name, 1048576)
             if digest(current[1]) != plan_data["evidence"]["config"][name]:
                 raise Refused("live_config_changed_during_offline_apply")
@@ -359,7 +572,9 @@ def apply_offline(review_sha, confirm):
             replace_file(CONF / name, plan_data["main"] if name == "main.cf"
                          else plan_data["master"], current)
         offline()
+        require_policy(policy)
         run(["postfix", "-c", str(CONF), "check"])
+        require_policy(policy)
         if [digest(read(PRIMARY / x, 1048576)[1]) for x in
                 ("main.cf", "master.cf")] != plan_data["evidence"]["primary"]:
             raise Refused("primary_postfix_changed")
@@ -378,18 +593,23 @@ def apply_offline(review_sha, confirm):
             "source": plan_data["evidence"]["source"],
             "primary": plan_data["evidence"]["primary"]
         }
-        markerfd = os.open(str(ACTIVE), os.O_CREAT | os.O_EXCL | os.O_WRONLY |
-                           getattr(os, "O_NOFOLLOW", 0), 0o600)
-        modified.append(("marker", ACTIVE))
-        with os.fdopen(markerfd, "wb") as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write((json.dumps(record, sort_keys=True, separators=(",", ":")) +
-                          "\n").encode("ascii"))
-            stream.flush()
-            os.fsync(stream.fileno())
-        if digest(read(ACTIVE, 4096, (0o600,))[1]) != digest(
-                (json.dumps(record, sort_keys=True, separators=(",", ":")) +
-                 "\n").encode("ascii")):
+        require_policy(policy)
+        verify_backup(safety,("main.cf","master.cf","manifest.json"),mode)
+        marker_bytes=(json.dumps(record,sort_keys=True,separators=(",",":"))+"\n").encode("ascii")
+        markerstage=Path(tempfile.mkdtemp(prefix=".active-",dir=str(RECOVERY)))
+        try:
+            write_new(markerstage/"marker",marker_bytes,mode,destination=ACTIVE)
+            require_policy(policy)
+            if mode!="inactive":
+                verify_label(markerstage/"marker",reviewed_label(policy,ACTIVE))
+            os.link(str(markerstage/"marker"),str(ACTIVE),follow_symlinks=False)
+            modified.append(("marker",ACTIVE))
+            (markerstage/"marker").unlink()
+            sync_dir(RECOVERY)
+        finally:
+            shutil.rmtree(str(markerstage))
+        require_policy(policy)
+        if read(ACTIVE,4096,(0o600,))[1]!=marker_bytes:
             raise Refused("active_route_marker_verification_failed")
         return plan_data["evidence"]
     except Exception:
@@ -399,20 +619,27 @@ def apply_offline(review_sha, confirm):
             if modified:
                 offline()
             if plan_data and modified:
+                require_policy(plan_data["policy"])
                 for kind, thing in reversed(modified):
                     if kind == "marker":
                         if ACTIVE.is_file() and not ACTIVE.is_symlink():
                             ACTIVE.unlink()
                     elif kind == "config":
-                        replace_file(CONF / thing,
-                                     plan_data["originals"][thing][1],
-                                     plan_data["originals"][thing])
+                        path=CONF/thing
+                        current=read(path,1048576)
+                        before=plan_data["originals"][thing][1]
+                        after=plan_data["main"] if thing=="main.cf" else plan_data["master"]
+                        if current[1] not in (before,after):
+                            raise Refused("concurrent_change_blocks_rollback")
+                        if current[1]!=before:
+                            replace_file(path,before,current)
                     elif kind == "map":
                         if RUNTIME.is_file() and not RUNTIME.is_symlink():
                             RUNTIME.unlink()
                     elif kind == "target":
                         if TARGET.is_dir() and not TARGET.is_symlink():
                             shutil.rmtree(str(TARGET))
+                require_policy(plan_data["policy"])
         except Exception:
             print("MULTI_OAUTH_ROLLBACK=unverified_manual_recovery_required",
                   file=sys.stderr)

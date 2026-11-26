@@ -1,6 +1,8 @@
 """Offline-only Postfix multi-OAuth route installer static and failure tests."""
 import importlib.util
+import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -105,6 +107,59 @@ class MultiPostfixInstallerTests(unittest.TestCase):
             with self.assertRaisesRegex(mod.Refused, "root_required"):
                 mod.plan()
             read.assert_not_called()
+
+    def test_selinux_context_parser(self):
+        self.assertEqual(mod.checked_context(b"system_u:object_r:etc_t:s0\0"),"system_u:object_r:etc_t:s0")
+        for raw in (b"",b"system_u:object_r:tmp_t:s0",b"system_u:object_r:unlabeled_t:s0"):
+            with self.assertRaises(mod.Refused):
+                mod.checked_context(raw)
+
+    @unittest.skipUnless(os.geteuid()==0 and os.environ.get("GITHUB_ACTIONS")=="true"
+                         and os.environ.get("RUNNER_ENVIRONMENT")=="github-hosted",
+                         "disposable root CI only")
+    def test_active_policy_staged_runtime_and_config_publication(self):
+        # Real file ownership, xattrs and fsync with synthetic labels.
+        with tempfile.TemporaryDirectory(prefix="lmr365-route-policy-",dir="/var/lib") as folder:
+            base=Path(folder)
+            modefile=base/"enforce"
+            modefile.write_text("1")
+            label="system_u:object_r:etc_t:s0"
+            code="system_u:object_r:bin_t:s0"
+            attr="user.lmr365_test_context"
+            config=base/"main.cf"
+            config.write_bytes(b"before\n")
+            config.chmod(0o640)
+            os.setxattr(str(config),attr,label.encode()+b"\0")
+            target=base/"runtime"
+            stage=base/"stage"
+            stage.mkdir(mode=0o700)
+            overrides={}
+            def expected(path,directory=False):
+                return overrides.get(path,code if path==target or path.parent==target else label)
+            with mock.patch.multiple(mod,SELINUX=modefile,LABEL_ATTR=attr), \
+                 mock.patch.object(mod,"expected_label",side_effect=expected):
+                policy=mod.policy_snapshot([(config,False),(target,True),(target/"module.py",False)])
+                self.assertEqual(policy["mode"],"enforcing")
+                mod.label_new_directory(stage,target,"enforcing")
+                mod.write_new(stage/"module.py",b"code\n","enforcing",0o644,destination=target/"module.py")
+                mod.require_policy(policy)
+                stage.rename(target)
+                mod.require_policy(policy)
+                mod.verify_label(target/"module.py",code)
+                before=mod.read(config,1024)
+                mod.replace_file(config,b"after\n",before)
+                self.assertEqual(config.read_bytes(),b"after\n")
+                mod.require_policy(policy)
+                overrides[config]=code
+                with self.assertRaises(mod.Refused):
+                    mod.require_policy(policy)
+                with self.assertRaises(mod.Refused):
+                    mod.replace_file(config,b"should not write\n",mod.read(config,1024))
+                self.assertEqual(config.read_bytes(),b"after\n")
+                overrides.clear()
+                modefile.write_text("0")
+                with self.assertRaisesRegex(mod.Refused,"policy_changed"):
+                    mod.require_policy(policy)
 
     def test_no_background_start_network_calls_or_primary_mta_writes(self):
         text = SOURCE.read_text(encoding="utf-8")

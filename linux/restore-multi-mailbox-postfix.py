@@ -107,7 +107,7 @@ def checked_record():
     install.secure_dir(backup_dir)
     if stat.S_IMODE(backup_dir.lstat().st_mode) != 0o700:
         raise Refused("recovery_backup_not_private")
-    manifest_info, manifest_data = install.read(backup_dir / "manifest.json", 4096, (0o600,))
+    manifest_info, manifest_data = install.read(backup_dir / "manifest.json", 16384, (0o600,))
     manifest = load_record(manifest_data)
     if not isinstance(manifest, dict) or manifest.get("version") != 1 or \
             manifest.get("config") != record["before"] or \
@@ -179,12 +179,17 @@ def preview():
         "proof": file_evidence(*proof) if proof is not None else None,
         "primary": primary,
     }
+    policy=install.policy_snapshot(install.route_policy_targets()+
+        [(backup_dir,True),(backup_dir/"main.cf",False),(backup_dir/"master.cf",False),
+         (backup_dir/"manifest.json",False)]+([(PROOF,False)] if proof is not None else []))
+    review.update(install.policy_evidence(policy))
+    install.require_policy(policy)
     reviewed_sha = install.digest(json.dumps(
         review, sort_keys=True, separators=(",", ":")).encode("ascii"))
     return {"sha": reviewed_sha, "backup_id": record["backup_id"],
             "record": record, "original": original, "current": current,
             "marker": (marker_stat, marker_bytes), "map": (map_stat, map_bytes),
-            "proof": proof, "source": source, "review": review}
+            "proof": proof, "source": source, "review": review, "policy":policy}
 
 
 def locked():
@@ -208,6 +213,8 @@ def write_emergency(view):
     install.secure_dir(install.RECOVERY)
     folder = Path(tempfile.mkdtemp(prefix=SAFETY_PREFIX, dir=str(install.RECOVERY)))
     os.chmod(str(folder), 0o700)
+    mode=view["policy"]["mode"]
+    install.label_new_directory(folder,folder,mode)
     copies = {name: view["current"][name][1] for name in ("main.cf", "master.cf")}
     copies.update({"installed-marker.json": view["marker"][1],
                    "runtime-map.tsv": view["map"][1]})
@@ -215,14 +222,21 @@ def write_emergency(view):
         copies["ingress-proof.json"] = view["proof"][1]
     for name, data in copies.items():
         path = folder / name
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                     getattr(os, "O_NOFOLLOW", 0), 0o600)
-        with os.fdopen(fd, "wb") as writer:
-            writer.write(data)
-            writer.flush()
-            os.fsync(writer.fileno())
-        if install.digest(install.read(path, 1048576, (0o600,))[1]) != install.digest(data):
+        # Keep legacy inactive fixtures and mode behavior; active mode
+        # requires exact target policy and readback for each new inode.
+        if mode!="inactive":
+            install.write_new(path,data,mode)
+        else:
+            fd=os.open(str(path),os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,"O_NOFOLLOW",0),0o600)
+            with os.fdopen(fd,"wb") as writer:
+                writer.write(data)
+                writer.flush()
+                os.fsync(writer.fileno())
+        if install.digest(install.read(path,1048576,(0o600,))[1])!=install.digest(data):
             raise Refused("emergency_restore_snapshot_not_verified")
+    install.verify_backup(folder,tuple(copies),mode)
+    install.sync_dir(folder)
+    install.sync_dir(install.RECOVERY)
     return folder
 
 
@@ -251,6 +265,16 @@ def apply_offline(reviewed_sha, backup_id, confirm):
         install.offline()  # unit stopped, queue empty, dedicated port closed
         if preview()["sha"] != reviewed_sha:
             raise Refused("restore_review_changed_while_stopping_sidecar")
+        policy=state["policy"]
+        install.require_policy(policy)
+        # Existing quarantine uses atomic rename. Refuse cross-filesystem
+        # restore BEFORE modifying main.cf/master.cf rather than copying live files.
+        retirement=[install.RUNTIME,install.TARGET,install.ACTIVE]
+        if state["proof"] is not None:
+            retirement.append(PROOF)
+        device=install.RECOVERY.stat().st_dev
+        if any(path.lstat().st_dev!=device for path in retirement):
+            raise Refused("quarantine_cross_filesystem_requires_manual_review")
         safety = write_emergency(state)
         print("MULTI_RESTORE_SAFETY_BACKUP=" + str(safety), flush=True)
         # Never modify files without an intact verified rescue snapshot.
@@ -258,11 +282,14 @@ def apply_offline(reviewed_sha, backup_id, confirm):
             raise Refused("restore_review_changed_during_safety_backup")
         for name in ("main.cf", "master.cf"):
             install.offline()
+            install.require_policy(policy)
             current = unchanged(install.CONF / name, state["current"][name])
             writes.append(name)  # rollback even if post-write verify fails
             install.replace_file(install.CONF / name, state["original"][name][1], current)
         install.offline()
+        install.require_policy(policy)
         install.run(["postfix", "-c", str(install.CONF), "check"])
+        install.require_policy(policy)
         for name in ("main.cf", "master.cf"):
             if install.digest(install.read(install.CONF / name, 1048576)[1]) != \
                     state["record"]["before"][name]:
@@ -282,20 +309,48 @@ def apply_offline(reviewed_sha, backup_id, confirm):
         for old, new, before, limit, mode in retired_paths:
             install.offline()
             unchanged(old, before, limit, mode)
+            install.require_policy(policy)
+            if install.present(new):
+                raise Refused("quarantine_destination_exists")
             os.rename(str(old), str(new))
             retired.append((old, new))
+            if policy["mode"]!="inactive":
+                install.verify_label(new,install.reviewed_label(policy,old))
+            install.sync_dir(old.parent)
+            install.sync_dir(new.parent)
         install.offline()
         install.secure_dir(install.TARGET)
         for name, evidence in state["source"].items():
             actual = install.read(install.TARGET / name, 262144, (0o644,))
             if evidence != file_evidence(*actual):
                 raise Refused("installed_runtime_changed_during_retirement")
-        os.rename(str(install.TARGET), str(safety / "retired-runtime-code"))
-        retired.append((install.TARGET, safety / "retired-runtime-code"))
+        install.require_policy(policy)
+        kept_code=safety/"retired-runtime-code"
+        if install.present(kept_code):
+            raise Refused("quarantine_destination_exists")
+        os.rename(str(install.TARGET),str(kept_code))
+        retired.append((install.TARGET,kept_code))
+        if policy["mode"]!="inactive":
+            install.verify_label(kept_code,install.reviewed_label(policy,install.TARGET),True)
+            for name in install.FILES:
+                install.verify_label(kept_code/name,install.reviewed_label(policy,install.TARGET/name))
+        install.sync_dir(install.TARGET.parent)
+        install.sync_dir(safety)
         install.offline()
         unchanged(install.ACTIVE, state["marker"], 4096, 0o600)
-        os.rename(str(install.ACTIVE), str(safety / "retired-active.json"))
-        retired.append((install.ACTIVE, safety / "retired-active.json"))
+        install.require_policy(policy)
+        kept_marker=safety/"retired-active.json"
+        if install.present(kept_marker):
+            raise Refused("quarantine_destination_exists")
+        os.rename(str(install.ACTIVE),str(kept_marker))
+        retired.append((install.ACTIVE,kept_marker))
+        if policy["mode"]!="inactive":
+            install.verify_label(kept_marker,install.reviewed_label(policy,install.ACTIVE))
+        install.sync_dir(install.RECOVERY)
+        install.sync_dir(safety)
+        install.require_policy(policy)
+        if any(install.present(path) for path in retirement):
+            raise Refused("retirement_readback_failed")
         # The original pre-install backup is retained unchanged, along with
         # a second pre-restore emergency copy of the active configuration.
         return {"backup_id": backup_id, "safety": safety}
@@ -304,6 +359,7 @@ def apply_offline(reviewed_sha, backup_id, confirm):
         try:
             if writes or retired:
                 install.offline()
+                install.require_policy(state["policy"])
                 for original, kept in reversed(retired):
                     if original.exists() or original.is_symlink() or not kept.exists():
                         raise Refused("rollback_quarantine_target_changed")
@@ -321,6 +377,7 @@ def apply_offline(reviewed_sha, backup_id, confirm):
                     if install.digest(install.read(install.CONF / name, 1048576)[1]) != \
                             state["record"]["active"][name]:
                         raise Refused("rollback_active_configuration_not_verified")
+                install.require_policy(state["policy"])
             rollback = "original_active_configuration_verified"
         except Exception:
             pass

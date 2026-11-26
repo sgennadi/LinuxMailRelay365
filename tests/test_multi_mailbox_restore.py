@@ -150,6 +150,21 @@ class MultiMailboxRestoreTests(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
+    def test_restore_plan_binds_selinux_mode_and_refuses_drift(self):
+        # Existing fixture is unprivileged: use a synthetic policy sampler.
+        sample={"mode":"enforcing","labels":{}}
+        with mock.patch.object(install,"policy_snapshot",side_effect=lambda paths:dict(sample)), \
+             mock.patch.object(install,"require_policy"):
+            first=restore.preview()
+            self.assertEqual(first["review"]["selinux_mode"],"enforcing")
+            sample["mode"]="permissive"
+            second=restore.preview()
+            self.assertNotEqual(first["sha"],second["sha"])
+            with self.assertRaisesRegex(restore.Refused,"review_has_changed"):
+                restore.apply_offline(first["sha"],self.backup_id,restore.CONFIRM)
+            self.assertEqual((self.conf/"main.cf").read_bytes(),self.installed["main.cf"])
+            self.assertFalse(list(self.recovery.glob("pre-restore-*")))
+
     def test_active_timer_artifacts_refuse_restore_before_looking_at_snapshot(self):
         for artifact in restore.TIMER_ARTIFACTS:
             with self.subTest(artifact=str(artifact)):

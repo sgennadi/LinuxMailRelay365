@@ -718,3 +718,27 @@ No policy edits, mode changes, runtime map, Postfix reload or cloud changes.
 Tests use synthetic user xattrs and real temporary files. Actual Enforcing
 VM acceptance, runtime route installer/restore label coverage and confined
 service-domain checks remain open.
+
+
+## Offline runtime installation and restore with active SELinux (experimental)
+
+The offline isolated Postfix route installer now binds the active mode and
+expected installed-policy labels for managed config, runtime map, runtime
+code, recovery and marker paths into the approved plan. Existing labels
+must already match. New runtime code is labeled for its final destination
+before publishing; the runtime map and marker use exclusive atomic links.
+Configuration replacement verifies metadata, exact policy and committed
+bytes; private safety copies are labeled and fsynced before changing routes.
+The restore preview independently binds current policy, selected backup and
+optional proof-file labels. New emergency copies are labeled; quarantined
+existing objects retain their original contexts in a private recovery tree
+and are checked after moving. No mass relabel, policy/mode edits or changes
+to the primary Postfix configuration. A cross-filesystem quarantine is now
+refused before modifying configuration. The sidecar must remain stopped,
+queue empty and listener closed. Policy drift refuses the operation; an
+uncertain rollback requires manual review. Synthetic xattr tests are not
+live kernel enforcement or confined service-domain acceptance. Existing
+staged installer scripts do not auto-upgrade; use a fresh supported source
+stage after reviewing existing staged/runtime files. Existing inactive
+marker schema remains unchanged; new evidence is recorded in the backup
+manifest, while restore checks the installed policy independently.
