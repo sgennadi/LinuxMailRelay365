@@ -13,7 +13,6 @@ UMask=0077
 Environment=LC_ALL=C
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/bin/python3 /usr/local/libexec/linuxmailrelay365/test-smtp-acme-renewal.py --live --confirm RUN_ACME_RENEWAL
-ExecStart=/usr/bin/python3 /usr/local/libexec/linuxmailrelay365/manage-smtp-tls-process-renewal.py --profile --confirm PROCESS_RENEWED_TLS
 TimeoutStartSec=1800
 StandardOutput=null
 StandardError=null
