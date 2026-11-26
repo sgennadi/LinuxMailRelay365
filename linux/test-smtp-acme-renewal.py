@@ -14,9 +14,11 @@ def load(name):
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--confirm",required=True)
-    p.add_argument("--live",action="store_true")
+    mode=p.add_mutually_exclusive_group()
+    mode.add_argument("--live",action="store_true")
+    mode.add_argument("--force",action="store_true")
     a=p.parse_args()
-    if os.geteuid()!=0 or a.confirm!=("RUN_ACME_RENEWAL" if a.live else "TEST_ACME_RENEWAL"):
+    if os.geteuid()!=0 or a.confirm!=("FORCE_ACME_RENEWAL" if a.force else "RUN_ACME_RENEWAL" if a.live else "TEST_ACME_RENEWAL"):
         p.error("root and explicit confirmation required")
     profile=load("smtp-tls-renewal-profile")
     profile.load()
@@ -38,11 +40,11 @@ def main():
     if (base/"cli.ini").exists():
         raise ValueError("custom global ACME configuration requires manual review")
     certbot=load("smtp-tls-postfix").trusted_binary("/usr/bin/certbot")
-    result=subprocess.run([certbot,"renew"]+([] if a.live else ["--dry-run"])+["--non-interactive","--no-directory-hooks",
+    result=subprocess.run([certbot,"renew"]+(["--force-renewal"] if a.force else [] if a.live else ["--dry-run"])+["--non-interactive","--no-directory-hooks",
         "--cert-name",name,"--config-dir",str(base),"--work-dir",str(base.parent/"work"),
         "--logs-dir",str(base.parent/"logs")],timeout=1800,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
         env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","LC_ALL":"C"})
-    print(json.dumps({"renewal_exit":result.returncode,"dry_run":not a.live,"activation_requested":False}))
+    print(json.dumps({"renewal_exit":result.returncode,"dry_run":not (a.live or a.force),"forced":a.force,"activation_requested":False}))
     return result.returncode
 if __name__=="__main__":
     raise SystemExit(main())
