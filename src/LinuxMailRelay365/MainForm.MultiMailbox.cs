@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Windows.Forms;
 
 namespace LinuxMailRelay365;
 
@@ -247,7 +248,8 @@ internal sealed partial class MainForm
         return value;
     }
 
-    private async Task StageMultiMailboxRuntimeAsync()
+    private Task StageMultiMailboxRuntimeAsync() => StageMultiMailboxRuntimeForOwnerAsync(null);
+    private async Task StageMultiMailboxRuntimeForOwnerAsync(IWin32Window? owner)
     {
         string context = CurrentMultiMailboxContext();
         if (!ConfirmDestructive("LinuxMailRelay365 | Stage multi-mailbox source files",
@@ -258,7 +260,7 @@ internal sealed partial class MainForm
               "Existing folders are never overwritten. SMTP routes, queues, Microsoft 365 and services stay untouched. " +
               "This is NOT production activation or delivery verification.",
               "הכנת קבצי מקור בתיקייה חדשה בלבד. אין שינוי בשירותי SMTP או שליחת דואר."),
-            "STAGE MULTI MAILBOX")) return;
+            "STAGE MULTI MAILBOX",owner)) return;
         ResetMultiMailboxRouteReview();
         var endpoint = Endpoint();
         var result = await SshRemote.RunRootScriptAsync(
@@ -317,7 +319,8 @@ internal sealed partial class MainForm
         RenderPage();
     }
 
-    private async Task ApplyMultiMailboxRouteOfflineAsync()
+    private Task ApplyMultiMailboxRouteOfflineAsync() => ApplyMultiMailboxRouteOfflineForOwnerAsync(null);
+    private async Task ApplyMultiMailboxRouteOfflineForOwnerAsync(IWin32Window? owner)
     {
         string context = CurrentMultiMailboxContext();
         if (reviewedMultiMailboxPlanSha is null ||
@@ -335,7 +338,7 @@ internal sealed partial class MainForm
               "This does NOT start services or send SMTP. Live M365 acceptance and verified Restore " +
               "are still required before production.",
               "שינוי ניסיוני של הנתיב המבודד בלבד. יש לעצור שירות ולוודא תור ריק. גיבוי נדרש."),
-            "INSTALL MULTI MAILBOX OFFLINE")) return;
+            "INSTALL MULTI MAILBOX OFFLINE",owner)) return;
         // Approval is single-use even if SSH fails or the operator loses the session.
         ResetMultiMailboxRouteReview();
         var result = await SshRemote.RunRootScriptAsync(

@@ -742,3 +742,26 @@ staged installer scripts do not auto-upgrade; use a fresh supported source
 stage after reviewing existing staged/runtime files. Existing inactive
 marker schema remains unchanged; new evidence is recorded in the backup
 manifest, while restore checks the installed policy independently.
+
+
+## Guided Multi-mailbox setup (experimental)
+
+The identity window now opens a six-step guided setup: key/application,
+source mailbox binding, Entra/Exchange, AUTH-only check, offline Postfix
+route, acceptance. The suggested step is based on fresh Linux evidence
+and exact in-window source-row cloud and AUTH samples (ten-minute window).
+The guidance is not authorization or delivery readiness; no stale or
+unbound sample is counted. Back/Next never runs an operation. All actions
+mode preserves the previous editor and maintenance controls. A successfully
+prepared identity prefills the editable Add mailbox fields; Linux still
+validates them. Route actions reuse the existing protected stage, Preview
+and typed offline Apply, with a fresh inventory and pinned SSH checks.
+Apply requires a Preview from this guided window; the backend still
+requires stopped sidecar, empty queue and closed listener. Installed route
+changes or recovery conflicts lead to the separate route/restore tools.
+Acceptance opens the existing explicit two-recipient test form without
+sending or filling recipient addresses; it is not local ingress or inbox
+proof. Existing advanced actions remain available, including proof timer,
+restore and acceptance ledger. The guided dialog does not start any service.
+GUI self-tests check evidence and navigation; physical 200% DPI review,
+real tenant/TPM/Enforcing VM and end-to-end delivery remain outstanding.

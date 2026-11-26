@@ -15,6 +15,30 @@ PROJECT = (SRC / "LinuxMailRelay365.csproj").read_text(encoding="utf-8")
 
 
 class MultiMailboxWizardRuntimeTests(unittest.TestCase):
+    def test_guided_setup_preserves_explicit_actions(self):
+        dialog=(SRC/"MainForm.MultiMailboxIdentities.cs").read_text(encoding="utf-8")
+        progress=(SRC/"MultiMailboxWizardProgress.cs").read_text(encoding="utf-8")
+        for fragment in ("newApp.Visible=prepareIdentity.Visible=Show(0)",
+                         "addMailbox.Visible=editMailbox.Visible=removeMailbox.Visible=restoreSource.Visible=Show(1)",
+                         "registerIdentity.Visible=configureScope.Visible=verify.Visible=Show(2)",
+                         "testSmtpAuth.Visible=Show(3)",
+                         "stageRoute.Visible=previewRoute.Visible=applyRoute.Visible=restoreTools.Visible=Show(4)",
+                         "deliveryTools.Visible=Show(5)",
+                         "StageMultiMailboxRuntimeForOwnerAsync(dialog)",
+                         "ApplyMultiMailboxRouteOfflineForOwnerAsync(dialog)",
+                         "guidedPlanSha!=reviewedMultiMailboxPlanSha",
+                         "MultiMailboxWizardProgress.SameInventory(before,latest)",
+                         "lastPreparedMailbox=req.Mailbox",
+                         'jumpTo="multi-mailbox-delivery-plan"'):
+            self.assertIn(fragment,dialog)
+        self.assertIn('ConfirmDestructive("LinuxMailRelay365 | Experimental OFFLINE',RUNTIME_GUI)
+        self.assertIn('MultiMailboxCloudSelection.Capture(inventory,"source",row)',progress)
+        self.assertIn("TimeSpan.FromMinutes(10)",progress)
+        self.assertIn("sample.Receipt.Authenticated",progress)
+        self.assertIn("ScopedConfigurationObserved==true",progress)
+        self.assertNotIn("ApplyMultiMailboxDeliveryTestAsync(",dialog)
+        self.assertNotIn("systemctl start",dialog)
+
     def test_separate_non_default_route_and_usable_gui_steps(self):
         for expected in (
                 "StageMultiMailboxRuntimeAsync, false",

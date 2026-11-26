@@ -449,6 +449,7 @@ internal static class Program
             }),
             ("Microsoft 365 read-only inventory parser", CloudObjectsInventory.SelfTest),
             ("Multi-mailbox source/runtime identity inventory", MultiMailboxIdentityInventory.SelfTest),
+            ("Multi-mailbox guided setup evidence and navigation", MultiMailboxWizardProgress.SelfTest),
             ("Selected multi-mailbox cloud observation identity binding", MultiMailboxCloudObservation.SelfTest),
             ("Prepared multi-mailbox source edit receipt and backup binding", MultiMailboxSourceEditPlan.SelfTest),
             ("Unbound multi-mailbox identity preparation receipts", MultiMailboxIdentityPrepareReceipt.SelfTest),

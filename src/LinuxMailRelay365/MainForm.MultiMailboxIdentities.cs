@@ -32,18 +32,20 @@ internal sealed partial class MainForm
             "; installed marker=" + inventory.InstalledBinding + ". No mail or changes.");
         using var dialog = new Form
         {
-            Text = "LinuxMailRelay365 | " + T("Ящики Multi-mailbox", "Multi-mailbox identities", "זהויות Multi-mailbox"),
+            Text = "LinuxMailRelay365 | " + T("Мастер Multi-mailbox", "Multi-mailbox Wizard", "אשף Multi-mailbox"),
             StartPosition = FormStartPosition.CenterParent, AutoScaleMode = AutoScaleMode.Dpi,
             ClientSize = PreferredDialogSize(Screen.FromControl(this).WorkingArea.Size, DeviceDpi, 1060, 730),
             MinimumSize = PreferredDialogSize(Screen.FromControl(this).WorkingArea.Size, DeviceDpi, 620, 420),
             Font = new Font("Segoe UI", 10f), BackColor = UiTheme.Canvas
         };
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4,
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6,
             Padding = new Padding(12) };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 62));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 38));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var heading = new Label { AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(8) };
         var tabs = new TabControl { Dock = DockStyle.Fill };
@@ -79,7 +81,27 @@ internal sealed partial class MainForm
         footer.Controls.Add(registerIdentity);
         var configureScope = UiTheme.Action(T("Настроить SMTP RBAC...", "Configure SMTP RBAC...", "הגדרת SMTP RBAC..."), false, "check");
         footer.Controls.Add(configureScope);
-        string lastPreparedIdentity = "";
+        var stageRoute = UiTheme.Action("Stage protected files...", false, "shield");
+        var previewRoute = UiTheme.Action("Preview route", true, "check");
+        var applyRoute = UiTheme.Action("Apply OFFLINE...", false, "shield");
+        var restoreTools = UiTheme.Action("Open route / restore tools", false, "restore");
+        var deliveryTools = UiTheme.Action("Open delivery tests", true, "check");
+        footer.Controls.Add(stageRoute); footer.Controls.Add(previewRoute); footer.Controls.Add(applyRoute);
+        footer.Controls.Add(restoreTools); footer.Controls.Add(deliveryTools);
+        var wizardSummary = new Label { AutoSize=true,Dock=DockStyle.Fill,Padding=new Padding(8,4,8,4) };
+        var wizardNav = new FlowLayoutPanel {AutoSize=true,Dock=DockStyle.Fill,WrapContents=true,
+            FlowDirection=FlowDirection.LeftToRight};
+        var backStep=UiTheme.Action(T("Назад","Back","הקודם"));
+        var nextStep=UiTheme.Action(T("Далее","Next","הבא"),true);
+        var suggestedStep=UiTheme.Action(T("Рекомендуемый шаг","Suggested step","שלב מומלץ"));
+        var advancedMode=UiTheme.Action(T("Все действия","All actions","כל הפעולות"));
+        wizardNav.Controls.Add(backStep);wizardNav.Controls.Add(nextStep);
+        wizardNav.Controls.Add(suggestedStep);wizardNav.Controls.Add(advancedMode);
+        bool advanced=false;
+        int wizardStep=0;
+        string? guidedPlanSha=null;
+        string? jumpTo=null;
+        string lastPreparedIdentity = "", lastPreparedMailbox = "";
         DataGridView Grid(TabPage tab)
         {
             var grid = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true,
@@ -112,6 +134,72 @@ internal sealed partial class MainForm
         MultiMailboxIdentityRow? Selected() =>
             (tabs.SelectedTab == runtimeTab ? runtimeGrid : sourceGrid).SelectedRows
                 .Cast<DataGridViewRow>().FirstOrDefault()?.Tag as MultiMailboxIdentityRow;
+        MultiMailboxWizardProgress Progress() => MultiMailboxWizardProgress.Evaluate(inventory,inventoryValid,
+            saveUncertain,lastPreparedIdentity!="" && !inventory.Source.Rows.Any(r=>r.Mailbox==lastPreparedMailbox),
+            observations,smtpAuthSamples,DateTimeOffset.UtcNow);
+        string[] stepNames = [
+            T("Ключ и приложение","Key and app","מפתח ויישום"),
+            T("Привязка ящика","Bind mailbox","שיוך תיבה"),
+            "Entra / Exchange",
+            "SMTP AUTH",
+            "Postfix / offline",
+            T("Тестирование","Acceptance","בדיקות")
+        ];
+        void UpdateWizard()
+        {
+            var p=Progress();
+            bool idle=!loading && !reading;
+            bool usable=idle && p.InventoryVerified;
+            bool Show(int phase)=>advanced || wizardStep==phase;
+            newApp.Visible=prepareIdentity.Visible=Show(0);
+            addMailbox.Visible=editMailbox.Visible=removeMailbox.Visible=restoreSource.Visible=Show(1);
+            registerIdentity.Visible=configureScope.Visible=verify.Visible=Show(2);
+            testSmtpAuth.Visible=Show(3);
+            stageRoute.Visible=previewRoute.Visible=applyRoute.Visible=restoreTools.Visible=Show(4);
+            deliveryTools.Visible=Show(5);
+            bool routeReady=usable && p.Count>0 && p.Certificates==p.Count && p.Route=="not_installed";
+            stageRoute.Enabled=previewRoute.Enabled=routeReady;
+            applyRoute.Enabled=routeReady && guidedPlanSha is not null &&
+                guidedPlanSha==reviewedMultiMailboxPlanSha && reviewedMultiMailboxPlanContext==context;
+            restoreTools.Enabled=idle && inventoryValid;
+            deliveryTools.Enabled=usable && p.Route=="map_matches_marker" && p.Count>0;
+            backStep.Enabled=idle && !advanced && wizardStep>0;
+            nextStep.Enabled=idle && !advanced && wizardStep<MultiMailboxWizardProgress.LastStep;
+            suggestedStep.Enabled=idle && !advanced && wizardStep!=p.SuggestedStep;
+            advancedMode.Enabled=idle;
+            advancedMode.Text=advanced?T("Мастер","Guided setup","אשף"):T("Все действия","All actions","כל הפעולות");
+            string hint=wizardStep switch {
+                0=>"Create a dedicated Entra app or prepare a certificate for an existing app. TPM is checked at creation.",
+                1=>"Select Source / planned. Bind an existing identity to a mailbox and local SMTP login.",
+                2=>"Select each planned mailbox. Register a prepared certificate if needed, configure scoped RBAC, then verify.",
+                3=>"Test each planned mailbox from Linux. AUTH only: no message is submitted.",
+                4=>p.Route=="review_required"?"Installed map or recovery marker requires review. Use route / restore tools; no overwrite.":
+                    p.Route=="map_matches_marker"?"Source/runtime map matches the recovery marker. This is not service or delivery proof.":
+                    "Stage files if needed, Preview, then explicitly apply offline. Stop the isolated service and empty its queue first.",
+                _=>"Open the separate two-recipient acceptance form. SMTP acceptance is not inbox delivery or local Postfix ingress proof."
+            };
+            string summary="Source: "+p.Count+" | Public cert: "+p.Certificates+"/"+p.Count+
+                " | Cloud configuration sample: "+p.Cloud+"/"+p.Count+" | AUTH sample: "+p.Auth+"/"+p.Count+
+                Environment.NewLine+"Route: "+p.Route+" | Suggested: "+stepNames[p.SuggestedStep]+
+                " | Samples ≤ 10 min; no delivery proof.";
+            wizardSummary.Text=(advanced?"All actions":(wizardStep+1)+"/6 · "+stepNames[wizardStep])+
+                Environment.NewLine+(p.InventoryVerified?summary:"Inventory unavailable or outcome uncertain. Refresh/review before changes.")+
+                (advanced?"":Environment.NewLine+hint)+
+                (lastPreparedIdentity!="" && !inventory.Source.Rows.Any(r=>r.Mailbox==lastPreparedMailbox)?
+                    Environment.NewLine+"Prepared (unbound): "+lastPreparedMailbox+" / "+lastPreparedIdentity:"");
+            wizardSummary.ForeColor=SystemInformation.HighContrast?SystemColors.WindowText:
+                p.InventoryVerified && p.Route=="map_matches_marker"?UiTheme.Navy:UiTheme.WarningInk;
+        }
+        void ChangeStep(int value)
+        {
+            if(reading || loading) return;
+            wizardStep=Math.Clamp(value,0,MultiMailboxWizardProgress.LastStep);
+            UpdateWizard();
+        }
+        backStep.Click+=(_,_)=>ChangeStep(MultiMailboxWizardProgress.Adjacent(wizardStep,false));
+        nextStep.Click+=(_,_)=>ChangeStep(MultiMailboxWizardProgress.Adjacent(wizardStep,true));
+        suggestedStep.Click+=(_,_)=>ChangeStep(Progress().SuggestedStep);
+        advancedMode.Click+=(_,_)=>{ if(!reading && !loading){advanced=!advanced;UpdateWizard();} };
         void EditingActions()
         {
             bool source = !loading && !reading && inventoryValid && !saveUncertain &&
@@ -130,6 +218,7 @@ internal sealed partial class MainForm
             registerIdentity.Enabled = !loading && !reading && inventoryValid && !saveUncertain &&
                 inventory.Source.Status is "ok" or "absent" && inventory.Runtime.Status is "ok" or "absent" &&
                 Selected() is { Signer: "software" or "hardware", Status: "public_certificate_read" };
+            UpdateWizard();
         }
         void Detail()
         {
@@ -225,11 +314,17 @@ internal sealed partial class MainForm
         sourceGrid.SelectionChanged += (_, _) => Detail();
         runtimeGrid.SelectionChanged += (_, _) => Detail();
         tabs.SelectedIndexChanged += (_, _) => Detail();
-        dialog.ClientSizeChanged += (_, _) => heading.MaximumSize = new Size(Math.Max(160, dialog.ClientSize.Width - 38), 0);
+        void FitWizard()
+        {
+            var width=Math.Max(160,dialog.ClientSize.Width-38);
+            heading.MaximumSize=wizardSummary.MaximumSize=new Size(width,0);
+        }
+        FitWizard();dialog.ClientSizeChanged+=(_,_)=>FitWizard();
         dialog.FormClosing += (_, e) => { if (reading) e.Cancel = true; };
         void Invalidate(string reason)
         {
             inventoryValid = false;
+            guidedPlanSha=null;
             observations.Clear(); smtpAuthSamples.Clear();
             sourceGrid.Rows.Clear();
             runtimeGrid.Rows.Clear();
@@ -269,7 +364,9 @@ internal sealed partial class MainForm
                     if (reply.ExitCode != 0) throw new IOException("Backup catalog unavailable or changed.");
                     catalog = MultiMailboxSourceBackupCatalog.Parse(reply.StdOut, oldMap.Sha256, oldMap.Rows.Length, nonce);
                 }
-                var request = PromptMultiMailboxSourceEdit(dialog, action, oldMap, selected, catalog);
+                var request = PromptMultiMailboxSourceEdit(dialog, action, oldMap, selected, catalog,
+                    action=="add" && !oldMap.Rows.Any(r=>r.Mailbox==lastPreparedMailbox)?lastPreparedIdentity:"",
+                    action=="add" && !oldMap.Rows.Any(r=>r.Mailbox==lastPreparedMailbox)?lastPreparedMailbox:"");
                 if (request is null) { Render(); return; }
                 async Task<(MultiMailboxSourceEditPlan Plan, string BackupId)> Execute(
                     MultiMailboxSourceEditPlan? approved)
@@ -523,6 +620,7 @@ internal sealed partial class MainForm
                 _=await Execute("finalize",claimed.ApprovalSha,claimed,appId);
                 await CheckMaps();
                 lastPreparedIdentity=req.IdentityFile;
+                lastPreparedMailbox=req.Mailbox;
                 Render();
                 WriteLine("New dedicated Entra application and local identity verified: "+req.IdentityFile+
                     "; Client ID: "+appId+"; Enterprise ID: "+enterprise+
@@ -622,6 +720,7 @@ internal sealed partial class MainForm
                 var latest = await ReadAsync();
                 CheckMaps(latest);
                 lastPreparedIdentity = req.IdentityFile;
+                lastPreparedMailbox = req.Mailbox;
                 inventory = latest;
                 Render();
                 WriteLine("Unbound local OAuth identity prepared: " + req.IdentityFile +
@@ -1011,12 +1110,89 @@ internal sealed partial class MainForm
                 Detail();
             }
         };
+        // Reuse the existing route entry points, keeping the same reviewed SHA,
+        // typed confirmation, offline guards, and no-start/no-mail receipts.
+        async Task GuidedRouteAsync(string action)
+        {
+            if(reading || loading || !inventoryValid || saveUncertain) return;
+            if(action=="stage" && !stageRoute.Enabled || action=="preview" && !previewRoute.Enabled ||
+                action=="apply" && !applyRoute.Enabled) return;
+            var before=inventory;
+            bool attempted=false;
+            reading=true;refresh.Enabled=close.Enabled=tabs.Enabled=verify.Enabled=false;
+            EditingActions();
+            try
+            {
+                RequireSameArchiveConnection(endpoint);
+                if(context!=CurrentMultiMailboxContext() || !HasMailDiscovery())
+                    throw new InvalidOperationException("Linux context changed.");
+                var latest=await ReadAsync();
+                if(!MultiMailboxWizardProgress.SameInventory(before,latest))
+                    throw new InvalidDataException("Map or identity evidence changed; refresh before continuing.");
+                RequireSameArchiveConnection(endpoint);
+                if(action=="apply" && (guidedPlanSha is null || guidedPlanSha!=reviewedMultiMailboxPlanSha ||
+                    reviewedMultiMailboxPlanContext!=context))
+                    throw new InvalidOperationException("A new guided Preview is required.");
+                heading.Text="Running reviewed "+action+" operation for isolated Postfix...";
+                if(action=="stage")
+                {
+                    guidedPlanSha=null;attempted=true;
+                    await StageMultiMailboxRuntimeForOwnerAsync(dialog);
+                }
+                else if(action=="preview")
+                {
+                    guidedPlanSha=null;
+                    await PreviewMultiMailboxRouteAsync();
+                    guidedPlanSha=reviewedMultiMailboxPlanSha;
+                }
+                else
+                {
+                    guidedPlanSha=null;attempted=true;
+                    await ApplyMultiMailboxRouteOfflineForOwnerAsync(dialog);
+                }
+                RequireSameArchiveConnection(endpoint);
+                if(context!=CurrentMultiMailboxContext()) throw new InvalidOperationException("Linux context changed.");
+                inventory=await ReadAsync();
+                if(action!="apply" && !MultiMailboxWizardProgress.SameInventory(before,inventory))
+                    throw new InvalidDataException("Map changed during route review.");
+                if(action=="apply" && !MultiMailboxWizardProgress.SameInventory(before,inventory))
+                {
+                    if(inventory.Source.Sha256!=before.Source.Sha256 ||
+                        !inventory.Source.Rows.SequenceEqual(before.Source.Rows) ||
+                        inventory.Relation!="same" || inventory.InstalledBinding!="matches_marker")
+                        throw new InvalidDataException("Installed map or marker could not be verified.");
+                    observations.Clear();smtpAuthSamples.Clear();
+                }
+                Render();
+                if(!string.IsNullOrEmpty(multiMailboxRouteSummary))
+                    details.Text=multiMailboxRouteSummary;
+            }
+            catch(Exception)
+            {
+                guidedPlanSha=null;
+                ResetMultiMailboxRouteReview();
+                if(attempted) saveUncertain=true;
+                Invalidate(attempted?"Route outcome requires review. Leave the sidecar stopped.":
+                    "Route Preview refused or stale. Refresh and check prerequisites.");
+                WriteLine("Guided offline route operation not verified; no automatic retry or service start.");
+            }
+            finally
+            {
+                reading=false;refresh.Enabled=close.Enabled=tabs.Enabled=true;Detail();
+            }
+        }
+        stageRoute.Click+=async (_,_)=>await GuidedRouteAsync("stage");
+        previewRoute.Click+=async (_,_)=>await GuidedRouteAsync("preview");
+        applyRoute.Click+=async (_,_)=>await GuidedRouteAsync("apply");
+        restoreTools.Click+=(_,_)=>{ if(!reading){jumpTo="multi-mailbox-preview";dialog.Close();} };
+        deliveryTools.Click+=(_,_)=>{ if(!reading && deliveryTools.Enabled){jumpTo="multi-mailbox-delivery-plan";dialog.Close();} };
         refresh.Click += async (_, _) =>
         {
             if (reading) return;
             reading = true;
             refresh.Enabled = close.Enabled = tabs.Enabled = verify.Enabled = false;
             inventoryValid = false;
+            guidedPlanSha=null;
             EditingActions();
             observations.Clear(); smtpAuthSamples.Clear();
             sourceGrid.Rows.Clear(); runtimeGrid.Rows.Clear();
@@ -1030,10 +1206,18 @@ internal sealed partial class MainForm
             }
             finally { reading = false; refresh.Enabled = close.Enabled = tabs.Enabled = true; Detail(); }
         };
-        root.Controls.Add(heading, 0, 0); root.Controls.Add(tabs, 0, 1);
-        root.Controls.Add(details, 0, 2); root.Controls.Add(footer, 0, 3);
-        dialog.Controls.Add(root); dialog.CancelButton = close;
+        root.Controls.Add(heading,0,0);root.Controls.Add(wizardSummary,0,1);
+        root.Controls.Add(tabs,0,2);root.Controls.Add(details,0,3);
+        root.Controls.Add(footer,0,4);root.Controls.Add(wizardNav,0,5);
+        dialog.Controls.Add(root);dialog.CancelButton=close;
+        wizardStep=Progress().SuggestedStep;
         Render();
         dialog.ShowDialog(this);
+        if(jumpTo is not null)
+        {
+            RenderPage();
+            var target=pageHost.Controls.Find(jumpTo,true).FirstOrDefault();
+            if(target is not null) pageHost.ScrollControlIntoView(target);
+        }
     }
 }

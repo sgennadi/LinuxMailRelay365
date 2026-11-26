@@ -8,7 +8,7 @@ internal sealed partial class MainForm
 {
     private MultiMailboxSourceEditRequest? PromptMultiMailboxSourceEdit(Form owner,
         string action, MultiMailboxIdentityMap map, MultiMailboxIdentityRow? row,
-        MultiMailboxSourceBackupCatalog? catalog = null)
+        MultiMailboxSourceBackupCatalog? catalog = null, string preparedFile = "", string preparedMailbox = "")
     {
         if (action is not ("add" or "edit" or "remove" or "restore") || map.Status is not ("ok" or "absent") ||
             (action is "edit" or "remove" && (row is null || !map.Rows.Contains(row)))) return null;
@@ -77,8 +77,10 @@ internal sealed partial class MainForm
         var fields = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 1, AutoSize = true };
         fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         var login = new TextBox { MaxLength = 64, Dock = DockStyle.Fill, Text = row?.Login ?? "" };
-        var address = new TextBox { MaxLength = 254, Dock = DockStyle.Fill, Text = row?.Mailbox ?? "" };
-        var file = new TextBox { MaxLength = 125, Dock = DockStyle.Fill };
+        // Prefill only a successfully prepared identity in this dialog; all
+        // fields remain editable and the existing Linux preview checks it.
+        var address = new TextBox { MaxLength = 254, Dock = DockStyle.Fill, Text = row?.Mailbox ?? (action=="add"?preparedMailbox:"") };
+        var file = new TextBox { MaxLength = 125, Dock = DockStyle.Fill, Text=action=="add"?preparedFile:"" };
         var help = UiTheme.Text(T(
             "Привязка существующего OAuth-идентификатора. Оставьте имя JSON пустым для однозначного поиска по ящику или сохранения текущего идентификатора. Новые ключи не создаются.",
             "Bind an existing OAuth identity. Leave JSON filename empty to keep the current identity or find one exact mailbox match. No new keys are created.",
