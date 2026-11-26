@@ -29,6 +29,14 @@ class PrepareTests(unittest.TestCase):
             with self.assertRaises((M.Refused, ValueError)):
                 M.request(M.encode(bad))
 
+    def test_selinux_context_validation(self):
+        self.assertEqual(M.checked_context(b"system_u:object_r:etc_t:s0\0"),"system_u:object_r:etc_t:s0")
+        for bad in (b"system_u:object_r:unlabeled_t:s0",b"system_u:object_r:default_t:s0",
+                    b"system_u:object_r:tmp_t:s0",b"system_u:object_r:etc_t:s0\n",
+                    b"system_u:system_r:etc_t:s0",b""):
+            with self.assertRaises(M.Refused):
+                M.checked_context(bad)
+
     @unittest.skipUnless(os.geteuid() == 0 and os.environ.get("GITHUB_ACTIONS") == "true"
                          and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
                          "requires disposable root CI")
@@ -76,6 +84,58 @@ class PrepareTests(unittest.TestCase):
                 (base/"no-selinux").touch()
                 with self.assertRaisesRegex(M.Refused, "selinux"):
                     M.plan(req2, gid)
+
+
+    @unittest.skipUnless(os.geteuid() == 0 and os.environ.get("GITHUB_ACTIONS") == "true"
+                         and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+                         "requires disposable root CI")
+    def test_labeled_software_identity_no_relabel_of_existing_files(self):
+        # Exercise real file-descriptor xattr operations without pretending
+        # to control the runner's kernel SELinux state or policy.
+        service = pwd.getpwnam("nobody")
+        gid = service.pw_gid
+        attr = "user.lmr365_test_context"
+        with tempfile.TemporaryDirectory(prefix="lmr365-labeled-ci-", dir="/var/lib") as folder:
+            base = Path(folder)
+            identities = base/"oauth-identities"
+            mode = base/"mock-enforce"
+            mode.write_text("1")
+            os.chown(str(base),0,gid)
+            os.chmod(str(base),0o750)
+            base_label="system_u:object_r:etc_t:s0"
+            key_label="system_u:object_r:cert_t:s0"
+            os.setxattr(str(base),attr,base_label.encode("ascii")+b"\0")
+            policy_overrides={}
+            def query(path,kind):
+                return policy_overrides.get(path,key_label if path.suffix==".key" else base_label)
+            with mock.patch.multiple(M,BASE=base,IDENTITIES=identities,SOURCE=base/"source",
+                                     RUNTIME=base/"runtime",LOCK=base/"lock",SELINUX=mode,LABEL_ATTR=attr), \
+                 mock.patch.object(M.I,"IDENTITIES",identities),mock.patch.object(M,"query_label",side_effect=query):
+                req=self.req()
+                preview=M.plan(req,gid)
+                self.assertFalse(identities.exists())
+                self.assertEqual(preview["selinux_mode"],"enforcing")
+                key,cert,identity=M.paths(req)
+                policy_overrides[key]=base_label
+                with self.assertRaisesRegex(M.Refused,"plan_changed"):
+                    M.apply(dict(req,approval=preview["plan_sha"],confirm=M.CONFIRM),gid,service.pw_name)
+                self.assertFalse(identities.exists())
+                policy_overrides.clear()
+                saved=M.apply(dict(req,approval=preview["plan_sha"],confirm=M.CONFIRM),gid,service.pw_name)
+                self.assertEqual(saved["selinux_policy_sha"],preview["selinux_policy_sha"])
+                self.assertEqual(M.checked_context(os.getxattr(str(key),attr)),key_label)
+                for path in (base,identities,cert,identity):
+                    self.assertEqual(M.checked_context(os.getxattr(str(path),attr)),base_label)
+                self.assertEqual(mode.read_text(),"1")
+                before={path:(path.read_bytes(),os.getxattr(str(path),attr)) for path in (key,cert,identity)}
+                req2=dict(req,nonce="b"*64)
+                preview2=M.plan(req2,gid)
+                os.setxattr(str(identities),attr,key_label.encode("ascii")+b"\0")
+                with self.assertRaisesRegex(M.Refused,"existing_context_mismatch"):
+                    M.apply(dict(req2,approval=preview2["plan_sha"],confirm=M.CONFIRM),gid,service.pw_name)
+                self.assertEqual(before,{path:(path.read_bytes(),os.getxattr(str(path),attr)) for path in before})
+                self.assertFalse(any(p.exists() for p in M.paths(req2)))
+                self.assertEqual(mode.read_text(),"1")
 
 
 if __name__ == "__main__":

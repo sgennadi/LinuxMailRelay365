@@ -615,3 +615,29 @@ inspect the attempt marker, handle and files manually. No automatic eviction,
 software fallback, or policy change. Tests use a real public X.509 certificate
 with mocked TPM commands; physical TPM/vTPM, real tenant and SELinux-aware
 creation remain unverified. No mail or Postfix route activation.
+
+
+## SELinux-aware software identity creation (existing Entra app, experimental)
+
+The existing-app New OAuth identity workflow now supports active SELinux
+for software RSA creation when the installed file-context policy is
+verifiable. Preview reads the kernel mode and exact raw matchpathcon labels
+for the trusted base directory, identity directory and the three new files.
+Existing directory contexts must already match; missing/untrusted tools,
+unsafe/default labels, foreign xattrs or mismatched contexts refuse the
+operation. A standard etc_t configuration label is allowed when it is the
+exact installed policy result. The plan digest binds all labels and the
+mode; the GUI displays the mode and policy digest. A new directory is
+created privately, labeled before granting service-group access. Only new
+scratch inodes receive their reviewed destination label before exclusive
+publication. Each publication rechecks the complete policy, the resulting
+inode/ownership/mode/label and unchanged SELinux mode. The existing local
+m365mailer PS256 proof and identity readback still apply. No changes to
+SELinux policy, mode, existing labels, Postfix, services or Entra are made.
+This is file-label publication and local account access evidence, not a
+confined systemd-domain or live Enforcing VM acceptance result. Synthetic
+user-xattr CI tests exercise real filesystem labeling, stale policy refusal
+and unchanged existing files; they do not emulate kernel enforcement.
+New-app stage/claim/recovery, TPM provisioning and new source-map creation
+retain active-SELinux refusal until their additional markers and runtime
+policy are integrated and validated. No global relabel or protection bypass.

@@ -26,7 +26,7 @@ internal sealed record MultiMailboxIdentityPrepareRequest(string Tenant, string 
 }
 
 internal sealed record MultiMailboxIdentityPrepareReceipt(string PlanSha, string RuntimeSha,
-    string CertificateSha, byte[] PublicDer)
+    string CertificateSha, byte[] PublicDer, string SelinuxMode = "", string SelinuxPolicySha = "")
 {
     internal static MultiMailboxIdentityPrepareReceipt Parse(string json,
         MultiMailboxIdentityPrepareRequest req, MultiMailboxIdentityPrepareReceipt? approved = null)
@@ -38,6 +38,8 @@ internal sealed record MultiMailboxIdentityPrepareReceipt(string PlanSha, string
         string[] fields = ["version", "status", "plan_sha", "source_sha", "runtime_sha", "nonce",
             "tenant", "client", "mailbox", "days", "identity_file", "changes", "runtime_changed",
             "cloud_changed", "mail_sent", "certificate_sha256", "certificate_der"];
+        bool labeled = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("selinux_mode",out _);
+        if (labeled) fields = [..fields,"selinux_mode","selinux_policy_sha"];
         if (root.ValueKind != JsonValueKind.Object ||
             !root.EnumerateObject().Select(x => x.Name).OrderBy(x => x, StringComparer.Ordinal)
                  .SequenceEqual(fields.OrderBy(x => x, StringComparer.Ordinal)))
@@ -57,15 +59,19 @@ internal sealed record MultiMailboxIdentityPrepareReceipt(string PlanSha, string
             throw new InvalidDataException("Identity preparation scope or context mismatch.");
         string plan = Read("plan_sha"), runtime = Read("runtime_sha"),
             certSha = Read("certificate_sha256"), certificate = Read("certificate_der");
+        string mode = labeled ? Read("selinux_mode") : "", policy = labeled ? Read("selinux_policy_sha") : "";
+        if (labeled && (mode is not ("enforcing" or "permissive") || !MultiMailboxSourceEditRequest.IsSha(policy)))
+            throw new InvalidDataException("Invalid SELinux policy evidence.");
         if (!MultiMailboxSourceEditRequest.IsSha(plan) ||
             (runtime != "" && !MultiMailboxSourceEditRequest.IsSha(runtime)) ||
-            (approved is not null && (approved.PlanSha != plan || approved.RuntimeSha != runtime)))
+            (approved is not null && (approved.PlanSha != plan || approved.RuntimeSha != runtime ||
+                approved.SelinuxMode != mode || approved.SelinuxPolicySha != policy)))
             throw new InvalidDataException("Identity preparation approval mismatch.");
         if (!applying)
         {
             if (certSha != "" || certificate != "")
                 throw new InvalidDataException("Preview must not contain generated certificate.");
-            return new(plan, runtime, "", []);
+            return new(plan, runtime, "", [], mode, policy);
         }
         if (!MultiMailboxSourceEditRequest.IsSha(certSha) || certificate.Length > 10924)
             throw new InvalidDataException("Invalid public certificate receipt.");
@@ -76,7 +82,7 @@ internal sealed record MultiMailboxIdentityPrepareReceipt(string PlanSha, string
         using var parsed = X509CertificateLoader.LoadCertificate(der);
         if (parsed.HasPrivateKey || !parsed.RawData.AsSpan().SequenceEqual(der))
             throw new InvalidDataException("Only exact public certificate DER is allowed.");
-        return new(plan, runtime, certSha, der);
+        return new(plan, runtime, certSha, der, mode, policy);
     }
 
     internal static bool SelfTest()
@@ -108,6 +114,16 @@ internal sealed record MultiMailboxIdentityPrepareReceipt(string PlanSha, string
         {
             try { Parse(bad, req, preview); return false; }
             catch (InvalidDataException) { }
+        }
+        string policy = new('e',64);
+        string Labeled(string body) => body[..^1] + ",\"selinux_mode\":\"enforcing\",\"selinux_policy_sha\":\"" + policy + "\"}";
+        var labeledPreview = Parse(Labeled(Receipt(false)),req);
+        if (labeledPreview.SelinuxMode!="enforcing" || Parse(Labeled(saved),req,labeledPreview).SelinuxPolicySha!=policy)
+            return false;
+        foreach (string bad in new[]{saved,Labeled(saved).Replace("enforcing","permissive"),
+            Labeled(saved).Replace(policy,new string('f',64))})
+        {
+            try { Parse(bad,req,labeledPreview); return false; } catch (InvalidDataException) { }
         }
         return true;
     }

@@ -85,6 +85,7 @@ def routes(req, gid):
 
 
 def preview(req, gid):
+    need(not P.SELINUX.exists(), "new_app_selinux_recovery_policy_review_required")
     need(all(P.missing(p) for p in destinations(req)), "pending_or_identity_destination_exists")
     if "handle" in req:
         state, version, handles = H.hardware(gid)

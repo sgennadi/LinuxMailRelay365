@@ -598,6 +598,9 @@ internal sealed partial class MainForm
                     ", validity: " + req.Days + " days" +
                     Environment.NewLine + "New file: " + req.IdentityFile +
                     Environment.NewLine + "Plan SHA-256: " + preview.PlanSha +
+                    (preview.SelinuxMode == "" ? "" : Environment.NewLine +
+                        "SELinux: " + preview.SelinuxMode + "; exact destination policy SHA-256: " + preview.SelinuxPolicySha +
+                        Environment.NewLine + "Only new files will receive policy-defined labels. No SELinux policy or mode changes.") +
                     Environment.NewLine + "Only new local protected identity files will be created. No mailbox, cloud permissions, source map, runtime, service or mail changes.",
                     handle is null ? MultiMailboxIdentityPrepareRequest.Confirmation : MultiMailboxTpmPrepare.Confirmation, dialog))
                 { Render(); return; }
@@ -615,7 +618,9 @@ internal sealed partial class MainForm
                 inventory = latest;
                 Render();
                 WriteLine("Unbound local OAuth identity prepared: " + req.IdentityFile +
-                    "; public certificate SHA-256: " + saved.CertificateSha + ". No route or cloud changes.");
+                    "; public certificate SHA-256: " + saved.CertificateSha +
+                    (saved.SelinuxMode == "" ? "" : "; SELinux destination contexts verified ("+saved.SelinuxMode+")") +
+                    ". No route or cloud changes.");
                 MessageBox.Show(dialog, "Identity prepared: " + req.IdentityFile +
                     Environment.NewLine + "Public certificate SHA-256: " + saved.CertificateSha +
                     Environment.NewLine + (handle is null ? "" : "TPM persistent handle: "+handle+
