@@ -1,0 +1,16 @@
+[Unit]
+Description=Recover interrupted LinuxMailRelay365 SMTP TLS transaction
+Requires=postfix.service
+After=postfix.service
+ConditionPathExists=/etc/postfix/lmr365-smtp-tls/deployment.json
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/libexec/linuxmailrelay365/manage-smtp-tls-renewal.py recover --confirm MANAGED_TLS_TRANSACTION
+TimeoutStartSec=300
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
