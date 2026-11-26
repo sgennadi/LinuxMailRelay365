@@ -75,10 +75,121 @@ def command(name,args):
     raise E.Refused("required_tool_missing")
 
 
-def config_hash():
+def config_bytes():
     E.trusted_directory(ROOT)
-    return E.digest(b"\0".join(E.secure_read(ROOT/name,524288,
-        modes=(0o600,0o640,0o644)) for name in ("main.cf","master.cf")))
+    return tuple(E.secure_read(ROOT/name,524288,
+        modes=(0o600,0o640,0o644)) for name in ("main.cf","master.cf"))
+
+
+def config_hash():
+    return E.digest(b"\0".join(config_bytes()))
+
+
+# Only these settings may be changed by the proposed in-place migration.
+# In particular, do not rewrite inet_interfaces, mynetworks, mydestination,
+# local/virtual transports, smtpd restrictions, message_size_limit or ports.
+ROUTE_CHANGES = (
+    ("default_transport","m365xoauth2:"),
+    ("relay_transport","m365xoauth2:"),
+    ("relayhost",""),
+    ("m365xoauth2_destination_recipient_limit","1"),
+    ("m365xoauth2_destination_concurrency_limit","2"),
+)
+PIPE = (b"m365xoauth2 unix - n n - 2 pipe\n"
+        b"  flags=q user=m365mailer argv=/usr/bin/python3 "
+        b"/usr/local/libexec/m365_xoauth2_transport.py --recipient ${recipient}\n")
+
+
+def candidate_configs(raw, sampled):
+    """Compile exact candidate bytes; never write a live or staged file."""
+    main, master = raw
+    _, values, services, _ = sampled
+    need(classify(sampled)["route"] != "review_required","route_conflict")
+    for blob in raw:
+        need(len(blob)<=524288 and b"\0" not in blob and b"\r" not in blob,
+             "unsupported_config_format")
+        blob.decode("utf-8")
+    targets=dict(ROUTE_CHANGES)
+    seen=set()
+    changed=set()
+    out=[]
+    last=None
+    # Preserve all unrelated lines byte for byte, including continuations.
+    # Reject targeted multi-line/duplicate definitions and macros that could
+    # make unrelated effective settings change when a target is replaced.
+    refs=re.compile(rb"\$(?:\{\s*)?(?:"+
+                    b"|".join(k.encode("ascii") for k in targets)+rb")(?![A-Za-z0-9_])")
+    for line in main.splitlines(keepends=True):
+        stripped=line.strip()
+        if not stripped or stripped.startswith(b"#"):
+            out.append(line)
+            continue
+        if line[:1] in (b" ",b"\t"):
+            need(last is not None and last not in targets,"target_continuation_or_orphan")
+            need(not refs.search(line),"dependent_config_macro")
+            out.append(line)
+            continue
+        match=re.match(rb"^([a-zA-Z][a-zA-Z0-9_]*)[ \t]*=",line)
+        need(match is not None,"unrecognized_main_cf_line")
+        last=match.group(1).decode("ascii")
+        if last not in targets:
+            need(not refs.search(line),"dependent_config_macro")
+            out.append(line)
+            continue
+        need(last not in seen,"duplicate_route_parameter")
+        seen.add(last)
+        value=targets[last].encode("ascii")
+        if line.split(b"=",1)[1].strip()==value:
+            out.append(line)
+        else:
+            out.append(last.encode("ascii")+b" = "+value+b"\n")
+            changed.add(last)
+    new_main=b"".join(out)
+    for name,value in ROUTE_CHANGES:
+        if name not in seen:
+            # Avoid creating an unnecessary empty relayhost override.
+            if name=="relayhost" and not values["relayhost"]:
+                continue
+            if new_main and not new_main.endswith(b"\n"):
+                new_main+=b"\n"
+            new_main+=name.encode("ascii")+b" = "+value.encode("ascii")+b"\n"
+            changed.add(name)
+    need(not refs.search(b"\n".join(line for line in master.splitlines()
+                                   if not line.lstrip().startswith(b"#"))),
+         "dependent_master_macro")
+    raw_services=[line for line in master.splitlines()
+                  if re.match(rb"^m365xoauth2(?:[ \t]|$)",line)]
+    effective_services=[line for line in services.splitlines()
+                        if re.match(r"^m365xoauth2(?:\s|$)",line)]
+    need(len(raw_services)==len(effective_services) and len(raw_services)<=1,
+         "ambiguous_existing_pipe")
+    if raw_services:
+        pipe=E.classify_postfix_route("primary",values,effective_services[0],
+                                     sampled[3])
+        need(pipe["MASTER_PIPE"]=="expected","unexpected_existing_pipe")
+        new_master=master
+    else:
+        new_master=master+(b"" if not master or master.endswith(b"\n") else b"\n")+PIPE
+        changed.add("master.cf:m365xoauth2")
+    ordered=[name for name,_ in ROUTE_CHANGES if name in changed]
+    if "master.cf:m365xoauth2" in changed:
+        ordered.append("master.cf:m365xoauth2")
+    return (new_main,new_master),ordered
+
+
+def candidate_evidence(raw,sampled,mailbox,identity):
+    empty=dict(candidate_status="review_required",candidate_sha256="",
+               plan_sha256="",change_set=[])
+    need(E.digest(b"\0".join(raw))==sampled[0],"configuration_changed")
+    try:
+        candidate,changes=candidate_configs(raw,sampled)
+    except (E.Refused,UnicodeError):
+        return empty
+    sha=E.digest(b"\0".join(candidate))
+    plan=E.digest(encode(dict(version=1,config_sha256=sampled[0],
+        candidate_sha256=sha,mailbox=mailbox,identity=identity,change_set=changes)))
+    return dict(candidate_status="ready" if changes else "already_configured",
+                candidate_sha256=sha,plan_sha256=plan,change_set=changes)
 
 
 def sample():
@@ -139,6 +250,8 @@ def inspect(req):
     first=sample()
     route=classify(first)
     ident=identity_status(req["mailbox"])
+    raw=config_bytes()
+    candidate=candidate_evidence(raw,first,req["mailbox"],ident)
     active=command("systemctl",("is-active","--quiet","postfix"))
     try:
         queue=command("postqueue",("-c",str(ROOT),"-j"))
@@ -146,10 +259,10 @@ def inspect(req):
     except (E.Refused,OSError,subprocess.TimeoutExpired):
         queue_status="unverified"
     need(sample()==first and identity_status(req["mailbox"])==ident,"configuration_changed")
-    return dict(version=1,nonce=req["nonce"],mailbox=req["mailbox"],config_sha256=first[0],
+    return dict(version=2,nonce=req["nonce"],mailbox=req["mailbox"],config_sha256=first[0],
         identity=ident,service="active" if active.returncode==0 else "unverified",
         queue=queue_status,changes=False,mail_sent=False,apply_supported=False,
-        local_delivery_changed=False,listener_changed=False,**route)
+        local_delivery_changed=False,listener_changed=False,**route,**candidate)
 
 
 def main():

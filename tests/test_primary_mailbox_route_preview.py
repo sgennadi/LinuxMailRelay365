@@ -44,19 +44,59 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
 
     def test_read_only_and_changed_configuration(self):
         req=dict(mailbox="alerts@example.org",nonce="a"*64)
-        sample=("a"*64,self.values(),"","")
-        with mock.patch.object(M,"sample",return_value=sample), \
+        raw=(b"mydestination = localhost\n",b"")
+        sample=(M.E.digest(b"\0".join(raw)),self.values(),"","")
+        with mock.patch.object(M,"config_bytes",return_value=raw), \
+             mock.patch.object(M,"sample",return_value=sample), \
              mock.patch.object(M,"identity_status",return_value="absent"), \
              mock.patch.object(M,"command",return_value=mock.Mock(returncode=0,stdout=b"")) as cmd:
             result=M.inspect(req)
             self.assertFalse(result["apply_supported"] or result["changes"] or result["mail_sent"])
             self.assertEqual(result["queue"],"empty")
+            self.assertEqual(result["version"],2)
+            self.assertEqual(result["candidate_status"],"ready")
+            self.assertRegex(result["plan_sha256"],r"^[a-f0-9]{64}$")
             self.assertEqual([c.args[0] for c in cmd.call_args_list],["systemctl","postqueue"])
-        with mock.patch.object(M,"sample",side_effect=[sample,("b"*64,*sample[1:])]), \
+        with mock.patch.object(M,"config_bytes",return_value=raw), \
+             mock.patch.object(M,"sample",side_effect=[sample,("b"*64,*sample[1:])]), \
              mock.patch.object(M,"identity_status",return_value="absent"), \
              mock.patch.object(M,"command",return_value=mock.Mock(returncode=0,stdout=b"")):
             with self.assertRaisesRegex(M.E.Refused,"configuration_changed"):
                 M.inspect(req)
+
+    def test_exact_candidate_preserves_ingress_and_local_delivery(self):
+        v=self.values()
+        v["relayhost"]="[old.example.org]:2525"
+        raw=(b"# original\ninet_interfaces = all\nmydestination = localhost,\n  example.org\n"
+             b"smtpd_relay_restrictions = permit_mynetworks, reject_unauth_destination\n"
+             b"relayhost = [old.example.org]:2525\ndefault_transport = smtp\n",
+             b"smtp inet n - y - - smtpd\n  -o syslog_name=postfix/smtp\n")
+        sample=(M.E.digest(b"\0".join(raw)),v,"","")
+        candidate,changes=M.candidate_configs(raw,sample)
+        self.assertIn(raw[0].split(b"relayhost")[0],candidate[0])
+        self.assertTrue(candidate[1].startswith(raw[1]))
+        self.assertIn(b"relayhost = \n",candidate[0])
+        self.assertEqual(changes,[k for k,_ in M.ROUTE_CHANGES]+["master.cf:m365xoauth2"])
+        e=M.candidate_evidence(raw,sample,"alerts@example.org","absent")
+        self.assertEqual(e["candidate_status"],"ready")
+        self.assertNotEqual(e["plan_sha256"],M.candidate_evidence(raw,sample,"other@example.org","absent")["plan_sha256"])
+        self.assertNotEqual(e["plan_sha256"],M.candidate_evidence(raw,sample,"alerts@example.org","mailbox_matches")["plan_sha256"])
+
+    def test_candidate_refuses_ambiguous_or_dependent_configuration(self):
+        for main,master in (
+            (b"relayhost = a\nrelayhost = b\n",b""),
+            (b"relayhost =\n  [other.example.org]:25\n",b""),
+            (b"myorigin = ${relayhost}\n",b""),
+            (b"myorigin = ${relayhost?{example.org}}\n",b""),
+            (b"myorigin = example.org\r\n",b""),
+            (b"",b"m365xoauth2 inet n - n - - smtpd\n"),
+        ):
+            raw=(main,master)
+            sample=(M.E.digest(b"\0".join(raw)),self.values(),"","")
+            report=M.candidate_evidence(raw,sample,"alerts@example.org","absent")
+            self.assertEqual(report["candidate_status"],"review_required")
+            self.assertEqual(report["change_set"],[])
+            self.assertEqual(report["plan_sha256"],"")
 
     def test_gui_model_selected_before_certificate_and_force_replace_separate(self):
         ui=(ROOT/"src/LinuxMailRelay365/MainForm.cs").read_text(encoding="utf-8")
