@@ -37,3 +37,35 @@ def activate(root,candidate,generation,transaction,check,reload,validate_tls):
             reload()
             transaction.record(root,previous,candidate,"rolled_back")
             raise
+
+def recover(root,generation,transaction,check,reload):
+    """Conservatively restore previous generation after an interrupted renewal."""
+    root=Path(root)
+    with transaction.deployment_lock(root):
+        journal=root/"deployment.json"
+        if not journal.exists():
+            return "no_transaction"
+        state=json.loads(journal.read_text())
+        if state.get("version")!=1:
+            raise ValueError("unknown journal version")
+        phase=state["phase"]
+        previous=state["previous"]
+        candidate=state["candidate"]
+        if phase not in ("prepared","switched","rollback_required","verified","rolled_back"):
+            raise ValueError("unknown journal phase")
+        generation.validate(root,previous)
+        generation.validate(root,candidate)
+        active=generation.current(root)
+        if phase in ("verified","rolled_back"):
+            if active!=(candidate if phase=="verified" else previous):
+                raise ValueError("terminal journal disagrees with active generation")
+            return "unchanged"
+        if active not in (previous,candidate):
+            raise ValueError("unexpected generation; manual recovery required")
+        transaction.record(root,previous,candidate,"rollback_required")
+        if active==candidate:
+            generation.switch(root,previous,candidate)
+        check()
+        reload()
+        transaction.record(root,previous,candidate,"rolled_back")
+        return "restored"
