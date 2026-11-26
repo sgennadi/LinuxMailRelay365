@@ -48,7 +48,7 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
         sample=(M.E.digest(b"\0".join(raw)),self.values(),"","")
         with mock.patch.object(M,"config_bytes",return_value=raw), \
              mock.patch.object(M,"sample",return_value=sample), \
-             mock.patch.object(M,"identity_status",return_value="absent"), \
+             mock.patch.object(M,"identity_snapshot",return_value=("absent","","")), \
              mock.patch.object(M,"command",return_value=mock.Mock(returncode=0,stdout=b"")) as cmd:
             result=M.inspect(req)
             self.assertFalse(result["apply_supported"] or result["changes"] or result["mail_sent"])
@@ -59,7 +59,7 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
             self.assertEqual([c[0][0] for c in cmd.call_args_list],["systemctl","postqueue"])
         with mock.patch.object(M,"config_bytes",return_value=raw), \
              mock.patch.object(M,"sample",side_effect=[sample,("b"*64,*sample[1:])]), \
-             mock.patch.object(M,"identity_status",return_value="absent"), \
+             mock.patch.object(M,"identity_snapshot",return_value=("absent","","")), \
              mock.patch.object(M,"command",return_value=mock.Mock(returncode=0,stdout=b"")):
             with self.assertRaisesRegex(M.E.Refused,"configuration_changed"):
                 M.inspect(req)
@@ -81,6 +81,22 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
         self.assertEqual(e["candidate_status"],"ready")
         self.assertNotEqual(e["plan_sha256"],M.candidate_evidence(raw,sample,"other@example.org","absent")["plan_sha256"])
         self.assertNotEqual(e["plan_sha256"],M.candidate_evidence(raw,sample,"alerts@example.org","mailbox_matches")["plan_sha256"])
+
+    def test_plan_binds_identity_and_certificate_digests(self):
+        raw=(b"mydestination = localhost\n",b"")
+        sample=(M.E.digest(b"\0".join(raw)),self.values(),"","")
+        identity=("mailbox_matches","a"*64,"b"*64)
+        def plan(value):
+            return M.candidate_evidence(raw,sample,"alerts@example.org",value)["plan_sha256"]
+        self.assertNotEqual(plan(identity),plan(("mailbox_matches","c"*64,"b"*64)))
+        self.assertNotEqual(plan(identity),plan(("mailbox_matches","a"*64,"c"*64)))
+        req=dict(mailbox="alerts@example.org",nonce="a"*64)
+        with mock.patch.object(M,"config_bytes",return_value=raw), \
+             mock.patch.object(M,"sample",return_value=sample), \
+             mock.patch.object(M,"identity_snapshot",side_effect=[identity,("mailbox_matches","a"*64,"c"*64)]), \
+             mock.patch.object(M,"command",return_value=mock.Mock(returncode=0,stdout=b"")):
+            with self.assertRaisesRegex(M.E.Refused,"configuration_changed"):
+                M.inspect(req)
 
     def test_candidate_refuses_ambiguous_or_dependent_configuration(self):
         for main,master in (

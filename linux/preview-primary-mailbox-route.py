@@ -186,7 +186,7 @@ def candidate_evidence(raw,sampled,mailbox,identity):
     except (E.Refused,UnicodeError):
         return empty
     sha=E.digest(b"\0".join(candidate))
-    plan=E.digest(encode(dict(version=1,config_sha256=sampled[0],
+    plan=E.digest(encode(dict(version=2,config_sha256=sampled[0],
         candidate_sha256=sha,mailbox=mailbox,identity=identity,change_set=changes)))
     return dict(candidate_status="ready" if changes else "already_configured",
                 candidate_sha256=sha,plan_sha256=plan,change_set=changes)
@@ -213,15 +213,18 @@ def sample():
     return digest,values,master,overrides
 
 
-def identity_status(mailbox):
+def identity_snapshot(mailbox):
     path=ROOT/"m365-oauth"/"app.json"
     if not os.path.lexists(str(path)):
-        return "absent"
+        return ("absent","","")
     try:
         item=E.active_inventory("primary")
+        need(SHA.fullmatch(item["identity_sha"]) and SHA.fullmatch(item["certificate_sha"]),
+             "invalid_identity_digest")
     except (E.Refused,OSError,KeyError,ValueError,TypeError,UnicodeError):
-        return "unverified"
-    return "mailbox_matches" if item["mailbox"]==mailbox else "different_mailbox"
+        return ("unverified","","")
+    return ("mailbox_matches" if item["mailbox"]==mailbox else "different_mailbox",
+            item["identity_sha"],item["certificate_sha"])
 
 
 def classify(sampled):
@@ -249,7 +252,7 @@ def classify(sampled):
 def inspect(req):
     first=sample()
     route=classify(first)
-    ident=identity_status(req["mailbox"])
+    ident=identity_snapshot(req["mailbox"])
     raw=config_bytes()
     candidate=candidate_evidence(raw,first,req["mailbox"],ident)
     active=command("systemctl",("is-active","--quiet","postfix"))
@@ -258,9 +261,9 @@ def inspect(req):
         queue_status="unverified" if queue.returncode else "nonempty" if queue.stdout.strip() else "empty"
     except (E.Refused,OSError,subprocess.TimeoutExpired):
         queue_status="unverified"
-    need(sample()==first and identity_status(req["mailbox"])==ident,"configuration_changed")
+    need(sample()==first and identity_snapshot(req["mailbox"])==ident,"configuration_changed")
     return dict(version=2,nonce=req["nonce"],mailbox=req["mailbox"],config_sha256=first[0],
-        identity=ident,service="active" if active.returncode==0 else "unverified",
+        identity=ident[0],service="active" if active.returncode==0 else "unverified",
         queue=queue_status,changes=False,mail_sent=False,apply_supported=False,
         local_delivery_changed=False,listener_changed=False,**route,**candidate)
 
