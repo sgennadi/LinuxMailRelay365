@@ -43,8 +43,7 @@ def main():
         def validate():
             if gen.current(ROOT)!=a.generation:
                 raise ValueError("active generation mismatch")
-            path=ROOT/a.generation/"client-chain.pem"
-            checker.inspect(str(path),str(path),a.domain,a.ca_file,str(path))
+            load("smtp-tls-validate-generation").validate(ROOT,a.generation,a.domain,a.ca_file,gen,checker)
         def reload():
             pf.run(pf.postfix,"check")
             pf.run(pf.postfix,"reload")

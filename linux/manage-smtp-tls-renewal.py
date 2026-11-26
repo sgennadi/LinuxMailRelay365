@@ -38,8 +38,7 @@ def main():
                 raise ValueError("candidate, domain and trust store required")
             checker=load("check-smtp-relay-certificate")
             def validate(name):
-                path=ROOT/name/"client-chain.pem"
-                checker.inspect(str(path),str(path),a.domain,a.ca_file,str(path))
+                load("smtp-tls-validate-generation").validate(ROOT,name,a.domain,a.ca_file,generation,checker)
             result=activation.activate(ROOT,a.candidate,generation,transaction,
                 postfix.check,postfix.reload,validate)
         print("TLS_TRANSACTION="+result)
