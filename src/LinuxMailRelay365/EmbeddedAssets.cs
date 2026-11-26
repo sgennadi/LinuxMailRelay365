@@ -25,6 +25,7 @@ internal static class EmbeddedAssets
     internal static string MultiMailboxIdentityInspector => Text("LinuxMailRelay365.linux.multi-mailbox-identity-inventory.py");
     internal static string MultiMailboxSourceEditor => Text("LinuxMailRelay365.linux.multi-mailbox-source-editor.py");
     internal static string MultiMailboxIdentityPreparer => Text("LinuxMailRelay365.linux.multi-mailbox-identity-prepare.py");
+    internal static string MultiMailboxNewApp => Text("LinuxMailRelay365.linux.multi-mailbox-new-app.py");
     internal static string MultiMailboxGraphPairReviewer => Text("LinuxMailRelay365.linux.multi-mailbox-graph-pair.py");
     internal static string OAuthIngressAudit => Text("LinuxMailRelay365.linux.oauth-ingress-audit.py");
     internal static string OAuthIdentitySigningAudit => Text("LinuxMailRelay365.linux.oauth-identity-signing-audit.py");
@@ -615,6 +616,25 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/prepare-multi-mailbox-identity.py\" <<'LMR365_SOURCE_EDITOR'\n" +
                Encode(MultiMailboxIdentityPreparer) + "\nLMR365_SOURCE_EDITOR\n" +
                "printf '%s' '" + Encode(request) + "' | base64 -d | python3 \"$work/prepare-multi-mailbox-identity.py\"\n";
+    }
+
+    internal static string BuildMultiMailboxNewAppBundle(string request)
+    {
+        if (Encoding.UTF8.GetByteCount(request) > 4096) throw new ArgumentException("New app request too large.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-new-app.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/audit-oauth-sender-map.py\" <<'LMR365_SOURCE_MAP'\n" +
+               Encode(OAuthSenderMapAudit) + "\nLMR365_SOURCE_MAP\n" +
+               "base64 -d > \"$work/export-hardware-oauth-cert.py\" <<'LMR365_SOURCE_CERT'\n" +
+               Encode(EntraPublicCertificateExporter) + "\nLMR365_SOURCE_CERT\n" +
+               "base64 -d > \"$work/inspect-multi-mailbox-identities.py\" <<'LMR365_SOURCE_INVENTORY'\n" +
+               Encode(MultiMailboxIdentityInspector) + "\nLMR365_SOURCE_INVENTORY\n" +
+               "base64 -d > \"$work/prepare-multi-mailbox-identity.py\" <<'LMR365_SOURCE_EDITOR'\n" +
+               Encode(MultiMailboxIdentityPreparer) + "\nLMR365_SOURCE_EDITOR\n" +
+               "base64 -d > \"$work/prepare-multi-mailbox-new-app.py\" <<'LMR365_NEW_APP'\n" +
+               Encode(MultiMailboxNewApp) + "\nLMR365_NEW_APP\n" +
+               "printf '%s' '" + Encode(request) + "' | base64 -d | python3 \"$work/prepare-multi-mailbox-new-app.py\"\n";
     }
 
     internal static string BuildMultiMailboxGraphPairBundle(string request)

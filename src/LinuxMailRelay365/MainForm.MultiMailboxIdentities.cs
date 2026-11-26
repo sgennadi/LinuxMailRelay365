@@ -71,6 +71,8 @@ internal sealed partial class MainForm
         footer.Controls.Add(restoreSource);
         var prepareIdentity = UiTheme.Action(T("Новый OAuth-идентификатор...", "New OAuth identity...", "זהות OAuth חדשה..."), false, "add");
         footer.Controls.Add(prepareIdentity);
+        var newApp = UiTheme.Action(T("Новое приложение Entra...", "New Entra app / recover...", "יישום Entra חדש..."), true, "add");
+        footer.Controls.Add(newApp);
         var registerIdentity = UiTheme.Action(T("Регистрация сертификата...", "Register prepared certificate...", "רישום אישור..."), false, "check");
         footer.Controls.Add(registerIdentity);
         var configureScope = UiTheme.Action(T("Настроить SMTP RBAC...", "Configure SMTP RBAC...", "הגדרת SMTP RBAC..."), false, "check");
@@ -116,6 +118,7 @@ internal sealed partial class MainForm
             removeMailbox.Enabled = source && Selected() is not null && inventory.Source.Rows.Length > 1;
             restoreSource.Enabled = source && inventory.Source.Status == "ok";
             prepareIdentity.Enabled = source && inventory.Runtime.Status is "ok" or "absent";
+            newApp.Enabled = prepareIdentity.Enabled && inventory.Source.Rows.Length < 64;
             configureScope.Enabled = !loading && !reading && inventoryValid && !saveUncertain &&
                 SelectedScope() == "source" && Selected() is { Status: "public_certificate_read" };
             registerIdentity.Enabled = !loading && !reading && inventoryValid && !saveUncertain &&
@@ -329,6 +332,164 @@ internal sealed partial class MainForm
                 Detail();
             }
         }
+        newApp.Click += async (_,_) =>
+        {
+            if (!newApp.Enabled) return;
+            var choice=PromptNewMailboxApp(dialog,inventory);
+            if (choice is null) return;
+            var (req,resume)=choice.Value;
+            var before=inventory;
+            reading=true;
+            refresh.Enabled=close.Enabled=tabs.Enabled=verify.Enabled=false;
+            EditingActions();
+            bool attempted=false;
+            string clientEvidence="";
+            try
+            {
+                string bootstrapField=entraSignInClientId.Text.Trim();
+                Guid bootstrap=ApprovedGraphPublicClientId();
+                void ValidateContext()
+                {
+                    RequireSameArchiveConnection(endpoint);
+                    if (!HasMailDiscovery() || context!=CurrentMultiMailboxContext() ||
+                        bootstrapField!=entraSignInClientId.Text.Trim() || SelectedScope()!="source")
+                        throw new InvalidOperationException("Linux or sign-in context changed.");
+                }
+                async Task CheckMaps()
+                {
+                    ValidateContext();
+                    var latest=await ReadAsync();
+                    if (latest.Source.Status!=before.Source.Status || latest.Source.Sha256!=before.Source.Sha256 ||
+                        latest.Runtime.Status!=before.Runtime.Status || latest.Runtime.Sha256!=before.Runtime.Sha256 ||
+                        latest.InstalledBinding!=before.InstalledBinding ||
+                        !latest.Source.Rows.SequenceEqual(before.Source.Rows) || !latest.Runtime.Rows.SequenceEqual(before.Runtime.Rows))
+                        throw new InvalidDataException("Source or runtime inventory changed.");
+                    ValidateContext();
+                }
+                async Task<MultiMailboxNewAppReceipt> Execute(string action, string approval="",
+                    MultiMailboxNewAppReceipt? previous=null, Guid? client=null)
+                {
+                    ValidateContext();
+                    var reply=await SshRemote.RunRootScriptAsync(endpoint,EmbeddedAssets.BuildMultiMailboxNewAppBundle(
+                        req.Serialize(action,approval,client)),TimeSpan.FromMinutes(4));
+                    ValidateContext();
+                    if (reply.ExitCode!=0) throw new IOException("New application local stage refused or requires review.");
+                    return MultiMailboxNewAppReceipt.Parse(reply.StdOut,req,action,previous,client);
+                }
+                await CheckMaps();
+                MultiMailboxNewAppReceipt stage;
+                if (resume)
+                {
+                    heading.Text="Recovering exact pending Linux certificate...";
+                    stage=await Execute("inspect");
+                }
+                else
+                {
+                    heading.Text="Checking local prerequisites for a new Entra application...";
+                    var preview=await Execute("preview");
+                    if (!ConfirmDestructive("LinuxMailRelay365 | Stage initial certificate",
+                        "Tenant: "+req.Tenant+Environment.NewLine+"Mailbox: "+req.Mailbox+
+                        Environment.NewLine+"Application name: "+req.Name+Environment.NewLine+"RSA 3072, days: "+req.Days+
+                        Environment.NewLine+"Recovery code: "+req.Nonce+Environment.NewLine+"Plan SHA-256: "+preview.ApprovalSha+
+                        Environment.NewLine+"Only a protected local key and public certificate are created. No cloud action.",
+                        MultiMailboxNewAppRequest.Phrase("stage"),dialog)) { Render(); return; }
+                    await CheckMaps();
+                    ResetMultiMailboxRouteReview(); observations.Clear();
+                    attempted=true;
+                    WriteLine("New Entra app recovery code: "+req.Nonce+"; name: "+req.Name+
+                        "; tenant: "+req.Tenant+"; mailbox: "+req.Mailbox+"; days: "+req.Days);
+                    heading.Text="Generating initial public certificate on Linux...";
+                    stage=await Execute("stage",preview.ApprovalSha,preview);
+                }
+                Guid appId;
+                Guid enterprise;
+                if (stage.Claimed)
+                {
+                    if (req.ResumeClient is not Guid recovered)
+                        throw new InvalidOperationException("Creation already claimed; recover exact Client ID, never recreate.");
+                    appId=recovered;
+                    clientEvidence=appId.ToString("D");
+                    enterprise=await VerifyNewMailboxAppAsync(req,stage,appId,bootstrap,dialog,ValidateContext);
+                    if (!ConfirmDestructive("LinuxMailRelay365 | Complete recovered identity",
+                        "Verified existing app: "+req.Name+Environment.NewLine+"Client ID: "+appId+
+                        Environment.NewLine+"Mailbox: "+req.Mailbox+Environment.NewLine+"Certificate SHA-256: "+stage.CertificateSha+
+                        Environment.NewLine+"Publish the local identity only; no cloud or route changes.",
+                        MultiMailboxNewAppRequest.Phrase("finalize"),dialog)) { Render(); return; }
+                }
+                else
+                {
+                    if (req.ResumeClient is not null) throw new InvalidDataException("Unclaimed stage cannot reuse an existing app.");
+                    if (!ConfirmDestructive("LinuxMailRelay365 | Create new Entra application",
+                        "MICROSOFT ENTRA CHANGE: create one new single-tenant App Registration with its initial public certificate, "+
+                        "then its Enterprise Application. No existing app is modified. No Exchange or Graph mail permissions are granted."+
+                        Environment.NewLine+"Tenant: "+req.Tenant+Environment.NewLine+"Mailbox: "+req.Mailbox+
+                        Environment.NewLine+"App name: "+req.Name+Environment.NewLine+"Certificate SHA-256: "+stage.CertificateSha+
+                        Environment.NewLine+"Recovery code: "+req.Nonce+
+                        Environment.NewLine+"After verified cloud creation, publish the unbound Linux identity. No mail or route activation.",
+                        MultiMailboxNewAppRequest.Phrase("claim"),dialog)) { Render(); return; }
+                    await CheckMaps();
+                    await WithNativeMicrosoftSignInAsync(async (show,ct)=>
+                    {
+                        await Microsoft365Auth.EntraGraphCertificateAddKeyClient.PrepareWriteSignInAsync(req.Tenant,bootstrap,show,ct);
+                        return true;
+                    },mayModifyEntra:true,signInOwner:dialog);
+                    await CheckMaps();
+                    var recent=await Execute("inspect",previous:stage);
+                    if (recent.Claimed) throw new InvalidDataException("Creation already claimed.");
+                    ResetMultiMailboxRouteReview(); observations.Clear();
+                    attempted=true;
+                    WriteLine("Claiming new Entra app creation once: "+req.Name+"; recovery code: "+req.Nonce);
+                    stage=await Execute("claim",stage.ApprovalSha,stage);
+                    ValidateContext();
+                    heading.Text="Creating dedicated App Registration and Enterprise Application...";
+                    var created=await WithNativeMicrosoftSignInAsync((show,ct)=>
+                        Microsoft365Auth.EntraGraphProvisioner.ProvisionAsync(req.Tenant,bootstrap,null,req.Name,
+                            Microsoft365Auth.EntraGraphCertificateAddKeyClient.MultiMailboxLabel,stage.PublicPem,show,ct),
+                        mayModifyEntra:true,signInOwner:dialog);
+                    if (created.ClientId!=Guid.Empty) clientEvidence=created.ClientId.ToString("D");
+                    if (!created.AppCreated || !created.PublicCertificateAdded || created.TenantId!=req.Tenant ||
+                        created.ClientId==Guid.Empty || created.ApplicationObjectId==Guid.Empty ||
+                        created.EnterpriseApplicationObjectId==Guid.Empty || created.DisplayName!=req.Name ||
+                        !string.Equals(created.CertificateSha256,stage.CertificateSha,StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("New app creation receipt unverified.");
+                    appId=created.ClientId;
+                    WriteLine("Entra new app Client ID: "+appId+"; name: "+req.Name+"; recovery code: "+req.Nonce);
+                    enterprise=await VerifyNewMailboxAppAsync(req,stage,appId,bootstrap,dialog,ValidateContext);
+                    if (enterprise!=created.EnterpriseApplicationObjectId)
+                        throw new InvalidDataException("Enterprise identity changed.");
+                }
+                await CheckMaps();
+                var claimed=await Execute("inspect",previous:stage);
+                if (!claimed.Claimed) throw new InvalidDataException("Creation claim disappeared.");
+                ResetMultiMailboxRouteReview(); observations.Clear();
+                attempted=true;
+                heading.Text="Publishing unbound local identity for verified Entra application...";
+                _=await Execute("finalize",claimed.ApprovalSha,claimed,appId);
+                await CheckMaps();
+                lastPreparedIdentity=req.IdentityFile;
+                Render();
+                WriteLine("New dedicated Entra application and local identity verified: "+req.IdentityFile+
+                    "; Client ID: "+appId+"; Enterprise ID: "+enterprise+". No route or Exchange permission changes.");
+                MessageBox.Show(dialog,"Dedicated application and unbound local OAuth identity ready."+
+                    Environment.NewLine+"Client ID: "+appId+Environment.NewLine+"Identity: "+req.IdentityFile+
+                    Environment.NewLine+"Next: Add mailbox to source map, Configure SMTP RBAC, then offline route review.",
+                    "New Entra app ready",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            }
+            catch (Exception)
+            {
+                if (attempted) saveUncertain=true;
+                Invalidate(attempted ? "New application outcome requires review; editing locked." : "New application preview or recovery refused.");
+                details.Text="Do not create again if a claim exists. Find exact app in Entra by name: "+req.Name+
+                    Environment.NewLine+"Recovery code: "+req.Nonce+Environment.NewLine+"Client ID (if known): "+clientEvidence+
+                    Environment.NewLine+"Mailbox: "+req.Mailbox+"; days: "+req.Days+
+                    Environment.NewLine+"Reopen this window and use recovery with the original parameters. No automatic cleanup.";
+                WriteLine("New app review required: "+req.Name+"; recovery code: "+req.Nonce+"; known Client ID: "+clientEvidence);
+            }
+            finally
+            {
+                reading=false; refresh.Enabled=close.Enabled=tabs.Enabled=true; Detail();
+            }
+        };
         prepareIdentity.Click += async (_, _) =>
         {
             if (reading || !inventoryValid || saveUncertain || SelectedScope() != "source") return;

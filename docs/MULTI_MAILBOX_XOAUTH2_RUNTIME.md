@@ -526,3 +526,26 @@ See https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols
 and https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac.
 Live tenant acceptance, including actual Exchange property serialization,
 remains necessary. Offline tests do not mutate a tenant.
+
+
+## Dedicated new Entra app and initial certificate (experimental)
+
+New Entra app / recover first stages a unique Linux RSA-3072 certificate
+without a fake Client ID or usable identity JSON. A root-only pending record
+binds tenant, mailbox, lifetime, source/runtime hashes and local key/cert
+fingerprints. A separate typed confirmation authorizes native Graph creation
+of a new single-tenant App Registration with its initial public certificate
+and corresponding Enterprise Application. A durable root-only no-clobber
+claim is written BEFORE Graph POST; it prevents repeating uncertain cloud
+creation. Graph verifies the exact app name, IDs and sole public certificate
+before the local identity JSON is published. No existing app is reused or
+PATCHed, and no Exchange/API mail permissions or routing are activated.
+Recover a pending stage using the original mailbox, tenant, lifetime and
+64-hex recovery code. If claimed, find the exact generated app name in Entra
+and enter its Client ID. Recovery is read-only in Graph, verifies the exact
+certificate and Enterprise Application, and requires local bind approval.
+If the cloud app or Enterprise Application was only partially created, repair
+or review it manually; never blindly recreate. Pending/claim files are retained
+as root-only evidence; no automatic deletion. Map changes invalidate the pending
+context. TPM and SELinux policy-aware staging remain open. CI exercises the
+actual local stage/claim/finalize flow, not a live tenant.

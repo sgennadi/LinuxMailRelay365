@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""Prepare an initial certificate before creating a new Entra application.
+
+No cloud calls here. Pending metadata and one-way creation claim are root-only.
+Do not publish a usable identity JSON until an explicitly reviewed Client ID
+is supplied by the GUI after native Graph verification. Python 3.6+.
+"""
+import base64
+import fcntl
+import grp
+import importlib.util
+import os
+from pathlib import Path
+import pwd
+import shutil
+import stat
+import sys
+import tempfile
+
+_spec = importlib.util.spec_from_file_location(
+    "new_app_prepare", str(Path(__file__).with_name("prepare-multi-mailbox-identity.py")))
+P = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(P)
+I, A, E, need, Refused = P.I, P.A, P.E, P.need, P.Refused
+PHRASES = {"stage": "STAGE_NEW_APP_CERTIFICATE", "claim": "CREATE_NEW_ENTRA_APP",
+           "finalize": "BIND_VERIFIED_NEW_ENTRA_APP"}
+
+
+def request(raw):
+    need(1 <= len(raw) <= 4096, "request_size")
+    obj = I.decode(raw)
+    need(isinstance(obj, dict) and set(obj) == {
+        "action", "tenant", "mailbox", "days", "source_sha", "runtime_sha", "nonce",
+        "approval", "client", "confirm"} and
+        all(isinstance(v, str) for k, v in obj.items() if k != "days"), "request_fields")
+    need(obj["action"] in ("preview", "stage", "inspect", "claim", "finalize") and
+         type(obj["days"]) is int and 4 <= obj["days"] <= 365 and
+         I.valid_mailbox(obj["mailbox"]) and A.EMAIL.fullmatch(obj["mailbox"]) and
+         I.SHA.fullmatch(obj["nonce"]) and
+         all(not obj[k] or I.SHA.fullmatch(obj[k]) for k in ("source_sha", "runtime_sha")),
+         "request_context")
+    I.guid(obj["tenant"])
+    if obj["action"] in PHRASES:
+        need(obj["confirm"] == PHRASES[obj["action"]] and I.SHA.fullmatch(obj["approval"]),
+             "approval_required")
+    else:
+        need(not obj["approval"] and not obj["confirm"], "read_only_request")
+    if obj["action"] == "finalize":
+        I.guid(obj["client"])
+    else:
+        need(not obj["client"], "unexpected_client_id")
+    return obj
+
+
+def basis(req):
+    return {k: req[k] for k in ("tenant", "mailbox", "days", "source_sha", "runtime_sha", "nonce")}
+
+
+def locations(req):
+    key, cert, identity = P.paths(req)
+    stem = identity.stem
+    return key, cert, identity, P.IDENTITIES / ("." + stem + ".pending"), P.IDENTITIES / ("." + stem + ".claim")
+
+
+def routes(req, gid):
+    hashes = P.route_state(req, gid)
+    need(hashes == [req["source_sha"], req["runtime_sha"]], "route_changed_since_inventory")
+    return hashes
+
+
+def preview(req, gid):
+    need(all(P.missing(p) for p in locations(req)), "pending_or_identity_destination_exists")
+    local = P.plan(dict(basis(req), client="", approval="", confirm=""), gid)
+    routes(req, gid)
+    return receipt(req, "preview", local["plan_sha"], "", "", False, False)
+
+
+def receipt(req, status, digest, cert_sha, der, claimed, changes):
+    return dict(basis(req), version=1, status=status, approval_sha=digest,
+                identity_file=P.paths(req)[2].name, app_name="LMR365-MBX-" + req["nonce"][:32],
+                certificate_sha256=cert_sha, certificate_der=der, claimed=claimed,
+                changes=changes, runtime_changed=False, cloud_changed=False, mail_sent=False,
+                client=req["client"] if status == "finalized" else "")
+
+
+def write_private(path, raw, work):
+    temp = work / "metadata"
+    temp.write_bytes(raw)
+    P.publish(temp, path, 0, 0o600)
+
+
+def stage(req, gid, service):
+    review = preview(req, gid)
+    need(review["approval_sha"] == req["approval"], "stale_stage_plan")
+    key, cert, identity, pending, claim = locations(req)
+    if P.missing(P.IDENTITIES):
+        P.IDENTITIES.mkdir(mode=0o700)
+        os.chown(str(P.IDENTITIES), 0, gid)
+        os.chmod(str(P.IDENTITIES), 0o750)
+        P.sync_dir(P.BASE)
+    state = P.directory_state(gid)
+    with tempfile.TemporaryDirectory(prefix=".new-app-", dir=str(P.IDENTITIES)) as folder:
+        work = Path(folder)
+        sk, sc = work/"key", work/"cert"
+        P.openssl(["req", "-x509", "-newkey", "rsa:3072", "-nodes", "-sha256",
+                   "-days", str(req["days"]), "-subj", "/CN=LinuxMailRelay365-New-App",
+                   "-keyout", str(sk), "-out", str(sc)], timeout=60)
+        need(P.directory_state(gid) == state and not P.SELINUX.exists() and
+             all(P.missing(p) for p in locations(req)), "destination_changed")
+        routes(req, gid)
+        P.publish(sk, key, gid, 0o640)
+        P.publish(sc, cert, gid, 0o640)
+        der = P.service_proof(service, key, cert, work)
+        need(250 <= len(der) <= 8192 and I.public_certificate_sha(str(cert)) == I.digest(der),
+             "certificate_digest_mismatch")
+        meta = dict(basis(req), version=1, certificate_sha256=I.digest(der),
+                    key_sha256=I.digest(E.secure_read(key, 65536, gid, modes=(0o640,))))
+        routes(req, gid)
+        write_private(pending, P.encode(meta), work)
+    return inspect(req, gid, service, status="staged", changes=True)
+
+
+def inspect(req, gid, service, status="staged", changes=False):
+    need(not P.SELINUX.exists(), "selinux_policy_review_required")
+    P.directory_state(gid)
+    routes(req, gid)
+    key, cert, identity, pending, claim = locations(req)
+    need(P.missing(identity), "identity_already_finalized")
+    raw = E.secure_read(pending, 4096, 0, modes=(0o600,))
+    meta = I.decode(raw)
+    need(isinstance(meta, dict) and set(meta) == set(basis(req)) |
+         {"version", "certificate_sha256", "key_sha256"} and meta["version"] == 1 and
+         all(meta[k] == v for k, v in basis(req).items()), "pending_context_mismatch")
+    need(I.SHA.fullmatch(meta["key_sha256"]) and I.SHA.fullmatch(meta["certificate_sha256"]),
+         "pending_digest_invalid")
+    need(I.digest(E.secure_read(key, 65536, gid, modes=(0o640,))) == meta["key_sha256"],
+         "staged_key_changed")
+    der = E.der_from_pem(E.secure_read(cert, E.MAX_PEM, gid, modes=(0o640,)))
+    need(I.digest(der) == meta["certificate_sha256"], "staged_certificate_changed")
+    # Verify local usability again, not merely stored hashes.
+    with tempfile.TemporaryDirectory(prefix=".new-app-proof-", dir=str(P.IDENTITIES)) as folder:
+        need(P.service_proof(service, key, cert, Path(folder)) == der, "local_proof_changed")
+    sha = I.digest(raw)
+    claimed = not P.missing(claim)
+    if claimed:
+        need(E.secure_read(claim, 256, 0, modes=(0o600,)) ==
+             P.encode(dict(version=1, stage_sha=sha)), "invalid_creation_claim")
+    routes(req, gid)
+    need(E.secure_read(pending, 4096, 0, modes=(0o600,)) == raw and
+         I.digest(E.secure_read(key, 65536, gid, modes=(0o640,))) == meta["key_sha256"] and
+         I.public_certificate_sha(str(cert)) == meta["certificate_sha256"] and
+         P.missing(identity), "staged_identity_changed")
+    return receipt(req, status, sha, meta["certificate_sha256"],
+                   base64.b64encode(der).decode("ascii"), claimed, changes)
+
+
+def mutate(req, gid, service):
+    action = req["action"]
+    if action == "stage":
+        return stage(req, gid, service)
+    current = inspect(req, gid, service)
+    need(current["approval_sha"] == req["approval"], "pending_stage_changed")
+    key, cert, identity, pending, claim = locations(req)
+    with tempfile.TemporaryDirectory(prefix=".new-app-commit-", dir=str(P.IDENTITIES)) as folder:
+        work = Path(folder)
+        if action == "claim":
+            # A durable no-clobber marker BEFORE Graph POST. A lost response
+            # never authorizes another create; resume by exact verified Client ID.
+            need(not current["claimed"], "creation_already_claimed")
+            write_private(claim, P.encode(dict(version=1, stage_sha=req["approval"])), work)
+            return inspect(req, gid, service, status="claimed", changes=True)
+        need(action == "finalize" and current["claimed"], "creation_claim_required")
+        data = P.encode(dict(tenant_id=req["tenant"], client_id=req["client"], mailbox=req["mailbox"],
+                             certificate=str(cert), private_key=str(key)))
+        A.validate_identity(data, req["mailbox"])
+        routes(req, gid)
+        staged = work/"identity"
+        staged.write_bytes(data)
+        P.publish(staged, identity, gid, 0o640)
+        need(E.secure_read(identity, A.MAX_IDENTITY, gid, modes=(0o640,)) == data,
+             "identity_readback_mismatch")
+        row = I.identity_row("proof", req["mailbox"], req["mailbox"], str(identity), gid)
+        need(row["status"] == "public_certificate_read" and
+             row["certificate_sha256"] == current["certificate_sha256"] and row["client"] == req["client"],
+             "identity_inventory_unverified")
+        runuser = shutil.which("runuser", path=P.ENV["PATH"])
+        need(bool(runuser), "runuser_required")
+        P.execute([runuser, "-u", service, "--", "/usr/bin/test", "-r", str(identity)])
+        routes(req, gid)
+        # Keep root-only stage and claim as recovery evidence; never delete keys.
+        return dict(current, status="finalized", client=req["client"], changes=True)
+
+
+def run(req, gid, service="m365mailer"):
+    need(pwd.getpwnam(service).pw_gid == gid, "service_group_changed")
+    if req["action"] == "preview":
+        result = preview(req, gid)
+        need(preview(req, gid) == result, "preview_changed")
+        return result
+    if req["action"] == "inspect":
+        return inspect(req, gid, service)
+    E.trusted_directory(P.LOCK.parent)
+    fd = os.open(str(P.LOCK), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        info = os.fstat(fd)
+        need(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and
+             stat.S_IMODE(info.st_mode) == 0o600, "unsafe_shared_lock")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return mutate(req, gid, service)
+    finally:
+        os.close(fd)
+
+
+def main():
+    try:
+        need(os.geteuid() == 0, "root_required")
+        os.umask(0o077)
+        req = request(sys.stdin.buffer.read(4097))
+        print(P.encode(run(req, grp.getgrnam("m365mailer").gr_gid)).decode("ascii"))
+        return 0
+    except (Refused, A.Refused, E.Refused, OSError, KeyError, TypeError, ValueError, UnicodeError):
+        print("NEW_APP_IDENTITY=refused_or_review_required")
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
