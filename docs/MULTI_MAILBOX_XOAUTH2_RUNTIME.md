@@ -502,3 +502,27 @@ creation is attempted. In those cases use the public certificate export
 and separately reviewed Entra registration. No route, service or mail
 changes. CI uses synthetic maps, real local RSA proof verification and
 receipt tests; real Entra/Exchange acceptance remains open.
+
+
+## Configure selected mailbox SMTP RBAC (experimental)
+
+Select a source-map mailbox with a valid registered public certificate and
+choose Configure SMTP RBAC. Native Graph verifies the exact app, Enterprise
+Object ID and certificate. Exchange-only PowerShell checks the session's
+tenant and resolves the primary SMTP address to the recipient GUID. A new
+scope uses exact GUID equality, and must match precisely one recipient.
+It does not use or change CustomAttribute15. Deterministic names are unique
+per app and recipient; existing name collisions require manual review.
+The reviewed SHA-bound plan optionally creates the absent EXO principal,
+scope and Application SMTP.SendAsApp assignment. Existing in-scope roles
+are not duplicated. Mailbox-only SMTP AUTH enable is opt-in and defaults
+to unchanged. The plan is reread before Apply; exact scope, assignee, role,
+policy and authorization are verified afterward. No Entra API grant,
+organization policy, existing role/scope edit, Linux config or mail sending.
+If an Apply result is uncertain, inspect the actual objects before retrying;
+no automatic removal or rollback. Existing app grants remain cumulative:
+this is not proof of exclusive mailbox access or live SMTP authentication.
+See https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/smtp-app-rbac-onboarding
+and https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac.
+Live tenant acceptance, including actual Exchange property serialization,
+remains necessary. Offline tests do not mutate a tenant.

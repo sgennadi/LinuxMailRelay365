@@ -73,6 +73,8 @@ internal sealed partial class MainForm
         footer.Controls.Add(prepareIdentity);
         var registerIdentity = UiTheme.Action(T("Регистрация сертификата...", "Register prepared certificate...", "רישום אישור..."), false, "check");
         footer.Controls.Add(registerIdentity);
+        var configureScope = UiTheme.Action(T("Настроить SMTP RBAC...", "Configure SMTP RBAC...", "הגדרת SMTP RBAC..."), false, "check");
+        footer.Controls.Add(configureScope);
         string lastPreparedIdentity = "";
         DataGridView Grid(TabPage tab)
         {
@@ -114,6 +116,8 @@ internal sealed partial class MainForm
             removeMailbox.Enabled = source && Selected() is not null && inventory.Source.Rows.Length > 1;
             restoreSource.Enabled = source && inventory.Source.Status == "ok";
             prepareIdentity.Enabled = source && inventory.Runtime.Status is "ok" or "absent";
+            configureScope.Enabled = !loading && !reading && inventoryValid && !saveUncertain &&
+                SelectedScope() == "source" && Selected() is { Status: "public_certificate_read" };
             registerIdentity.Enabled = !loading && !reading && inventoryValid && !saveUncertain &&
                 inventory.Source.Status is "ok" or "absent" && inventory.Runtime.Status is "ok" or "absent" &&
                 Selected() is { Signer: "software", Status: "public_certificate_read" };
@@ -565,6 +569,92 @@ internal sealed partial class MainForm
         editMailbox.Click += async (_, _) => await EditSourceAsync("edit");
         removeMailbox.Click += async (_, _) => await EditSourceAsync("remove");
         restoreSource.Click += async (_, _) => await EditSourceAsync("restore");
+        configureScope.Click += async (_, _) =>
+        {
+            if (!configureScope.Enabled || SelectedScope() != "source") return;
+            var selection = MultiMailboxCloudSelection.Capture(inventory,"source",Selected());
+            if (selection is null) return;
+            var choice = MessageBox.Show(dialog,
+                "Review scoped Exchange SMTP permission for " + selection.Row.Mailbox + "?" +
+                Environment.NewLine + "YES: also allow mailbox-only SMTP AUTH enable if effectively disabled." +
+                Environment.NewLine + "NO: RBAC only; leave SMTP AUTH policy unchanged." +
+                Environment.NewLine + "CANCEL: no operation. Apply requires separate typed confirmation.",
+                "Microsoft 365 | Scope and SMTP policy",MessageBoxButtons.YesNoCancel,MessageBoxIcon.Information,MessageBoxDefaultButton.Button2);
+            if (choice == DialogResult.Cancel) return;
+            reading=true;
+            refresh.Enabled=close.Enabled=tabs.Enabled=verify.Enabled=false;
+            EditingActions();
+            bool attempted=false;
+            try
+            {
+                string bootstrapField=entraSignInClientId.Text.Trim();
+                Guid bootstrap=ApprovedGraphPublicClientId();
+                void ValidateContext()
+                {
+                    RequireSameArchiveConnection(endpoint);
+                    if (!HasMailDiscovery() || context != CurrentMultiMailboxContext() ||
+                        bootstrapField != entraSignInClientId.Text.Trim() || !selection.Matches(inventory,SelectedScope(),Selected()))
+                        throw new InvalidOperationException("Mailbox or sign-in context changed.");
+                }
+                ValidateContext();
+                selection.RequireUnchanged(await ReadAsync());
+                heading.Text="Checking exact Graph application and public certificate...";
+                Guid enterprise=await ReadScopeEnterpriseAsync(selection.Row,bootstrap,dialog,ValidateContext);
+                var req=new MultiMailboxSmtpScopeRequest(selection.Row.Tenant!.Value,selection.Row.Client!.Value,
+                    enterprise,selection.Row.Mailbox,Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant(),
+                    choice == DialogResult.Yes);
+                heading.Text="Reading exact Exchange mailbox, scope and SMTP policy...";
+                var preview=await RunMailboxSmtpScopeAsync(req,null,ValidateContext);
+                selection.RequireUnchanged(await ReadAsync());
+                if (!preview.ChangesNeeded)
+                {
+                    MessageBox.Show(dialog,"Existing SMTP RBAC already authorizes this mailbox." +
+                        Environment.NewLine+"Effective SMTP AUTH: "+preview.EffectivePolicy+
+                        Environment.NewLine+"Other application grants may exist. Live SMTP is not tested.",
+                        "Exchange SMTP RBAC review",MessageBoxButtons.OK,MessageBoxIcon.Information);
+                    Render(selection); return;
+                }
+                if (!ConfirmDestructive("LinuxMailRelay365 | Scoped Exchange SMTP authorization",
+                    preview.Describe(req),MultiMailboxSmtpScopeRequest.Confirmation,dialog))
+                { Render(selection); return; }
+                ValidateContext();
+                selection.RequireUnchanged(await ReadAsync());
+                if (await ReadScopeEnterpriseAsync(selection.Row,bootstrap,dialog,ValidateContext) != enterprise)
+                    throw new InvalidDataException("Enterprise application changed.");
+                selection.RequireUnchanged(await ReadAsync());
+                ValidateContext();
+                ResetMultiMailboxRouteReview();
+                observations.Clear();
+                attempted=true;
+                heading.Text="Applying reviewed Exchange mailbox scope...";
+                _=await RunMailboxSmtpScopeAsync(req,preview,ValidateContext);
+                var latest=await ReadAsync();
+                selection.RequireUnchanged(latest);
+                ValidateContext();
+                inventory=latest;
+                Render(selection);
+                WriteLine("Scoped Exchange SMTP RBAC postcheck passed. No organization policy, Entra API grant, Postfix or mail changes.");
+                MessageBox.Show(dialog,"Exchange RBAC configuration verified for selected mailbox."+
+                    Environment.NewLine+"Effective SMTP AUTH: "+(preview.EnableMailboxSmtp ? "enabled" : preview.EffectivePolicy)+
+                    Environment.NewLine+"Run separate live SMTP AUTH verification. Existing app grants remain cumulative.",
+                    "Exchange scope configured",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            }
+            catch (Exception)
+            {
+                if (attempted) saveUncertain=true;
+                Invalidate(attempted ? "Exchange Apply outcome requires review; editing locked." :
+                    "Exchange preview refused or stale. No Apply requested.");
+                if (attempted) details.Text="Do not retry blindly. Inspect Exchange principal, scope, assignment and mailbox policy.";
+                WriteLine(attempted ? "Scoped Exchange operation outcome requires independent review." :
+                    "Scoped Exchange preview unavailable. Check Graph certificate and Exchange scope prerequisites.");
+            }
+            finally
+            {
+                reading=false;
+                refresh.Enabled=close.Enabled=tabs.Enabled=true;
+                Detail();
+            }
+        };
         verify.Click += async (_, _) =>
         {
             if (reading || !inventoryValid) return;

@@ -120,6 +120,7 @@
     <EmbeddedResource Include="../../windows/Initialize-LinuxMailRelay365.ps1" LogicalName="LinuxMailRelay365.windows.provision.ps1" />
     <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365Connector.ps1" LogicalName="LinuxMailRelay365.windows.tenant-connector-manager.ps1" />
     <EmbeddedResource Include="../../windows/Inspect-LinuxMailRelay365Objects.ps1" LogicalName="LinuxMailRelay365.windows.cloud-objects-inspector.ps1" />
+    <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365MailboxScope.ps1" LogicalName="LinuxMailRelay365.windows.multi-mailbox-smtp-scope.ps1" />
     <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365Object.ps1" LogicalName="LinuxMailRelay365.windows.cloud-connector-manager.ps1" />
     <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365EntraCertificate.ps1" LogicalName="LinuxMailRelay365.windows.entra-oauth-cert-manager.ps1" />
   </ItemGroup>

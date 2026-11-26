@@ -104,6 +104,7 @@ internal static class EmbeddedAssets
     internal static string CloudSecurityProbe => Text("LinuxMailRelay365.windows.cloud-security-probe.ps1");
     internal static string TenantConnectorManager => Text("LinuxMailRelay365.windows.tenant-connector-manager.ps1");
     internal static string CloudObjectsInspector => Text("LinuxMailRelay365.windows.cloud-objects-inspector.ps1");
+    internal static string MultiMailboxSmtpScopeManager => Text("LinuxMailRelay365.windows.multi-mailbox-smtp-scope.ps1");
     internal static string CloudConnectorManager => Text("LinuxMailRelay365.windows.cloud-connector-manager.ps1");
 
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
