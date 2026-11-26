@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace LinuxMailRelay365;
 
@@ -124,8 +125,13 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
         using var tpmPublicCert=new CertificateRequest("CN=TPM receipt test",tpmPublicKey,HashAlgorithmName.SHA256,
             RSASignaturePadding.Pkcs1).CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1),DateTimeOffset.UtcNow.AddDays(30));
         var tpmHash=Convert.ToHexString(SHA256.HashData(tpmPublicCert.RawData)).ToLowerInvariant();
-        string tpmJson=json.Replace(hash,tpmHash).Replace(Convert.ToBase64String(cert.RawData),Convert.ToBase64String(tpmPublicCert.RawData));
-        tpmJson=tpmJson[..^1]+",\"handle\":\"0x81010001\"}";
+        // JSON serialization can escape Base64 characters. Edit the fields
+        // rather than performing literal replacements in encoded JSON.
+        var tpmNode=JsonNode.Parse(json)!.AsObject();
+        tpmNode["certificate_sha256"]=tpmHash;
+        tpmNode["certificate_der"]=Convert.ToBase64String(tpmPublicCert.RawData);
+        tpmNode["handle"]="0x81010001";
+        string tpmJson=tpmNode.ToJsonString();
         if (Parse(tpmJson,hardware,"stage").CertificateSha!=tpmHash ||
             !hardware.Serialize("stage",sha).Contains("0x81010001",StringComparison.Ordinal) ||
             (hardware with { TpmHandle="0x81020000" }).Valid) return false;
@@ -137,9 +143,12 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
         string policy=new('e',64);
         string labeled=json[..^1]+",\"selinux_mode\":\"enforcing\",\"selinux_policy_sha\":\""+policy+"\"}";
         var labeledStage=Parse(labeled,req,"stage");
-        string preview=labeled.Replace("\"status\":\"staged\"","\"status\":\"preview\"")
-            .Replace("\"changes\":true","\"changes\":false").Replace(hash,"")
-            .Replace(Convert.ToBase64String(cert.RawData),"");
+        var previewNode=JsonNode.Parse(labeled)!.AsObject();
+        previewNode["status"]="preview";
+        previewNode["changes"]=false;
+        previewNode["certificate_sha256"]="";
+        previewNode["certificate_der"]="";
+        string preview=previewNode.ToJsonString();
         var labeledPreview=Parse(preview,req,"preview");
         if (Parse(labeled,req,"stage",labeledPreview).SelinuxPolicySha!=policy ||
             labeledStage.SelinuxMode!="enforcing") return false;
