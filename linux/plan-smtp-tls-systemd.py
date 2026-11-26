@@ -39,3 +39,17 @@ def preview_uninstall(source,target=Path("/etc/systemd/system")):
     return dict(units=units,conflict=installed["conflict"],apply_supported=False,
                 requires_disabled_timer=True,requires_inactive_renewal=True,
                 preserves_certificates=True,preserves_postfix_configuration=True)
+
+
+def preview_update(source,previous,target=Path("/etc/systemd/system")):
+    new=preview(source,target)
+    old=preview(previous,target)
+    prior={u["name"]:u for u in old["units"]}
+    units=[]
+    for u in new["units"]:
+        before=prior[u["name"]]
+        status=u["status"]
+        if status=="conflict" and before["status"]=="unchanged":
+            status="update"
+        units.append(dict(name=u["name"],status=status,sha256=u["sha256"],previous_sha256=before["sha256"]))
+    return dict(units=units,conflict=any(u["status"]=="conflict" for u in units),apply_supported=False)
