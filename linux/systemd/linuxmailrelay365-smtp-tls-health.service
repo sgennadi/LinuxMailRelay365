@@ -1,0 +1,15 @@
+[Unit]
+Description=LinuxMailRelay365 SMTP TLS health monitoring
+ConditionPathExists=/etc/postfix/lmr365-smtp-tls/active
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/linuxmailrelay365/check-smtp-tls-health.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=linuxmailrelay365-tls-health
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+TimeoutStartSec=120
