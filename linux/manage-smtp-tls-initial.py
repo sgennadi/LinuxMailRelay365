@@ -17,8 +17,11 @@ def load(name):
 
 def main():
     p=argparse.ArgumentParser()
-    for name in ("original-sha","candidate-sha","generation","domain","ca-file","confirm"):
-        p.add_argument("--"+name,required=True)
+    p.add_argument("--recover",action="store_true")
+    p.add_argument("--before-start",action="store_true")
+    p.add_argument("--confirm",required=True)
+    for name in ("original-sha","candidate-sha","generation","domain","ca-file"):
+        p.add_argument("--"+name)
     a=p.parse_args()
     if os.geteuid()!=0 or a.confirm!="INITIAL_TLS_DEPLOYMENT":
         p.error("root and explicit confirmation required")
@@ -46,6 +49,18 @@ def main():
             pf.run(pf.postfix,"check")
             pf.run(pf.postfix,"reload")
         with tx.deployment_lock(ROOT):
+            if a.recover:
+                path=ROOT/"initial-deployment.json"
+                if not path.exists():
+                    print("INITIAL_TLS=no_transaction")
+                    return 0
+                result=journal.recover(ROOT,json.loads(path.read_text()),read,backup.restore,
+                    lambda:pf.run(pf.postfix,"check"),lambda:None if a.before_start else reload(),
+                    lambda *args:journal.record(ROOT,*args))
+                print("INITIAL_TLS="+result)
+                return 0
+            if a.before_start or not all((a.original_sha,a.candidate_sha,a.generation,a.domain,a.ca_file)):
+                raise ValueError("deployment arguments required")
             for name in ("initial-deployment.json","deployment.json"):
                 path=ROOT/name
                 if path.exists() and json.loads(path.read_text()).get("phase") not in ("verified","rolled_back"):
