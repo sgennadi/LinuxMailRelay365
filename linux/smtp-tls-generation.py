@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Atomic generation pointer primitive; not a Postfix deployment command."""
 import os
+import hashlib
 import re
 import stat
 import uuid
@@ -15,10 +16,13 @@ def validate(root,name):
         st=p.lstat()
         if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o022:
             raise ValueError("unsafe directory")
-    for label in ("fullchain.pem","key.pem"):
+    for label in ("fullchain.pem","key.pem","client-chain.pem"):
         st=(root/name/label).lstat()
         if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o077 or not st.st_size:
             raise ValueError("unsafe generation file")
+    combined=(root/name/"client-chain.pem").read_bytes()
+    if hashlib.sha256(combined).hexdigest()!=name[len("candidate-"):]:
+        raise ValueError("generation digest mismatch")
 
 def current(root):
     try:

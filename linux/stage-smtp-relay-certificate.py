@@ -38,12 +38,14 @@ def stage(cert,chain,key,name,ca):
             (tmp/label).write_bytes(data)
         checker.inspect(str(tmp/"cert.pem"),str(tmp/"chain.pem"),name,ca,str(tmp/"key.pem"))
         bundle=(tmp/"cert.pem").read_bytes().rstrip()+b"\n"+(tmp/"chain.pem").read_bytes()
-        fingerprint=hashlib.sha256(bundle).hexdigest()
+        key_bytes=(tmp/"key.pem").read_bytes()
+        combined=key_bytes.rstrip()+b"\n"+bundle
+        fingerprint=hashlib.sha256(combined).hexdigest()
         # Publish a complete immutable-by-convention generation, never overwrite.
         dest=ROOT/("candidate-"+fingerprint)
         dest.mkdir(mode=0o700)
         try:
-            for label,data in (("fullchain.pem",bundle),("key.pem",(tmp/"key.pem").read_bytes())):
+            for label,data in (("fullchain.pem",bundle),("key.pem",key_bytes),("client-chain.pem",combined)):
                 with (dest/label).open("xb") as f:
                     f.write(data)
                     f.flush()
@@ -53,7 +55,7 @@ def stage(cert,chain,key,name,ca):
                 try: os.fsync(fd)
                 finally: os.close(fd)
         except BaseException:
-            for label in ("fullchain.pem","key.pem"):
+            for label in ("fullchain.pem","key.pem","client-chain.pem"):
                 try: (dest/label).unlink()
                 except FileNotFoundError: pass
             dest.rmdir()
