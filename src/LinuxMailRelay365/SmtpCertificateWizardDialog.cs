@@ -8,6 +8,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
     private readonly ComboBox identity = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
     private readonly ComboBox source = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
     private readonly Label summary = new() { Dock = DockStyle.Fill, AutoSize = false };
+    internal System.Text.Json.JsonElement? SelectedCertificate { get; private set; }
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
@@ -35,13 +36,39 @@ internal sealed class SmtpCertificateWizardDialog : Form
         var scan = new Button { Text = "Discover existing certificates", AutoSize = true };
         scan.Click += async (_, _) =>
         {
+            SelectedCertificate = null;
             scan.Enabled = false;
             try
             {
                 using var json = System.Text.Json.JsonDocument.Parse(await discover());
                 if (IsDisposed) return;
-                var rows = json.RootElement.GetProperty("certificates").EnumerateArray().Select(x => x.GetProperty("lineage").GetString() + " - unverified").ToArray();
-                MessageBox.Show(this, rows.Length == 0 ? "No standard ACME certificates found." : string.Join(Environment.NewLine, rows), "Certificate inventory");
+                var rows = json.RootElement.GetProperty("certificates").EnumerateArray().Select(x => x.Clone()).ToArray();
+                if (rows.Length == 0)
+                {
+                    MessageBox.Show(this, "No standard ACME certificates found.");
+                    return;
+                }
+                using var picker = new Form { Text = "Certificate inventory - eligibility unverified", StartPosition = FormStartPosition.CenterParent, AutoScaleMode = AutoScaleMode.Dpi, ClientSize = new Size(640, 440) };
+                var list = new ListBox { Dock = DockStyle.Top, Height = 120 };
+                var details = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false };
+                var choose = new Button { Dock = DockStyle.Bottom, Text = "Select for validation", Enabled = false };
+                foreach (var row in rows) list.Items.Add(row.GetProperty("lineage").GetString() ?? "(unknown)");
+                list.SelectedIndexChanged += (_, _) =>
+                {
+                    var row = rows[list.SelectedIndex];
+                    choose.Enabled = row.TryGetProperty("certificate", out _) && row.TryGetProperty("key_path", out _) && row.TryGetProperty("chain", out _);
+                    details.Text = row.TryGetProperty("metadata", out var metadata) ? metadata.GetString() ?? "" : "Inspection refused";
+                };
+                choose.Click += (_, _) =>
+                {
+                    SelectedCertificate = rows[list.SelectedIndex];
+                    picker.DialogResult = DialogResult.OK;
+                };
+                picker.Controls.Add(details);
+                picker.Controls.Add(list);
+                picker.Controls.Add(choose);
+                list.SelectedIndex = 0;
+                if (picker.ShowDialog(this) == DialogResult.OK) RefreshPlan();
             }
             catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, "Discovery failed: " + ex.GetType().Name); }
             finally { if (!IsDisposed) scan.Enabled = true; }
@@ -62,6 +89,6 @@ internal sealed class SmtpCertificateWizardDialog : Form
         summary.Text = "Planned steps (preview only)" + Environment.NewLine + Environment.NewLine +
             string.Join(Environment.NewLine, SmtpCertificateWizardPlan.Steps(Identity, Source)
                 .Select((step, index) => (index + 1) + ". " + step)) +
-            Environment.NewLine + Environment.NewLine + "No Linux or Microsoft 365 settings will be changed.";
+            Environment.NewLine + Environment.NewLine + (SelectedCertificate is { } cert ? "Selected: " + cert.GetProperty("lineage").GetString() + " (unverified)" + Environment.NewLine : "") + "No Linux or Microsoft 365 settings will be changed.";
     }
 }
