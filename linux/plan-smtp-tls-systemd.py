@@ -8,13 +8,18 @@ UNITS=("linuxmailrelay365-smtp-acme-renew.service",
        "linuxmailrelay365-smtp-acme-renew.timer",
        "linuxmailrelay365-smtp-tls-initial-recovery.service",
        "linuxmailrelay365-smtp-tls-prestart.service",
-       "linuxmailrelay365-smtp-tls-recovery.service")
+       "linuxmailrelay365-smtp-tls-recovery.service",
+       "linuxmailrelay365-smtp-tls-health.service",
+       "linuxmailrelay365-smtp-tls-health.timer")
 
-def preview(source,target=Path("/etc/systemd/system")):
+def preview(source,target=Path("/etc/systemd/system"),allow_missing_health=False):
     source,target=Path(source),Path(target)
     result=[]
     for name in UNITS:
         src=source/name
+        if allow_missing_health and "-health." in name and not os.path.lexists(str(src)):
+            result.append(dict(name=name,status="absent",sha256=None))
+            continue
         st=src.lstat()
         if not stat.S_ISREG(st.st_mode) or st.st_size>65536:
             raise ValueError("invalid packaged unit: "+name)
@@ -43,7 +48,7 @@ def preview_uninstall(source,target=Path("/etc/systemd/system")):
 
 def preview_update(source,previous,target=Path("/etc/systemd/system")):
     new=preview(source,target)
-    old=preview(previous,target)
+    old=preview(previous,target,allow_missing_health=True)
     prior={u["name"]:u for u in old["units"]}
     units=[]
     for u in new["units"]:

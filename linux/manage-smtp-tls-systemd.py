@@ -19,7 +19,7 @@ def digest(plan):
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("action",choices=("preview","install","status","enable-recovery","disable-timer","stop-timer","enable-timer","start-timer","renew-now","preview-uninstall","uninstall","preview-update","update"))
+    p.add_argument("action",choices=("preview","install","status","enable-recovery","disable-timer","stop-timer","enable-timer","start-timer","renew-now","preview-uninstall","uninstall","preview-update","update","enable-health","disable-health","health-now"))
     p.add_argument("--previous-units",type=Path)
     p.add_argument("--plan-sha")
     p.add_argument("--confirm")
@@ -85,6 +85,23 @@ def main():
             return 0
         finally:
             os.close(fd)
+    if a.action in ("enable-health","disable-health","health-now"):
+        if a.confirm!="MANAGE_TLS_UNITS":
+            p.error("explicit confirmation required")
+        timer="linuxmailrelay365-smtp-tls-health.timer"
+        if a.action!="disable-health":
+            units=planner.preview(source,target)["units"]
+            if any(u["status"]!="unchanged" for u in units if "-health." in u["name"]):
+                raise ValueError("installed health units do not match package")
+            load("smtp-tls-postfix").Postfix().verify_managed()
+        if a.action=="enable-health":
+            result=run("enable","--now",timer)
+        elif a.action=="disable-health":
+            result=run("disable","--now",timer)
+        else:
+            result=run("start","linuxmailrelay365-smtp-tls-health.service")
+        print(json.dumps({"action":a.action,"exit":result.returncode}))
+        return result.returncode
     if a.action=="status":
         for unit in planner.UNITS:
             result=run("show",unit,"--property=LoadState,ActiveState,UnitFileState,NextElapseUSecRealtime")
