@@ -43,7 +43,19 @@ def stage(cert,chain,key,name,ca):
         fingerprint=hashlib.sha256(combined).hexdigest()
         # Publish a complete immutable-by-convention generation, never overwrite.
         dest=ROOT/("candidate-"+fingerprint)
-        dest.mkdir(mode=0o700)
+        try:
+            dest.mkdir(mode=0o700)
+        except FileExistsError:
+            st=dest.lstat()
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o077:
+                raise ValueError("unsafe existing generation")
+            for label,data in (("fullchain.pem",bundle),("key.pem",key_bytes),("client-chain.pem",combined)):
+                fd=os.open(str(dest/label),os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+                with os.fdopen(fd,"rb") as f:
+                    st=os.fstat(f.fileno())
+                    if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o077 or f.read(len(data)+1)!=data:
+                        raise ValueError("existing generation mismatch")
+            return dest.name
         try:
             for label,data in (("fullchain.pem",bundle),("key.pem",key_bytes),("client-chain.pem",combined)):
                 with (dest/label).open("xb") as f:
