@@ -46,6 +46,7 @@ def run_renewal(a):
     conf=profile.trusted(base/"renewal"/(name+".conf"))
     if conf.stat().st_size>65536:
         raise ValueError("renewal configuration too large")
+    authenticator=None
     for line in conf.read_text().splitlines():
         line=line.strip()
         if not line or line.startswith(("#",";","[")):
@@ -53,15 +54,24 @@ def run_renewal(a):
         key,sep,value=line.partition("=")
         if not sep:
             raise ValueError("unsupported renewal configuration syntax")
+        if key.strip()=="authenticator":
+            if authenticator is not None:
+                raise ValueError("ambiguous authenticator")
+            authenticator=value.strip()
         if "hook" in key.lower():
             raise ValueError("configured hooks require manual review")
     if (base/"cli.ini").exists():
         raise ValueError("custom global ACME configuration requires manual review")
     certbot=load("smtp-tls-postfix").trusted_binary("/usr/bin/certbot")
+    env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","LC_ALL":"C","HOME":"/root"}
+    if authenticator=="dns-route53":
+        credentials=Path("/etc/postfix/lmr365-smtp-tls/aws-credentials")
+        load("check-smtp-acme-credentials").inspect(authenticator,credentials)
+        env.update(AWS_SHARED_CREDENTIALS_FILE=str(credentials),AWS_CONFIG_FILE="/dev/null",AWS_PROFILE="default",AWS_EC2_METADATA_DISABLED="true")
     result=subprocess.run([certbot,"renew"]+(["--force-renewal"] if a.force else [] if a.live else ["--dry-run"])+["--non-interactive","--no-directory-hooks",
         "--cert-name",name,"--config-dir",str(base),"--work-dir",str(base.parent/"work"),
         "--logs-dir",str(base.parent/"logs")],timeout=1800,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
-        env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","LC_ALL":"C"})
+        env=env)
     print(json.dumps({"renewal_exit":result.returncode,"dry_run":not (a.live or a.force),"forced":a.force,"activation_requested":False}))
     if result.returncode==0 and (a.force or a.live):
         import sys
