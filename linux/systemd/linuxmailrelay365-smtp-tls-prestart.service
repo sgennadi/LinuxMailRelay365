@@ -1,4 +1,6 @@
 [Unit]
+Requires=linuxmailrelay365-smtp-tls-initial-recovery.service
+After=linuxmailrelay365-smtp-tls-initial-recovery.service
 Description=Restore interrupted managed SMTP TLS generation before Postfix starts
 Before=postfix.service
 ConditionPathExists=/etc/postfix/lmr365-smtp-tls/deployment.json

@@ -1,0 +1,13 @@
+[Unit]
+Description=LinuxMailRelay365 initial TLS configuration recovery
+Before=postfix.service linuxmailrelay365-smtp-tls-prestart.service
+ConditionPathExists=/etc/postfix/lmr365-smtp-tls/initial-deployment.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/linuxmailrelay365/manage-smtp-tls-initial.py --recover --before-start --confirm INITIAL_TLS_DEPLOYMENT
+TimeoutStartSec=180
+UMask=0077
+
+[Install]
+RequiredBy=postfix.service
