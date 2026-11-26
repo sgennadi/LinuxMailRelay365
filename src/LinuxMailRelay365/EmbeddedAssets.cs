@@ -19,6 +19,7 @@ internal static class EmbeddedAssets
         return text;
     }
 
+    internal static string SmtpCertificateDiscovery => "set -eu\n/usr/bin/python3 - <<'LMR365_CERT_DISCOVERY'\n" + Text("LinuxMailRelay365.linux.smtp-cert-discovery.py") + "\nLMR365_CERT_DISCOVERY\n";
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
     internal static string OAuthSenderMapAudit => Text("LinuxMailRelay365.linux.oauth-sender-map-audit.py");

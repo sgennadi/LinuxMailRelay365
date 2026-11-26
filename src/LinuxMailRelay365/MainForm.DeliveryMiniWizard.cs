@@ -124,7 +124,13 @@ internal sealed partial class MainForm
             smtp.Enabled = !busy;
             smtp.Click += (_, _) =>
             {
-                using var dialog = new SmtpCertificateWizardDialog();
+                using var dialog = new SmtpCertificateWizardDialog(async () =>
+                {
+                    var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+                        EmbeddedAssets.SmtpCertificateDiscovery, TimeSpan.FromSeconds(90));
+                    result.EnsureSuccess();
+                    return result.StdOut;
+                });
                 dialog.ShowDialog(this);
             };
             AddLine(page, smtp);
