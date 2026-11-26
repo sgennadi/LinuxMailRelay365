@@ -268,6 +268,18 @@ def inspect(req):
         local_delivery_changed=False,listener_changed=False,**route,**candidate)
 
 
+def validate_apply_preconditions(report, expected_plan):
+    """Read-only gate for a future transaction; not authorization to write."""
+    need(isinstance(expected_plan,str) and SHA.fullmatch(expected_plan),
+         "invalid_reviewed_plan")
+    need(report["plan_sha256"]==expected_plan,"stale_reviewed_plan")
+    need(report["scope"]=="primary_only" and report["route"]!="review_required" and
+         report["candidate_status"]=="ready","migration_not_ready")
+    need(report["identity"]=="mailbox_matches","identity_not_ready")
+    need(report["service"]=="active","service_not_ready")
+    need(report["queue"]=="empty","queue_not_empty_or_unverified")
+
+
 def main():
     try:
         need(os.geteuid()==0,"root_required")

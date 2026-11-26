@@ -98,6 +98,21 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
             with self.assertRaisesRegex(M.E.Refused,"configuration_changed"):
                 M.inspect(req)
 
+    def test_apply_preconditions_fail_closed(self):
+        plan="a"*64
+        report=dict(plan_sha256=plan,scope="primary_only",route="migration_candidate",
+                    candidate_status="ready",identity="mailbox_matches",
+                    service="active",queue="empty")
+        M.validate_apply_preconditions(report,plan)
+        for key,value in (("plan_sha256","b"*64),("scope","review_required"),
+                          ("route","review_required"),("candidate_status","already_configured"),
+                          ("identity","different_mailbox"),("identity","absent"),
+                          ("service","unverified"),("queue","nonempty"),("queue","unverified")):
+            with self.assertRaises(M.E.Refused):
+                M.validate_apply_preconditions(dict(report,**{key:value}),plan)
+        with self.assertRaises(M.E.Refused):
+            M.validate_apply_preconditions(report,"invalid")
+
     def test_candidate_refuses_ambiguous_or_dependent_configuration(self):
         for main,master in (
             (b"relayhost = a\nrelayhost = b\n",b""),
