@@ -116,6 +116,19 @@ internal sealed partial class MainForm
         button.Enabled = !busy;
         button.Click += (_, _) => { deliveryPhase = DeliveryAdvancedPhase; RenderPage(); };
         AddLine(page, button);
+        if (DeliveryHasPlan() && selectedMailTarget == MailFlowIntent.TargetM365 &&
+            selectedMailScenario != MailScenarioPlanner.Keep && mailTransport.SelectedIndex == 1)
+        {
+            var smtp = UiTheme.Action(T("Настройка SMTP Connector и TLS",
+                "SMTP Connector and TLS setup", "הגדרת SMTP Connector ו-TLS"), glyph: "shield");
+            smtp.Enabled = !busy;
+            smtp.Click += (_, _) =>
+            {
+                using var dialog = new SmtpCertificateWizardDialog();
+                dialog.ShowDialog(this);
+            };
+            AddLine(page, smtp);
+        }
     }
 
     private bool CertificateHardwareProbeCurrent() =>
