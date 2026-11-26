@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Preview ACME renewal test; refuse configured hooks before running dry-run."""
 import argparse
-import configparser
 import importlib.util
 import json
 import os
@@ -26,12 +25,15 @@ def main():
     conf=profile.trusted(base/"renewal"/(name+".conf"))
     if conf.stat().st_size>65536:
         raise ValueError("renewal configuration too large")
-    parser=configparser.ConfigParser(interpolation=None)
-    parser.read_string("[top]\n"+conf.read_text())
-    for section in parser.sections():
-        for key,value in parser.items(section):
-            if "hook" in key.lower() and value.strip():
-                raise ValueError("configured hooks require manual review")
+    for line in conf.read_text().splitlines():
+        line=line.strip()
+        if not line or line.startswith(("#",";","[")):
+            continue
+        key,sep,value=line.partition("=")
+        if not sep:
+            raise ValueError("unsupported renewal configuration syntax")
+        if "hook" in key.lower():
+            raise ValueError("configured hooks require manual review")
     if (base/"cli.ini").exists():
         raise ValueError("custom global ACME configuration requires manual review")
     certbot=load("smtp-tls-postfix").trusted_binary("/usr/bin/certbot")
