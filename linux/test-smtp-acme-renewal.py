@@ -45,6 +45,11 @@ def main():
         "--logs-dir",str(base.parent/"logs")],timeout=1800,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
         env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","LC_ALL":"C"})
     print(json.dumps({"renewal_exit":result.returncode,"dry_run":not (a.live or a.force),"forced":a.force,"activation_requested":False}))
+    if result.returncode==0 and a.force:
+        import sys
+        activation=subprocess.run([sys.executable,str(Path(__file__).resolve().with_name("manage-smtp-tls-process-renewal.py")),"--profile","--confirm","PROCESS_RENEWED_TLS"],timeout=300)
+        print(json.dumps({"forced_activation_exit":activation.returncode,"exchange_acceptance":"unverified"}))
+        return activation.returncode
     return result.returncode
 if __name__=="__main__":
     raise SystemExit(main())
