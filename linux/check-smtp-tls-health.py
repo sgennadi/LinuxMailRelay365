@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Read-only managed SMTP TLS health report."""
+import argparse
+import sys
 import importlib.util
 import json
 import subprocess
@@ -12,6 +14,9 @@ def load(name):
     return m
 
 def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--journal-alerts',action='store_true')
+    args=parser.parse_args()
     root=Path("/etc/postfix/lmr365-smtp-tls")
     report={"version":1,"exchange_acceptance_verified":False,"checks":{}}
     checks=report["checks"]
@@ -42,5 +47,9 @@ def main():
         checks["systemd"]={"status":"unavailable"}
     report['alerts']=load('smtp-tls-health-alerts').alerts(report)
     print(json.dumps(report,sort_keys=True))
+    if args.journal_alerts:
+        for alert in report['alerts']:
+            priority=2 if alert['severity']=='critical' else 4
+            print('<{}>SMTP TLS: {}'.format(priority,alert['code']),file=sys.stderr)
 if __name__=="__main__":
     main()

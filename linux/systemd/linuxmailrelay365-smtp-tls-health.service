@@ -4,9 +4,10 @@ ConditionPathExists=/etc/postfix/lmr365-smtp-tls/active
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /usr/local/libexec/linuxmailrelay365/check-smtp-tls-health.py
+ExecStart=/usr/bin/python3 /usr/local/libexec/linuxmailrelay365/check-smtp-tls-health.py --journal-alerts
 StandardOutput=journal
 StandardError=journal
+SyslogLevelPrefix=yes
 SyslogIdentifier=linuxmailrelay365-tls-health
 ProtectSystem=strict
 ProtectHome=yes
