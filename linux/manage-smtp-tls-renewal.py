@@ -15,7 +15,7 @@ def load(name):
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("action",choices=("activate","recover"))
+    p.add_argument("action",choices=("activate","recover","recover-before-start"))
     p.add_argument("--candidate")
     p.add_argument("--domain")
     p.add_argument("--ca-file")
@@ -29,7 +29,9 @@ def main():
         activation=load("smtp-tls-activate")
         postfix=load("smtp-tls-postfix").Postfix()
         postfix.verify_managed()
-        if a.action=="recover":
+        if a.action=="recover-before-start":
+            result=activation.recover(ROOT,generation,transaction,postfix.check,lambda: None)
+        elif a.action=="recover":
             result=activation.recover(ROOT,generation,transaction,postfix.check,postfix.reload)
         else:
             if not all((a.candidate,a.domain,a.ca_file)):
