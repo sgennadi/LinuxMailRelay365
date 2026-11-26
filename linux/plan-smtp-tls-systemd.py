@@ -30,3 +30,12 @@ def preview(source,target=Path("/etc/systemd/system")):
         result.append(dict(name=name,status=status,sha256=hashlib.sha256(data).hexdigest()))
     return dict(units=result,conflict=any(x["status"]=="conflict" for x in result),
                 apply_supported=False)
+
+
+def preview_uninstall(source,target=Path("/etc/systemd/system")):
+    installed=preview(source,target)
+    states={"create":"absent","unchanged":"remove","conflict":"preserve"}
+    units=[dict(name=u["name"],status=states[u["status"]],sha256=u["sha256"]) for u in installed["units"]]
+    return dict(units=units,conflict=installed["conflict"],apply_supported=False,
+                requires_disabled_timer=True,requires_inactive_renewal=True,
+                preserves_certificates=True,preserves_postfix_configuration=True)
