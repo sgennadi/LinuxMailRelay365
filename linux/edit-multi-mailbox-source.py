@@ -20,6 +20,10 @@ _spec = importlib.util.spec_from_file_location(
 I = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(I)
 A, E = I.A, I.E
+_policy_spec = importlib.util.spec_from_file_location(
+    "source_label_policy", str(Path(__file__).with_name("prepare-multi-mailbox-identity.py")))
+P = importlib.util.module_from_spec(_policy_spec)
+_policy_spec.loader.exec_module(P)
 BASE, SOURCE, IDENTITIES = I.BASE, I.SOURCE, I.IDENTITIES
 BACKUPS = BASE / "oauth-source-backups"
 # Coordinate with the existing offline route installer.
@@ -120,6 +124,48 @@ def identity_path(req, previous, gid):
     return matches[0]
 
 
+def exists(path):
+    try:
+        path.lstat()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def source_policy(req):
+    """Review only fixed source/backup paths, not arbitrary request paths."""
+    mode = P.selinux_mode()
+    labels = {}
+    if mode != "inactive":
+        E.trusted_directory(BASE)
+        targets = [(BASE,True), (SOURCE,False), (BACKUPS,True)]
+        if req["action"] == "restore":
+            need(BACKUP_ID.fullmatch(req["backup_id"]), "invalid_backup_id")
+            folder = BACKUPS / req["backup_id"]
+            targets += [(folder,True),(folder/"manifest.json",False),
+                        (folder/"oauth-senders.tsv",False)]
+        for path, directory in targets:
+            expected = P.query_label(path, "dir" if directory else "file")
+            if exists(path):
+                if directory:
+                    E.trusted_directory(path)
+                P.verify_label(path, expected, directory=directory)
+            else:
+                need(path in (SOURCE,BACKUPS), "required_policy_path_missing")
+            labels[str(path)] = expected
+    need(P.selinux_mode() == mode,"selinux_mode_changed")
+    return dict(mode=mode,labels=labels)
+
+
+def check_backup_labels(folder):
+    if P.selinux_mode() == "inactive":
+        return
+    for path,directory in ((BASE,True),(BACKUPS,True),(folder,True),
+                           (folder/"manifest.json",False),(folder/"oauth-senders.tsv",False)):
+        expected=P.query_label(path,"dir" if directory else "file")
+        P.verify_label(path,expected,directory=directory)
+
+
 def restore_backup(req):
     """Verify backup metadata and canonical bytes without reading identities."""
     need(BACKUP_ID.fullmatch(req["backup_id"]), "invalid_backup_id")
@@ -147,6 +193,7 @@ def restore_backup(req):
     new = E.secure_read(folder / "oauth-senders.tsv", A.MAX_MAP, modes=(0o600,))
     need(I.digest(new) == manifest["old_sha256"], "backup_digest_mismatch")
     rows = canonical_rows(new)
+    check_backup_labels(folder)
     return new, rows, manifest_raw
 
 
@@ -171,7 +218,7 @@ def backup_catalog(req):
                     continue
                 try:
                     new, rows, _ = restore_backup(dict(req, backup_id=entry.name))
-                except (Refused, A.Refused, E.Refused, OSError, KeyError, ValueError, TypeError, UnicodeError):
+                except (Refused, A.Refused, E.Refused, P.Refused, P.E.Refused, OSError, KeyError, ValueError, TypeError, UnicodeError):
                     continue
                 items.append(dict(backup_id=entry.name, map_sha=I.digest(new), row_count=len(rows)))
                 need(len(items) <= 64, "backup_catalog_match_limit")
@@ -202,6 +249,18 @@ def restore_plan(req, gid):
 
 
 def plan(req, gid):
+    # Preserve legacy inactive plan digests. With active SELinux, bind the
+    # exact policy and mode into the reviewed plan, not just the map bytes.
+    old, new, result = content_plan(req, gid)
+    policy = source_policy(req)
+    if policy["mode"] != "inactive":
+        sha = I.digest(encode(policy))
+        result.update(plan_sha=I.digest(encode(dict(content_plan=result["plan_sha"], policy=policy))),
+                      selinux_mode=policy["mode"], selinux_policy_sha=sha)
+    return old, new, result
+
+
+def content_plan(req, gid):
     if req["action"] == "restore":
         return restore_plan(req, gid)
     old, rows = read_source()
@@ -252,46 +311,80 @@ def sync_directory(path):
         os.close(fd)
 
 
-def write_new(path, data):
+def label_new_directory(path, mode):
+    if mode == "inactive":
+        return
+    expected = P.query_label(path,"dir")
+    fd = os.open(str(path),os.O_RDONLY|os.O_DIRECTORY|getattr(os,"O_NOFOLLOW",0))
+    try:
+        info, live = os.fstat(fd), path.lstat()
+        need(info.st_uid == 0 and stat.S_IMODE(info.st_mode)==0o700 and
+             (info.st_dev,info.st_ino)==(live.st_dev,live.st_ino),"new_backup_directory_changed")
+        P.set_new_label(fd,expected)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    P.verify_label(path,expected,directory=True)
+
+
+def write_new(path, data, mode="inactive"):
+    expected=P.query_label(path,"file") if mode!="inactive" else None
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     with os.fdopen(fd, "wb") as stream:
         os.fchmod(stream.fileno(), 0o600)
+        if expected is not None:
+            P.set_new_label(stream.fileno(),expected)
         stream.write(data)
         stream.flush()
         os.fsync(stream.fileno())
+    if expected is not None:
+        P.verify_label(path,expected)
 
 
 def backup(old, result):
     E.trusted_directory(BASE)
-    BACKUPS.mkdir(mode=0o700, exist_ok=True)
+    mode = result.get("selinux_mode","inactive")
+    need(P.selinux_mode()==mode,"selinux_mode_changed")
+    if not exists(BACKUPS):
+        BACKUPS.mkdir(mode=0o700)
+        label_new_directory(BACKUPS,mode)
     E.trusted_directory(BACKUPS)
     need(stat.S_IMODE(BACKUPS.lstat().st_mode) == 0o700, "backup_root_not_private")
+    if mode!="inactive":
+        P.verify_label(BACKUPS,P.query_label(BACKUPS,"dir"),directory=True)
     folder = Path(tempfile.mkdtemp(prefix="source-", dir=str(BACKUPS)))
+    label_new_directory(folder,mode)
     if old is not None:
-        write_new(folder / "oauth-senders.tsv", old)
+        write_new(folder / "oauth-senders.tsv", old, mode)
         need(I.digest(E.secure_read(folder / "oauth-senders.tsv", A.MAX_MAP, modes=(0o600,))) ==
              result["base_sha"], "backup_readback_mismatch")
     write_new(folder / "manifest.json", encode(dict(version=1, source_was_present=old is not None,
-              old_sha256=result["base_sha"], new_sha256=result["new_sha"], plan_sha256=result["plan_sha"])))
+              old_sha256=result["base_sha"], new_sha256=result["new_sha"], plan_sha256=result["plan_sha"])),mode)
+    if mode!="inactive":
+        for path,directory in ((folder,True),(folder/"manifest.json",False)):
+            P.verify_label(path,P.query_label(path,"dir" if directory else "file"),directory=directory)
+        if old is not None:
+            check_backup_labels(folder)
+    need(P.selinux_mode()==mode,"selinux_mode_changed")
     sync_directory(folder)
     sync_directory(BACKUPS)
     sync_directory(BASE)
     return folder.name
 
 
-def source_metadata(old):
+def source_metadata(old, policy):
+    active = policy["mode"] != "inactive"
     if old is None:
-        # New-file SELinux labeling requires a separate policy-aware
-        # acceptance path. Do not silently create an incorrectly labeled map.
-        need(not Path("/sys/fs/selinux/enforce").exists(), "new_source_selinux_requires_review")
-        return None, None
+        return None, (policy["labels"][str(SOURCE)].encode("ascii")+b"\0") if active else None
     info = SOURCE.lstat()
     need(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and
          stat.S_IMODE(info.st_mode) == 0o600, "unsafe_source_metadata")
     attributes = os.listxattr(str(SOURCE), follow_symlinks=False)
-    need(set(attributes) <= {"security.selinux"}, "unsupported_source_extended_attributes")
-    label = os.getxattr(str(SOURCE), "security.selinux", follow_symlinks=False) if "security.selinux" in attributes else None
-    need(not Path("/sys/fs/selinux/enforce").exists() or label is not None, "source_selinux_label_missing")
+    need(set(attributes) <= {P.LABEL_ATTR}, "unsupported_source_extended_attributes")
+    label = os.getxattr(str(SOURCE), P.LABEL_ATTR, follow_symlinks=False) if P.LABEL_ATTR in attributes else None
+    if active:
+        need(label is not None and P.checked_context(label)==policy["labels"][str(SOURCE)],
+             "source_selinux_label_mismatch")
     return info.st_gid, label
 
 
@@ -307,8 +400,16 @@ def apply(req, gid):
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         old, new, result = plan(req, gid)
         need(req["approval"] == result["plan_sha"], "plan_changed_since_approval")
-        group, label = source_metadata(old)
+        policy = source_policy(req)
+        def verify_policy():
+            need(source_policy(req)==policy,"selinux_policy_changed")
+            need(policy["mode"]==result.get("selinux_mode","inactive") and
+                 (policy["mode"]=="inactive" or I.digest(encode(policy))==result["selinux_policy_sha"]),
+                 "selinux_policy_changed_since_approval")
+        verify_policy()
+        group, label = source_metadata(old,policy)
         backup_id = backup(old, result)
+        verify_policy()
         # Report the durable backup even if a later readback is uncertain.
         print("SOURCE_MAP_BACKUP_ID=" + backup_id, file=sys.stderr, flush=True)
         stage_fd, name = tempfile.mkstemp(prefix=".oauth-source-", dir=str(BASE))
@@ -316,14 +417,19 @@ def apply(req, gid):
         with os.fdopen(stage_fd, "wb") as stream:
             os.fchmod(stream.fileno(), 0o600)
             os.fchown(stream.fileno(), 0, group if group is not None else 0)
-            if label is not None:
-                os.setxattr(stream.fileno(), "security.selinux", label)
-                need(os.getxattr(stream.fileno(), "security.selinux") == label, "source_label_not_preserved")
+            if policy["mode"]!="inactive":
+                P.set_new_label(stream.fileno(),policy["labels"][str(SOURCE)])
+            elif label is not None:
+                os.setxattr(stream.fileno(), P.LABEL_ATTR, label)
+                need(os.getxattr(stream.fileno(), P.LABEL_ATTR) == label, "source_label_not_preserved")
             stream.write(new)
             stream.flush()
             os.fsync(stream.fileno())
         need(E.secure_read(stage, A.MAX_MAP, modes=(0o600,)) == new, "stage_readback")
-        need(plan(req, gid) == (old, new, result) and source_metadata(old) == (group, label),
+        verify_policy()
+        if policy["mode"]!="inactive":
+            P.verify_label(stage,policy["labels"][str(SOURCE)])
+        need(plan(req, gid) == (old, new, result) and source_metadata(old,policy) == (group, label),
              "configuration_changed_before_commit")
         # The shared lock protects cooperating installers/editors. Other root
         # administrators must not concurrently edit this map.
@@ -338,6 +444,11 @@ def apply(req, gid):
         stage = None
         sync_directory(BASE)
         need(E.secure_read(SOURCE, A.MAX_MAP, modes=(0o600,)) == new, "committed_readback")
+        verify_policy()
+        committed_group,committed_label=source_metadata(new,policy)
+        need(committed_group==(group if group is not None else 0) and
+             (P.checked_context(committed_label)==policy["labels"][str(SOURCE)] if policy["mode"]!="inactive"
+              else committed_label==label), "committed_source_metadata_mismatch")
         return dict(result, backup_id=backup_id, status="saved", changes=True)
     except Exception:
         if committed:
@@ -368,7 +479,7 @@ def main():
         result.update(version=1, runtime_changed=False, mail_sent=False, cloud_changed=False)
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
-    except (Refused, A.Refused, E.Refused, OSError, KeyError, ValueError, TypeError, UnicodeError):
+    except (Refused, A.Refused, E.Refused, P.Refused, P.E.Refused, OSError, KeyError, ValueError, TypeError, UnicodeError):
         print("SOURCE_MAP_EDITOR=refused_or_review_required")
         return 2
 

@@ -41,7 +41,8 @@ internal sealed record MultiMailboxSourceEditRequest(string Action, string BaseS
 }
 
 internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha, int NewCount,
-    MultiMailboxIdentityRow? Selected, string IdentityFile, string RestoredFrom = "")
+    MultiMailboxIdentityRow? Selected, string IdentityFile, string RestoredFrom = "",
+    string SelinuxMode = "", string SelinuxPolicySha = "")
 {
     internal string Describe(MultiMailboxSourceEditRequest req) =>
         "Operation: " + req.Action.ToUpperInvariant() + Environment.NewLine +
@@ -60,7 +61,10 @@ internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha,
             "Public certificate SHA-256: " + row.CertificateSha + Environment.NewLine : "") +
         "Original map SHA-256: " + (req.BaseSha == "" ? "absent" : req.BaseSha) + Environment.NewLine +
         "New map SHA-256: " + NewSha + Environment.NewLine +
-        "Reviewed plan SHA-256: " + PlanSha + Environment.NewLine + Environment.NewLine +
+        "Reviewed plan SHA-256: " + PlanSha + Environment.NewLine +
+        (SelinuxMode == "" ? "" : "SELinux: " + SelinuxMode + "; policy SHA-256: " + SelinuxPolicySha +
+            Environment.NewLine + "Only new map/backup inodes receive installed-policy labels; existing policy is unchanged." + Environment.NewLine) +
+        Environment.NewLine +
         "A root-private backup is required before saving. No runtime map, credentials, Microsoft 365 object, " +
         "queue, service or live Postfix configuration is changed. Removing a row does not delete its identity.";
 
@@ -72,7 +76,8 @@ internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha,
         using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 8 });
         var root = doc.RootElement;
         bool restoring = req.Action == "restore";
-        int fields = restoring ? 18 : 17;
+        bool labeled = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("selinux_mode", out _);
+        int fields = (restoring ? 18 : 17) + (labeled ? 2 : 0);
         if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != fields ||
             root.EnumerateObject().Select(x => x.Name).Distinct(StringComparer.Ordinal).Count() != fields)
             throw new InvalidDataException("Unexpected source-map edit receipt shape.");
@@ -117,7 +122,10 @@ internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha,
                 row.Mailbox != req.Mailbox || row.Sender != req.Mailbox)
                 throw new InvalidDataException("Selected identity differs from the request.");
         }
-        var plan = new MultiMailboxSourceEditPlan(planSha, newSha, count, row, file, restoredFrom);
+        string mode = labeled ? Read("selinux_mode") : "", policy = labeled ? Read("selinux_policy_sha") : "";
+        if (labeled && (mode is not ("enforcing" or "permissive") || !MultiMailboxSourceEditRequest.IsSha(policy)))
+            throw new InvalidDataException("Invalid SELinux source-map evidence.");
+        var plan = new MultiMailboxSourceEditPlan(planSha, newSha, count, row, file, restoredFrom, mode, policy);
         if (saving && plan != approved)
             throw new InvalidDataException("Saved receipt differs from the explicitly approved preview.");
         return (plan, backup);
@@ -150,6 +158,16 @@ internal sealed record MultiMailboxSourceEditPlan(string PlanSha, string NewSha,
         {
             try { Parse(bad, req, preview); return false; }
             catch (InvalidDataException) { }
+        }
+        string policy = new('9',64);
+        string Labeled(string body) => body[..^1] + ",\"selinux_mode\":\"enforcing\",\"selinux_policy_sha\":\""+policy+"\"}";
+        var labeledPreview = Parse(Labeled(Receipt(false)),req).Plan;
+        if (labeledPreview.SelinuxMode!="enforcing" || Parse(Labeled(Receipt(true)),req,labeledPreview).Plan.SelinuxPolicySha!=policy)
+            return false;
+        foreach (string bad in new[]{Receipt(true),Labeled(Receipt(true)).Replace("enforcing","permissive"),
+            Labeled(Receipt(true)).Replace(policy,new string('8',64))})
+        {
+            try { Parse(bad,req,labeledPreview); return false; } catch(InvalidDataException) { }
         }
         var restore = new MultiMailboxSourceEditRequest("restore", sha, 1, "", "", "", "",
             req.Nonce, "source-abcdefgh");

@@ -598,6 +598,8 @@ internal static class EmbeddedAssets
                Encode(EntraPublicCertificateExporter) + "\nLMR365_SOURCE_CERT\n" +
                "base64 -d > \"$work/inspect-multi-mailbox-identities.py\" <<'LMR365_SOURCE_INVENTORY'\n" +
                Encode(MultiMailboxIdentityInspector) + "\nLMR365_SOURCE_INVENTORY\n" +
+               "base64 -d > \"$work/prepare-multi-mailbox-identity.py\" <<'LMR365_SOURCE_LABEL_POLICY'\n" +
+               Encode(MultiMailboxIdentityPreparer) + "\nLMR365_SOURCE_LABEL_POLICY\n" +
                "base64 -d > \"$work/edit-multi-mailbox-source.py\" <<'LMR365_SOURCE_EDITOR'\n" +
                Encode(MultiMailboxSourceEditor) + "\nLMR365_SOURCE_EDITOR\n" +
                "printf '%s' '" + Encode(request) + "' | base64 -d | python3 \"$work/edit-multi-mailbox-source.py\"\n";

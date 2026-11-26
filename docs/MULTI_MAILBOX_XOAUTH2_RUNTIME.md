@@ -700,3 +700,21 @@ is not changed. Existing valid registered donor certificate is required;
 real TPM/provider and live tenant acceptance remain open. Tests cover mixed
 pair approval, config tampering, read-only preview and mocked RS256 TPM
 commands; these are not a physical TPM signature test.
+
+
+## Source-map editor with reviewed SELinux file policy (experimental)
+
+First source-map creation, edits and restore now use the installed SELinux
+file-context policy when active. Preview binds the mode and exact expected
+base directory, source map and private backup-root contexts; restore also
+binds the selected backup directory and files. Existing contexts must
+already match the installed policy. Only exclusively created scratch map
+and backup inodes are labeled, using policy lookup for the actual target
+path. New map creation remains no-clobber; replacements preserve group
+and private mode and check the committed bytes and context. Existing files
+are not relabeled. A stale plan, mismatched label or uncertain outcome is
+refused or requires review. Backup catalogs omit mismatched backup entries.
+No policy edits, mode changes, runtime map, Postfix reload or cloud changes.
+Tests use synthetic user xattrs and real temporary files. Actual Enforcing
+VM acceptance, runtime route installer/restore label coverage and confined
+service-domain checks remain open.

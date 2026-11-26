@@ -167,6 +167,73 @@ class SourceEditorTests(unittest.TestCase):
                     M.plan(restore, 10)
                 self.assertFalse(list(base.glob(".oauth-source-*")))
 
+    @unittest.skipUnless(os.geteuid()==0 and os.environ.get("GITHUB_ACTIONS")=="true"
+                         and os.environ.get("RUNNER_ENVIRONMENT")=="github-hosted",
+                         "requires disposable root CI")
+    def test_active_selinux_first_map_edit_restore_and_policy_drift(self):
+        # Real file/xattr operations with synthetic labels, not live SELinux.
+        with tempfile.TemporaryDirectory(prefix="lmr365-source-label-",dir="/var/lib") as folder:
+            base=Path(folder)
+            source=base/"oauth-senders.tsv"
+            backups=base/"oauth-source-backups"
+            mode=base/"mock-enforce"
+            mode.write_text("1")
+            attr="user.lmr365_test_context"
+            label="system_u:object_r:etc_t:s0"
+            other="system_u:object_r:cert_t:s0"
+            os.setxattr(str(base),attr,label.encode("ascii")+b"\0")
+            overrides={}
+            def query(path,kind):
+                return overrides.get(path,other if path==source else label)
+            with mock.patch.multiple(M,BASE=base,SOURCE=source,BACKUPS=backups,LOCK=base/"lock"), \
+                 mock.patch.multiple(M.P,SELINUX=mode,LABEL_ATTR=attr), \
+                 mock.patch.object(M.P,"query_label",side_effect=query), \
+                 mock.patch.object(M.I,"identity_row",side_effect=self.evidence), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                def apply(req,preview):
+                    return M.apply(dict(req,approval=preview["plan_sha"],
+                        confirm=M.RESTORE_CONFIRM if req["action"]=="restore" else M.CONFIRM),10)
+                req=self.req("add",[],login="alice",mailbox=MAIL,file="alice.json")
+                _, first, preview=M.plan(req,10)
+                self.assertEqual(preview["selinux_mode"],"enforcing")
+                self.assertFalse(source.exists() or backups.exists())
+                overrides[source]=label
+                with self.assertRaisesRegex(M.Refused,"plan_changed"):
+                    apply(req,preview)
+                self.assertFalse(source.exists() or backups.exists())
+                overrides.clear()
+                saved=apply(req,preview)
+                self.assertEqual(source.read_bytes(),first)
+                self.assertEqual(M.P.checked_context(os.getxattr(str(source),attr)),other)
+                first_backup=backups/saved["backup_id"]
+                self.assertEqual(M.P.checked_context(os.getxattr(str(first_backup),attr)),label)
+                self.assertFalse((first_backup/"oauth-senders.tsv").exists())
+                self.assertEqual(saved["selinux_policy_sha"],preview["selinux_policy_sha"])
+                edit=self.req("edit",M.A.parse_map(first),MAIL,"new-login",MAIL)
+                _, changed, reviewed=M.plan(edit,10)
+                mode.write_text("0")
+                with self.assertRaisesRegex(M.Refused,"plan_changed"):
+                    apply(edit,reviewed)
+                mode.write_text("1")
+                result=apply(edit,reviewed)
+                self.assertEqual(source.read_bytes(),changed)
+                backup=backups/result["backup_id"]
+                for p in (backup,backup/"manifest.json",backup/"oauth-senders.tsv"):
+                    self.assertEqual(M.P.checked_context(os.getxattr(str(p),attr)),label)
+                restore=dict(self.req("add",M.A.parse_map(changed)),action="restore",backup_id=result["backup_id"])
+                _, restored, restore_preview=M.plan(restore,10)
+                self.assertEqual(restored,first)
+                os.setxattr(str(backup/"oauth-senders.tsv"),attr,other.encode("ascii")+b"\0")
+                with self.assertRaisesRegex(M.P.Refused,"existing_context_mismatch"):
+                    apply(restore,restore_preview)
+                self.assertEqual(source.read_bytes(),changed)
+                os.setxattr(str(backup/"oauth-senders.tsv"),attr,label.encode("ascii")+b"\0")
+                apply(restore,restore_preview)
+                self.assertEqual(source.read_bytes(),first)
+                self.assertEqual(M.P.checked_context(os.getxattr(str(source),attr)),other)
+                self.assertEqual(mode.read_text(),"1")
+                self.assertFalse(list(base.glob(".oauth-source-*")))
+
     def test_apply_never_writes_without_matching_approval(self):
         req = self.req("add", [], login="alice", mailbox=MAIL, file="alice.json")
         with tempfile.TemporaryDirectory() as folder:
