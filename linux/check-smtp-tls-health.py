@@ -40,6 +40,7 @@ def main():
             checks[kind]={"status":"observed" if r.returncode==0 else "unavailable","properties":dict(line.split("=",1) for line in r.stdout.decode("utf-8","replace").splitlines() if "=" in line)}
     except Exception:
         checks["systemd"]={"status":"unavailable"}
+    report['alerts']=load('smtp-tls-health-alerts').alerts(report)
     print(json.dumps(report,sort_keys=True))
 if __name__=="__main__":
     main()
