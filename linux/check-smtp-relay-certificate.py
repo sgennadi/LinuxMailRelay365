@@ -25,9 +25,18 @@ def inspect(cert, chain, domain, ca_file, key):
             "-untrusted",chain,cert)
     details=openssl("x509","-in",cert,"-noout","-subject","-issuer",
                     "-dates","-fingerprint","-sha256").decode("utf-8")
+    extensions=openssl("x509","-in",cert,"-noout","-ext",
+                       "subjectAltName,extendedKeyUsage").decode("utf-8")
+    eku=re.search(r"X509v3 Extended Key Usage:[^\n]*\n([^\n]+)",extensions)
+    client_auth="not_explicit"
+    if eku:
+        client_auth=("explicit" if any(x.strip() in
+            ("TLS Web Client Authentication","1.3.6.1.5.5.7.3.2")
+            for x in eku.group(1).split(",")) else "not_explicit")
     # Local trust and purpose checks are not proof of Exchange Online acceptance.
     return {"status":"local_checks_passed","requested_domain":domain,
-            "details":details,"exchange_acceptance":"unverified",
+            "details":details,"extensions":extensions,"client_auth_eku":client_auth,
+            "exchange_acceptance":"unverified",
             "name_match":"verified","private_key_match":"verified",
             "apply_supported":False}
 
