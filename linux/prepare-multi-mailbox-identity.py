@@ -172,17 +172,20 @@ def policy_snapshot(targets):
         else:
             need(path == IDENTITIES, "selinux_base_directory_missing")
         labels[str(path)] = context
-    # Exact generated namespace only; new-app recovery adds two private markers.
-    need(len(targets) in (3, 5) and len(set(targets)) == len(targets) and
-         all(p.parent == IDENTITIES for p in targets), "selinux_unapproved_identity_paths")
-    names = {p.name for p in targets}
-    matches = [re.fullmatch(r"(mbx-[a-f0-9]{32})\.json", name) for name in names]
-    stems = [match.group(1) for match in matches if match is not None]
-    need(len(stems) == 1, "selinux_unapproved_identity_paths")
-    stem = stems[0]
-    files = {stem + suffix for suffix in (".key", ".crt", ".json")}
-    recovery = files | {"." + stem + ".pending", "." + stem + ".claim"}
-    need(names == files or names == recovery, "selinux_unapproved_identity_paths")
+    # Directory-only discovery does not authorize file publication.
+    if targets:
+        need(len(targets) in (3, 5, 7) and len(set(targets)) == len(targets) and
+             all(p.parent == IDENTITIES for p in targets), "selinux_unapproved_identity_paths")
+        names = {p.name for p in targets}
+        matches = [re.fullmatch(r"(mbx-[a-f0-9]{32})\.json", name) for name in names]
+        stems = [match.group(1) for match in matches if match is not None]
+        need(len(stems) == 1, "selinux_unapproved_identity_paths")
+        stem = stems[0]
+        files = {stem + suffix for suffix in (".key", ".crt", ".json")}
+        recovery = {"." + stem + ".pending", "." + stem + ".claim"}
+        hardware = {stem + ".tpm2.cnf", "." + stem + ".tpm-attempt"}
+        need(names in (files, files | recovery, files | hardware, files | recovery | hardware),
+             "selinux_unapproved_identity_paths")
     for path in targets:
         context = query_label(path, "file")
         if not missing(path):
@@ -314,7 +317,8 @@ def publish(stage, target, gid, mode, policy=None):
         os.fchown(fd, 0, gid)
         os.fchmod(fd, mode)
         if policy["mode"] != "inactive":
-            need(str(target) in policy["labels"], "selinux_unreviewed_publication_target")
+            need(target.parent == IDENTITIES and str(target) in policy["labels"],
+                 "selinux_unreviewed_publication_target")
             set_new_label(fd, policy["labels"][str(target)])
         os.fsync(fd)
         require_policy(policy)

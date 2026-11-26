@@ -89,7 +89,7 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
                 throw new InvalidDataException("Expected exact public RSA certificate.");
         }
         string mode=labeled?Read("selinux_mode"):"", policy=labeled?Read("selinux_policy_sha"):"";
-        if (labeled && (req.TpmHandle is not null || mode is not ("enforcing" or "permissive") ||
+        if (labeled && (mode is not ("enforcing" or "permissive") ||
             !MultiMailboxSourceEditRequest.IsSha(policy)))
             throw new InvalidDataException("Invalid new-app SELinux policy evidence.");
         if (previous is not null && (previous.SelinuxMode!=mode || previous.SelinuxPolicySha!=policy))
@@ -157,6 +157,20 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
         {
             try { Parse(bad,req,"stage",labeledPreview); return false; } catch(InvalidDataException) { }
         }
+        tpmNode["selinux_mode"]="enforcing";
+        tpmNode["selinux_policy_sha"]=policy;
+        var labeledTpm=Parse(tpmNode.ToJsonString(),hardware,"stage");
+        if (labeledTpm.SelinuxPolicySha!=policy || labeledTpm.CertificateSha!=tpmHash) return false;
+        var hardwarePreview=tpmNode.DeepClone().AsObject();
+        hardwarePreview["status"]="preview";
+        hardwarePreview["changes"]=false;
+        hardwarePreview["certificate_sha256"]="";
+        hardwarePreview["certificate_der"]="";
+        var approvedTpm=Parse(hardwarePreview.ToJsonString(),hardware,"preview");
+        if (Parse(tpmNode.ToJsonString(),hardware,"stage",approvedTpm)!=labeledTpm) return false;
+        tpmNode["selinux_mode"]="permissive";
+        try { Parse(tpmNode.ToJsonString(),hardware,"stage",approvedTpm); return false; }
+        catch(InvalidDataException) { }
         return true;
     }
 }

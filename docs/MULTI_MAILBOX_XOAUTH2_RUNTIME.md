@@ -661,3 +661,22 @@ manual review rather than silent migration. TPM with active SELinux and
 unrelated source-map/runtime writes remain gated. Synthetic user-xattr tests
 cover staging, claim, recovery and finalization; no live Enforcing VM,
 confined service-domain or real tenant acceptance is claimed.
+
+
+## TPM with reviewed active SELinux file policy (experimental)
+
+Both TPM identity preparation and new-app TPM staging now use the reviewed
+SELinux context publisher. Discovery checks directory contexts and service
+account TPM/provider access; exact generated file contexts are checked at
+Preview. The namespace includes the provider configuration and a root-only
+TPM attempt marker. Both TPM workflows publish a durable marker before key
+persistence; an uncertain attempt must be inspected, never automatically
+recreated or evicted. New-app pending records bind all seven prospective
+file contexts through claim and finalization. Existing labels, policy, mode,
+mail routes and cloud permissions are unchanged. No PEM fallback. Inactive
+pending schemas remain compatible. Tests use mocked TPM commands and real
+temporary files with synthetic user xattrs, not kernel enforcement. Physical
+TPM, confined systemd-domain, live Enforcing VM and tenant acceptance remain
+open. The Windows new-app self-test now mutates certificate JSON fields
+structurally instead of replacing potentially escaped Base64 text; production
+receipt checks are not weakened.

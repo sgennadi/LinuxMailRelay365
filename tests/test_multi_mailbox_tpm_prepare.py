@@ -51,6 +51,21 @@ class MappedTpmTests(unittest.TestCase):
             with self.assertRaisesRegex(M.Refused,"occupied"):
                 M.plan(job,123)
 
+    def test_mapped_tpm_plan_binds_selinux_policy(self):
+        job=self.job()
+        policy=dict(mode="enforcing",labels={"example":"system_u:object_r:etc_t:s0"})
+        with mock.patch.object(M.P,"require_policy"), \
+             mock.patch.object(M,"hardware",return_value=("absent","OpenSSL 3.0.9",set())), \
+             mock.patch.object(M.P,"route_state",return_value=["",""]), \
+             mock.patch.object(M.P,"missing",return_value=True):
+            first=M.plan(job,123,policy)
+            self.assertEqual(first["selinux_mode"],"enforcing")
+            second=M.plan(job,123,dict(policy,mode="permissive"))
+            self.assertNotEqual(first["plan_sha"],second["plan_sha"])
+            self.assertNotEqual(first["selinux_policy_sha"],second["selinux_policy_sha"])
+            self.assertIn(M.attempt_path(job["identity"]),M.destinations(job["identity"]))
+            self.assertEqual(len(M.destinations(job["identity"])),5)
+
     def test_persist_never_evicts_existing_handle(self):
         handle=self.job()["handle"]
         calls=[]

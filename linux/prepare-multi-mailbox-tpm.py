@@ -43,11 +43,16 @@ def service_group():
     return gid
 
 
-def hardware(gid):
-    """Read-only prerequisite checks; no provider or permission changes."""
-    need(not P.SELINUX.exists(), "selinux_policy_review")
+def hardware(gid, policy=None):
+    """Read-only prerequisites; full destination policy is reviewed later."""
     try:
-        state = P.directory_state(gid)
+        if policy is None:
+            policy = P.policy_snapshot([])
+        P.require_policy(policy)
+    except (Refused, E.Refused, OSError, ValueError):
+        raise Refused("selinux_policy_review") from None
+    try:
+        state = P.directory_state(gid, policy)
     except (Refused, E.Refused, OSError, ValueError):
         raise Refused("identity_directory_or_account") from None
     try:
@@ -76,6 +81,11 @@ def hardware(gid):
         handles = T.read_capabilities()
     except (T.Refused, OSError):
         raise Refused("persistent_inventory_unavailable") from None
+    try:
+        P.require_policy(policy)
+        need(P.directory_state(gid, policy) == state, "directory_changed")
+    except (Refused, E.Refused, OSError, ValueError):
+        raise Refused("selinux_policy_review") from None
     return state, version, handles
 
 
@@ -122,21 +132,38 @@ def locations(req):
     return key, cert, identity, identity.with_suffix(".tpm2.cnf")
 
 
-def plan(job, gid):
+def attempt_path(req):
+    return P.IDENTITIES / ("." + P.paths(req)[2].stem + ".tpm-attempt")
+
+
+def destinations(req):
+    return locations(req) + (attempt_path(req),)
+
+
+def plan(job, gid, policy=None):
     req, handle = job["identity"], job["handle"]
-    state, version, handles = hardware(gid)
+    if policy is None:
+        policy = P.policy_snapshot(list(destinations(req)))
+    P.require_policy(policy)
+    state, version, handles = hardware(gid, policy)
     need(handle not in handles, "tpm_handle_occupied_no_overwrite")
     hashes = P.route_state(req,gid)
-    need(all(P.missing(p) for p in locations(req)), "identity_destination_already_exists")
+    need(all(P.missing(p) for p in destinations(req)), "identity_destination_already_exists")
     evidence = dict(version=1, backend="tpm2", request={k:v for k,v in req.items()
                     if k not in ("approval","confirm")}, handle=handle,
                     directory=state, group=gid, openssl=version, handles=sorted(handles),
                     runtime_sha=hashes[1], provider_sha=I.digest(T.PROVIDER_TEMPLATE.encode("ascii")))
-    return dict(version=1,status="preview",plan_sha=I.digest(P.encode(evidence)),
+    if policy["mode"] != "inactive":
+        evidence["selinux_policy"] = policy
+    result = dict(version=1,status="preview",plan_sha=I.digest(P.encode(evidence)),
                 source_sha=hashes[0],runtime_sha=hashes[1],nonce=req["nonce"],
                 tenant=req["tenant"],client=req["client"],mailbox=req["mailbox"],days=req["days"],
                 identity_file=locations(req)[2].name,changes=False,runtime_changed=False,
                 cloud_changed=False,mail_sent=False,certificate_sha256="",certificate_der="")
+    if policy["mode"] != "inactive":
+        result.update(selinux_mode=policy["mode"], selinux_policy_sha=I.digest(P.encode(policy)))
+    P.require_policy(policy)
+    return result
 
 
 def wrap(job, receipt, created):
@@ -189,33 +216,38 @@ def apply(job,gid):
     started=False
     try:
         guard=sidecar_lock()
-        review=plan(job,gid)
-        need(review["plan_sha"]==req["approval"] and plan(job,gid)==review,"tpm_plan_changed")
+        policy=P.policy_snapshot(list(destinations(req)))
+        review=plan(job,gid,policy)
+        need(review["plan_sha"]==req["approval"] and plan(job,gid,policy)==review,"tpm_plan_changed")
         key,cert,identity,provider=locations(req)
-        if P.missing(P.IDENTITIES):
-            P.IDENTITIES.mkdir(mode=0o700)
-            os.chown(str(P.IDENTITIES),0,gid)
-            os.chmod(str(P.IDENTITIES),0o750)
-            P.sync_dir(P.BASE)
-        state=P.directory_state(gid)
+        attempt=attempt_path(req)
+        state=P.ensure_identity_directory(gid,policy)
         hashes=[review["source_sha"],review["runtime_sha"]]
         def unchanged():
-            need(P.directory_state(gid)==state and P.route_state(req,gid)==hashes and
-                 not P.SELINUX.exists(),"identity_context_changed")
+            P.require_policy(policy)
+            need(P.directory_state(gid,policy)==state and P.route_state(req,gid)==hashes,"identity_context_changed")
         unchanged()
-        need(all(P.missing(p) for p in locations(req)),"identity_destination_already_exists")
+        need(all(P.missing(p) for p in destinations(req)),"identity_destination_already_exists")
         with tempfile.TemporaryDirectory(prefix=".mapped-tpm-",dir=str(P.IDENTITIES)) as folder:
             scratch=Path(folder)
             need(handle not in T.read_capabilities(),"tpm_handle_occupied")
             # The attempt can persist a key even when the command response is
             # lost. Never free the handle automatically, even on failure.
             started=True
+            marker=P.encode(dict(version=1,handle=handle,nonce=req["nonce"],plan_sha=req["approval"],
+                                **{k:review[k] for k in ("selinux_mode","selinux_policy_sha") if k in review}))
+            staged_attempt=scratch/"attempt"
+            staged_attempt.write_bytes(marker)
+            P.publish(staged_attempt,attempt,0,0o600,policy)
+            need(E.secure_read(attempt,4096,0,modes=(0o600,))==marker,"tpm_attempt_marker_changed")
+            unchanged()
             persist(handle,scratch)
             unchanged()
-            need(all(P.missing(p) for p in locations(req)),"identity_destination_already_exists")
+            need(E.secure_read(attempt,4096,0,modes=(0o600,))==marker and
+                 all(P.missing(p) for p in locations(req)),"identity_destination_already_exists")
             staged_provider=scratch/"provider"
             staged_provider.write_bytes(T.PROVIDER_TEMPLATE.encode("ascii"))
-            P.publish(staged_provider,provider,gid,0o640)
+            P.publish(staged_provider,provider,gid,0o640,policy)
             staged_cert=scratch/"cert"
             T.run_command([str(T.COMMANDS["openssl"]),"req","-new","-x509","-sha256","-days",str(req["days"]),
                            "-subj","/CN=LinuxMailRelay365-MultiMailbox-TPM2","-provider","tpm2","-provider","default",
@@ -223,7 +255,7 @@ def apply(job,gid):
                           env=T.command_env(provider),timeout=95,operation="tpm_certificate_generation_failed")
             der=E.der_from_pem(staged_cert.read_bytes())
             need(250<=len(der)<=8192,"tpm_public_certificate_invalid")
-            P.publish(staged_cert,cert,gid,0o640)
+            P.publish(staged_cert,cert,gid,0o640,policy)
             T.verify_service_signature(dict(gid=gid,directory=P.IDENTITIES,handle=handle,
                                              provider_config=provider),cert,scratch)
             unchanged()
@@ -237,7 +269,7 @@ def apply(job,gid):
             A.validate_identity(data,req["mailbox"])
             staged=scratch/"identity"
             staged.write_bytes(data)
-            P.publish(staged,identity,gid,0o640)
+            P.publish(staged,identity,gid,0o640,policy)
             need(E.secure_read(identity,A.MAX_IDENTITY,gid,modes=(0o640,))==data,"identity_readback_mismatch")
             row=I.identity_row("proof",req["mailbox"],req["mailbox"],str(identity),gid)
             need(row["status"]=="public_certificate_read" and row["signer"]=="hardware" and
@@ -246,7 +278,8 @@ def apply(job,gid):
             need(bool(runuser),"runuser_required")
             P.execute([runuser,"-u","m365mailer","--","/usr/bin/test","-r",str(identity)])
             unchanged()
-            need(P.missing(key),"pem_key_unexpected")
+            need(P.missing(key) and E.secure_read(attempt,4096,0,modes=(0o600,))==marker,
+                 "pem_key_or_attempt_marker_changed")
             return wrap(job,dict(review,status="prepared",changes=True,certificate_sha256=I.digest(der),
                                  certificate_der=base64.b64encode(der).decode("ascii")),True)
     except BaseException:

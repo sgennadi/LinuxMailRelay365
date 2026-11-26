@@ -86,6 +86,11 @@ class NewAppTests(unittest.TestCase):
     @unittest.skipUnless(os.geteuid()==0 and os.environ.get("GITHUB_ACTIONS")=="true"
                          and os.environ.get("RUNNER_ENVIRONMENT")=="github-hosted","disposable root CI only")
     def test_tpm_stage_claim_and_finalize_with_mocked_hardware(self):
+        for enforcing in (False, True):
+            with self.subTest(enforcing=enforcing):
+                self.exercise_tpm_stage(enforcing)
+
+    def exercise_tpm_stage(self,enforcing):
         service=pwd.getpwnam("nobody")
         gid=service.pw_gid
         req=dict(self.req(),handle="0x81010001")
@@ -94,6 +99,16 @@ class NewAppTests(unittest.TestCase):
             identities=base/"oauth-identities"
             os.chown(str(base),0,gid)
             os.chmod(str(base),0o750)
+            attr="user.lmr365_test_context"
+            mode=base/"mock-enforce"
+            label="system_u:object_r:etc_t:s0"
+            marker_label="system_u:object_r:cert_t:s0"
+            overrides={}
+            def query(path,kind):
+                return overrides.get(path,marker_label if path.name.endswith((".claim",".pending",".tpm-attempt")) else label)
+            if enforcing:
+                mode.write_text("1")
+                os.setxattr(str(base),attr,label.encode("ascii")+b"\0")
             # Real certificate bytes, but only mocked TPM commands and
             # service-account hardware proof. Test-only PEM is outside identity root.
             pub=base/"test.crt"
@@ -109,9 +124,10 @@ class NewAppTests(unittest.TestCase):
             def lock():
                 return os.open(str(base/"mock-hardware-lock"),os.O_CREAT|os.O_RDWR,0o600)
             with mock.patch.multiple(M.P,BASE=base,IDENTITIES=identities,SOURCE=base/"source",RUNTIME=base/"runtime",
-                                      LOCK=base/"lock",SELINUX=base/"no-selinux"), \
+                                      LOCK=base/"lock",SELINUX=mode,LABEL_ATTR=attr), \
                  mock.patch.object(M.I,"IDENTITIES",identities), \
-                 mock.patch.object(M.H,"hardware",side_effect=lambda _: (M.P.directory_state(gid),"OpenSSL 3",set(handles))), \
+                 mock.patch.object(M.P,"query_label",side_effect=query), \
+                 mock.patch.object(M.H,"hardware",side_effect=lambda _,policy=None: (M.P.directory_state(gid,policy),"OpenSSL 3",set(handles))), \
                  mock.patch.object(M.H,"persist",side_effect=persist) as create, \
                  mock.patch.object(M.T,"lock",side_effect=lock), \
                  mock.patch.object(M.T,"read_capabilities",side_effect=lambda:set(handles)), \
@@ -125,6 +141,16 @@ class NewAppTests(unittest.TestCase):
                 stage=run("stage",preview["approval_sha"])
                 key,cert,identity,pending,claim=M.locations(req)
                 provider,attempt=M.tpm_paths(req)
+                if enforcing:
+                    self.assertEqual(stage["selinux_mode"],"enforcing")
+                    self.assertEqual(stage["selinux_policy_sha"],preview["selinux_policy_sha"])
+                    for path in (cert,provider,pending,attempt):
+                        self.assertEqual(M.P.checked_context(os.getxattr(str(path),attr)),query(path,"file"))
+                    overrides[claim]=label
+                    with self.assertRaisesRegex(M.Refused,"pending_selinux_policy_changed"):
+                        run("claim",stage["approval_sha"])
+                    self.assertFalse(claim.exists())
+                    overrides.clear()
                 self.assertFalse(key.exists() or identity.exists())
                 self.assertEqual(attempt.stat().st_mode & 0o777,0o600)
                 self.assertEqual(attempt.stat().st_gid,0)
@@ -154,6 +180,11 @@ class NewAppTests(unittest.TestCase):
                 self.assertTrue(attempt.exists() and pending.exists() and claim.exists())
                 create.assert_called_once()
                 self.assertGreaterEqual(proof.call_count,3)
+                if enforcing:
+                    self.assertEqual(saved["selinux_policy_sha"],stage["selinux_policy_sha"])
+                    for path in (identity,cert,provider,pending,claim,attempt):
+                        self.assertEqual(M.P.checked_context(os.getxattr(str(path),attr)),query(path,"file"))
+                    self.assertEqual(mode.read_text(),"1")
 
 
     @unittest.skipUnless(os.geteuid()==0 and os.environ.get("GITHUB_ACTIONS")=="true"
@@ -233,8 +264,10 @@ class NewAppTests(unittest.TestCase):
                 self.assertEqual(before,{p:(p.read_bytes(),os.getxattr(str(p),attr)) for p in before})
                 self.assertEqual(mode.read_text(),"1")
                 self.assertFalse((base/"source").exists() or (base/"runtime").exists())
-                with self.assertRaisesRegex(M.Refused,"tpm_selinux"):
-                    M.app_policy(dict(req,handle="0x81010001"))
+                hardware_policy=M.app_policy(dict(req,handle="0x81010001"))
+                self.assertEqual(hardware_policy["mode"],"enforcing")
+                self.assertIn(str(M.tpm_paths(req)[0]),hardware_policy["labels"])
+                self.assertNotEqual(M.I.digest(M.P.encode(hardware_policy)),stage["selinux_policy_sha"])
 
 
 if __name__=="__main__":

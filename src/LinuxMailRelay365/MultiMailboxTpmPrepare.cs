@@ -8,8 +8,8 @@ internal sealed record MultiMailboxTpmDiscovery(string? Handle, string Reason)
     internal static MultiMailboxTpmDiscovery Unavailable => new(null,"probe_unverified");
     internal bool Available => Handle is not null;
     internal static bool ValidHandle(string value) => Regex.IsMatch(value,@"\A0x8101[a-f0-9]{4}\z",RegexOptions.CultureInvariant);
-    internal string Describe() => Available ? "TPM 2.0 ready for reviewed creation: " + Handle : Reason switch {
-        "selinux_policy_review" => "SELinux policy-aware identity creation requires separate review.",
+    internal string Describe() => Available ? "TPM 2.0 prerequisites verified: " + Handle + ". Exact file policy is checked at Preview." : Reason switch {
+        "selinux_policy_review" => "SELinux file-context policy or existing directory labels could not be verified.",
         "identity_directory_or_account" => "Trusted identity directory or m365mailer account is unavailable.",
         "tpm2_device_unavailable" => "TPM 2.0 resource-manager device was not verified.",
         "tpm2_tools_unavailable" => "Required trusted TPM utilities are unavailable.",

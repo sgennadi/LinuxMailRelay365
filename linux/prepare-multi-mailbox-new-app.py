@@ -85,10 +85,7 @@ def routes(req, gid):
 
 
 def app_policy(req):
-    if "handle" in req:
-        need(P.selinux_mode() == "inactive", "new_app_tpm_selinux_policy_review_required")
-        return dict(mode="inactive", labels={})
-    return P.policy_snapshot(list(locations(req)))
+    return P.policy_snapshot(list(destinations(req) if "handle" in req else locations(req)))
 
 
 def policy_evidence(policy):
@@ -103,11 +100,13 @@ def preview(req, gid, policy=None):
     P.require_policy(policy)
     need(all(P.missing(p) for p in destinations(req)), "pending_or_identity_destination_exists")
     if "handle" in req:
-        state, version, handles = H.hardware(gid)
+        state, version, handles = H.hardware(gid, policy)
         need(req["handle"] not in handles, "tpm_handle_occupied_no_overwrite")
         evidence = dict(basis(req), version=1, directory=state, group=gid, openssl=version,
                         persistent_handles=sorted(handles),
                         provider_sha256=I.digest(T.PROVIDER_TEMPLATE.encode("ascii")))
+        if policy["mode"] != "inactive":
+            evidence["selinux_policy"] = policy
         sha = I.digest(P.encode(evidence))
     else:
         local = P.plan(dict(basis(req), client="", approval="", confirm=""), gid, policy)
@@ -142,7 +141,7 @@ def stage(req, gid, service):
     with tempfile.TemporaryDirectory(prefix=".new-app-", dir=str(P.IDENTITIES)) as folder:
         work = Path(folder)
         if "handle" in req:
-            meta = stage_tpm(req, gid, state, work)
+            meta = stage_tpm(req, gid, state, work, policy)
         else:
             sk, sc = work/"key", work/"cert"
             P.openssl(["req", "-x509", "-newkey", "rsa:3072", "-nodes", "-sha256",
@@ -167,27 +166,31 @@ def stage(req, gid, service):
     return inspect(req, gid, service, status="staged", changes=True, policy=policy)
 
 
-def stage_tpm(req, gid, state, work):
+def stage_tpm(req, gid, state, work, policy):
     key, cert, identity, pending, claim = locations(req)
     provider, attempt = tpm_paths(req)
     handle = req["handle"]
-    need(P.directory_state(gid) == state and not P.SELINUX.exists() and
+    P.require_policy(policy)
+    need(P.directory_state(gid, policy) == state and
          all(P.missing(p) for p in destinations(req)), "destination_changed")
     routes(req, gid)
     need(handle not in T.read_capabilities(), "tpm_handle_occupied")
     # Durable reservation before the first TPM mutation. Even a lost reply
     # cannot make a second attempt with this recovery code safe.
     marker = P.encode(dict(basis(req), version=1, plan_sha=req["approval"]))
-    write_private(attempt, marker, work)
+    write_private(attempt, marker, work, policy)
+    P.require_policy(policy)
+    need(P.directory_state(gid,policy)==state,"identity_directory_changed")
     H.persist(handle, work)
     routes(req, gid)
-    need(P.directory_state(gid) == state and not P.SELINUX.exists() and
+    P.require_policy(policy)
+    need(P.directory_state(gid, policy) == state and
          all(P.missing(p) for p in locations(req) + (provider,)) and
          E.secure_read(attempt, 4096, 0, modes=(0o600,)) == marker, "tpm_stage_changed")
     raw_provider = T.PROVIDER_TEMPLATE.encode("ascii")
     staged_provider = work/"provider"
     staged_provider.write_bytes(raw_provider)
-    P.publish(staged_provider, provider, gid, 0o640)
+    P.publish(staged_provider, provider, gid, 0o640, policy)
     sc = work/"cert"
     T.run_command([str(T.COMMANDS["openssl"]), "req", "-new", "-x509", "-sha256",
                    "-days", str(req["days"]), "-subj", "/CN=LinuxMailRelay365-New-App-TPM2",
@@ -196,10 +199,13 @@ def stage_tpm(req, gid, state, work):
                   timeout=95, operation="tpm_certificate_generation_failed")
     der = E.der_from_pem(sc.read_bytes())
     need(250 <= len(der) <= 8192, "tpm_public_certificate_invalid")
-    P.publish(sc, cert, gid, 0o640)
+    P.require_policy(policy)
+    need(P.directory_state(gid,policy)==state,"identity_directory_changed")
+    P.publish(sc, cert, gid, 0o640, policy)
     meta = dict(basis(req), version=1, certificate_sha256=I.digest(der),
                 provider_sha256=I.digest(raw_provider), attempt_sha256=I.digest(marker))
     verify_tpm(req, gid, meta, work)
+    P.require_policy(policy)
     routes(req, gid)
     return meta
 
