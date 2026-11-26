@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Preview ACME renewal test; refuse configured hooks before running dry-run."""
 import argparse
+import fcntl
+import stat
 import importlib.util
 import json
 import os
@@ -20,6 +22,22 @@ def main():
     a=p.parse_args()
     if os.geteuid()!=0 or a.confirm!=("FORCE_ACME_RENEWAL" if a.force else "RUN_ACME_RENEWAL" if a.live else "TEST_ACME_RENEWAL"):
         p.error("root and explicit confirmation required")
+    root=Path("/etc/postfix/lmr365-smtp-tls")
+    for directory in [root]+list(root.parents):
+        st=directory.lstat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o022:
+            raise ValueError("unsafe renewal lock directory")
+    fd=os.open(str(root/"acme-renewal.lock"),os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK,0o600)
+    try:
+        st=os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o077:
+            raise ValueError("unsafe renewal lock")
+        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        return run_renewal(a)
+    finally:
+        os.close(fd)
+
+def run_renewal(a):
     profile=load("smtp-tls-renewal-profile")
     profile.load()
     data=json.loads(profile.PROFILE.read_text())
