@@ -35,7 +35,10 @@ def main():
     def validate(name):
         return validator.validate(ROOT,name,a.domain,a.ca_file,gen,checker)
     def activate(name):
-        return load("smtp-tls-activate").activate(ROOT,name,gen,tx,pf.check,pf.reload,validate)
+        def validate_candidate(candidate):
+            validate(candidate)
+            load("smtp-tls-selinux-prepare").prepare(ROOT,candidate,gen,load("smtp-tls-postfix").trusted_binary)
+        return load("smtp-tls-activate").activate(ROOT,name,gen,tx,pf.check,pf.reload,validate_candidate)
     pf.check()
     result=load("smtp-tls-process-renewal").process(a.cert,a.chain,a.key,a.domain,a.ca_file,
         load("stage-smtp-relay-certificate").stage,lambda:gen.current(ROOT),validate,activate)
