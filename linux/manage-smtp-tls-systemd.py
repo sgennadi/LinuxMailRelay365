@@ -19,7 +19,7 @@ def digest(plan):
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("action",choices=("preview","install","status","enable-recovery","disable-timer","stop-timer","enable-timer","start-timer","renew-now"))
+    p.add_argument("action",choices=("preview","install","status","enable-recovery","disable-timer","stop-timer","enable-timer","start-timer","renew-now","preview-uninstall","uninstall"))
     p.add_argument("--plan-sha")
     p.add_argument("--confirm")
     a=p.parse_args()
@@ -33,6 +33,50 @@ def main():
         return subprocess.run([systemctl]+list(args),stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,timeout=90,
             env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","LC_ALL":"C"})
+    if a.action in ("preview-uninstall","uninstall"):
+        plan=planner.preview_uninstall(source,target)
+        if a.action=="preview-uninstall":
+            print(json.dumps(dict(plan=plan,plan_sha256=digest(plan))))
+            return 0
+        if a.confirm!="UNINSTALL_TLS_UNITS" or a.plan_sha!=digest(plan):
+            p.error("explicit confirmation and matching plan required")
+        root=Path("/etc/postfix/lmr365-smtp-tls")
+        import fcntl
+        import stat
+        for directory in [root]+list(root.parents):
+            st=directory.lstat()
+            if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o022:
+                raise ValueError("unsafe lock directory")
+        fd=os.open(str(root/"acme-renewal.lock"),os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK,0o600)
+        try:
+            st=os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o077:
+                raise ValueError("unsafe lock")
+            fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with load("smtp-tls-transaction").deployment_lock(root):
+                def inactive():
+                    for name in ("initial-deployment.json","deployment.json"):
+                        path=root/name
+                        if path.exists() and json.loads(path.read_text()).get("phase") not in ("verified","rolled_back"):
+                            raise ValueError("unfinished TLS transaction")
+                    pf=load("smtp-tls-postfix").Postfix()
+                    if "/lmr365-smtp-tls/" in pf.run(pf.postconf,"-n") or "/lmr365-smtp-tls/" in pf.run(pf.postconf,"-P"):
+                        raise ValueError("detach managed TLS before removing recovery units")
+                    for unit in planner.UNITS:
+                        r=run("show",unit,"--property=ActiveState","--value")
+                        if r.returncode or r.stdout.strip()!=b"inactive":
+                            raise ValueError("unit must be inactive: "+unit)
+                        r=run("is-enabled",unit)
+                        if r.stdout.strip() not in (b"disabled",b"static",b"not-found"):
+                            raise ValueError("unit must be disabled: "+unit)
+                def reload_units():
+                    if run("daemon-reload").returncode:
+                        raise RuntimeError("daemon-reload failed")
+                removed=load("uninstall-smtp-tls-systemd").uninstall(source,target,plan,planner.preview_uninstall,inactive,reload_units)
+            print(json.dumps(dict(removed=removed)))
+            return 0
+        finally:
+            os.close(fd)
     if a.action=="status":
         for unit in planner.UNITS:
             result=run("show",unit,"--property=LoadState,ActiveState,UnitFileState,NextElapseUSecRealtime")
