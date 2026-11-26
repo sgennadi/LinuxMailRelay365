@@ -4,6 +4,7 @@ Wants=network-online.target
 After=network-online.target linuxmailrelay365-smtp-tls-recovery.service
 Requires=linuxmailrelay365-smtp-tls-recovery.service
 ConditionPathIsDirectory=/var/lib/linuxmailrelay365/smtp-acme/config/renewal
+ConditionPathExists=/etc/postfix/lmr365-smtp-tls/renewal-profile.json
 
 [Service]
 Type=oneshot
@@ -12,10 +13,11 @@ UMask=0077
 Environment=LC_ALL=C
 Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/bin/certbot renew --non-interactive --no-directory-hooks --config-dir /var/lib/linuxmailrelay365/smtp-acme/config --work-dir /var/lib/linuxmailrelay365/smtp-acme/work --logs-dir /var/lib/linuxmailrelay365/smtp-acme/logs
+ExecStart=/usr/bin/python3 /usr/local/libexec/linuxmailrelay365/manage-smtp-tls-process-renewal.py --profile --confirm PROCESS_RENEWED_TLS
 TimeoutStartSec=1800
 StandardOutput=null
 StandardError=null
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/linuxmailrelay365/smtp-acme
+ReadWritePaths=/var/lib/linuxmailrelay365/smtp-acme /etc/postfix/lmr365-smtp-tls /var/spool/postfix /var/lib/postfix
