@@ -19,7 +19,7 @@ def digest(plan):
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("action",choices=("preview","install","status","enable-recovery","disable-timer","stop-timer"))
+    p.add_argument("action",choices=("preview","install","status","enable-recovery","disable-timer","stop-timer","enable-timer","start-timer","renew-now"))
     p.add_argument("--plan-sha")
     p.add_argument("--confirm")
     a=p.parse_args()
@@ -38,6 +38,33 @@ def main():
             result=run("show",unit,"--property=LoadState,ActiveState,UnitFileState,NextElapseUSecRealtime")
             print(json.dumps({"unit":unit,"exit":result.returncode,"properties":result.stdout.decode("utf-8","replace").splitlines()}))
         return 0
+    if a.action in ("enable-timer","start-timer","renew-now"):
+        if a.confirm!="MANAGE_TLS_UNITS":
+            p.error("explicit confirmation required")
+        if any(u["status"]!="unchanged" for u in planner.preview(source,target)["units"]):
+            raise ValueError("installed units do not match package")
+        root=Path("/etc/postfix/lmr365-smtp-tls")
+        with load("smtp-tls-transaction").deployment_lock(root):
+            for name in ("initial-deployment.json","deployment.json"):
+                path=root/name
+                if path.exists() and json.loads(path.read_text()).get("phase") not in ("verified","rolled_back"):
+                    raise ValueError("unfinished TLS transaction")
+            data=load("smtp-tls-renewal-profile").load()
+            gen=load("smtp-tls-generation")
+            load("smtp-tls-validate-generation").validate(root,gen.current(root),data["domain"],data["ca_file"],gen,load("check-smtp-relay-certificate"))
+            load("smtp-tls-postfix").Postfix().check()
+            for unit in ("linuxmailrelay365-smtp-tls-initial-recovery.service","linuxmailrelay365-smtp-tls-prestart.service"):
+                if run("is-enabled",unit).returncode:
+                    raise ValueError("recovery units must be enabled")
+        timer="linuxmailrelay365-smtp-acme-renew.timer"
+        if a.action=="enable-timer":
+            result=run("enable","--now",timer)
+        elif a.action=="start-timer":
+            result=run("start",timer)
+        else:
+            result=run("--no-block","start","linuxmailrelay365-smtp-acme-renew.service")
+        print(json.dumps({"action":a.action,"exit":result.returncode,"completion_verified":False}))
+        return result.returncode
     if a.action in ("enable-recovery","disable-timer","stop-timer"):
         if a.confirm!="MANAGE_TLS_UNITS":
             p.error("explicit confirmation required")
