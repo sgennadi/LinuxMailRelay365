@@ -19,7 +19,8 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
     def test_request_and_scope(self):
         req=dict(mailbox="alerts@example.org",nonce="a"*64)
         self.assertEqual(M.parse(M.encode(req)),req)
-        for bad in (dict(req,mailbox="a..b@example.org"),dict(req,nonce="wrong"),dict(req,port=2525)):
+        for bad in (dict(req,mailbox="a..b@example.org"),dict(req,nonce="wrong"),dict(req,port=2525),
+                    dict(req,mailbox="a@"+"b"*250+".org")):
             with self.assertRaises(M.E.Refused):
                 M.parse(M.encode(bad))
         values=self.values()
@@ -30,6 +31,8 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
         self.assertEqual(M.classify(("a"*64,values,"",""))["route"],"review_required")
         values["multi_instance_enable"]="yes"
         self.assertEqual(M.classify(("a"*64,values,"",""))["scope"],"review_required")
+        values["transport_maps"]=""
+        self.assertEqual(M.classify(("a"*64,values,"",""))["route"],"review_required")
 
     def test_existing_transport(self):
         v=self.values()

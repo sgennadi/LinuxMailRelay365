@@ -51,7 +51,7 @@ def parse(raw):
     obj=json.loads(raw.decode("utf-8"),object_pairs_hook=unique)
     need(isinstance(obj,dict) and set(obj)=={"mailbox","nonce"} and
          all(isinstance(v,str) for v in obj.values()) and
-         MAIL.fullmatch(obj["mailbox"]) and ".." not in obj["mailbox"] and
+         len(obj["mailbox"])<=254 and MAIL.fullmatch(obj["mailbox"]) and ".." not in obj["mailbox"] and
          SHA.fullmatch(obj["nonce"]),"invalid_request")
     return obj
 
@@ -129,7 +129,7 @@ def classify(sampled):
         values["default_transport"] not in ("smtp","smtp:","m365xoauth2:") or
         values["relay_transport"] not in ("relay","relay:","smtp","smtp:","m365xoauth2:") or
         (bool(service_lines) and pipe["MASTER_PIPE"]!="expected"))
-    return dict(scope=scope,route="configured" if expected else "review_required" if conflicts else "migration_candidate",
+    return dict(scope=scope,route="review_required" if scope!="primary_only" or conflicts else "configured" if expected else "migration_candidate",
                 override_status="present" if conflicts else "absent",
                 local_classes="configured" if any(values[k] for k in
                     ("mydestination","virtual_alias_domains","virtual_mailbox_domains")) else "not_declared")

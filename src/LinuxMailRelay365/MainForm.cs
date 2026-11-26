@@ -2970,7 +2970,7 @@ internal sealed partial class MainForm : Form
                     AddLine(page,MailFlowText(T(
                         "Для нескольких ящиков используются отдельные сертификаты, приложения и разрешения. Не требуется создавать общий сертификат на этой странице.",
                         "Multiple mailboxes use their own identities, certificates and scoped grants. No shared certificate is required on this page.",
-                        "לתיבות מרובות יש זהויות והרשאות נפרדות."),width));
+                        "לתיבות מרובות יש זהויות והרשאות נפרדות."),Math.Max(260,pageHost.ClientSize.Width-90)));
                     AddAction(page,T("Мастер Multi-mailbox...","Multi-mailbox setup wizard...","אשף תיבות מרובות"),
                         InspectMultiMailboxIdentitiesAsync,false,"check","delivery-multi-mailbox");
                     break;
