@@ -21,6 +21,7 @@ internal sealed partial class MainForm
         fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
         var help=UiTheme.Text("Create one dedicated single-tenant Entra application with its initial public certificate. " +
             "The private key is generated on Linux. No Exchange permissions, source-map binding or Postfix activation. " +
+            "Software creation and recovery can use verified active SELinux file contexts; TPM with active SELinux remains blocked. " +
             "To recover an interrupted creation, enter the original mailbox, tenant, validity and recovery code, plus the original TPM handle if used; " +
             "if a cloud create was claimed, enter the exact Client ID from Entra. A claimed creation is never automatically repeated.");
         void Fit()=>help.MaximumSize=new Size(Math.Max(150,dialog.ClientSize.Width-70),0);

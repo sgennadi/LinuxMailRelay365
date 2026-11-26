@@ -33,7 +33,7 @@ internal sealed record MultiMailboxNewAppRequest(Guid Tenant, string Mailbox, in
 }
 
 internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalSha, string CertificateSha,
-    string PublicDerBase64, bool Claimed)
+    string PublicDerBase64, bool Claimed, string SelinuxMode = "", string SelinuxPolicySha = "")
 {
     internal string PublicPem => PemEncoding.WriteString("CERTIFICATE", Convert.FromBase64String(PublicDerBase64));
     internal static MultiMailboxNewAppReceipt Parse(string json, MultiMailboxNewAppRequest req, string action,
@@ -46,6 +46,8 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
         string[] fields=["version","status","approval_sha","source_sha","runtime_sha","nonce","tenant","mailbox","days",
             "identity_file","app_name","certificate_sha256","certificate_der","claimed","changes","runtime_changed","cloud_changed","mail_sent","client"];
         if (req.TpmHandle is not null) fields=[..fields,"handle"];
+        bool labeled=root.ValueKind==JsonValueKind.Object && root.TryGetProperty("selinux_mode",out _);
+        if (labeled) fields=[..fields,"selinux_mode","selinux_policy_sha"];
         if (root.ValueKind != JsonValueKind.Object ||
             !root.EnumerateObject().Select(x=>x.Name).OrderBy(x=>x,StringComparer.Ordinal)
                 .SequenceEqual(fields.OrderBy(x=>x,StringComparer.Ordinal))) throw new InvalidDataException("Unexpected app receipt.");
@@ -85,10 +87,16 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
                 (req.TpmHandle is null ? rsa.KeySize<3072 : rsa.KeySize!=2048))
                 throw new InvalidDataException("Expected exact public RSA certificate.");
         }
+        string mode=labeled?Read("selinux_mode"):"", policy=labeled?Read("selinux_policy_sha"):"";
+        if (labeled && (req.TpmHandle is not null || mode is not ("enforcing" or "permissive") ||
+            !MultiMailboxSourceEditRequest.IsSha(policy)))
+            throw new InvalidDataException("Invalid new-app SELinux policy evidence.");
+        if (previous is not null && (previous.SelinuxMode!=mode || previous.SelinuxPolicySha!=policy))
+            throw new InvalidDataException("New-app SELinux policy changed.");
         if (previous is not null && previous.Status!="preview" &&
             (previous.ApprovalSha!=sha || previous.CertificateSha!=cert || previous.PublicDerBase64!=der))
             throw new InvalidDataException("Pending app certificate changed.");
-        return new(status,sha,cert,der,claimed);
+        return new(status,sha,cert,der,claimed,mode,policy);
     }
 
     internal static bool SelfTest()
@@ -125,6 +133,20 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
             (tpmJson.Replace("0x81010001","0x81010002"),hardware)})
         {
             try { Parse(body,request,"stage");return false; } catch(InvalidDataException) { }
+        }
+        string policy=new('e',64);
+        string labeled=json[..^1]+",\"selinux_mode\":\"enforcing\",\"selinux_policy_sha\":\""+policy+"\"}";
+        var labeledStage=Parse(labeled,req,"stage");
+        string preview=labeled.Replace("\"status\":\"staged\"","\"status\":\"preview\"")
+            .Replace("\"changes\":true","\"changes\":false").Replace(hash,"")
+            .Replace(Convert.ToBase64String(cert.RawData),"");
+        var labeledPreview=Parse(preview,req,"preview");
+        if (Parse(labeled,req,"stage",labeledPreview).SelinuxPolicySha!=policy ||
+            labeledStage.SelinuxMode!="enforcing") return false;
+        foreach (string bad in new[]{json,labeled.Replace("enforcing","permissive"),
+            labeled.Replace(policy,new string('f',64))})
+        {
+            try { Parse(bad,req,"stage",labeledPreview); return false; } catch(InvalidDataException) { }
         }
         return true;
     }

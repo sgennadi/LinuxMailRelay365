@@ -440,6 +440,9 @@ internal sealed partial class MainForm
                         "Tenant: "+req.Tenant+Environment.NewLine+"Mailbox: "+req.Mailbox+
                         Environment.NewLine+"Application name: "+req.Name+Environment.NewLine+req.KeyDescription+", days: "+req.Days+
                         Environment.NewLine+"Recovery code: "+req.Nonce+Environment.NewLine+"Plan SHA-256: "+preview.ApprovalSha+
+                        (preview.SelinuxMode==""?"":Environment.NewLine+"SELinux: "+preview.SelinuxMode+
+                            "; file policy SHA-256: "+preview.SelinuxPolicySha+
+                            Environment.NewLine+"New files and recovery markers only; no policy or mode changes.")+
                         Environment.NewLine+(req.TpmHandle is null?"Only a protected local key and public certificate are created.":
                             "One new persistent TPM key and public certificate will be created; no PEM fallback. Never automatically evict or retry.")+" No cloud action.",
                         MultiMailboxNewAppRequest.Phrase("stage"),dialog)) { Render(); return; }
@@ -464,6 +467,8 @@ internal sealed partial class MainForm
                     if (!ConfirmDestructive("LinuxMailRelay365 | Complete recovered identity",
                         "Verified existing app: "+req.Name+Environment.NewLine+"Client ID: "+appId+
                         Environment.NewLine+"Mailbox: "+req.Mailbox+Environment.NewLine+"Certificate SHA-256: "+stage.CertificateSha+
+                        (stage.SelinuxMode==""?"":Environment.NewLine+"Original SELinux policy verified: "+stage.SelinuxMode+
+                            "; SHA-256: "+stage.SelinuxPolicySha)+
                         Environment.NewLine+"Publish the local identity only; no cloud or route changes.",
                         MultiMailboxNewAppRequest.Phrase("finalize"),dialog)) { Render(); return; }
                 }
@@ -520,7 +525,9 @@ internal sealed partial class MainForm
                 lastPreparedIdentity=req.IdentityFile;
                 Render();
                 WriteLine("New dedicated Entra application and local identity verified: "+req.IdentityFile+
-                    "; Client ID: "+appId+"; Enterprise ID: "+enterprise+". No route or Exchange permission changes.");
+                    "; Client ID: "+appId+"; Enterprise ID: "+enterprise+
+                    (claimed.SelinuxMode==""?"":"; SELinux file contexts verified ("+claimed.SelinuxMode+")")+
+                    ". No route or Exchange permission changes.");
                 MessageBox.Show(dialog,"Dedicated application and unbound local OAuth identity ready."+
                     Environment.NewLine+"Client ID: "+appId+Environment.NewLine+"Identity: "+req.IdentityFile+
                     Environment.NewLine+"Key: "+req.KeyDescription+(req.TpmHandle is null?"":"; hardware attestation not verified")+

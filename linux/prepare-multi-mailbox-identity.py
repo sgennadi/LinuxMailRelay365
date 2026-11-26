@@ -172,10 +172,17 @@ def policy_snapshot(targets):
         else:
             need(path == IDENTITIES, "selinux_base_directory_missing")
         labels[str(path)] = context
-    need(len(targets) == 3 and len(set(targets)) == 3 and
-         all(p.parent == IDENTITIES and re.fullmatch(r"mbx-[a-f0-9]{32}\.(key|crt|json)", p.name)
-             for p in targets) and {p.suffix for p in targets} == {".key", ".crt", ".json"} and
-         len({p.stem for p in targets}) == 1, "selinux_unapproved_identity_paths")
+    # Exact generated namespace only; new-app recovery adds two private markers.
+    need(len(targets) in (3, 5) and len(set(targets)) == len(targets) and
+         all(p.parent == IDENTITIES for p in targets), "selinux_unapproved_identity_paths")
+    names = {p.name for p in targets}
+    matches = [re.fullmatch(r"(mbx-[a-f0-9]{32})\.json", name) for name in names]
+    stems = [match.group(1) for match in matches if match is not None]
+    need(len(stems) == 1, "selinux_unapproved_identity_paths")
+    stem = stems[0]
+    files = {stem + suffix for suffix in (".key", ".crt", ".json")}
+    recovery = files | {"." + stem + ".pending", "." + stem + ".claim"}
+    need(names == files or names == recovery, "selinux_unapproved_identity_paths")
     for path in targets:
         context = query_label(path, "file")
         if not missing(path):

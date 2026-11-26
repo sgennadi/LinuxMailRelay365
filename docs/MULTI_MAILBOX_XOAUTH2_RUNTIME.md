@@ -641,3 +641,23 @@ and unchanged existing files; they do not emulate kernel enforcement.
 New-app stage/claim/recovery, TPM provisioning and new source-map creation
 retain active-SELinux refusal until their additional markers and runtime
 policy are integrated and validated. No global relabel or protection bypass.
+
+
+## SELinux-aware new application software staging and recovery (experimental)
+
+New Entra app / recover uses the exact installed-policy label reader and
+exclusive publisher for software RSA. Only the three generated identity
+files and their exact hidden pending and claim markers are allowed. Preview
+binds prospective contexts and kernel mode. The root:root 0600 pending
+record persists the reviewed mode and policy digest; inspect, claim and
+finalize compare these against current installed policy and actual contexts.
+Existing files are not relabeled. The root-only claim is still published
+before Graph POST and remains bound to the exact pending record hash.
+Drift in prospective or existing labels, mode changes, foreign xattrs or
+missing policy tools refuse recovery. The GUI compares policy receipts
+across stage/claim/finalize and shows evidence during review. Inactive
+software stages keep their original schema. Different-mode stages require
+manual review rather than silent migration. TPM with active SELinux and
+unrelated source-map/runtime writes remain gated. Synthetic user-xattr tests
+cover staging, claim, recovery and finalization; no live Enforcing VM,
+confined service-domain or real tenant acceptance is claimed.

@@ -156,5 +156,86 @@ class NewAppTests(unittest.TestCase):
                 self.assertGreaterEqual(proof.call_count,3)
 
 
+    @unittest.skipUnless(os.geteuid()==0 and os.environ.get("GITHUB_ACTIONS")=="true"
+                         and os.environ.get("RUNNER_ENVIRONMENT")=="github-hosted","disposable root CI only")
+    def test_labeled_software_stage_claim_recovery_and_policy_drift(self):
+        # Real files/xattrs and RSA proof; synthetic labels, not kernel enforcement.
+        service=pwd.getpwnam("nobody")
+        gid=service.pw_gid
+        attr="user.lmr365_test_context"
+        with tempfile.TemporaryDirectory(prefix="lmr365-new-label-",dir="/var/lib") as folder:
+            base=Path(folder)
+            identities=base/"oauth-identities"
+            mode=base/"mock-enforce"
+            mode.write_text("1")
+            os.chown(str(base),0,gid)
+            os.chmod(str(base),0o750)
+            base_label="system_u:object_r:etc_t:s0"
+            secret_label="system_u:object_r:cert_t:s0"
+            os.setxattr(str(base),attr,base_label.encode("ascii")+b"\0")
+            overrides={}
+            def query(path,kind):
+                return overrides.get(path,secret_label if path.name.endswith((".key",".pending",".claim")) else base_label)
+            with mock.patch.multiple(M.P,BASE=base,IDENTITIES=identities,SOURCE=base/"source",RUNTIME=base/"runtime",
+                                     LOCK=base/"lock",SELINUX=mode,LABEL_ATTR=attr), \
+                 mock.patch.object(M.I,"IDENTITIES",identities),mock.patch.object(M.P,"query_label",side_effect=query):
+                req=self.req()
+                def run(action,approval="",client=""):
+                    return M.run(dict(req,action=action,approval=approval,client=client,
+                                      confirm=M.PHRASES.get(action,"")),gid,service.pw_name)
+                preview=run("preview")
+                self.assertEqual(preview["selinux_mode"],"enforcing")
+                self.assertFalse(identities.exists())
+                key,cert,identity,pending,claim=M.locations(req)
+                overrides[claim]=base_label
+                with self.assertRaisesRegex(M.Refused,"stale_stage_plan"):
+                    run("stage",preview["approval_sha"])
+                self.assertFalse(identities.exists())
+                overrides.clear()
+                stage=run("stage",preview["approval_sha"])
+                self.assertEqual(stage["selinux_policy_sha"],preview["selinux_policy_sha"])
+                self.assertEqual(M.I.decode(pending.read_bytes())["selinux_policy_sha"],stage["selinux_policy_sha"])
+                self.assertFalse(identity.exists() or claim.exists())
+                for path in (key,cert,pending,identities):
+                    self.assertEqual(M.P.checked_context(os.getxattr(str(path),attr)),query(path,"file"))
+                self.assertEqual(pending.stat().st_mode & 0o777,0o600)
+                self.assertEqual(pending.stat().st_gid,0)
+                overrides[claim]=base_label
+                with self.assertRaisesRegex(M.Refused,"pending_selinux_policy_changed"):
+                    run("claim",stage["approval_sha"])
+                self.assertFalse(claim.exists())
+                overrides.clear()
+                mode.write_text("0")
+                with self.assertRaisesRegex(M.Refused,"pending_selinux_policy_changed"):
+                    run("inspect")
+                mode.write_text("1")
+                claimed=run("claim",stage["approval_sha"])
+                self.assertTrue(claimed["claimed"])
+                self.assertEqual(M.P.checked_context(os.getxattr(str(claim),attr)),secret_label)
+                self.assertEqual(claim.stat().st_mode & 0o777,0o600)
+                before={p:(p.read_bytes(),os.getxattr(str(p),attr)) for p in (key,cert,pending,claim)}
+                client="22222222-2222-4222-8222-222222222222"
+                with self.assertRaisesRegex(M.Refused,"creation_already_claimed"):
+                    run("claim",stage["approval_sha"])
+                overrides[identity]=secret_label
+                with self.assertRaisesRegex(M.Refused,"pending_selinux_policy_changed"):
+                    run("finalize",stage["approval_sha"],client)
+                self.assertFalse(identity.exists())
+                overrides.clear()
+                os.setxattr(str(pending),attr,base_label.encode("ascii")+b"\0")
+                with self.assertRaisesRegex(M.Refused,"existing_context_mismatch"):
+                    run("inspect")
+                os.setxattr(str(pending),attr,before[pending][1])
+                result=run("finalize",stage["approval_sha"],client)
+                self.assertEqual(result["selinux_policy_sha"],stage["selinux_policy_sha"])
+                self.assertEqual(M.I.decode(identity.read_bytes())["client_id"],client)
+                self.assertEqual(M.P.checked_context(os.getxattr(str(identity),attr)),base_label)
+                self.assertEqual(before,{p:(p.read_bytes(),os.getxattr(str(p),attr)) for p in before})
+                self.assertEqual(mode.read_text(),"1")
+                self.assertFalse((base/"source").exists() or (base/"runtime").exists())
+                with self.assertRaisesRegex(M.Refused,"tpm_selinux"):
+                    M.app_policy(dict(req,handle="0x81010001"))
+
+
 if __name__=="__main__":
     unittest.main()

@@ -84,8 +84,23 @@ def routes(req, gid):
     return hashes
 
 
-def preview(req, gid):
-    need(not P.SELINUX.exists(), "new_app_selinux_recovery_policy_review_required")
+def app_policy(req):
+    if "handle" in req:
+        need(P.selinux_mode() == "inactive", "new_app_tpm_selinux_policy_review_required")
+        return dict(mode="inactive", labels={})
+    return P.policy_snapshot(list(locations(req)))
+
+
+def policy_evidence(policy):
+    if policy["mode"] == "inactive":
+        return {}
+    return dict(selinux_mode=policy["mode"], selinux_policy_sha=I.digest(P.encode(policy)))
+
+
+def preview(req, gid, policy=None):
+    if policy is None:
+        policy = app_policy(req)
+    P.require_policy(policy)
     need(all(P.missing(p) for p in destinations(req)), "pending_or_identity_destination_exists")
     if "handle" in req:
         state, version, handles = H.hardware(gid)
@@ -95,10 +110,11 @@ def preview(req, gid):
                         provider_sha256=I.digest(T.PROVIDER_TEMPLATE.encode("ascii")))
         sha = I.digest(P.encode(evidence))
     else:
-        local = P.plan(dict(basis(req), client="", approval="", confirm=""), gid)
+        local = P.plan(dict(basis(req), client="", approval="", confirm=""), gid, policy)
         sha = local["plan_sha"]
     routes(req, gid)
-    return receipt(req, "preview", sha, "", "", False, False)
+    P.require_policy(policy)
+    return dict(receipt(req, "preview", sha, "", "", False, False), **policy_evidence(policy))
 
 
 def receipt(req, status, digest, cert_sha, der, claimed, changes):
@@ -109,22 +125,20 @@ def receipt(req, status, digest, cert_sha, der, claimed, changes):
                 client=req["client"] if status == "finalized" else "")
 
 
-def write_private(path, raw, work):
+def write_private(path, raw, work, policy=None):
     temp = work / "metadata"
     temp.write_bytes(raw)
-    P.publish(temp, path, 0, 0o600)
+    P.publish(temp, path, 0, 0o600, policy)
+    need(E.secure_read(path, 4096, 0, modes=(0o600,)) == raw,
+         "private_recovery_record_readback_mismatch")
 
 
 def stage(req, gid, service):
-    review = preview(req, gid)
-    need(review["approval_sha"] == req["approval"] and preview(req, gid) == review, "stale_stage_plan")
+    policy = app_policy(req)
+    review = preview(req, gid, policy)
+    need(review["approval_sha"] == req["approval"] and preview(req, gid, policy) == review, "stale_stage_plan")
     key, cert, identity, pending, claim = locations(req)
-    if P.missing(P.IDENTITIES):
-        P.IDENTITIES.mkdir(mode=0o700)
-        os.chown(str(P.IDENTITIES), 0, gid)
-        os.chmod(str(P.IDENTITIES), 0o750)
-        P.sync_dir(P.BASE)
-    state = P.directory_state(gid)
+    state = P.ensure_identity_directory(gid, policy)
     with tempfile.TemporaryDirectory(prefix=".new-app-", dir=str(P.IDENTITIES)) as folder:
         work = Path(folder)
         if "handle" in req:
@@ -134,19 +148,23 @@ def stage(req, gid, service):
             P.openssl(["req", "-x509", "-newkey", "rsa:3072", "-nodes", "-sha256",
                        "-days", str(req["days"]), "-subj", "/CN=LinuxMailRelay365-New-App",
                        "-keyout", str(sk), "-out", str(sc)], timeout=60)
-            need(P.directory_state(gid) == state and not P.SELINUX.exists() and
+            P.require_policy(policy)
+            need(P.directory_state(gid, policy) == state and
                  all(P.missing(p) for p in destinations(req)), "destination_changed")
             routes(req, gid)
-            P.publish(sk, key, gid, 0o640)
-            P.publish(sc, cert, gid, 0o640)
+            P.publish(sk, key, gid, 0o640, policy)
+            P.publish(sc, cert, gid, 0o640, policy)
             der = P.service_proof(service, key, cert, work)
             need(250 <= len(der) <= 8192 and I.public_certificate_sha(str(cert)) == I.digest(der),
                  "certificate_digest_mismatch")
             meta = dict(basis(req), version=1, certificate_sha256=I.digest(der),
                         key_sha256=I.digest(E.secure_read(key, 65536, gid, modes=(0o640,))))
         routes(req, gid)
-        write_private(pending, P.encode(meta), work)
-    return inspect(req, gid, service, status="staged", changes=True)
+        P.require_policy(policy)
+        need(P.directory_state(gid, policy) == state, "identity_directory_changed")
+        meta.update(policy_evidence(policy))
+        write_private(pending, P.encode(meta), work, policy)
+    return inspect(req, gid, service, status="staged", changes=True, policy=policy)
 
 
 def stage_tpm(req, gid, state, work):
@@ -219,18 +237,22 @@ def verify_tpm(req, gid, meta, work):
     return der
 
 
-def inspect(req, gid, service, status="staged", changes=False):
-    need(not P.SELINUX.exists(), "selinux_policy_review_required")
-    P.directory_state(gid)
+def inspect(req, gid, service, status="staged", changes=False, policy=None):
+    if policy is None:
+        policy = app_policy(req)
+    P.require_policy(policy)
+    state = P.directory_state(gid, policy)
     routes(req, gid)
     key, cert, identity, pending, claim = locations(req)
     need(P.missing(identity), "identity_already_finalized")
     raw = E.secure_read(pending, 4096, 0, modes=(0o600,))
     meta = I.decode(raw)
     digests = {"certificate_sha256"} | ({"provider_sha256", "attempt_sha256"} if "handle" in req else {"key_sha256"})
-    need(isinstance(meta, dict) and set(meta) == set(basis(req)) | {"version"} | digests and
+    evidence = policy_evidence(policy)
+    need(isinstance(meta, dict) and set(meta) == set(basis(req)) | {"version"} | digests | set(evidence) and
          meta["version"] == 1 and all(meta[k] == v for k, v in basis(req).items()),
          "pending_context_mismatch")
+    need(all(meta[k] == v for k, v in evidence.items()), "pending_selinux_policy_changed")
     need(all(isinstance(meta[k],str) and I.SHA.fullmatch(meta[k]) for k in digests),
          "pending_digest_invalid")
     # Verify local usability again, not merely stored hashes.
@@ -258,15 +280,19 @@ def inspect(req, gid, service, status="staged", changes=False):
     else:
         need(I.digest(E.secure_read(key,65536,gid,modes=(0o640,))) == meta["key_sha256"] and
              all(P.missing(p) for p in tpm_paths(req)), "staged_key_changed")
-    return receipt(req, status, sha, meta["certificate_sha256"],
-                   base64.b64encode(der).decode("ascii"), claimed, changes)
+    P.require_policy(policy)
+    need(P.directory_state(gid, policy) == state, "identity_directory_changed")
+    return dict(receipt(req, status, sha, meta["certificate_sha256"],
+                   base64.b64encode(der).decode("ascii"), claimed, changes), **evidence)
 
 
 def mutate(req, gid, service):
     action = req["action"]
     if action == "stage":
         return stage(req, gid, service)
-    current = inspect(req, gid, service)
+    policy = app_policy(req)
+    state = P.directory_state(gid, policy)
+    current = inspect(req, gid, service, policy=policy)
     need(current["approval_sha"] == req["approval"], "pending_stage_changed")
     key, cert, identity, pending, claim = locations(req)
     with tempfile.TemporaryDirectory(prefix=".new-app-commit-", dir=str(P.IDENTITIES)) as folder:
@@ -275,8 +301,10 @@ def mutate(req, gid, service):
             # A durable no-clobber marker BEFORE Graph POST. A lost response
             # never authorizes another create; resume by exact verified Client ID.
             need(not current["claimed"], "creation_already_claimed")
-            write_private(claim, P.encode(dict(version=1, stage_sha=req["approval"])), work)
-            return inspect(req, gid, service, status="claimed", changes=True)
+            P.require_policy(policy)
+            need(P.directory_state(gid, policy) == state, "identity_directory_changed")
+            write_private(claim, P.encode(dict(version=1, stage_sha=req["approval"])), work, policy)
+            return inspect(req, gid, service, status="claimed", changes=True, policy=policy)
         need(action == "finalize" and current["claimed"], "creation_claim_required")
         item = dict(tenant_id=req["tenant"],client_id=req["client"],mailbox=req["mailbox"],certificate=str(cert))
         if "handle" in req:
@@ -289,7 +317,9 @@ def mutate(req, gid, service):
         routes(req, gid)
         staged = work/"identity"
         staged.write_bytes(data)
-        P.publish(staged, identity, gid, 0o640)
+        P.require_policy(policy)
+        need(P.directory_state(gid, policy) == state, "identity_directory_changed")
+        P.publish(staged, identity, gid, 0o640, policy)
         need(E.secure_read(identity, A.MAX_IDENTITY, gid, modes=(0o640,)) == data,
              "identity_readback_mismatch")
         row = I.identity_row("proof", req["mailbox"], req["mailbox"], str(identity), gid)
@@ -301,6 +331,8 @@ def mutate(req, gid, service):
         need(bool(runuser), "runuser_required")
         P.execute([runuser, "-u", service, "--", "/usr/bin/test", "-r", str(identity)])
         routes(req, gid)
+        P.require_policy(policy)
+        need(P.directory_state(gid, policy) == state, "identity_directory_changed")
         # Keep root-only stage and claim as recovery evidence; never delete keys.
         return dict(current, status="finalized", client=req["client"], changes=True)
 
