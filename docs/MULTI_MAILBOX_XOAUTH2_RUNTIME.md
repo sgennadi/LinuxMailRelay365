@@ -765,3 +765,25 @@ proof. Existing advanced actions remain available, including proof timer,
 restore and acceptance ledger. The guided dialog does not start any service.
 GUI self-tests check evidence and navigation; physical 200% DPI review,
 real tenant/TPM/Enforcing VM and end-to-end delivery remain outstanding.
+
+
+## Primary Postfix, one shared Microsoft 365 sender
+
+The delivery wizard now asks for the XOAUTH2 sender model before certificate
+creation. The default single mailbox rewrites From and envelope sender for
+messages handled by the common XOAUTH2 outbound transport. Multi-mailbox
+uses a separate identity wizard and skips the unrelated single-mailbox
+certificate/cloud steps. The existing primary installer and isolated
+single-mailbox relay remain available; the isolated multi-mailbox runtime
+is not a replacement for the entire primary MTA.
+For Switch existing outbound relay, a new read-only primary mailbox
+Preview binds the requested mailbox and current configuration digest,
+checks instance scope, default/relay transports, declared overrides,
+local/virtual classes, service/queue status and the public configured
+identity mailbox. It emits no private material, raw config, queue details
+or SMTP response. It proposes the common outbound transport without a new
+listener. Local delivery, listener and inbound policies must remain intact
+in a future reviewed migration. Preview does NOT authorize Apply, verify
+cloud grants or deliver messages. In-place Apply/Restore for the common
+XOAUTH2 route remains a separate development block. Force Replace is
+explicitly blocked for the in-place migration selection.

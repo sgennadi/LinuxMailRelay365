@@ -14,7 +14,7 @@ internal sealed partial class MainForm
     private bool RequiresOAuthCertificate() => DeliveryHasPlan() &&
         selectedMailTarget == MailFlowIntent.TargetM365 &&
         selectedMailScenario != MailScenarioPlanner.Keep &&
-        mailTransport.SelectedIndex == 0;
+        mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 0;
 
     private static int[] DeliverySequence(bool keep, bool oauth) =>
         keep ? [0, DeliveryReviewPhase] :
@@ -65,6 +65,21 @@ internal sealed partial class MainForm
         }
         return AdjacentDeliveryPhase(2, false, false, false) == 0 &&
             AdjacentDeliveryPhase(3, false, false, true) == DeliveryReviewPhase;
+    }
+
+    private void ShowOAuthMailboxChoice(TableLayoutPanel page)
+    {
+        int width=Math.Max(260,pageHost.ClientSize.Width-90);
+        AddLine(page,UiTheme.Emphasis(T("Кто будет отправителем?", "Choose the sender identity model", "בחירת זהות השולח"),width));
+        AddLine(page,oauthSenderMode);
+        string explanation=oauthSenderMode.SelectedIndex==1 ?
+            T("Несколько разрешённых ящиков, привязка отправителей. Рабочий маршрут пока только на отдельном Postfix.",
+              "Multiple authorized mailboxes with sender mappings. Runtime currently restricted to an isolated Postfix.",
+              "תיבות מרובות עם מיפוי שולחים במופע Postfix מבודד.") :
+            T("Один ящик для исходящей почты. Все сообщения, проходящие через XOAUTH2, получают общий From и envelope sender. Не меняет локальную доставку автоматически.",
+              "One mailbox for outbound mail. Messages handled by XOAUTH2 use the shared From and envelope sender. This does not automatically change local delivery.",
+              "תיבה אחת לדואר יוצא. כתובת השולח תוחלף; מסירה מקומית לא משתנה אוטומטית.");
+        AddLine(page,MailFlowText(explanation,width,warning:oauthSenderMode.SelectedIndex==0));
     }
 
     private void ShowDeliveryProgress(TableLayoutPanel page)

@@ -452,7 +452,7 @@ internal sealed partial class MainForm : Form
             }
             SaveRoutingChoices();
             UpdatePreserveFlowPreview();
-            if (step == 3 && !routingLoading && !busy)
+            if ((step == 3 || (step == 2 && deliveryPhase is 0 or 1)) && !routingLoading && !busy && !renderingPage)
             {
                 RenderPage();
             }
@@ -2887,8 +2887,10 @@ internal sealed partial class MainForm : Form
                             tenantId != Guid.Empty
                             ? tenantId.ToString()
                             : T("Не выбран", "Not selected", "טרם נבחר");
-                        string detail = mailTransport.SelectedIndex == 0
-                            ? T("Ящик отправителя", "Sender mailbox", "תיבת דואר שולח") +
+                        string detail = mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex==1
+                            ? T("Несколько ящиков: отдельный мастер идентификаторов", "Multiple mailboxes: dedicated identity wizard", "תיבות מרובות: אשף זהויות")
+                            : mailTransport.SelectedIndex == 0
+                            ? T("Общий ящик отправителя", "Shared sender mailbox", "תיבת שולח משותפת") +
                                 ": " + (string.IsNullOrWhiteSpace(mailbox.Text)
                                     ? T("Не указан", "Not entered", "לא הוזן") : mailbox.Text.Trim())
                             : T("Принятый домен и MX проверяются на этапе настройки маршрута.",
@@ -2939,6 +2941,7 @@ internal sealed partial class MainForm : Form
                     "First select HOW Linux will deliver mail through Microsoft 365",
                     "בחרו כיצד Linux ישלח דואר דרך Microsoft 365")));
                 AddLine(page, BuildDeliveryModeChoices());
+                if(mailTransport.SelectedIndex==0) ShowOAuthMailboxChoice(page);
                 AddLine(page, BuildDeliveryModeOverview());
                     break;
                 }
@@ -2961,7 +2964,18 @@ internal sealed partial class MainForm : Form
                             "הגדירו יציאת ממסר נפרד, MX ודומיין.")));
                     break;
                 }
-                AddField(page, T("Почтовый ящик отправителя", "Sender mailbox", "תיבת דואר שולח"), mailbox);
+                ShowOAuthMailboxChoice(page);
+                if(oauthSenderMode.SelectedIndex==1)
+                {
+                    AddLine(page,MailFlowText(T(
+                        "Для нескольких ящиков используются отдельные сертификаты, приложения и разрешения. Не требуется создавать общий сертификат на этой странице.",
+                        "Multiple mailboxes use their own identities, certificates and scoped grants. No shared certificate is required on this page.",
+                        "לתיבות מרובות יש זהויות והרשאות נפרדות."),width));
+                    AddAction(page,T("Мастер Multi-mailbox...","Multi-mailbox setup wizard...","אשף תיבות מרובות"),
+                        InspectMultiMailboxIdentitiesAsync,false,"check","delivery-multi-mailbox");
+                    break;
+                }
+                AddField(page, T("Общий почтовый ящик отправителя", "Shared sender mailbox", "תיבת שולח משותפת"), mailbox);
                 AddField(page, T("Имя приложения Entra (можно изменить)", "Entra application display name", "שם האפליקציה"), applicationName);
                     break;
                 }
@@ -3041,6 +3055,18 @@ internal sealed partial class MainForm : Form
                     AddAction(page, T("Создать проверенную резервную копию Postfix",
                         "Create verified primary Postfix backup",
                         "גיבוי מאומת של Postfix"), BackupNowAsync, false, "shield", "mail-flow-backup");
+                    if(mailTransport.SelectedIndex==0)
+                    {
+                        ShowOAuthMailboxChoice(page);
+                        if(oauthSenderMode.SelectedIndex==0 && inspectedMail?.Mta=="postfix")
+                            ShowPrimaryMailboxRoutePreviewAction(page,Math.Max(260,pageHost.ClientSize.Width-90));
+                        else if(oauthSenderMode.SelectedIndex==1)
+                            AddLine(page,MailFlowText(T(
+                                "Multi-mailbox рабочий маршрут пока поддерживается только на отдельном Postfix.",
+                                "Multi-mailbox runtime is currently restricted to an isolated Postfix.",
+                                "ניתוב לתיבות מרובות זמין כרגע רק במופע מבודד."),
+                                Math.Max(260,pageHost.ClientSize.Width-90),warning:true));
+                    }
                     break;
                 }
                 if (selectedMailScenario == MailScenarioPlanner.Rebuild)
@@ -9350,6 +9376,8 @@ internal sealed partial class MainForm : Form
     private async Task ApplyAsync()
     {
         EnsureRoutingLoaded();
+        if(selectedMailScenario==MailScenarioPlanner.ReplaceRelay)
+            throw new NotSupportedException("In-place outbound migration is separate from installation. Never use Force Replace to switch the existing relay.");
         if (mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 1)
             throw new NotSupportedException(
                 "Multi-mailbox XOAUTH2 is an unimplemented planning option. The active transport rewrites all From addresses to one mailbox. Do not deploy until sender ownership and Exchange grants are verified.");

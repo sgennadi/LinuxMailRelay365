@@ -60,6 +60,7 @@ internal static class EmbeddedAssets
     internal static string CustomSmtpProbe => Text("LinuxMailRelay365.linux.check-custom-smtp.py");
     internal static string GooglePostfixRoute => Text("LinuxMailRelay365.linux.manage-google-relay.py");
     internal static string CustomPostfixRoute => Text("LinuxMailRelay365.linux.manage-custom-relay.py");
+    internal static string PrimaryMailboxRoutePreview => Text("LinuxMailRelay365.linux.primary-mailbox-route-preview.py");
     internal static string ConditionalStageManager => Text("LinuxMailRelay365.linux.stage-conditional-postfix-maps.py");
     internal static string ConditionalTransactionManager => Text("LinuxMailRelay365.linux.conditional-postfix-transaction.py");
     internal static string ConditionalActivationPreflight => Text("LinuxMailRelay365.linux.inspect-conditional-postfix-activation.py");
@@ -111,6 +112,19 @@ internal static class EmbeddedAssets
     internal static string CloudConnectorManager => Text("LinuxMailRelay365.windows.cloud-connector-manager.ps1");
 
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+
+    internal static string BuildPrimaryMailboxRoutePreviewBundle(string request)
+    {
+        if (Encoding.UTF8.GetByteCount(request)>2048) throw new ArgumentException("Primary route request too large.");
+        return "set -Eeuo pipefail\numask 077\n" +
+               "work=$(mktemp -d /tmp/lmr365-primary-mailbox.XXXXXXXX)\n" +
+               "trap 'rm -rf -- \"$work\"' EXIT\n" +
+               "base64 -d > \"$work/export-hardware-oauth-cert.py\" <<'LMR365_PRIMARY_ROUTE_SUPPORT'\n" +
+               Encode(EntraPublicCertificateExporter) + "\nLMR365_PRIMARY_ROUTE_SUPPORT\n" +
+               "base64 -d > \"$work/preview-primary-mailbox-route.py\" <<'LMR365_PRIMARY_ROUTE'\n" +
+               Encode(PrimaryMailboxRoutePreview) + "\nLMR365_PRIMARY_ROUTE\n" +
+               "printf '%s' '" + Encode(request) + "' | base64 -d | /usr/bin/python3 -I -B \"$work/preview-primary-mailbox-route.py\"\n";
+    }
 
     internal static string BuildInstalledPostfixRouteBundle(string request)
     {

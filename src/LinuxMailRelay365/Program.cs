@@ -81,6 +81,7 @@ internal static class Program
                 MainForm.UseWideDeliveryChoices(1500, 192)),
             ("Delivery route chooser guidance", DeliveryModeOverview.SelfTest),
             ("Delivery wizard route-aware forward/back navigation", MainForm.DeliveryNavigationSelfTest),
+            ("Primary single-mailbox outbound route preview", PrimaryMailboxRoutePreview.SelfTest),
             ("Recipient-aware read-only delivery recommendations", MailDeliveryAdvisor.SelfTest),
             ("Readable mail discovery overview and safe guidance", MailDiscoveryBrief.SelfTest),
             ("Mail intent and evidence-gated scenario ranking", MailFlowIntent.SelfTest),
