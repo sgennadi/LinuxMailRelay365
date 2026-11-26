@@ -13,11 +13,20 @@ def load(name):
     return m
 def main():
     p=argparse.ArgumentParser()
-    for field in ("cert","chain","key","domain","ca-file","confirm"):
-        p.add_argument("--"+field,required=True)
+    p.add_argument("--profile",action="store_true")
+    p.add_argument("--confirm",required=True)
+    for field in ("cert","chain","key","domain","ca-file"):
+        p.add_argument("--"+field)
     a=p.parse_args()
     if os.geteuid()!=0 or a.confirm!="PROCESS_RENEWED_TLS":
         p.error("root and explicit confirmation required")
+    if a.profile:
+        if any((a.cert,a.chain,a.key,a.domain,a.ca_file)):
+            p.error("profile and explicit paths are mutually exclusive")
+        data=load("smtp-tls-renewal-profile").load()
+        a.cert,a.chain,a.key,a.domain,a.ca_file=(data[k] for k in ("cert","chain","privkey","domain","ca_file"))
+    elif not all((a.cert,a.chain,a.key,a.domain,a.ca_file)):
+        p.error("certificate parameters required")
     gen=load("smtp-tls-generation")
     tx=load("smtp-tls-transaction")
     pf=load("smtp-tls-postfix").Postfix()
