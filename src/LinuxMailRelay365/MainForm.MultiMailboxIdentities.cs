@@ -504,8 +504,35 @@ internal sealed partial class MainForm
         prepareIdentity.Click += async (_, _) =>
         {
             if (reading || !inventoryValid || saveUncertain || SelectedScope() != "source") return;
-            var req = PromptUnboundMailboxIdentity(dialog, inventory.Source.Sha256);
-            if (req is null) return;
+            var tpm = MultiMailboxTpmDiscovery.Unavailable;
+            reading=true;
+            refresh.Enabled=close.Enabled=tabs.Enabled=verify.Enabled=false;
+            EditingActions();
+            try
+            {
+                heading.Text="Checking TPM 2.0 prerequisites before certificate choices...";
+                RequireSameArchiveConnection(endpoint);
+                var probe=await SshRemote.RunRootScriptAsync(endpoint,
+                    EmbeddedAssets.BuildMultiMailboxTpmPrepareBundle("{\"action\":\"discover\"}"),TimeSpan.FromMinutes(3));
+                RequireSameArchiveConnection(endpoint);
+                if (context!=CurrentMultiMailboxContext() || !HasMailDiscovery())
+                    throw new InvalidOperationException("Linux context changed.");
+                if (probe.ExitCode==0) tpm=MultiMailboxTpmDiscovery.Parse(probe.StdOut);
+            }
+            catch (Exception)
+            {
+                if (context!=CurrentMultiMailboxContext() || !HasMailDiscovery())
+                { Invalidate("Linux context changed during TPM discovery."); return; }
+                WriteLine("TPM prerequisites unavailable; no hardware creation was attempted.");
+            }
+            finally
+            {
+                reading=false;refresh.Enabled=close.Enabled=tabs.Enabled=true;Detail();
+            }
+            Render();
+            var choice=PromptUnboundMailboxIdentity(dialog,inventory.Source.Sha256,tpm);
+            if (choice is null) return;
+            var (req,handle)=choice.Value;
             var before = inventory;
             reading = true;
             refresh.Enabled = close.Enabled = tabs.Enabled = verify.Enabled = false;
@@ -524,11 +551,14 @@ internal sealed partial class MainForm
                 {
                     ValidateContext();
                     var reply = await SshRemote.RunRootScriptAsync(endpoint,
-                        EmbeddedAssets.BuildMultiMailboxIdentityPrepareBundle(req.Serialize(approved?.PlanSha ?? "")),
-                        TimeSpan.FromMinutes(4));
+                        handle is null
+                            ? EmbeddedAssets.BuildMultiMailboxIdentityPrepareBundle(req.Serialize(approved?.PlanSha ?? ""))
+                            : EmbeddedAssets.BuildMultiMailboxTpmPrepareBundle(MultiMailboxTpmPrepare.Serialize(req,handle,approved?.PlanSha ?? "")),
+                        TimeSpan.FromMinutes(handle is null ? 4 : 9));
                     ValidateContext();
                     if (reply.ExitCode != 0) throw new IOException("Identity preparation refused or requires review.");
-                    return MultiMailboxIdentityPrepareReceipt.Parse(reply.StdOut, req, approved);
+                    return handle is null ? MultiMailboxIdentityPrepareReceipt.Parse(reply.StdOut,req,approved)
+                        : MultiMailboxTpmPrepare.Parse(reply.StdOut,req,handle,approved);
                 }
                 void CheckMaps(MultiMailboxIdentityInventory sample)
                 {
@@ -547,18 +577,20 @@ internal sealed partial class MainForm
                 if (!ConfirmDestructive("LinuxMailRelay365 | Prepare new local identity",
                     "Tenant: " + req.Tenant + Environment.NewLine + "Existing application: " + req.Client +
                     Environment.NewLine + "Mailbox: " + req.Mailbox +
-                    Environment.NewLine + "RSA 3072, validity: " + req.Days + " days" +
+                    Environment.NewLine + (handle is null ? "Software RSA 3072" : "TPM 2.0 RSA 2048, new persistent handle: "+handle) +
+                    ", validity: " + req.Days + " days" +
                     Environment.NewLine + "New file: " + req.IdentityFile +
                     Environment.NewLine + "Plan SHA-256: " + preview.PlanSha +
                     Environment.NewLine + "Only new local protected identity files will be created. No mailbox, cloud permissions, source map, runtime, service or mail changes.",
-                    MultiMailboxIdentityPrepareRequest.Confirmation, dialog))
+                    handle is null ? MultiMailboxIdentityPrepareRequest.Confirmation : MultiMailboxTpmPrepare.Confirmation, dialog))
                 { Render(); return; }
                 CheckMaps(await ReadAsync());
                 ValidateContext();
                 ResetMultiMailboxRouteReview();
                 observations.Clear(); smtpAuthSamples.Clear();
                 attempted = true;
-                heading.Text = "Preparing RSA key and verifying local service-account signature...";
+                heading.Text = handle is null ? "Preparing RSA key and verifying local service-account signature..." :
+                    "Creating reviewed TPM persistent key and verifying m365mailer PS256 signature...";
                 saved = await Execute(preview);
                 var latest = await ReadAsync();
                 CheckMaps(latest);
@@ -569,7 +601,9 @@ internal sealed partial class MainForm
                     "; public certificate SHA-256: " + saved.CertificateSha + ". No route or cloud changes.");
                 MessageBox.Show(dialog, "Identity prepared: " + req.IdentityFile +
                     Environment.NewLine + "Public certificate SHA-256: " + saved.CertificateSha +
-                    Environment.NewLine + "Save the public certificate, register it with the exact Entra application, review Exchange permissions, then use Add mailbox to bind this identity. No live route changed.",
+                    Environment.NewLine + (handle is null ? "" : "TPM persistent handle: "+handle+
+                        ". Hardware attestation is not verified. Import this public certificate manually; automated prepared-certificate registration currently requires software identities."+Environment.NewLine) +
+                    "Save the public certificate, register it with the exact Entra application, review Exchange permissions, then use Add mailbox to bind this identity. No live route changed.",
                     "Unbound identity prepared", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception)
@@ -580,8 +614,11 @@ internal sealed partial class MainForm
                 if (attempted)
                 {
                     details.Text = "Do not retry blindly. Inspect the protected directory for " + req.IdentityFile +
-                        " and its matching .key/.crt files. No route activation requested.";
-                    WriteLine("Identity preparation outcome requires manual review: " + req.IdentityFile);
+                        (handle is null ? " and its matching .key/.crt files." :
+                            " and matching .crt/.tpm2.cnf files; inspect TPM handle "+handle+". Never evict or retry automatically.") +
+                        " No route activation requested.";
+                    WriteLine("Identity preparation outcome requires manual review: " + req.IdentityFile +
+                        (handle is null ? "" : "; TPM handle "+handle));
                 }
                 else WriteLine("Identity preparation preview refused. Check OpenSSL, service account, directory permissions and SELinux.");
             }

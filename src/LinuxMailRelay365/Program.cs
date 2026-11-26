@@ -452,6 +452,7 @@ internal static class Program
             ("Selected multi-mailbox cloud observation identity binding", MultiMailboxCloudObservation.SelfTest),
             ("Prepared multi-mailbox source edit receipt and backup binding", MultiMailboxSourceEditPlan.SelfTest),
             ("Unbound multi-mailbox identity preparation receipts", MultiMailboxIdentityPrepareReceipt.SelfTest),
+            ("Optional mapped TPM identity prerequisite and approval checks", MultiMailboxTpmPrepare.SelfTest),
             ("Dedicated new Entra application stage receipts", MultiMailboxNewAppReceipt.SelfTest),
             ("Selected mailbox live SMTP AUTH-only receipts", MultiMailboxSmtpAuthReceipt.SelfTest),
             ("Multi-mailbox Graph certificate pair receipts", MultiMailboxGraphPair.SelfTest),

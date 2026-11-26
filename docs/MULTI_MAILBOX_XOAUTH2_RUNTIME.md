@@ -568,3 +568,28 @@ accepting an in-memory timestamped sample; refresh or edits clear samples.
 This is not Postfix ingress, SELinux service-domain or mail-delivery proof.
 No real tenant is exercised by offline tests. Network/proxy-only hosts and
 hardware/SELinux permission failures require manual review, not policy bypass.
+
+
+## Optional TPM 2.0 protection for an existing-app mailbox identity (experimental)
+
+New OAuth identity first checks the connected Linux host, trusted identity
+directory, dedicated m365mailer user, TPM2 resource manager, trusted tools,
+OpenSSL 3 native TPM2 provider, provider/device access as m365mailer and a
+free persistent handle. The software RSA-3072 default stays available;
+TPM RSA-2048 appears only after successful prerequisite discovery. No
+packages, device permissions or SELinux settings are changed. The exact
+handle, TPM inventory, provider configuration, current map and identity
+context are bound into the reviewed plan. A separate typed confirmation
+creates one fresh TPM primary key, persists it using only its transient
+context, verifies the public key, produces a public certificate, and
+verifies PS256 as m365mailer. The protected identity JSON references the
+persistent handle and its own root-managed provider config; no PEM private
+key or fallback is created. Failure requires inspecting the specified handle
+and partial files; never automatically remove or recreate a TPM object.
+The local proof is not hardware attestation. Import the public certificate
+manually in the existing Entra application, bind the mailbox separately,
+and run a live SMTP AUTH-only check. No existing role, map, service, or
+cloud changes. New Entra app initial TPM staging, automated hardware
+candidate registration, SELinux-aware creation, provider packaging and real
+physical/vTPM acceptance remain open. The automated TPM command tests use
+mocks, not real hardware.

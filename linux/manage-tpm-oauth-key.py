@@ -355,7 +355,7 @@ def verify_service_signature(plan, cert, scratch):
                     if Path(p).is_file()), None)
     if runuser is None:
         raise Refused("service_user_runner_missing")
-    conf = plan["directory"] / "tpm2.cnf"
+    conf = plan.get("provider_config", plan["directory"] / "tpm2.cnf")
     env = command_env(conf)
     sig = run_command([runuser, "-u", "m365mailer", "--",
                        str(COMMANDS["openssl"]), "pkeyutl",

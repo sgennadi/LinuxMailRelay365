@@ -36,6 +36,7 @@ internal static class EmbeddedAssets
     internal static string HardwareOAuthCutover => Text("LinuxMailRelay365.linux.hardware-oauth-cutover.py");
     internal static string DeliveryAcceptance => Text("LinuxMailRelay365.linux.delivery-acceptance.py");
     internal static string TpmOauthProvision => Text("LinuxMailRelay365.linux.tpm-oauth-provision.py");
+    internal static string MultiMailboxTpmPrepare => Text("LinuxMailRelay365.linux.multi-mailbox-tpm-prepare.py");
     internal static string EntraPublicCertificateExporter => Text("LinuxMailRelay365.linux.entra-public-cert-export.py");
     internal static string InstalledPostfixRouteInspector => Text("LinuxMailRelay365.linux.inspect-postfix-route.py");
     internal static string PrimaryOAuthRotator => Text("LinuxMailRelay365.linux.primary-oauth-rotation.py");
@@ -600,6 +601,28 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/edit-multi-mailbox-source.py\" <<'LMR365_SOURCE_EDITOR'\n" +
                Encode(MultiMailboxSourceEditor) + "\nLMR365_SOURCE_EDITOR\n" +
                "printf '%s' '" + Encode(request) + "' | base64 -d | python3 \"$work/edit-multi-mailbox-source.py\"\n";
+    }
+
+    internal static string BuildMultiMailboxTpmPrepareBundle(string request)
+    {
+        if (Encoding.UTF8.GetByteCount(request)>8192) throw new ArgumentException("TPM identity request too large.");
+        var files=new (string Name,string Content)[] {
+            ("prepare-multi-mailbox-tpm.py",MultiMailboxTpmPrepare),
+            ("prepare-multi-mailbox-identity.py",MultiMailboxIdentityPreparer),
+            ("manage-tpm-oauth-key.py",TpmOauthProvision),
+            ("inspect-multi-mailbox-identities.py",MultiMailboxIdentityInspector),
+            ("audit-oauth-sender-map.py",OAuthSenderMapAudit),
+            ("export-hardware-oauth-cert.py",EntraPublicCertificateExporter)
+        };
+        var script=new StringBuilder("set -Eeuo pipefail\numask 077\n" +
+            "work=$(mktemp -d /tmp/lmr365-mapped-tpm.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n");
+        foreach(var (name,content) in files)
+            script.Append("base64 -d > \"$work/").Append(name).Append("\" <<'LMR365_MAPPED_TPM'\n")
+                .Append(Encode(content)).Append("\nLMR365_MAPPED_TPM\n");
+        script.Append("printf '%s' '").Append(Encode(request))
+            .Append("' | base64 -d | /usr/bin/python3 \"$work/prepare-multi-mailbox-tpm.py\"\n");
+        return script.ToString();
     }
 
     internal static string BuildMultiMailboxIdentityPrepareBundle(string request)
