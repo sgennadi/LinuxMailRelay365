@@ -19,7 +19,8 @@ def digest(plan):
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("action",choices=("preview","install","status","enable-recovery","disable-timer","stop-timer","enable-timer","start-timer","renew-now","preview-uninstall","uninstall"))
+    p.add_argument("action",choices=("preview","install","status","enable-recovery","disable-timer","stop-timer","enable-timer","start-timer","renew-now","preview-uninstall","uninstall","preview-update","update"))
+    p.add_argument("--previous-units",type=Path)
     p.add_argument("--plan-sha")
     p.add_argument("--confirm")
     a=p.parse_args()
@@ -33,12 +34,15 @@ def main():
         return subprocess.run([systemctl]+list(args),stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,timeout=90,
             env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","LC_ALL":"C"})
-    if a.action in ("preview-uninstall","uninstall"):
-        plan=planner.preview_uninstall(source,target)
-        if a.action=="preview-uninstall":
+    if a.action in ("preview-uninstall","uninstall","preview-update","update"):
+        updating=a.action in ("preview-update","update")
+        if updating and not a.previous_units:
+            p.error("previous packaged unit directory required")
+        plan=planner.preview_update(source,a.previous_units,target) if updating else planner.preview_uninstall(source,target)
+        if a.action.startswith("preview-"):
             print(json.dumps(dict(plan=plan,plan_sha256=digest(plan))))
             return 0
-        if a.confirm!="UNINSTALL_TLS_UNITS" or a.plan_sha!=digest(plan):
+        if a.confirm!=("UPDATE_TLS_UNITS" if updating else "UNINSTALL_TLS_UNITS") or a.plan_sha!=digest(plan):
             p.error("explicit confirmation and matching plan required")
         root=Path("/etc/postfix/lmr365-smtp-tls")
         import fcntl
@@ -59,21 +63,25 @@ def main():
                         path=root/name
                         if path.exists() and json.loads(path.read_text()).get("phase") not in ("verified","rolled_back"):
                             raise ValueError("unfinished TLS transaction")
-                    pf=load("smtp-tls-postfix").Postfix()
-                    if "/lmr365-smtp-tls/" in pf.run(pf.postconf,"-n") or "/lmr365-smtp-tls/" in pf.run(pf.postconf,"-P"):
-                        raise ValueError("detach managed TLS before removing recovery units")
+                    if not updating:
+                        pf=load("smtp-tls-postfix").Postfix()
+                        if "/lmr365-smtp-tls/" in pf.run(pf.postconf,"-n") or "/lmr365-smtp-tls/" in pf.run(pf.postconf,"-P"):
+                            raise ValueError("detach managed TLS before removing recovery units")
                     for unit in planner.UNITS:
                         r=run("show",unit,"--property=ActiveState","--value")
                         if r.returncode or r.stdout.strip()!=b"inactive":
                             raise ValueError("unit must be inactive: "+unit)
                         r=run("is-enabled",unit)
-                        if r.stdout.strip() not in (b"disabled",b"static",b"not-found"):
+                        if (not updating or unit.endswith(".timer")) and r.stdout.strip() not in (b"disabled",b"static",b"not-found"):
                             raise ValueError("unit must be disabled: "+unit)
                 def reload_units():
                     if run("daemon-reload").returncode:
                         raise RuntimeError("daemon-reload failed")
-                removed=load("uninstall-smtp-tls-systemd").uninstall(source,target,plan,planner.preview_uninstall,inactive,reload_units)
-            print(json.dumps(dict(removed=removed)))
+                if updating:
+                    changed=load("update-smtp-tls-systemd").update(source,a.previous_units,target,plan,planner.preview_update,inactive,reload_units)
+                else:
+                    changed=load("uninstall-smtp-tls-systemd").uninstall(source,target,plan,planner.preview_uninstall,inactive,reload_units)
+            print(json.dumps({"updated" if updating else "removed":changed,"timer_started":False}))
             return 0
         finally:
             os.close(fd)
