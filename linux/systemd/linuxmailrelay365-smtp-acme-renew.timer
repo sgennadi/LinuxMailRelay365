@@ -1,0 +1,11 @@
+[Unit]
+Description=Check LinuxMailRelay365 SMTP certificates twice daily
+
+[Timer]
+OnCalendar=*-*-* 00,12:00:00
+RandomizedDelaySec=3600
+Persistent=true
+Unit=linuxmailrelay365-smtp-acme-renew.service
+
+[Install]
+WantedBy=timers.target
