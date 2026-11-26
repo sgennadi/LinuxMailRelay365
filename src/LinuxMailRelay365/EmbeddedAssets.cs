@@ -656,6 +656,10 @@ internal static class EmbeddedAssets
                Encode(MultiMailboxIdentityInspector) + "\nLMR365_SOURCE_INVENTORY\n" +
                "base64 -d > \"$work/prepare-multi-mailbox-identity.py\" <<'LMR365_SOURCE_EDITOR'\n" +
                Encode(MultiMailboxIdentityPreparer) + "\nLMR365_SOURCE_EDITOR\n" +
+               "base64 -d > \"$work/manage-tpm-oauth-key.py\" <<'LMR365_NEW_APP_TPM_TOOLS'\n" +
+               Encode(TpmOauthProvision) + "\nLMR365_NEW_APP_TPM_TOOLS\n" +
+               "base64 -d > \"$work/prepare-multi-mailbox-tpm.py\" <<'LMR365_NEW_APP_TPM'\n" +
+               Encode(MultiMailboxTpmPrepare) + "\nLMR365_NEW_APP_TPM\n" +
                "base64 -d > \"$work/prepare-multi-mailbox-new-app.py\" <<'LMR365_NEW_APP'\n" +
                Encode(MultiMailboxNewApp) + "\nLMR365_NEW_APP\n" +
                "printf '%s' '" + Encode(request) + "' | base64 -d | python3 \"$work/prepare-multi-mailbox-new-app.py\"\n";

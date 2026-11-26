@@ -343,10 +343,48 @@ internal sealed partial class MainForm
                 Detail();
             }
         }
+        async Task<MultiMailboxTpmDiscovery?> DiscoverTpmForCertificateAsync()
+        {
+            var tpm=MultiMailboxTpmDiscovery.Unavailable;
+            reading=true;
+            refresh.Enabled=close.Enabled=tabs.Enabled=verify.Enabled=false;
+            EditingActions();
+            try
+            {
+                heading.Text="Checking TPM 2.0 prerequisites before certificate choices...";
+                RequireSameArchiveConnection(endpoint);
+                var probe=await SshRemote.RunRootScriptAsync(endpoint,
+                    EmbeddedAssets.BuildMultiMailboxTpmPrepareBundle("{\"action\":\"discover\"}"),TimeSpan.FromMinutes(3));
+                RequireSameArchiveConnection(endpoint);
+                if(context!=CurrentMultiMailboxContext() || !HasMailDiscovery())
+                    throw new InvalidOperationException("Linux context changed.");
+                if(probe.ExitCode==0) tpm=MultiMailboxTpmDiscovery.Parse(probe.StdOut);
+            }
+            catch(Exception)
+            {
+                try
+                {
+                    RequireSameArchiveConnection(endpoint);
+                    if(context!=CurrentMultiMailboxContext() || !HasMailDiscovery())
+                        throw new InvalidOperationException("Linux context changed.");
+                }
+                catch(Exception)
+                { Invalidate("Linux context changed during TPM discovery.");return null; }
+                WriteLine("TPM prerequisites unavailable; no hardware creation was attempted.");
+            }
+            finally
+            {
+                reading=false;refresh.Enabled=close.Enabled=tabs.Enabled=true;Detail();
+            }
+            Render();
+            return tpm;
+        }
         newApp.Click += async (_,_) =>
         {
             if (!newApp.Enabled) return;
-            var choice=PromptNewMailboxApp(dialog,inventory);
+            var tpm=await DiscoverTpmForCertificateAsync();
+            if(tpm is null) return;
+            var choice=PromptNewMailboxApp(dialog,inventory,tpm);
             if (choice is null) return;
             var (req,resume)=choice.Value;
             var before=inventory;
@@ -382,7 +420,7 @@ internal sealed partial class MainForm
                 {
                     ValidateContext();
                     var reply=await SshRemote.RunRootScriptAsync(endpoint,EmbeddedAssets.BuildMultiMailboxNewAppBundle(
-                        req.Serialize(action,approval,client)),TimeSpan.FromMinutes(4));
+                        req.Serialize(action,approval,client)),TimeSpan.FromMinutes(req.TpmHandle is null?4:10));
                     ValidateContext();
                     if (reply.ExitCode!=0) throw new IOException("New application local stage refused or requires review.");
                     return MultiMailboxNewAppReceipt.Parse(reply.StdOut,req,action,previous,client);
@@ -400,16 +438,18 @@ internal sealed partial class MainForm
                     var preview=await Execute("preview");
                     if (!ConfirmDestructive("LinuxMailRelay365 | Stage initial certificate",
                         "Tenant: "+req.Tenant+Environment.NewLine+"Mailbox: "+req.Mailbox+
-                        Environment.NewLine+"Application name: "+req.Name+Environment.NewLine+"RSA 3072, days: "+req.Days+
+                        Environment.NewLine+"Application name: "+req.Name+Environment.NewLine+req.KeyDescription+", days: "+req.Days+
                         Environment.NewLine+"Recovery code: "+req.Nonce+Environment.NewLine+"Plan SHA-256: "+preview.ApprovalSha+
-                        Environment.NewLine+"Only a protected local key and public certificate are created. No cloud action.",
+                        Environment.NewLine+(req.TpmHandle is null?"Only a protected local key and public certificate are created.":
+                            "One new persistent TPM key and public certificate will be created; no PEM fallback. Never automatically evict or retry.")+" No cloud action.",
                         MultiMailboxNewAppRequest.Phrase("stage"),dialog)) { Render(); return; }
                     await CheckMaps();
                     ResetMultiMailboxRouteReview(); observations.Clear(); smtpAuthSamples.Clear();
                     attempted=true;
                     WriteLine("New Entra app recovery code: "+req.Nonce+"; name: "+req.Name+
-                        "; tenant: "+req.Tenant+"; mailbox: "+req.Mailbox+"; days: "+req.Days);
-                    heading.Text="Generating initial public certificate on Linux...";
+                        "; tenant: "+req.Tenant+"; mailbox: "+req.Mailbox+"; days: "+req.Days+"; key: "+req.KeyDescription);
+                    heading.Text=req.TpmHandle is null?"Generating initial public certificate on Linux...":
+                        "Creating reviewed TPM key and initial public certificate...";
                     stage=await Execute("stage",preview.ApprovalSha,preview);
                 }
                 Guid appId;
@@ -483,6 +523,7 @@ internal sealed partial class MainForm
                     "; Client ID: "+appId+"; Enterprise ID: "+enterprise+". No route or Exchange permission changes.");
                 MessageBox.Show(dialog,"Dedicated application and unbound local OAuth identity ready."+
                     Environment.NewLine+"Client ID: "+appId+Environment.NewLine+"Identity: "+req.IdentityFile+
+                    Environment.NewLine+"Key: "+req.KeyDescription+(req.TpmHandle is null?"":"; hardware attestation not verified")+
                     Environment.NewLine+"Next: Add mailbox to source map, Configure SMTP RBAC, then offline route review.",
                     "New Entra app ready",MessageBoxButtons.OK,MessageBoxIcon.Information);
             }
@@ -492,9 +533,9 @@ internal sealed partial class MainForm
                 Invalidate(attempted ? "New application outcome requires review; editing locked." : "New application preview or recovery refused.");
                 details.Text="Do not create again if a claim exists. Find exact app in Entra by name: "+req.Name+
                     Environment.NewLine+"Recovery code: "+req.Nonce+Environment.NewLine+"Client ID (if known): "+clientEvidence+
-                    Environment.NewLine+"Mailbox: "+req.Mailbox+"; days: "+req.Days+
+                    Environment.NewLine+"Mailbox: "+req.Mailbox+"; days: "+req.Days+"; key: "+req.KeyDescription+
                     Environment.NewLine+"Reopen this window and use recovery with the original parameters. No automatic cleanup.";
-                WriteLine("New app review required: "+req.Name+"; recovery code: "+req.Nonce+"; known Client ID: "+clientEvidence);
+                WriteLine("New app review required: "+req.Name+"; recovery code: "+req.Nonce+"; known Client ID: "+clientEvidence+"; key: "+req.KeyDescription);
             }
             finally
             {
@@ -504,32 +545,8 @@ internal sealed partial class MainForm
         prepareIdentity.Click += async (_, _) =>
         {
             if (reading || !inventoryValid || saveUncertain || SelectedScope() != "source") return;
-            var tpm = MultiMailboxTpmDiscovery.Unavailable;
-            reading=true;
-            refresh.Enabled=close.Enabled=tabs.Enabled=verify.Enabled=false;
-            EditingActions();
-            try
-            {
-                heading.Text="Checking TPM 2.0 prerequisites before certificate choices...";
-                RequireSameArchiveConnection(endpoint);
-                var probe=await SshRemote.RunRootScriptAsync(endpoint,
-                    EmbeddedAssets.BuildMultiMailboxTpmPrepareBundle("{\"action\":\"discover\"}"),TimeSpan.FromMinutes(3));
-                RequireSameArchiveConnection(endpoint);
-                if (context!=CurrentMultiMailboxContext() || !HasMailDiscovery())
-                    throw new InvalidOperationException("Linux context changed.");
-                if (probe.ExitCode==0) tpm=MultiMailboxTpmDiscovery.Parse(probe.StdOut);
-            }
-            catch (Exception)
-            {
-                if (context!=CurrentMultiMailboxContext() || !HasMailDiscovery())
-                { Invalidate("Linux context changed during TPM discovery."); return; }
-                WriteLine("TPM prerequisites unavailable; no hardware creation was attempted.");
-            }
-            finally
-            {
-                reading=false;refresh.Enabled=close.Enabled=tabs.Enabled=true;Detail();
-            }
-            Render();
+            var tpm=await DiscoverTpmForCertificateAsync();
+            if(tpm is null) return;
             var choice=PromptUnboundMailboxIdentity(dialog,inventory.Source.Sha256,tpm);
             if (choice is null) return;
             var (req,handle)=choice.Value;

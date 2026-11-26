@@ -593,3 +593,25 @@ cloud changes. New Entra app initial TPM staging, automated hardware
 candidate registration, SELinux-aware creation, provider packaging and real
 physical/vTPM acceptance remain open. The automated TPM command tests use
 mocks, not real hardware.
+
+
+## TPM protection for a dedicated new Entra app (experimental)
+
+The new-app certificate dialog shares the read-only TPM prerequisite check
+with existing-app certificate creation. A reviewed free handle is optional;
+software RSA-3072 remains the default. TPM RSA-2048 stages the initial
+public certificate with a root-only durable attempt marker before key
+persistence and verifies PS256 as m365mailer. No PEM private key is created.
+The pending evidence binds the exact handle, provider configuration, attempt
+marker, certificate, tenant, mailbox, recovery code and maps. The existing
+one-shot Graph creation claim is still required before POST. The final
+identity references the verified TPM handle only after the native Graph
+application and enterprise identity checks. A claimed app is never recreated.
+For recovery, enter the original handle as well as the original recovery
+parameters; a different backend or handle cannot resume the same stage.
+Legacy software requests and pending records retain their exact format.
+If a TPM stage was interrupted before its pending record was completed,
+inspect the attempt marker, handle and files manually. No automatic eviction,
+software fallback, or policy change. Tests use a real public X.509 certificate
+with mocked TPM commands; physical TPM/vTPM, real tenant and SELinux-aware
+creation remain unverified. No mail or Postfix route activation.

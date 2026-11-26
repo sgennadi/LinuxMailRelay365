@@ -5,11 +5,13 @@ using System.Text.Json;
 namespace LinuxMailRelay365;
 
 internal sealed record MultiMailboxNewAppRequest(Guid Tenant, string Mailbox, int Days,
-    string SourceSha, string RuntimeSha, string Nonce, Guid? ResumeClient)
+    string SourceSha, string RuntimeSha, string Nonce, Guid? ResumeClient, string? TpmHandle = null)
 {
     internal string Name => "LMR365-MBX-" + Nonce[..32];
     internal string IdentityFile => "mbx-" + Nonce[..32] + ".json";
+    internal string KeyDescription => TpmHandle is null ? "Software RSA-3072" : "TPM 2.0 RSA-2048 ("+TpmHandle+")";
     internal bool Valid => Tenant != Guid.Empty && ResumeClient != Guid.Empty &&
+        (TpmHandle is null || MultiMailboxTpmDiscovery.ValidHandle(TpmHandle)) &&
         InstalledPostfixRoute.ValidAddress(Mailbox) && Mailbox == Mailbox.ToLowerInvariant() &&
         Days is >= 4 and <= 365 && MultiMailboxSourceEditRequest.IsSha(Nonce) &&
         new[] {SourceSha, RuntimeSha}.All(s => s == "" || MultiMailboxSourceEditRequest.IsSha(s));
@@ -22,9 +24,11 @@ internal sealed record MultiMailboxNewAppRequest(Guid Tenant, string Mailbox, in
             (Phrase(action) == "" ? approval != "" : !MultiMailboxSourceEditRequest.IsSha(approval)) ||
             (action == "finalize" ? client is null || client == Guid.Empty : client is not null))
             throw new InvalidDataException("Invalid new application request.");
-        return JsonSerializer.Serialize(new { action, tenant=Tenant.ToString("D"), mailbox=Mailbox, days=Days,
-            source_sha=SourceSha, runtime_sha=RuntimeSha, nonce=Nonce, approval,
-            client=client?.ToString("D") ?? "", confirm=Phrase(action) });
+        var payload = new Dictionary<string,object> { ["action"]=action,["tenant"]=Tenant.ToString("D"),
+            ["mailbox"]=Mailbox,["days"]=Days,["source_sha"]=SourceSha,["runtime_sha"]=RuntimeSha,
+            ["nonce"]=Nonce,["approval"]=approval,["client"]=client?.ToString("D") ?? "",["confirm"]=Phrase(action) };
+        if (TpmHandle is not null) payload.Add("handle",TpmHandle);
+        return JsonSerializer.Serialize(payload);
     }
 }
 
@@ -41,6 +45,7 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
         var root=doc.RootElement;
         string[] fields=["version","status","approval_sha","source_sha","runtime_sha","nonce","tenant","mailbox","days",
             "identity_file","app_name","certificate_sha256","certificate_der","claimed","changes","runtime_changed","cloud_changed","mail_sent","client"];
+        if (req.TpmHandle is not null) fields=[..fields,"handle"];
         if (root.ValueKind != JsonValueKind.Object ||
             !root.EnumerateObject().Select(x=>x.Name).OrderBy(x=>x,StringComparer.Ordinal)
                 .SequenceEqual(fields.OrderBy(x=>x,StringComparer.Ordinal))) throw new InvalidDataException("Unexpected app receipt.");
@@ -49,6 +54,7 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
             "finalize"=>"finalized", _=>throw new InvalidDataException("Unknown app action.") };
         bool writes=action is "stage" or "claim" or "finalize";
         if (root.GetProperty("version").GetInt32()!=1 || Read("status")!=status ||
+            (req.TpmHandle is not null && Read("handle")!=req.TpmHandle) ||
             Read("tenant")!=req.Tenant.ToString("D") || Read("mailbox")!=req.Mailbox ||
             Read("source_sha")!=req.SourceSha || Read("runtime_sha")!=req.RuntimeSha || Read("nonce")!=req.Nonce ||
             Read("app_name")!=req.Name || Read("identity_file")!=req.IdentityFile ||
@@ -75,7 +81,8 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
                 throw new InvalidDataException("Certificate digest mismatch.");
             using var parsed=X509CertificateLoader.LoadCertificate(bytes);
             using var rsa=parsed.GetRSAPublicKey();
-            if (parsed.HasPrivateKey || !parsed.RawData.AsSpan().SequenceEqual(bytes) || rsa is null || rsa.KeySize<3072)
+            if (parsed.HasPrivateKey || !parsed.RawData.AsSpan().SequenceEqual(bytes) || rsa is null ||
+                (req.TpmHandle is null ? rsa.KeySize<3072 : rsa.KeySize!=2048))
                 throw new InvalidDataException("Expected exact public RSA certificate.");
         }
         if (previous is not null && previous.Status!="preview" &&
@@ -103,6 +110,21 @@ internal sealed record MultiMailboxNewAppReceipt(string Status, string ApprovalS
             json.Replace("\"claimed\":false","\"claimed\":true"),json.Replace("\"cloud_changed\":false","\"cloud_changed\":true")})
         {
             try { Parse(bad,req,"stage"); return false; } catch (InvalidDataException) { }
+        }
+        var hardware=req with { TpmHandle="0x81010001" };
+        using var tpmPublicKey=RSA.Create(2048);
+        using var tpmPublicCert=new CertificateRequest("CN=TPM receipt test",tpmPublicKey,HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1).CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1),DateTimeOffset.UtcNow.AddDays(30));
+        var tpmHash=Convert.ToHexString(SHA256.HashData(tpmPublicCert.RawData)).ToLowerInvariant();
+        string tpmJson=json.Replace(hash,tpmHash).Replace(Convert.ToBase64String(cert.RawData),Convert.ToBase64String(tpmPublicCert.RawData));
+        tpmJson=tpmJson[..^1]+",\"handle\":\"0x81010001\"}";
+        if (Parse(tpmJson,hardware,"stage").CertificateSha!=tpmHash ||
+            !hardware.Serialize("stage",sha).Contains("0x81010001",StringComparison.Ordinal) ||
+            (hardware with { TpmHandle="0x81020000" }).Valid) return false;
+        foreach (var (body,request) in new[]{(tpmJson,req),(json,hardware),
+            (tpmJson.Replace("0x81010001","0x81010002"),hardware)})
+        {
+            try { Parse(body,request,"stage");return false; } catch(InvalidDataException) { }
         }
         return true;
     }
