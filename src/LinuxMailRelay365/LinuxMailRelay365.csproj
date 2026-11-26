@@ -43,6 +43,7 @@
     <EmbeddedResource Include="../../linux/edit-multi-mailbox-source.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-source-editor.py" />
     <EmbeddedResource Include="../../linux/prepare-multi-mailbox-identity.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-identity-prepare.py" />
     <EmbeddedResource Include="../../linux/prepare-multi-mailbox-new-app.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-new-app.py" />
+    <EmbeddedResource Include="../../linux/check-multi-mailbox-smtp-auth.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-smtp-auth.py" />
     <EmbeddedResource Include="../../linux/review-multi-mailbox-graph-pair.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-graph-pair.py" />
     <EmbeddedResource Include="../../linux/audit-oauth-ingress.py" LogicalName="LinuxMailRelay365.linux.oauth-ingress-audit.py" />
     <EmbeddedResource Include="../../linux/audit-oauth-identity-signing.py" LogicalName="LinuxMailRelay365.linux.oauth-identity-signing-audit.py" />

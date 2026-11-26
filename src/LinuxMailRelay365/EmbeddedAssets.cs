@@ -26,6 +26,7 @@ internal static class EmbeddedAssets
     internal static string MultiMailboxSourceEditor => Text("LinuxMailRelay365.linux.multi-mailbox-source-editor.py");
     internal static string MultiMailboxIdentityPreparer => Text("LinuxMailRelay365.linux.multi-mailbox-identity-prepare.py");
     internal static string MultiMailboxNewApp => Text("LinuxMailRelay365.linux.multi-mailbox-new-app.py");
+    internal static string MultiMailboxSmtpAuth => Text("LinuxMailRelay365.linux.multi-mailbox-smtp-auth.py");
     internal static string MultiMailboxGraphPairReviewer => Text("LinuxMailRelay365.linux.multi-mailbox-graph-pair.py");
     internal static string OAuthIngressAudit => Text("LinuxMailRelay365.linux.oauth-ingress-audit.py");
     internal static string OAuthIdentitySigningAudit => Text("LinuxMailRelay365.linux.oauth-identity-signing-audit.py");
@@ -652,6 +653,32 @@ internal static class EmbeddedAssets
                "base64 -d > \"$work/review-multi-mailbox-graph-pair.py\" <<'LMR365_SOURCE_EDITOR'\n" +
                Encode(MultiMailboxGraphPairReviewer) + "\nLMR365_SOURCE_EDITOR\n" +
                "printf '%s' '" + Encode(request) + "' | base64 -d | python3 \"$work/review-multi-mailbox-graph-pair.py\"\n";
+    }
+
+    internal static string BuildMultiMailboxSmtpAuthBundle(string request)
+    {
+        if (Encoding.UTF8.GetByteCount(request)>4096) throw new ArgumentException("SMTP AUTH request too large.");
+        var files=new (string Name,string Content)[] {
+            ("check-multi-mailbox-smtp-auth.py",MultiMailboxSmtpAuth),
+            ("inspect-multi-mailbox-identities.py",MultiMailboxIdentityInspector),
+            ("audit-oauth-sender-map.py",OAuthSenderMapAudit),
+            ("export-hardware-oauth-cert.py",EntraPublicCertificateExporter),
+            ("m365_xoauth2_transport.py",Transport),
+            ("m365_hardware_signer.py",HardwareSigner)
+        };
+        var script=new StringBuilder("set -Eeuo pipefail\numask 077\n" +
+            "test \"$(id -u)\" = 0 && test -d /run && test ! -L /run\n" +
+            "work=$(mktemp -d /run/lmr365-mailbox-auth.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n");
+        foreach(var (name,content) in files)
+            script.Append("base64 -d > \"$work/").Append(name).Append("\" <<'LMR365_AUTH_CODE'\n")
+                .Append(Encode(content)).Append("\nLMR365_AUTH_CODE\n");
+        // Code only, no identity or token files. Service account can traverse
+        // and read the immutable root-owned diagnostic modules.
+        script.Append("chmod 0644 \"$work\"/*.py\nchmod 0755 \"$work\"\n")
+            .Append("printf '%s' '").Append(Encode(request))
+            .Append("' | base64 -d | /usr/bin/python3 -I -B \"$work/check-multi-mailbox-smtp-auth.py\"\n");
+        return script.ToString();
     }
 
     internal static string BuildMultiMailboxIdentityInventoryBundle(string nonce)

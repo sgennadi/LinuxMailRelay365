@@ -63,6 +63,8 @@ internal sealed partial class MainForm
         var verify = UiTheme.Action(T("Проверить в Microsoft 365...", "Verify selected mailbox in Microsoft 365...",
             "בדיקת התיבה ב-Microsoft 365..."), true, "check");
         footer.Controls.Add(verify);
+        var testSmtpAuth = UiTheme.Action(T("Проверить SMTP AUTH...", "Test SMTP AUTH only...", "בדיקת SMTP AUTH..."), true, "check");
+        footer.Controls.Add(testSmtpAuth);
         var addMailbox = UiTheme.Action(T("Добавить", "Add mailbox", "הוספת תיבה"), false, "add");
         var editMailbox = UiTheme.Action(T("Изменить", "Edit mailbox", "עריכת תיבה"), false, "edit");
         var removeMailbox = UiTheme.Action(T("Удалить запись", "Remove row", "הסרת שורה"), false, "delete");
@@ -98,6 +100,7 @@ internal sealed partial class MainForm
         bool loading = false, reading = false, inventoryValid = true, saveUncertain = false;
         // Only within this dialog and exact source/runtime map selection.
         var observations = new Dictionary<MultiMailboxCloudSelection, MultiMailboxCloudObservation>();
+        var smtpAuthSamples = new Dictionary<MultiMailboxCloudSelection, (MultiMailboxSmtpAuthReceipt Receipt, DateTimeOffset Sampled)>();
         CloudObjectsInventory? CloudSample() => lastReadOnlyCloudLinuxIdentity is not null &&
             lastReadOnlyCloudLinuxIdentity == TryCurrentIdentity() ? lastReadOnlyCloudInventory : null;
         string SelectedScope() => tabs.SelectedTab == runtimeTab ? "runtime" : "source";
@@ -119,6 +122,9 @@ internal sealed partial class MainForm
             restoreSource.Enabled = source && inventory.Source.Status == "ok";
             prepareIdentity.Enabled = source && inventory.Runtime.Status is "ok" or "absent";
             newApp.Enabled = prepareIdentity.Enabled && inventory.Source.Rows.Length < 64;
+            testSmtpAuth.Enabled = !loading && !reading && inventoryValid && !saveUncertain &&
+                Selected() is { Status: "public_certificate_read" } &&
+                MultiMailboxCloudSelection.Capture(inventory, SelectedScope(), Selected()) is not null;
             configureScope.Enabled = !loading && !reading && inventoryValid && !saveUncertain &&
                 SelectedScope() == "source" && Selected() is { Status: "public_certificate_read" };
             registerIdentity.Enabled = !loading && !reading && inventoryValid && !saveUncertain &&
@@ -146,6 +152,11 @@ internal sealed partial class MainForm
                         "Previous Objects Manager mailbox RBAC sample: " + row.CompareMailboxRbac(CloudSample()) + Environment.NewLine +
                         "Choose Verify selected mailbox for a new read-only cloud sample. " +
                         "Local certificate validity, key possession, SMTP login and delivery remain unverified.");
+            var authSelection = MultiMailboxCloudSelection.Capture(inventory, scope, row);
+            if (authSelection is not null && smtpAuthSamples.TryGetValue(authSelection, out var sample))
+                details.AppendText(Environment.NewLine + Environment.NewLine +
+                    "Live AUTH-only sample (UTC): " + sample.Sampled.ToString("u") + Environment.NewLine +
+                    sample.Receipt.Describe() + Environment.NewLine + "No mail or delivery proof; historical sample only.");
         }
         void Populate(DataGridView grid, MultiMailboxIdentityMap map, string scope)
         {
@@ -219,7 +230,7 @@ internal sealed partial class MainForm
         void Invalidate(string reason)
         {
             inventoryValid = false;
-            observations.Clear();
+            observations.Clear(); smtpAuthSamples.Clear();
             sourceGrid.Rows.Clear();
             runtimeGrid.Rows.Clear();
             heading.Text = reason;
@@ -293,7 +304,7 @@ internal sealed partial class MainForm
                 }
                 ValidateContext();
                 ResetMultiMailboxRouteReview();
-                observations.Clear();
+                observations.Clear(); smtpAuthSamples.Clear();
                 saveAttempted = true;
                 heading.Text = "Saving approved source map; runtime is not activated...";
                 var saved = await Execute(preview);
@@ -394,7 +405,7 @@ internal sealed partial class MainForm
                         Environment.NewLine+"Only a protected local key and public certificate are created. No cloud action.",
                         MultiMailboxNewAppRequest.Phrase("stage"),dialog)) { Render(); return; }
                     await CheckMaps();
-                    ResetMultiMailboxRouteReview(); observations.Clear();
+                    ResetMultiMailboxRouteReview(); observations.Clear(); smtpAuthSamples.Clear();
                     attempted=true;
                     WriteLine("New Entra app recovery code: "+req.Nonce+"; name: "+req.Name+
                         "; tenant: "+req.Tenant+"; mailbox: "+req.Mailbox+"; days: "+req.Days);
@@ -436,7 +447,7 @@ internal sealed partial class MainForm
                     await CheckMaps();
                     var recent=await Execute("inspect",previous:stage);
                     if (recent.Claimed) throw new InvalidDataException("Creation already claimed.");
-                    ResetMultiMailboxRouteReview(); observations.Clear();
+                    ResetMultiMailboxRouteReview(); observations.Clear(); smtpAuthSamples.Clear();
                     attempted=true;
                     WriteLine("Claiming new Entra app creation once: "+req.Name+"; recovery code: "+req.Nonce);
                     stage=await Execute("claim",stage.ApprovalSha,stage);
@@ -461,7 +472,7 @@ internal sealed partial class MainForm
                 await CheckMaps();
                 var claimed=await Execute("inspect",previous:stage);
                 if (!claimed.Claimed) throw new InvalidDataException("Creation claim disappeared.");
-                ResetMultiMailboxRouteReview(); observations.Clear();
+                ResetMultiMailboxRouteReview(); observations.Clear(); smtpAuthSamples.Clear();
                 attempted=true;
                 heading.Text="Publishing unbound local identity for verified Entra application...";
                 _=await Execute("finalize",claimed.ApprovalSha,claimed,appId);
@@ -545,7 +556,7 @@ internal sealed partial class MainForm
                 CheckMaps(await ReadAsync());
                 ValidateContext();
                 ResetMultiMailboxRouteReview();
-                observations.Clear();
+                observations.Clear(); smtpAuthSamples.Clear();
                 attempted = true;
                 heading.Text = "Preparing RSA key and verifying local service-account signature...";
                 saved = await Execute(preview);
@@ -686,7 +697,7 @@ internal sealed partial class MainForm
                 if (proofReply.ExitCode != 0) throw new IOException("Local proof signing failed.");
                 string proof = EntraCertificateReview.ParseProof(proofReply.StdOut);
                 ResetMultiMailboxRouteReview();
-                observations.Clear();
+                observations.Clear(); smtpAuthSamples.Clear();
                 graphAttempted = true;
                 heading.Text = "Adding one reviewed public certificate to Entra...";
                 string added = await WithNativeMicrosoftSignInAsync((show, ct) =>
@@ -785,7 +796,7 @@ internal sealed partial class MainForm
                 selection.RequireUnchanged(await ReadAsync());
                 ValidateContext();
                 ResetMultiMailboxRouteReview();
-                observations.Clear();
+                observations.Clear(); smtpAuthSamples.Clear();
                 attempted=true;
                 heading.Text="Applying reviewed Exchange mailbox scope...";
                 _=await RunMailboxSmtpScopeAsync(req,preview,ValidateContext);
@@ -814,6 +825,66 @@ internal sealed partial class MainForm
                 reading=false;
                 refresh.Enabled=close.Enabled=tabs.Enabled=true;
                 Detail();
+            }
+        };
+        testSmtpAuth.Click += async (_, _) =>
+        {
+            if (!testSmtpAuth.Enabled) return;
+            var selection=MultiMailboxCloudSelection.Capture(inventory,SelectedScope(),Selected());
+            if (selection is null) return;
+            var req=new MultiMailboxSmtpAuthRequest(selection,Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant());
+            if (!req.Valid) return;
+            if (MessageBox.Show(dialog,
+                "Test only this mailbox from the connected Linux host as m365mailer?" +
+                Environment.NewLine+"Mailbox: "+selection.Row.Mailbox+
+                Environment.NewLine+"Tenant: "+selection.Row.Tenant+
+                Environment.NewLine+"Application: "+selection.Row.Client+
+                Environment.NewLine+"Map: "+selection.Scope+
+                Environment.NewLine+"Connect to login.microsoftonline.com:443 and smtp.office365.com:587; validate TLS and XOAUTH2. "+
+                "No MAIL FROM, RCPT TO or DATA. No configuration change or mail delivery. This may appear in Microsoft sign-in logs.",
+                "Microsoft 365 | Live SMTP AUTH only",MessageBoxButtons.OKCancel,MessageBoxIcon.Information,
+                MessageBoxDefaultButton.Button2)!=DialogResult.OK) return;
+            smtpAuthSamples.Remove(selection);
+            reading=true; refresh.Enabled=close.Enabled=tabs.Enabled=verify.Enabled=false;
+            EditingActions();
+            try
+            {
+                void ValidateContext()
+                {
+                    RequireSameArchiveConnection(endpoint);
+                    if (!HasMailDiscovery() || context!=CurrentMultiMailboxContext() ||
+                        !selection.Matches(inventory,SelectedScope(),Selected()))
+                        throw new InvalidOperationException("Mailbox or Linux context changed.");
+                }
+                ValidateContext();
+                selection.RequireUnchanged(await ReadAsync());
+                ValidateContext();
+                heading.Text="Checking local signer, Entra token and live STARTTLS / XOAUTH2...";
+                var reply=await SshRemote.RunRootScriptAsync(endpoint,EmbeddedAssets.BuildMultiMailboxSmtpAuthBundle(req.Serialize()),
+                    TimeSpan.FromMinutes(5));
+                ValidateContext();
+                if (reply.ExitCode!=0) throw new IOException("Selected mailbox authentication probe refused or stale.");
+                var receipt=MultiMailboxSmtpAuthReceipt.Parse(reply.StdOut,req);
+                var latest=await ReadAsync();
+                selection.RequireUnchanged(latest);
+                ValidateContext();
+                inventory=latest;
+                smtpAuthSamples[selection]=(receipt,DateTimeOffset.UtcNow);
+                Render(selection);
+                WriteLine("Selected mailbox SMTP AUTH-only: "+receipt.Status+". No message submitted or route changed.");
+                MessageBox.Show(dialog,receipt.Describe()+Environment.NewLine+
+                    "No message sent. Local Postfix ingress, From Guard, queue and delivery are NOT verified.",
+                    "Microsoft 365 SMTP AUTH only",MessageBoxButtons.OK,
+                    receipt.Authenticated?MessageBoxIcon.Information:MessageBoxIcon.Warning);
+            }
+            catch (Exception)
+            {
+                Invalidate("Selected mailbox authentication result unavailable or stale.");
+                WriteLine("SMTP AUTH-only probe did not return a verified result. No mail or configuration change requested.");
+            }
+            finally
+            {
+                reading=false; refresh.Enabled=close.Enabled=tabs.Enabled=true; Detail();
             }
         };
         verify.Click += async (_, _) =>
@@ -881,7 +952,7 @@ internal sealed partial class MainForm
             refresh.Enabled = close.Enabled = tabs.Enabled = verify.Enabled = false;
             inventoryValid = false;
             EditingActions();
-            observations.Clear();
+            observations.Clear(); smtpAuthSamples.Clear();
             sourceGrid.Rows.Clear(); runtimeGrid.Rows.Clear();
             heading.Text = "Reading fresh identity inventory...";
             details.Clear();

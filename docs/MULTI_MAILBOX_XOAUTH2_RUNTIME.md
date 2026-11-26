@@ -549,3 +549,22 @@ or review it manually; never blindly recreate. Pending/claim files are retained
 as root-only evidence; no automatic deletion. Map changes invalidate the pending
 context. TPM and SELinux policy-aware staging remain open. CI exercises the
 actual local stage/claim/finalize flow, not a live tenant.
+
+
+## Live selected mailbox SMTP AUTH-only diagnostic
+
+Select one exact source or runtime identity and choose Test SMTP AUTH only.
+After explicit approval, root resolves the selected map row and checks its
+identity and public certificate digests; a temporary root-owned code bundle
+under /run executes the actual signer and SMTP probe as m365mailer. Local
+PS256 signature verification, a bounded no-redirect HTTPS token request to
+Entra, and certificate-validated STARTTLS/XOAUTH2 to smtp.office365.com:587
+are attempted. No recipient or message is accepted by this helper. Existing
+mapped CLI delivery restrictions are unchanged. No MAIL FROM, RCPT TO, DATA,
+queue/service changes, Graph writes or token export. The GUI shows fixed
+result categories (including HTTP/SMTP codes), not raw server responses,
+assertions or access tokens. It checks the selected identity again before
+accepting an in-memory timestamped sample; refresh or edits clear samples.
+This is not Postfix ingress, SELinux service-domain or mail-delivery proof.
+No real tenant is exercised by offline tests. Network/proxy-only hosts and
+hardware/SELinux permission failures require manual review, not policy bypass.
