@@ -56,7 +56,7 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
             self.assertEqual(result["version"],2)
             self.assertEqual(result["candidate_status"],"ready")
             self.assertRegex(result["plan_sha256"],r"^[a-f0-9]{64}$")
-            self.assertEqual([c.args[0] for c in cmd.call_args_list],["systemctl","postqueue"])
+            self.assertEqual([c[0][0] for c in cmd.call_args_list],["systemctl","postqueue"])
         with mock.patch.object(M,"config_bytes",return_value=raw), \
              mock.patch.object(M,"sample",side_effect=[sample,("b"*64,*sample[1:])]), \
              mock.patch.object(M,"identity_status",return_value="absent"), \
