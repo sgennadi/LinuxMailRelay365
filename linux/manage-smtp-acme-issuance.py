@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Explicit issuance dispatcher; never activates a certificate."""
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
@@ -23,6 +24,10 @@ def main():
     if os.geteuid()!=0 or a.confirm!="ISSUE_CERTIFICATE":
         p.error("root and explicit confirmation required")
     try:
+        spec=importlib.util.spec_from_file_location("credentials",str(Path(__file__).resolve().with_name("check-smtp-acme-credentials.py")))
+        module=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.inspect(a.provider,a.credentials)
         probe=subprocess.run(["/usr/bin/python3",str(Path(__file__).resolve().with_name("probe-smtp-acme-plugins.py"))],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=75)
         if probe.returncode or not json.loads(probe.stdout.decode("utf-8")).get("providers",{}).get(a.provider,{}).get("registered"):
             raise ValueError("plugin unavailable")
@@ -32,7 +37,7 @@ def main():
         print(json.dumps(dict(version=1,status="completed_unverified" if ok else "failed",
             provider=a.provider,certificate_validated=False,postfix_modified=False,exchange_acceptance_verified=False)))
         return 0 if ok else 1
-    except (OSError,ValueError,subprocess.SubprocessError):
+    except (OSError,ValueError,KeyError,subprocess.SubprocessError):
         print(json.dumps(dict(version=1,status="failed",postfix_modified=False)))
         return 1
 if __name__=="__main__":
