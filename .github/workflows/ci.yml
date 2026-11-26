@@ -86,6 +86,7 @@ jobs:
           # Real root-owned temporary map transaction; not a production spool.
           sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted python3 -m unittest discover -v -s tests -p test_multi_mailbox_source_editor.py
           sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted python3 -m unittest discover -v -s tests -p test_multi_mailbox_identity_prepare.py
+          sudo env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted python3 -m unittest discover -v -s tests -p test_multi_mailbox_graph_pair.py
           python3 -m unittest discover -v -s tests -p test_signed_release_gate.py
           python3 linux/mta-coexistence-doctor.py --self-test
           python3 linux/guard-foreign-mta.py --self-test

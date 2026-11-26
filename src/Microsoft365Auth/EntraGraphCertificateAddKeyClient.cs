@@ -18,6 +18,7 @@ namespace Microsoft365Auth;
 /// </summary>
 public static class EntraGraphCertificateAddKeyClient
 {
+    public const string MultiMailboxLabel = "LinuxMailRelay365 Multi-mailbox OAuth";
     private const int MaxResponseBytes = 256_000;
     private const int MaxRequestBytes = 45_000;
     private const string GraphRoot = "https://graph.microsoft.com/v1.0/";
@@ -81,7 +82,7 @@ public static class EntraGraphCertificateAddKeyClient
                 type = "AsymmetricX509Cert",
                 usage = "Verify",
                 key = Convert.ToBase64String(newCert.RawData),
-                displayName = "LinuxMailRelay365 Hardware OAuth",
+                displayName = evidence.CertificateLabel,
                 startDateTime = newCert.NotBefore.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
                 endDateTime = newCert.NotAfter.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
             };
@@ -127,6 +128,7 @@ public static class EntraGraphCertificateAddKeyClient
     {
         newCert = null!;
         if (evidence.TenantId == Guid.Empty || evidence.ClientId == Guid.Empty ||
+            evidence.CertificateLabel is not ("LinuxMailRelay365 Hardware OAuth" or MultiMailboxLabel) ||
             !new[] { evidence.ActiveSha, evidence.StageSha, evidence.ActiveCertSha, evidence.CandidateCertSha }
                 .All(x => x is not null && Hash.IsMatch(x)))
             throw new EntraDiscoveryException("invalid_linux_certificate_evidence");
@@ -239,7 +241,7 @@ public static class EntraGraphCertificateAddKeyClient
             "lmr365-entra-cert/v1",
             evidence.TenantId.ToString("D"), evidence.ClientId.ToString("D"),
             objectId.ToString("D"), evidence.ActiveSha, evidence.StageSha,
-            evidence.ActiveCertSha, evidence.CandidateCertSha, oldThumb, newThumb
+            evidence.ActiveCertSha, evidence.CandidateCertSha, oldThumb, newThumb, evidence.CertificateLabel
         };
         basis.AddRange(keys.Select(k =>
             k.Id.ToString("D") + "|" + k.Type + "|" + k.Usage + "|" + k.Thumbprint + "|" +
@@ -422,4 +424,4 @@ public sealed record EntraCertificateEvidence(
     Guid TenantId, Guid ClientId,
     string ActiveSha, string StageSha,
     string ActiveCertSha, string CandidateCertSha,
-    string ActiveDer, string CandidateDer);
+    string ActiveDer, string CandidateDer, string CertificateLabel = "LinuxMailRelay365 Hardware OAuth");

@@ -477,3 +477,28 @@ are refused pending policy-aware creation; TPM is not yet offered here.
 The real disposable CI test uses RSA/OpenSSL and a local service account,
 not a real Microsoft 365 tenant. Existing bound mailbox rotation remains
 separate.
+
+
+## Append a prepared public certificate with native Graph addKey (experimental)
+
+Select a mapped mailbox with an existing software certificate, then choose
+Register prepared certificate and enter the unbound mbx-<32 hex>.json
+identity filename. The last prepared filename is suggested in the current
+window. The two identities must belong to the exact same tenant and Entra
+application; the candidate must not already be bound in either map. The
+Linux preview returns only exact public DER and map/identity digests.
+Native Graph checks the existing valid registered certificate and reviewed
+key inventory. A typed confirmation and fresh Linux review are required
+before generating an ephemeral RS256 Graph proof using the existing key.
+The proof stays in memory, is never logged or written to a payload file.
+Graph addKey appends one public certificate, never PATCHes the certificate
+collection or removes an existing key. Exact existing-key metadata and
+new key presence are checked by the native Graph client. If the result is
+uncertain, inspect the app before retrying; editing is locked in that window.
+The new credential inherits the application's existing authority; this
+operation does not grant, restrict, or test Exchange mailbox permissions.
+No first-certificate bootstrap, hardware donor proof, or new application
+creation is attempted. In those cases use the public certificate export
+and separately reviewed Entra registration. No route, service or mail
+changes. CI uses synthetic maps, real local RSA proof verification and
+receipt tests; real Entra/Exchange acceptance remains open.

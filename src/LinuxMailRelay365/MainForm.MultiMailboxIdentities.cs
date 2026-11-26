@@ -71,6 +71,9 @@ internal sealed partial class MainForm
         footer.Controls.Add(restoreSource);
         var prepareIdentity = UiTheme.Action(T("Новый OAuth-идентификатор...", "New OAuth identity...", "זהות OAuth חדשה..."), false, "add");
         footer.Controls.Add(prepareIdentity);
+        var registerIdentity = UiTheme.Action(T("Регистрация сертификата...", "Register prepared certificate...", "רישום אישור..."), false, "check");
+        footer.Controls.Add(registerIdentity);
+        string lastPreparedIdentity = "";
         DataGridView Grid(TabPage tab)
         {
             var grid = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true,
@@ -111,6 +114,9 @@ internal sealed partial class MainForm
             removeMailbox.Enabled = source && Selected() is not null && inventory.Source.Rows.Length > 1;
             restoreSource.Enabled = source && inventory.Source.Status == "ok";
             prepareIdentity.Enabled = source && inventory.Runtime.Status is "ok" or "absent";
+            registerIdentity.Enabled = !loading && !reading && inventoryValid && !saveUncertain &&
+                inventory.Source.Status is "ok" or "absent" && inventory.Runtime.Status is "ok" or "absent" &&
+                Selected() is { Signer: "software", Status: "public_certificate_read" };
         }
         void Detail()
         {
@@ -380,6 +386,7 @@ internal sealed partial class MainForm
                 saved = await Execute(preview);
                 var latest = await ReadAsync();
                 CheckMaps(latest);
+                lastPreparedIdentity = req.IdentityFile;
                 inventory = latest;
                 Render();
                 WriteLine("Unbound local OAuth identity prepared: " + req.IdentityFile +
@@ -429,6 +436,129 @@ internal sealed partial class MainForm
                             "Public certificate export", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 }
+            }
+        };
+        registerIdentity.Click += async (_, _) =>
+        {
+            if (!registerIdentity.Enabled || Selected() is not { } donor) return;
+            var selection = MultiMailboxCloudSelection.Capture(inventory, SelectedScope(), donor);
+            if (selection is null) return;
+            var req = PromptMailboxGraphPair(dialog, selection.Scope, inventory, donor, lastPreparedIdentity);
+            if (req is null) return;
+            reading = true;
+            refresh.Enabled = close.Enabled = tabs.Enabled = verify.Enabled = false;
+            EditingActions();
+            bool graphAttempted = false;
+            try
+            {
+                string bootstrapField = entraSignInClientId.Text.Trim();
+                Guid bootstrap = ApprovedGraphPublicClientId();
+                void ValidateContext()
+                {
+                    RequireSameArchiveConnection(endpoint);
+                    if (!HasMailDiscovery() || context != CurrentMultiMailboxContext() ||
+                        bootstrapField != entraSignInClientId.Text.Trim() ||
+                        !selection.Matches(inventory, SelectedScope(), Selected()))
+                        throw new InvalidOperationException("Mailbox or sign-in context changed.");
+                }
+                async Task<MultiMailboxGraphPair> ReadPair()
+                {
+                    ValidateContext();
+                    var reply = await SshRemote.RunRootScriptAsync(endpoint,
+                        EmbeddedAssets.BuildMultiMailboxGraphPairBundle(req.Serialize()), TimeSpan.FromMinutes(3));
+                    ValidateContext();
+                    if (reply.ExitCode != 0) throw new IOException("Prepared pair could not be verified.");
+                    return MultiMailboxGraphPair.Parse(reply.StdOut, req);
+                }
+                ValidateContext();
+                selection.RequireUnchanged(await ReadAsync());
+                heading.Text = "Checking prepared certificate and existing Graph application...";
+                var pair = await ReadPair();
+                string report = await WithNativeMicrosoftSignInAsync((show, ct) =>
+                    Microsoft365Auth.EntraGraphCertificateAddKeyClient.PreviewAsync(pair.Evidence, bootstrap, show, ct),
+                    signInOwner: dialog);
+                ValidateContext();
+                string Value(string key, string allowed) => ValidatedMultiMailboxReportValue(report, key, allowed);
+                string plan = Value("ENTRA_CERT_PLAN_SHA256", @"\A[a-f0-9]{64}\z");
+                var objectId = Guid.Parse(Value("ENTRA_CERT_OBJECT_ID", @"\A[a-f0-9-]{36}\z"));
+                if (objectId == Guid.Empty) throw new InvalidDataException("Missing exact application object ID.");
+                _ = Value("ENTRA_CERT_TENANT", "exact_match");
+                _ = Value("ENTRA_CERT_APP", "exact_client_id");
+                _ = Value("ENTRA_CERT_ACTIVE_KEY", "valid");
+                _ = Value("ENTRA_CERT_CANDIDATE", "not_registered");
+                _ = Value("ENTRA_CERT_EXISTING_KEYS_PRESERVED", "yes");
+                _ = Value("CHANGES_APPLIED", "no");
+                if (!ConfirmDestructive("LinuxMailRelay365 | Add prepared public certificate in Entra",
+                    "MICROSOFT ENTRA CHANGE: append only one public certificate to this existing app." +
+                    Environment.NewLine + "Tenant: " + pair.Evidence.TenantId +
+                    Environment.NewLine + "Client ID: " + pair.Evidence.ClientId +
+                    Environment.NewLine + "App Registration object ID: " + objectId +
+                    Environment.NewLine + "Existing proof mailbox: " + donor.Mailbox +
+                    Environment.NewLine + "Prepared mailbox: " + pair.CandidateMailbox +
+                    Environment.NewLine + "New public certificate SHA-256: " + pair.Evidence.CandidateCertSha +
+                    Environment.NewLine + "Graph plan SHA-256: " + plan +
+                    Environment.NewLine + "The new credential can authenticate as the same app and inherits its existing authority. " +
+                    "No Exchange permission or mailbox restriction is added by this action. Existing keys are preserved. " +
+                    "No route activation, mail sending or private key export.",
+                    MultiMailboxGraphPairRequest.Confirmation, dialog))
+                { Render(selection); return; }
+                ValidateContext();
+                await WithNativeMicrosoftSignInAsync(async (show, ct) =>
+                {
+                    await Microsoft365Auth.EntraGraphCertificateAddKeyClient.PrepareWriteSignInAsync(
+                        pair.Evidence.TenantId, bootstrap, show, ct);
+                    return true;
+                }, mayModifyEntra: true, signInOwner: dialog);
+                selection.RequireUnchanged(await ReadAsync());
+                if (await ReadPair() != pair)
+                    throw new InvalidDataException("Prepared pair changed after review.");
+                ValidateContext();
+                var proofReply = await SshRemote.RunRootScriptAsync(endpoint,
+                    EmbeddedAssets.BuildMultiMailboxGraphPairBundle(req.Serialize(pair.PairSha, objectId)),
+                    TimeSpan.FromMinutes(2));
+                ValidateContext();
+                // Never log the ephemeral proof or include SSH output in exceptions.
+                if (proofReply.ExitCode != 0) throw new IOException("Local proof signing failed.");
+                string proof = EntraCertificateReview.ParseProof(proofReply.StdOut);
+                ResetMultiMailboxRouteReview();
+                observations.Clear();
+                graphAttempted = true;
+                heading.Text = "Adding one reviewed public certificate to Entra...";
+                string added = await WithNativeMicrosoftSignInAsync((show, ct) =>
+                    Microsoft365Auth.EntraGraphCertificateAddKeyClient.AddAsync(pair.Evidence, bootstrap, plan, proof, show, ct),
+                    mayModifyEntra: true, signInOwner: dialog);
+                ValidateContext();
+                _ = ValidatedMultiMailboxReportValue(added, "ENTRA_CERT_ADDED", "yes");
+                _ = ValidatedMultiMailboxReportValue(added, "ENTRA_CERT_EXISTING_KEYS_PRESERVED", "yes");
+                _ = ValidatedMultiMailboxReportValue(added, "CHANGES_APPLIED", "entra_addkey_only");
+                if (ValidatedMultiMailboxReportValue(added, "ENTRA_CERT_PLAN_SHA256", @"\A[a-f0-9]{64}\z") != plan ||
+                    ValidatedMultiMailboxReportValue(added, "ENTRA_CERT_OBJECT_ID", @"\A[a-f0-9-]{36}\z") != objectId.ToString("D"))
+                    throw new InvalidDataException("Graph addKey receipt differs from review.");
+                var latest = await ReadAsync();
+                selection.RequireUnchanged(latest);
+                if (await ReadPair() != pair) throw new InvalidDataException("Prepared pair changed after Graph operation.");
+                inventory = latest;
+                Render(selection);
+                WriteLine("Graph addKey verified: prepared public certificate added; existing keys preserved. No mail or route changes.");
+                MessageBox.Show(dialog, "Public certificate added to the exact Entra application." +
+                    Environment.NewLine + "Review Exchange mailbox permissions separately before Add mailbox and offline route deployment.",
+                    "Entra certificate registered", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception)
+            {
+                if (graphAttempted) saveUncertain = true;
+                Invalidate(graphAttempted ? "Graph outcome requires review; editing locked for this window." :
+                    "Graph preview or proof refused. No addKey requested.");
+                if (graphAttempted)
+                    details.Text = "Do not retry blindly. Inspect the selected Entra application for the new public certificate.";
+                WriteLine(graphAttempted ? "Graph addKey outcome requires independent review." :
+                    "Registration unavailable or stale. An existing valid same-app software proof certificate is required. No addKey requested.");
+            }
+            finally
+            {
+                reading = false;
+                refresh.Enabled = close.Enabled = tabs.Enabled = true;
+                Detail();
             }
         };
         addMailbox.Click += async (_, _) => await EditSourceAsync("add");
