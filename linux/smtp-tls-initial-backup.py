@@ -45,8 +45,15 @@ def verify(dest):
 
 def restore(dest, expected_current_sha256, target=Path("/etc/postfix/main.cf")):
     """Caller holds deployment lock; external editors must be excluded separately."""
-    target=Path(target)
     data,meta=verify(dest)
+    replace_config(data,expected_current_sha256,target,meta)
+
+
+def replace_config(data, expected_current_sha256, target=Path("/etc/postfix/main.cf"), meta=None):
+    """Atomically replace configuration; caller holds deployment lock."""
+    target=Path(target)
+    if not isinstance(data,bytes) or len(data)>8388608:
+        raise ValueError("invalid candidate size")
     for p in target.parents:
         st=p.lstat()
         if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o022:
@@ -60,6 +67,8 @@ def restore(dest, expected_current_sha256, target=Path("/etc/postfix/main.cf")):
         if len(current)>8388608 or hashlib.sha256(current).hexdigest()!=expected_current_sha256:
             raise ValueError("configuration changed; manual recovery required")
         attrs={name:os.getxattr(f.fileno(),name) for name in os.listxattr(f.fileno())}
+    if meta is None:
+        meta={"uid":st.st_uid,"gid":st.st_gid,"mode":stat.S_IMODE(st.st_mode)}
     if meta["uid"]!=0 or meta["mode"] & 0o7022:
         raise ValueError("unsafe backup metadata")
     fd,tmp=tempfile.mkstemp(prefix=".lmr365-restore-",dir=str(target.parent))
