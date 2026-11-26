@@ -19,6 +19,20 @@ internal static class EmbeddedAssets
         return text;
     }
 
+    internal static string BuildSmtpCertificateCheck(string cert, string chain, string key, string domain, string ca)
+    {
+        static string Quote(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value.Length > 4096 || value.Any(char.IsControl))
+                throw new ArgumentException("Invalid certificate check argument.");
+            return "'" + value.Replace("'", "'\"'\"'") + "'";
+        }
+        return "set -eu\n/usr/bin/python3 - --cert=" + Quote(cert) +
+            " --chain=" + Quote(chain) + " --key=" + Quote(key) +
+            " --domain=" + Quote(domain) + " --ca-file=" + Quote(ca) +
+            " <<'LMR365_CERT_CHECK'\n" + Text("LinuxMailRelay365.linux.smtp-cert-check.py") +
+            "\nLMR365_CERT_CHECK\n";
+    }
     internal static string SmtpCertificateDiscovery => "set -eu\n/usr/bin/python3 - <<'LMR365_CERT_DISCOVERY'\n" + Text("LinuxMailRelay365.linux.smtp-cert-discovery.py") + "\nLMR365_CERT_DISCOVERY\n";
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");
