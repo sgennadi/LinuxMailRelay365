@@ -105,6 +105,72 @@ def read_active(group):
     return raw,identity
 
 
+def tpm_device_fingerprint(value):
+    return [value.st_dev,value.st_ino,value.st_rdev,value.st_uid,value.st_gid,value.st_mode]
+
+
+def service_privilege_drop(uid,gid,groups):
+    need(os.geteuid()==0 and type(uid) is int and type(gid) is int and
+         uid>0 and gid>0 and groups==[gid],"invalid_diagnostic_service_identity")
+    def drop():
+        os.setgroups([])
+        os.setgid(gid)
+        os.setuid(uid)
+        if (os.getresuid()!=(uid,uid,uid) or os.getresgid()!=(gid,gid,gid)
+                or os.getgroups()):
+            raise RuntimeError("incomplete_privilege_drop")
+    return drop
+
+
+# Fixed child program, no caller-provided source, shell, device path or
+# TPM command. Open the resource manager in the same access mode as a TCTI,
+# then immediately close it without reading, writing or issuing an ioctl.
+# This is a service-credential access observation, NOT a postfix_pipe_t test.
+TPM_OPEN_PROBE = r"""
+import json,os,stat,sys
+uid,gid=int(sys.argv[1]),int(sys.argv[2])
+expected=json.loads(sys.argv[3])
+if (os.getresuid()!=(uid,uid,uid) or os.getresgid()!=(gid,gid,gid)
+        or os.getgroups()):
+    raise SystemExit(1)
+fd=os.open("/dev/tpmrm0",os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+try:
+    st=os.fstat(fd)
+    actual=[st.st_dev,st.st_ino,st.st_rdev,st.st_uid,st.st_gid,st.st_mode]
+    if not stat.S_ISCHR(st.st_mode) or actual!=expected:
+        raise SystemExit(1)
+finally:
+    os.close(fd)
+print("TPM_RESOURCE_MANAGER_OPEN_CLOSE_OK")
+"""
+
+
+def check_service_tpm_access(uid,gid,groups,expected,runner=subprocess.run):
+    """Check actual service access without broadening group/device permissions."""
+    drop=service_privilege_drop(uid,gid,groups)
+    need(type(expected) is list and len(expected)==6 and
+         all(type(value) is int and value>=0 for value in expected) and
+         expected[3]==0 and stat.S_ISCHR(expected[5]) and not expected[5]&0o002,
+         "invalid_tpm_resource_manager_fingerprint")
+    try:
+        before=T.DEVICE.lstat()
+        need(tpm_device_fingerprint(before)==expected,"tpm_resource_manager_changed")
+        python=system_executable("/usr/bin/python3")
+        result=runner(["/usr/bin/python3","-I","-B","-c",TPM_OPEN_PROBE,
+                       str(uid),str(gid),json.dumps(expected,separators=(",",":"))],
+                      input=b"",stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                      timeout=10,check=False,env=dict(ENV),cwd="/",preexec_fn=drop)
+        need(result.returncode==0 and result.stdout==b"TPM_RESOURCE_MANAGER_OPEN_CLOSE_OK\n"
+             and not result.stderr,"tpm_service_device_access_requires_review")
+        after=T.DEVICE.lstat()
+        need(tpm_device_fingerprint(after)==expected and
+             before.st_ctime_ns==after.st_ctime_ns and
+             system_executable("/usr/bin/python3")==python,
+             "tpm_resource_manager_changed")
+    except (OSError,subprocess.SubprocessError):
+        raise Refused("tpm_service_device_access_requires_review") from None
+
+
 def tpm_public_evidence(handle,certificate):
     # No TPM key creation, eviction or export. Read only the public key
     # from the managed persistent handle, using the kernel resource manager.
@@ -125,11 +191,10 @@ def tpm_public_evidence(handle,certificate):
     need(system_executable(str(T.COMMANDS["readpublic"]))==binary,
          "tpm_readpublic_changed")
     after=T.DEVICE.lstat()
-    def fingerprint(value):
-        return [value.st_dev,value.st_ino,value.st_rdev,value.st_uid,value.st_gid,value.st_mode]
-    need(fingerprint(after)==fingerprint(device),"tpm_resource_manager_changed")
+    need(tpm_device_fingerprint(after)==tpm_device_fingerprint(device),
+         "tpm_resource_manager_changed")
     return {"public_key_sha256":hashlib.sha256(expected).hexdigest(),
-            "device":fingerprint(device),"readpublic":binary}
+            "device":tpm_device_fingerprint(device),"readpublic":binary}
 
 
 def managed_tpm_snapshot(identity,group):
@@ -194,6 +259,11 @@ def installed_snapshot(mailbox, tenant, client):
             credentials=managed_tpm_snapshot(identity,group.gr_gid)
             need(credentials["certificate_sha256"]==inventory["certificate_sha"],
                  "active_tpm_certificate_inventory_mismatch")
+            # Postfix pipe runs with a single selected group; a successful
+            # root ReadPublic or runuser with supplementary groups cannot
+            # establish that the exact transport credentials can open TPM.
+            check_service_tpm_access(account.pw_uid,group.gr_gid,groups,
+                                     credentials["hardware"]["device"])
             version=2
         else:
             active=C.current(group.gr_gid)
@@ -227,14 +297,7 @@ def installed_snapshot(mailbox, tenant, client):
 
 def run_auth(state, runner=subprocess.run):
     uid,gid = state["uid"],state["gid"]
-    need(os.geteuid() == 0 and type(uid) is int and type(gid) is int and uid>0 and gid>0
-         and state["groups"] == [gid], "invalid_diagnostic_service_identity")
-    def drop():
-        os.setgroups([])
-        os.setgid(gid)
-        os.setuid(uid)
-        if os.getresuid() != (uid,uid,uid) or os.getresgid() != (gid,gid,gid) or os.getgroups():
-            raise RuntimeError("incomplete_privilege_drop")
+    drop=service_privilege_drop(uid,gid,state["groups"])
     # Same installed interpreter and transport as the proposed pipe.
     # Ignore inherited Python settings, disable user site and bytecode writes.
     args = ["/usr/bin/python3","-E","-s","-B",str(LIBEXEC/TRANSPORT),

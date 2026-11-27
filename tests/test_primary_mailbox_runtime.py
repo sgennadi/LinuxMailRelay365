@@ -183,7 +183,8 @@ class ManagedTpmRuntimeTests(unittest.TestCase):
         inventory={"mailbox":MAIL,"tenant":TENANT,"client":CLIENT,
                    "identity_sha":A.C.sha(raw),"certificate_sha":cert_sha}
         credentials={"certificate_sha256":cert_sha,"certificate_file_sha256":"d"*64,
-                     "hardware":{"provider":"tpm2","public_key_sha256":"b"*64}}
+                     "hardware":{"provider":"tpm2","public_key_sha256":"b"*64,
+                                 "device":self.public["device"]}}
         account=Mock(pw_name="m365mailer",pw_uid=998,pw_gid=998)
         with patch.object(A.os,"geteuid",return_value=0), \
              patch.object(A.pwd,"getpwnam",return_value=account), \
@@ -193,21 +194,89 @@ class ManagedTpmRuntimeTests(unittest.TestCase):
              patch.object(A,"read_active",return_value=(raw,self.identity)), \
              patch.object(A.R.E,"active_inventory",return_value=inventory), \
              patch.object(A,"managed_tpm_snapshot",return_value=credentials), \
+             patch.object(A,"check_service_tpm_access") as access, \
              patch.object(A.C,"current",side_effect=AssertionError("no PEM fallback")), \
              patch.object(A.R.E,"secure_read",return_value=b"same installed code"), \
              patch.object(A,"reject_import_artifacts"), \
              patch.object(A,"system_executable",return_value=["trusted"]):
             state=A.installed_snapshot(MAIL,TENANT,CLIENT)
             self.assertEqual(state["version"],2)
+            access.assert_called_once_with(998,998,[998],self.public["device"])
             self.assertEqual(state["hardware"]["provider"],"tpm2")
             self.assertNotIn("key_sha256",state)
             self.assertNotIn(raw.decode(),str(state))
             first=A.digest(state)
             credentials["hardware"]["public_key_sha256"]="e"*64
             self.assertNotEqual(A.digest(A.installed_snapshot(MAIL,TENANT,CLIENT)),first)
+            access.side_effect=A.Refused("tpm_service_device_access_requires_review")
+            with self.assertRaisesRegex(A.Refused,"tpm_service_device_access_requires_review"):
+                A.installed_snapshot(MAIL,TENANT,CLIENT)
+            access.side_effect=None
             credentials["certificate_sha256"]="f"*64
             with self.assertRaises(A.Refused):
                 A.installed_snapshot(MAIL,TENANT,CLIENT)
+
+    def test_tpm_access_checks_exact_credentials_without_tpm_command(self):
+        import stat
+        device=Mock(st_dev=1,st_ino=2,st_rdev=3,st_uid=0,st_gid=998,
+                    st_mode=stat.S_IFCHR|0o660,st_ctime_ns=123)
+        result=Mock(returncode=0,stdout=b"TPM_RESOURCE_MANAGER_OPEN_CLOSE_OK\n",stderr=b"")
+        runner=Mock(return_value=result)
+        expected=A.tpm_device_fingerprint(device)
+        with patch.object(A.os,"geteuid",return_value=0), \
+             patch.object(A.T,"DEVICE",Mock(lstat=Mock(return_value=device))), \
+             patch.object(A,"system_executable",return_value=["trusted"]):
+            A.check_service_tpm_access(998,998,[998],expected,runner)
+            args=runner.call_args[0][0]
+            self.assertEqual(args[:5],["/usr/bin/python3","-I","-B","-c",A.TPM_OPEN_PROBE])
+            self.assertEqual(args[5:7],["998","998"])
+            self.assertIn('os.open("/dev/tpmrm0"',A.TPM_OPEN_PROBE)
+            self.assertNotIn("os.write(",A.TPM_OPEN_PROBE)
+            self.assertNotIn("ioctl(",A.TPM_OPEN_PROBE)
+            compile(A.TPM_OPEN_PROBE,"tpm_open_probe","exec")
+            kw=runner.call_args[1]
+            self.assertEqual(kw["timeout"],10)
+            self.assertEqual(kw["input"],b"")
+            self.assertEqual(kw["env"],A.ENV)
+            self.assertNotIn("shell",kw)
+            with patch.object(A.os,"setgroups") as groups, \
+                 patch.object(A.os,"setgid") as gid, \
+                 patch.object(A.os,"setuid") as uid, \
+                 patch.object(A.os,"getresuid",return_value=(998,998,998)), \
+                 patch.object(A.os,"getresgid",return_value=(998,998,998)), \
+                 patch.object(A.os,"getgroups",return_value=[]):
+                kw["preexec_fn"]()
+                groups.assert_called_once_with([])
+                gid.assert_called_once_with(998)
+                uid.assert_called_once_with(998)
+            for rc,out,err in ((1,result.stdout,b""),(0,b"",b""),
+                               (0,result.stdout,b"unexpected")):
+                runner.return_value=Mock(returncode=rc,stdout=out,stderr=err)
+                with self.assertRaisesRegex(A.Refused,"tpm_service_device_access_requires_review"):
+                    A.check_service_tpm_access(998,998,[998],expected,runner)
+            runner.reset_mock()
+            for uid,gid,groups in ((0,998,[998]),(998,0,[0]),(998,998,[998,997])):
+                with self.assertRaises(A.Refused):
+                    A.check_service_tpm_access(uid,gid,groups,expected,runner)
+            with self.assertRaises(A.Refused):
+                A.check_service_tpm_access(998,998,[998],expected[:-1]+[stat.S_IFCHR|0o666],runner)
+            runner.assert_not_called()
+            runner.side_effect=subprocess.TimeoutExpired(args,10)
+            with self.assertRaisesRegex(A.Refused,"tpm_service_device_access_requires_review"):
+                A.check_service_tpm_access(998,998,[998],expected,runner)
+
+    def test_tpm_access_refuses_resource_manager_drift(self):
+        import stat
+        base=Mock(st_dev=1,st_ino=2,st_rdev=3,st_uid=0,st_gid=998,
+                  st_mode=stat.S_IFCHR|0o660,st_ctime_ns=123)
+        changed=Mock(st_dev=1,st_ino=2,st_rdev=3,st_uid=0,st_gid=998,
+                     st_mode=stat.S_IFCHR|0o660,st_ctime_ns=124)
+        runner=Mock(return_value=Mock(returncode=0,stdout=b"TPM_RESOURCE_MANAGER_OPEN_CLOSE_OK\n",stderr=b""))
+        with patch.object(A.os,"geteuid",return_value=0), \
+             patch.object(A.T,"DEVICE",Mock(lstat=Mock(side_effect=[base,changed]))), \
+             patch.object(A,"system_executable",return_value=["trusted"]):
+            with self.assertRaisesRegex(A.Refused,"tpm_resource_manager_changed"):
+                A.check_service_tpm_access(998,998,[998],A.tpm_device_fingerprint(base),runner)
 
     def test_tpm_public_read_only_command_and_certificate_match(self):
         import stat
