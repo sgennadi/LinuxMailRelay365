@@ -364,8 +364,8 @@ internal static class EmbeddedAssets
 
     internal static string BuildPostfixM365DeliveryProbe(string action, string request, string? sha)
     {
-        if (action is not ("preview" or "submit" or "trace" or "audit") || request.Length > 4096 ||
-            (action == "submit" ? sha is null || !Regex.IsMatch(sha, @"\A[a-f0-9]{64}\z") : sha is not null))
+        if (action is not ("preview" or "submit" or "trace" or "audit" or "local-preview" or "local-submit" or "local-trace") || request.Length > 4096 ||
+            (action is "submit" or "local-submit" ? sha is null || !Regex.IsMatch(sha, @"\A[a-f0-9]{64}\z") : sha is not null))
             throw new ArgumentException("Invalid reviewed delivery probe.");
         var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-postfix-probe.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
         foreach (string file in new[] { "review-postfix-m365-delivery.py", "smtp-tls-postfix.py" })

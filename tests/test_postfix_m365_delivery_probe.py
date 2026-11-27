@@ -189,3 +189,71 @@ class PrimaryAuditTests(unittest.TestCase):
         self.assertIn("No Apply operation",main)
         self.assertIn("OpenPrimaryPostfixAuditAsync(owner, context, mx)",(src/"MainForm.DeliveryMiniWizard.cs").read_text())
         self.assertIn("Inspect primary Postfix configuration / queue",(src/"SmtpCertificateWizardDialog.cs").read_text())
+
+
+class LocalDeliveryProbeTests(unittest.TestCase):
+    def setUp(self):
+        self.req={"run_id":"c"*32,"recipient":"testuser@mail.example.org"}
+        self.sha="d"*64
+        self.policy=dict(config_directory="/etc/postfix",myhostname="mail.example.org",
+                         mydestination="localhost, mail.example.org",local_transport="local",
+                         local_recipient_maps="proxy:unix:passwd.byname",
+                         mail_spool_directory="/var/mail")
+
+    def test_simple_local_route_and_refuse_redirection(self):
+        self.assertEqual(M.local_policy(lambda k:self.policy.get(k,""),"",self.req)["mailbox_kind"],"system_spool")
+        for key,value in (("alias_maps","hash:/etc/aliases"),("forward_path","$home/.forward"),
+                          ("transport_maps","hash:/etc/postfix/transport"),("mailbox_command","procmail"),
+                          ("local_transport","lmtp:unix:private/dovecot"),("always_bcc","other@example.net"),
+                          ("mydestination","localhost"),("recipient_delimiter","+")):
+            with self.subTest(key=key):
+                changed=dict(self.policy,**{key:value})
+                with self.assertRaises(ValueError):
+                    M.local_policy(lambda k:changed.get(k,""),"",self.req)
+        with self.assertRaises(ValueError):
+            M.local_policy(lambda k:self.policy.get(k,""),"local/unix/local_transport=other",self.req)
+
+    def test_invalid_local_recipient(self):
+        for recipient in ("-bad@mail.example.org","root+tag@mail.example.org","u@localhost","u@evil.example.org\n"):
+            with self.assertRaises(ValueError):
+                M.local_request(dict(self.req,recipient=recipient))
+
+    def test_submission_reserved_before_send_and_no_retry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(M,"ROOT",pathlib.Path(temp)/"ledger"),patch.object(M,"directory"):
+                plan=lambda _:{"plan_sha256":self.sha,"_binary":"/usr/sbin/sendmail"}
+                def run(args,**kwargs):
+                    self.assertEqual(args[-4:],["-f","<>","--",self.req["recipient"]])
+                    self.assertIn(M.local_message_id(self.req).encode(),kwargs["input"])
+                    self.assertIn('"event":"attempted","role":"local"',M.ledger_file(self.req).read_text())
+                    return Mock(returncode=1)
+                runner=Mock(side_effect=run)
+                result=M.submit_local(self.req,self.sha,plan,runner)
+                self.assertEqual(result["submission"],"submission_uncertain")
+                self.assertFalse(result["mailbox_verified"])
+                self.assertEqual(M.ledger(self.req,("local",))[1]["local"],"submission_uncertain")
+                with self.assertRaises(FileExistsError):
+                    M.submit_local(self.req,self.sha,plan,runner)
+                runner.assert_called_once()
+
+    def test_local_trace_uses_exact_cleanup_and_local_agent(self):
+        cleanup=["ABC123: message-id="+M.local_message_id(self.req)]
+        local=["ABC123: to=<"+self.req["recipient"]+">, relay=local, dsn=2.0.0, status=sent (delivered to mailbox)"]
+        result=M.correlate_local(self.req,cleanup,local,[],"local_submission_accepted")
+        self.assertEqual(result["transport"],"local_agent_accepted")
+        self.assertEqual(result["queue"],"not_observed")
+        self.assertEqual(M.correlate_local(self.req,cleanup+local,[],[],"attempted")["transport"],"unknown")
+        fake=["ABC123: to=<"+self.req["recipient"]+">, relay=none, dsn=4.4.1, status=deferred (relay=local, dsn=2.0.0, status=sent)"]
+        self.assertEqual(M.correlate_local(self.req,cleanup,fake,[],"attempted")["transport"],"deferred")
+
+    def test_local_probe_gui_separate_from_exchange(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        ui=(src/"PostfixLocalDeliveryDialog.cs").read_text()
+        self.assertIn('remote("local-preview"',ui)
+        self.assertIn('remote("local-submit"',ui)
+        self.assertIn('remote("local-trace"',ui)
+        self.assertIn("Confirm local delivery test",ui)
+        self.assertIn("mailbox_verified",ui)
+        self.assertIn("attempted.Add",ui)
+        self.assertNotIn("Exchange Message Trace",ui)
+        self.assertIn("new PostfixLocalDeliveryDialog(remote)",(src/"PostfixM365DeliveryDialog.cs").read_text())

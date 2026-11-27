@@ -9,6 +9,7 @@ import importlib.util
 import ipaddress
 import json
 import os
+import pwd
 import re
 import stat
 import subprocess
@@ -266,7 +267,7 @@ def submit(req, expected, prepare_fn=prepare, runner=subprocess.run):
         os.close(fd)
 
 
-def ledger(req):
+def ledger(req, roles=ROLES):
     raw = read_file(ledger_file(req), 16384, True)
     rows = [json.loads(line, object_pairs_hook=strict_object) for line in raw.splitlines()]
     first = rows[0] if rows else {}
@@ -274,10 +275,10 @@ def ledger(req):
             or type(first.get("started")) is not int or first["started"] > time.time() + 60
             or not SHA.fullmatch(first.get("plan_sha256", ""))):
         raise ValueError("ledger request mismatch")
-    result = {role: "not_attempted" for role in ROLES}
+    result = {role: "not_attempted" for role in roles}
     for row in rows[1:]:
         role, event = row.get("role"), row.get("event")
-        if role not in ROLES or event not in ("attempted", "local_submission_accepted", "submission_uncertain"):
+        if role not in roles or event not in ("attempted", "local_submission_accepted", "submission_uncertain"):
             raise ValueError("invalid ledger event")
         if (event == "attempted" and result[role] != "not_attempted") or (
                 event != "attempted" and result[role] != "attempted"):
@@ -556,9 +557,214 @@ def primary_audit(req, adapter=None, queue_reader=queue_rows, config_reader=read
                 apply_supported=False, exchange_acceptance_verified=False)
 
 
+# This first local probe intentionally refuses maps/forwarding that might
+# redirect a test outside the selected local UNIX mailbox. It does not
+# require or change the global relayhost, or inspect mailbox contents.
+LOCAL_EMPTY = tuple(sorted(set(EMPTY + (
+    "alias_maps", "forward_path", "mailbox_command", "mailbox_command_maps",
+    "mailbox_transport", "mailbox_transport_maps", "fallback_transport",
+    "fallback_transport_maps", "luser_relay", "always_bcc", "sender_bcc_maps",
+    "recipient_bcc_maps", "relocated_maps", "masquerade_domains", "smtpd_milters",
+    "virtual_mailbox_maps", "recipient_delimiter",
+))))
+LOCAL_USER = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+
+
+def local_request(req):
+    if (not isinstance(req,dict) or set(req)!={"run_id","recipient"} or
+            not isinstance(req["run_id"],str) or not RUN.fullmatch(req["run_id"]) or
+            not isinstance(req["recipient"],str) or len(req["recipient"])>254 or
+            req["recipient"].count("@")!=1):
+        raise ValueError("invalid local probe request")
+    user,host=req["recipient"].split("@")
+    if not LOCAL_USER.fullmatch(user) or len(host)>253 or not DNS.fullmatch(host):
+        raise ValueError("exact local UNIX user and hostname required")
+    return req
+
+
+def local_account(user):
+    # Require a matching local passwd entry as well as the effective NSS
+    # result; remote NSS users and privileged/service users are out of scope.
+    raw=read_file(Path("/etc/passwd"),4*1024*1024)
+    rows=[line.split(":") for line in raw.decode("utf-8","strict").splitlines()
+          if line.split(":",1)[0]==user]
+    if len(rows)!=1 or len(rows[0])!=7:
+        raise ValueError("local account not found")
+    row=rows[0]
+    account=pwd.getpwnam(user)
+    uid,gid=int(row[2]),int(row[3])
+    if (not 1000<=uid<65534 or gid<=0 or
+            (account.pw_name,account.pw_uid,account.pw_gid,account.pw_dir,account.pw_shell)!=
+            (user,uid,gid,row[5],row[6]) or
+            not row[5].startswith("/") or row[5] in ("/","/root","/nonexistent") or
+            row[6].endswith(("/nologin","/false"))):
+        raise ValueError("unsupported local account")
+    return {"uid":uid,"gid":gid,"account_sha256":digest(canonical([user,uid,gid,row[5],row[6]]))}
+
+
+def local_policy(read,overrides,req):
+    user,host=req["recipient"].split("@")
+    if (read("config_directory")!=str(CONFIG) or read("multi_instance_directories") or
+            read("myhostname")!=host or read("local_transport")!="local" or overrides):
+        raise ValueError("nonstandard local route")
+    destinations=[v.lower() for v in re.split(r"[\s,]+",read("mydestination")) if v]
+    if host not in destinations or any(not DNS.fullmatch(v) and v!="localhost" for v in destinations):
+        raise ValueError("hostname is not an explicit local destination")
+    for key in LOCAL_EMPTY:
+        if read(key):
+            raise ValueError("local redirection or forwarding requires manual review")
+    # Only native UNIX recipient lookup, and standard local spool or
+    # Maildir. No arbitrary file/command/LMTP delivery.
+    if read("local_recipient_maps") not in ("proxy:unix:passwd.byname","unix:passwd.byname"):
+        raise ValueError("unsupported local recipient lookup")
+    mailbox=read("home_mailbox")
+    if mailbox not in ("","Maildir/") or (not mailbox and read("mail_spool_directory") not in ("/var/mail","/var/spool/mail")):
+        raise ValueError("nonstandard mailbox destination")
+    return {"hostname":host,"user":user,"mailbox_kind":"maildir" if mailbox else "system_spool"}
+
+
+def prepare_local(req,adapter=None,account_reader=local_account):
+    local_request(req)
+    adapter=adapter or load_adapter()
+    pf=adapter.Postfix()
+    def hashes():
+        return {name:digest(read_file(CONFIG/name,8*1024*1024)) for name in ("main.cf","master.cf")}
+    before=hashes()
+    read=lambda key:pf.run(pf.postconf,"-h","-x",key)
+    settings=local_policy(read,pf.run(pf.postconf,"-P"),req)
+    account=account_reader(settings["user"])
+    binary=adapter.trusted_invocation("/usr/sbin/sendmail")
+    resolved=adapter.trusted_binary(binary)
+    if resolved!=adapter.trusted_binary(read("sendmail_path")):
+        raise ValueError("sendmail implementation mismatch")
+    verify_postfix_package(resolved,adapter)
+    fields=pf.run(pf.postconf,"-M","local/unix").split()
+    if len(fields)!=8 or fields[0:2]!=["local","unix"] or fields[7]!="local":
+        raise ValueError("nonstandard local delivery service")
+    pf.run(pf.postfix,"status")
+    if (hashes()!=before or local_policy(read,pf.run(pf.postconf,"-P"),req)!=settings or
+            account_reader(settings["user"])!=account):
+        raise ValueError("local configuration changed")
+    st=os.stat(resolved)
+    evidence={"request_sha256":digest(canonical(req)),"configuration":before,"settings":settings,
+              "account":account,"sendmail_identity":[binary,resolved,st.st_dev,st.st_ino,st.st_mtime_ns,st.st_size]}
+    return {"status":"local_review_ready","plan_sha256":digest(canonical(evidence)),
+            "run_id":req["run_id"],"recipient":req["recipient"],"mailbox_kind":settings["mailbox_kind"],
+            "mail_sent":False,"mailbox_verified":False,"_binary":binary}
+
+
+def local_message_id(req):
+    return "<lmr365-"+req["run_id"]+"-local@"+req["recipient"].split("@")[1]+">"
+
+
+def local_message(req):
+    return ("From: postmaster@"+req["recipient"].split("@")[1]+"\r\nTo: "+req["recipient"]+
+            "\r\nDate: "+email.utils.formatdate(localtime=False,usegmt=True)+
+            "\r\nMessage-ID: "+local_message_id(req)+
+            "\r\nSubject: LinuxMailRelay365 local delivery probe\r\n"+
+            "Auto-Submitted: auto-generated\r\nMIME-Version: 1.0\r\n"+
+            "Content-Type: text/plain; charset=us-ascii\r\n\r\n"+
+            "Operator-approved local mailbox test. Run: "+req["run_id"]+"\r\n").encode("ascii")
+
+
+def submit_local(req,expected,prepare_fn=prepare_local,runner=subprocess.run):
+    local_request(req)
+    if not SHA.fullmatch(expected or "") or prepare_fn(req)["plan_sha256"]!=expected:
+        raise ValueError("stale local review")
+    fd=reserve(req,expected)
+    try:
+        plan=prepare_fn(req)
+        if plan["plan_sha256"]!=expected:
+            raise ValueError("local route changed")
+        record(fd,{"event":"attempted","role":"local"})
+        try:
+            # Null reverse path: do not generate a delivery failure message.
+            result=runner([plan["_binary"],"-i","-f","<>","--",req["recipient"]],
+                          input=local_message(req),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                          timeout=60,env=ENV)
+            outcome="local_submission_accepted" if result.returncode==0 else "submission_uncertain"
+        except (OSError,subprocess.SubprocessError):
+            outcome="submission_uncertain"
+        record(fd,{"event":outcome,"role":"local"})
+        return {"status":"local_submission_recorded","run_id":req["run_id"],
+                "plan_sha256":expected,"submission":outcome,
+                "mailbox_verified":False,"automatic_retry":False}
+    finally:
+        os.close(fd)
+
+
+def local_logs(started,adapter,runner=subprocess.run):
+    # Keep the journal tags separate; never promote an SMTP log line or its
+    # free-form response text to local delivery evidence.
+    output=[]
+    for tag in ("postfix/cleanup","postfix/local"):
+        try:
+            tool=adapter.trusted_binary("/usr/bin/journalctl")
+            result=runner([tool,"--no-pager","-o","cat","-n","4000",
+                           "--since=@"+str(max(0,started-5)),"-t",tag],
+                          stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=25,env=ENV)
+            if result.returncode or len(result.stdout)>8*1024*1024:
+                return [],[],"journal_unavailable"
+            output.append(result.stdout.decode("utf-8","replace").splitlines())
+        except (OSError,ValueError,subprocess.SubprocessError):
+            return [],[],"journal_unavailable"
+    return output[0],output[1],"journal_recent_only"
+
+
+def correlate_local(req,cleanup,local,queue,attempted):
+    observation={"submission":attempted,"transport":"not_attempted" if attempted=="not_attempted" else "correlation_unavailable"}
+    if attempted=="not_attempted":
+        return observation
+    marker=local_message_id(req)
+    ids={m.group(1) for line in cleanup for m in
+         [re.fullmatch(r"([A-Za-z0-9]{5,80}): message-id=(<[^>]+>)",line.strip())]
+         if m and m.group(2)==marker}
+    if len(ids)!=1:
+        return observation
+    ident=next(iter(ids))
+    observation.update(queue_id=ident,transport="unknown")
+    prefix=ident+": to=<"+req["recipient"]+">,"
+    for line in local:
+        if not line.startswith(prefix):
+            continue
+        fields=line[len(prefix):].split(" (",1)[0]
+        state=re.search(r"(?:^|,)\s*status=(sent|deferred|bounced)$",fields)
+        dsn=re.search(r"(?:^|,)\s*dsn=([245]\.[0-9]{1,3}\.[0-9]{1,3})(?=,|$)",fields)
+        relay=re.search(r"(?:^|,)\s*relay=local(?=,|$)",fields)
+        if not state:
+            continue
+        observation.pop("dsn",None)
+        if dsn:
+            observation["dsn"]=dsn.group(1)
+        if state.group(1)=="sent":
+            observation["transport"]=("local_agent_accepted" if relay and dsn and dsn.group(1).startswith("2.")
+                                      else "local_destination_unverified")
+        else:
+            observation["transport"]=state.group(1)
+    observation["queue"]="unavailable" if queue is None else "not_observed"
+    if queue is not None:
+        rows=[r for r in queue if isinstance(r,dict) and r.get("queue_id")==ident]
+        if len(rows)==1 and isinstance(rows[0].get("recipients"),list) and any(
+                isinstance(r,dict) and r.get("address")==req["recipient"] for r in rows[0]["recipients"]):
+            name=rows[0].get("queue_name")
+            observation["queue"]=name if name in QUEUE_NAMES else "other"
+    return observation
+
+
+def trace_local(req):
+    local_request(req)
+    started,events=ledger(req,("local",))
+    adapter=load_adapter()
+    cleanup,local,source=local_logs(started,adapter)
+    return {"status":"local_trace_observed","run_id":req["run_id"],"source":source,
+            "request_sha256":digest(canonical(req)),"started_unix":started,
+            "outcome":correlate_local(req,cleanup,local,queue_rows(adapter),events["local"]),
+            "mailbox_verified":False,"automatic_retry":False}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("preview", "submit", "trace", "audit"))
+    parser.add_argument("action", choices=("preview", "submit", "trace", "audit", "local-preview", "local-submit", "local-trace"))
     parser.add_argument("--expected-sha")
     args = parser.parse_args()
     try:
@@ -573,6 +779,20 @@ def main():
             if args.expected_sha is not None:
                 raise ValueError("unexpected approval")
             print(json.dumps(primary_audit(req)))
+            return 0
+        if args.action.startswith("local-"):
+            local_request(req)
+            if args.action == "local-submit":
+                report=submit_local(req,args.expected_sha)
+            else:
+                if args.expected_sha is not None:
+                    raise ValueError("unexpected approval")
+                if args.action=="local-preview":
+                    report=prepare_local(req)
+                    report.pop("_binary")
+                else:
+                    report=trace_local(req)
+            print(json.dumps(report))
             return 0
         req = validate_request(req)
         if args.action == "submit":

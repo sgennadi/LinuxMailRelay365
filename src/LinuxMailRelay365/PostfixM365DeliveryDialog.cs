@@ -39,7 +39,8 @@ internal sealed class PostfixM365DeliveryDialog : Form
         var cloudTrace = new Button { Text = "Exchange Message Trace", AutoSize = true };
         var tls = new Button { Text = "Diagnose STARTTLS (no mail)", AutoSize = true };
         var managedTls = new Button { Text = "STARTTLS with active client certificate", AutoSize = true };
-        buttons.Controls.AddRange([preview, submit, trace, cloudTrace, tls, managedTls, close]);
+        var local = new Button { Text = "Local UNIX mailbox test", AutoSize = true };
+        buttons.Controls.AddRange([local, preview, submit, trace, cloudTrace, tls, managedTls, close]);
         TextBox[] inputs = [domain, from, host, internalRecipient, externalRecipient, run];
         string? approvedSha = null, approvedRequest = null;
         bool busy = false;
@@ -62,11 +63,18 @@ internal sealed class PostfixM365DeliveryDialog : Form
         {
             busy = value;
             foreach (var input in inputs) input.Enabled = !value;
-            preview.Enabled = trace.Enabled = cloudTrace.Enabled = tls.Enabled = managedTls.Enabled = close.Enabled = !value;
+            local.Enabled = preview.Enabled = trace.Enabled = cloudTrace.Enabled = tls.Enabled = managedTls.Enabled = close.Enabled = !value;
             submit.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
 
+        local.Click += (_, _) =>
+        {
+            if (busy) return;
+            Invalidate();
+            using var dialog = new PostfixLocalDeliveryDialog(remote);
+            dialog.ShowDialog(this);
+        };
         preview.Click += async (_, _) =>
         {
             if (busy) return;
