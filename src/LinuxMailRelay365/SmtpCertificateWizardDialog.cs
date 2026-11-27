@@ -12,7 +12,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate)
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer)
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
@@ -105,10 +105,17 @@ internal sealed class SmtpCertificateWizardDialog : Form
         };
         layout.Controls.Add(domain, 0, 6);
         layout.Controls.Add(check, 0, 7);
-        var import = new Button { Text = "Inspect certificate files", AutoSize = true };
+        var import = new Button { Text = "Import certificate files", AutoSize = true };
         import.Click += (_, _) =>
         {
-            using var dialog = new SmtpCertificateImportDialog();
+            if (Identity != SmtpConnectorIdentity.Certificate || Source != SmtpCertificateSource.Import ||
+                Uri.CheckHostName(domain.Text.Trim()) != UriHostNameType.Dns)
+            {
+                MessageBox.Show(this, "Select TLS certificate import and enter the certificate DNS name.");
+                return;
+            }
+            string name = domain.Text.Trim();
+            using var dialog = new SmtpCertificateImportDialog((leaf, chain) => transfer(leaf, chain, name));
             dialog.ShowDialog(this);
         };
         layout.Controls.Add(import, 0, 8);

@@ -143,6 +143,12 @@ internal sealed partial class MainForm
                     result.EnsureSuccess();
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     return result.StdOut;
+                }, async (leaf, chain, domain) =>
+                {
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    var generation = await SmtpCertificateTransfer.StageAsync(Endpoint(), leaf, chain, domain);
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    return generation;
                 });
                 dialog.ShowDialog(this);
             };
