@@ -179,6 +179,31 @@ internal static class EmbeddedAssets
         return script.Append('\n').ToString();
     }
 
+    internal static string BuildM365ManagedStartTlsDiagnosis(string mx)
+    {
+        if (!Regex.IsMatch(mx, @"\A[a-z0-9.-]{1,253}\z") ||
+            Uri.CheckHostName(mx) != UriHostNameType.Dns ||
+            !mx.EndsWith(".mail.protection.outlook.com", StringComparison.Ordinal))
+            throw new ArgumentException("Invalid Microsoft 365 MX name.");
+        var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-managed-tls.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
+        (string File, string Resource)[] files =
+        [
+            ("inspect-m365-managed-starttls.py", "LinuxMailRelay365.linux.m365-managed-starttls.py"),
+            ("inspect-m365-starttls.py", "LinuxMailRelay365.linux.m365-starttls-diagnosis.py"),
+            ("review-smtp-tls-rotation.py", "LinuxMailRelay365.linux.review-smtp-tls-rotation.py"),
+            ("smtp-tls-postfix.py", "LinuxMailRelay365.linux.smtp-tls-postfix.py")
+        ];
+        foreach (var file in files)
+        {
+            script.Append("base64 -d > \"$work/").Append(file.File).Append("\" <<'LMR365_MANAGED_TLS_ASSET'\n")
+                .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text(file.Resource))))
+                .Append("\nLMR365_MANAGED_TLS_ASSET\n");
+        }
+        return script.Append("/usr/bin/python3 -I -B \"$work/inspect-m365-managed-starttls.py\" <<'LMR365_MANAGED_TLS_REQUEST'\n")
+            .Append(System.Text.Json.JsonSerializer.Serialize(new { mx }))
+            .Append("\nLMR365_MANAGED_TLS_REQUEST\n").ToString();
+    }
+
     internal static string BuildM365StartTlsDiagnosis(string mx)
     {
         if (!Regex.IsMatch(mx, @"\A[a-z0-9.-]{1,253}\z") ||

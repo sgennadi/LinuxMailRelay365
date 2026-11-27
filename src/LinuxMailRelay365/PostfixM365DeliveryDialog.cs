@@ -9,7 +9,7 @@ internal sealed class PostfixM365DeliveryDialog : Form
 {
     internal PostfixM365DeliveryDialog(Func<string, string, string?, Task<string>> remote,
         string acceptedDomain, string sender, string mx, Func<string, string, Task<string>> exchangeTrace,
-        Func<string, Task<string>> diagnoseTls)
+        Func<string, bool, Task<string>> diagnoseTls)
     {
         Text = "Primary Postfix | Microsoft 365 delivery probe";
         StartPosition = FormStartPosition.CenterParent;
@@ -38,7 +38,8 @@ internal sealed class PostfixM365DeliveryDialog : Form
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         var cloudTrace = new Button { Text = "Exchange Message Trace", AutoSize = true };
         var tls = new Button { Text = "Diagnose STARTTLS (no mail)", AutoSize = true };
-        buttons.Controls.AddRange([preview, submit, trace, cloudTrace, tls, close]);
+        var managedTls = new Button { Text = "STARTTLS with active client certificate", AutoSize = true };
+        buttons.Controls.AddRange([preview, submit, trace, cloudTrace, tls, managedTls, close]);
         TextBox[] inputs = [domain, from, host, internalRecipient, externalRecipient, run];
         string? approvedSha = null, approvedRequest = null;
         bool busy = false;
@@ -61,7 +62,7 @@ internal sealed class PostfixM365DeliveryDialog : Form
         {
             busy = value;
             foreach (var input in inputs) input.Enabled = !value;
-            preview.Enabled = trace.Enabled = cloudTrace.Enabled = tls.Enabled = close.Enabled = !value;
+            preview.Enabled = trace.Enabled = cloudTrace.Enabled = tls.Enabled = managedTls.Enabled = close.Enabled = !value;
             submit.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
@@ -167,26 +168,35 @@ internal sealed class PostfixM365DeliveryDialog : Form
             }
             finally { SetBusy(false); }
         };
-        tls.Click += async (_, _) =>
+        async Task DiagnoseTlsAsync(bool managed)
         {
             if (busy) return;
             string mxName = host.Text.Trim().ToLowerInvariant();
+            if (managed && MessageBox.Show(this,
+                "Allow the active managed Postfix client certificate to be offered to " + mxName +
+                ":25 during STARTTLS? No mail will be sent. The private key stays on Linux.",
+                "Confirm client certificate test", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             Invalidate();
             SetBusy(true);
             status.Text = "Testing DNS, TCP/25, EHLO and verified STARTTLS from Linux...";
             try
             {
-                using var json = JsonDocument.Parse(await diagnoseTls(mxName));
+                using var json = JsonDocument.Parse(await diagnoseTls(mxName, managed));
                 var root = json.RootElement;
                 if (root.GetProperty("version").GetInt32() != 1 ||
                     root.GetProperty("host").GetString() != mxName ||
                     root.GetProperty("port").GetInt32() != 25 ||
                     root.GetProperty("mail_sent").GetBoolean() ||
                     root.GetProperty("auth_attempted").GetBoolean() ||
-                    root.GetProperty("client_certificate_loaded").GetBoolean() ||
+                    root.GetProperty("client_certificate_loaded").GetBoolean() != managed ||
                     root.GetProperty("postfix_process_tested").GetBoolean() ||
                     root.GetProperty("exchange_connector_verified").GetBoolean())
                     throw new InvalidDataException("Unexpected TLS diagnostic evidence.");
+                if (managed && (root.GetProperty("client_certificate_presentation_verified").GetBoolean() ||
+                    !root.GetProperty("active_configuration_unchanged").GetBoolean() ||
+                    !Regex.IsMatch(root.GetProperty("client_certificate_sha256").GetString() ?? "", @"\A[a-f0-9]{64}\z")))
+                    throw new InvalidDataException("Unexpected client certificate evidence.");
                 var lines = new List<string> {
                     "MX: " + mxName + ":25",
                     "DNS: " + root.GetProperty("dns").GetString(),
@@ -209,7 +219,13 @@ internal sealed class PostfixM365DeliveryDialog : Form
                 }
                 lines.Add("");
                 lines.Add("System trust and hostname verification are required. No insecure fallback.");
-                lines.Add("This is a separate Linux process, without the Postfix client certificate.");
+                if (managed)
+                {
+                    lines.Add("Active client generation: " + root.GetProperty("client_generation").GetString());
+                    lines.Add("Client certificate SHA-256: " + root.GetProperty("client_certificate_sha256").GetString());
+                    lines.Add("Client identity loaded in a separate Linux TLS process. Whether the server requested or received it remains unverified.");
+                }
+                else lines.Add("This is a separate Linux process, without the Postfix client certificate.");
                 lines.Add("Actual Postfix TLS policy, connector recognition and mail delivery remain unverified.");
                 report.Text = string.Join(Environment.NewLine, lines);
                 status.Text = samples == 0 ? "No endpoint result; review DNS and local trust." :
@@ -220,7 +236,9 @@ internal sealed class PostfixM365DeliveryDialog : Form
                 status.Text = "STARTTLS diagnostic unavailable: " + ex.GetType().Name;
             }
             finally { SetBusy(false); }
-        };
+        }
+        tls.Click += async (_, _) => await DiagnoseTlsAsync(false);
+        managedTls.Click += async (_, _) => await DiagnoseTlsAsync(true);
         string[] labels = ["Accepted sender domain", "Envelope sender", "Microsoft 365 MX",
             "Internal recipient (same domain)", "External recipient (different domain)", "Run ID (retain for later trace)"];
         for (int i = 0; i < inputs.Length; i++)
