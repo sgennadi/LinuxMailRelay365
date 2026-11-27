@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Native SELinux v2 primary Postfix transaction acceptance, disposable VM ONLY.
 
-No real credentials, SMTP AUTH, message submission, service startup with the
-candidate, policy installation or weakening. The disposable fixture may normalize the
+No real credentials, Microsoft 365 SMTP AUTH or external delivery, policy
+installation or weakening. A separate fixture submits one local test to a
+CI-only pipe worker for local signing, then restores the original baseline. The disposable fixture may normalize the
 original two configuration labels to exact installed policy before review.
 Synthetic auth is an explicit
 test dependency, never part of the manager's production CLI.
@@ -165,6 +166,11 @@ def main():
                        selinux=policy)==revision,"native_restore_not_idempotent")
         guard()
         print("LMR365_PRIMARY_VM_RESTORE=exact_bytes_metadata_and_native",flush=True)
+        spec_pipe=importlib.util.spec_from_file_location("primary_native_pipe_fixture",
+            str(HERE/"rocky_vm_primary_pipe_enforcing.py"))
+        pipe_fixture=importlib.util.module_from_spec(spec_pipe)
+        spec_pipe.loader.exec_module(pipe_fixture)
+        pipe_fixture.run(C,config,queue,policy,guard,baseline,native,files)
         completed=True
     finally:
         for fd in reversed(fds):

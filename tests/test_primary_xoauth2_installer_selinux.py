@@ -81,9 +81,13 @@ SELINUX_SETUP_MODE="$SETUP_MODE"
 class PrimaryVmReceiptTests(unittest.TestCase):
     def test_every_required_marker_is_checked_by_actual_bash(self):
         source=(ROOT/"tests/rocky_vm_boot_enforcing.sh").read_text()
+        self.assertEqual(source.count("LMR365_GUEST_EXTERNAL_MAIL_DELIVERY_TESTED=no"),1)
+        self.assertTrue(source.rstrip().endswith('echo "LMR365_GUEST_EXTERNAL_MAIL_DELIVERY_TESTED=no"'))
+        syntax=subprocess.run(["bash","-n"],input=source.encode(),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+        self.assertEqual(syntax.returncode,0,syntax.stderr)
         block=source.split("# BEGIN PRIMARY_VM_RECEIPT_CHECK\n",1)[1].split(
             "# END PRIMARY_VM_RECEIPT_CHECK",1)[0]
-        required=["LMR365_PRIMARY_VM_FIXTURE_POLICY=exact_context_baseline","LMR365_PRIMARY_VM_REVIEW=native_policy_and_postconf","LMR365_PRIMARY_VM_APPLY=verified_native_labels","LMR365_PRIMARY_VM_BACKUP=verified_native_private_labels","LMR365_PRIMARY_VM_RESTORE=exact_bytes_metadata_and_native","LMR365_PRIMARY_VM_BASELINE=running_restored","LMR365_PRIMARY_VM_REAL_OAUTH_AUTH=no","LMR365_PRIMARY_VM_REAL_PIPE_DELIVERY=no"]
+        required=["LMR365_PRIMARY_VM_FIXTURE_POLICY=exact_context_baseline","LMR365_PRIMARY_VM_REVIEW=native_policy_and_postconf","LMR365_PRIMARY_VM_APPLY=verified_native_labels","LMR365_PRIMARY_VM_BACKUP=verified_native_private_labels","LMR365_PRIMARY_VM_RESTORE=exact_bytes_metadata_and_native","LMR365_PRIMARY_VM_PIPE_DOMAIN=postfix_pipe_t","LMR365_PRIMARY_VM_PIPE_PS256=verified_fixture_certificate","LMR365_PRIMARY_VM_PIPE_QUEUE=correlated_and_empty","LMR365_PRIMARY_VM_PIPE_BASELINE=restored_exact_bytes", "LMR365_PRIMARY_VM_BASELINE=running_restored","LMR365_PRIMARY_VM_REAL_OAUTH_AUTH=no","LMR365_PRIMARY_VM_REAL_PIPE_DELIVERY=no"]
         mismatch="LMR365_PRIMARY_VM_LABEL_MISMATCH=refused_without_write"
         with tempfile.TemporaryDirectory() as tmp:
             receipt=Path(tmp)/"primary-mailbox"
