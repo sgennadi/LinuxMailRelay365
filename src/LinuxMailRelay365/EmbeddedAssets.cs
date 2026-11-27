@@ -179,6 +179,24 @@ internal static class EmbeddedAssets
         return script.Append('\n').ToString();
     }
 
+    internal static string BuildPostfixM365DeliveryProbe(string action, string request, string? sha)
+    {
+        if (action is not ("preview" or "submit" or "trace") || request.Length > 4096 ||
+            (action == "submit" ? sha is null || !Regex.IsMatch(sha, @"\A[a-f0-9]{64}\z") : sha is not null))
+            throw new ArgumentException("Invalid reviewed delivery probe.");
+        var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-postfix-probe.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
+        foreach (string file in new[] { "review-postfix-m365-delivery.py", "smtp-tls-postfix.py" })
+        {
+            script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_POSTFIX_PROBE_ASSET'\n")
+                .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux." + file))))
+                .Append("\nLMR365_POSTFIX_PROBE_ASSET\n");
+        }
+        script.Append("base64 -d <<'LMR365_POSTFIX_PROBE_REQUEST' | /usr/bin/python3 -I -B \"$work/review-postfix-m365-delivery.py\" ").Append(action);
+        if (sha is not null) script.Append(" --expected-sha=").Append(sha);
+        return script.Append('\n').Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(request)))
+            .Append("\nLMR365_POSTFIX_PROBE_REQUEST\n").ToString();
+    }
+
     internal static string SmtpRenewalInventory =>
         "set -eu\n/usr/bin/python3 -I -B - <<'LMR365_RENEWAL_INVENTORY'\n" +
         Text("LinuxMailRelay365.linux.smtp-renewal-inventory.py") +

@@ -1,0 +1,165 @@
+using System.Drawing;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Windows.Forms;
+
+namespace LinuxMailRelay365;
+
+internal sealed class PostfixM365DeliveryDialog : Form
+{
+    internal PostfixM365DeliveryDialog(Func<string, string, string?, Task<string>> remote,
+        string acceptedDomain, string sender, string mx)
+    {
+        Text = "Primary Postfix | Microsoft 365 delivery probe";
+        StartPosition = FormStartPosition.CenterParent;
+        AutoScaleMode = AutoScaleMode.Dpi;
+        ClientSize = new Size(800, 620);
+        MinimumSize = new Size(480, 380);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1,
+            RowCount = 14, Padding = new Padding(12), AutoScroll = true };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (int i = 0; i < 12; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var domain = new TextBox { Text = acceptedDomain, Dock = DockStyle.Top };
+        var from = new TextBox { Text = sender, Dock = DockStyle.Top };
+        var host = new TextBox { Text = mx, Dock = DockStyle.Top };
+        var internalRecipient = new TextBox { Dock = DockStyle.Top };
+        var externalRecipient = new TextBox { Dock = DockStyle.Top };
+        var run = new TextBox { Text = Guid.NewGuid().ToString("N"), Dock = DockStyle.Top };
+        var status = new Label { Text = "Review the active route before submitting two test messages.", AutoSize = true };
+        var report = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, Multiline = true,
+            ScrollBars = ScrollBars.Both, WordWrap = false, MinimumSize = new Size(0, 130) };
+        var preview = new Button { Text = "Review route", AutoSize = true };
+        var submit = new Button { Text = "Send two reviewed tests", AutoSize = true, Enabled = false };
+        var trace = new Button { Text = "Refresh trace (no send)", AutoSize = true };
+        var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
+        buttons.Controls.AddRange([preview, submit, trace, close]);
+        TextBox[] inputs = [domain, from, host, internalRecipient, externalRecipient, run];
+        string? approvedSha = null, approvedRequest = null;
+        bool busy = false;
+        string Request() => JsonSerializer.Serialize(new
+        {
+            accepted_domain = domain.Text.Trim().ToLowerInvariant(),
+            sender = from.Text.Trim(),
+            mx = host.Text.Trim().ToLowerInvariant(),
+            internal_ = internalRecipient.Text.Trim(),
+            external = externalRecipient.Text.Trim(),
+            run_id = run.Text.Trim()
+        }).Replace("\"internal_\":", "\"internal\":", StringComparison.Ordinal);
+        void Invalidate()
+        {
+            approvedSha = approvedRequest = null;
+            submit.Enabled = false;
+        }
+        foreach (var input in inputs) input.TextChanged += (_, _) => Invalidate();
+        void SetBusy(bool value)
+        {
+            busy = value;
+            foreach (var input in inputs) input.Enabled = !value;
+            preview.Enabled = trace.Enabled = close.Enabled = !value;
+            submit.Enabled = !value && approvedSha is not null;
+        }
+        FormClosing += (_, e) => { if (busy) e.Cancel = true; };
+
+        preview.Click += async (_, _) =>
+        {
+            if (busy) return;
+            Invalidate();
+            string request = Request();
+            SetBusy(true);
+            status.Text = "Reviewing the actual primary Postfix route...";
+            try
+            {
+                using var json = JsonDocument.Parse(await remote("preview", request, null));
+                var root = json.RootElement;
+                string sha = root.GetProperty("plan_sha256").GetString() ?? "";
+                if (root.GetProperty("status").GetString() != "review_ready" ||
+                    root.GetProperty("mail_sent").GetBoolean() ||
+                    root.GetProperty("run_id").GetString() != run.Text.Trim() ||
+                    !Regex.IsMatch(sha, @"\A[a-f0-9]{64}\z"))
+                    throw new InvalidDataException();
+                approvedSha = sha;
+                approvedRequest = request;
+                report.Text = JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true });
+                status.Text = "Local route reviewed. Confirm recipient roles and permission to send.";
+            }
+            catch (Exception ex) { status.Text = "Route review refused: " + ex.GetType().Name + ". Custom routes require manual review."; }
+            finally { SetBusy(false); }
+        };
+        submit.Click += async (_, _) =>
+        {
+            if (busy || approvedSha is null || approvedRequest is null || approvedRequest != Request()) return;
+            if (MessageBox.Show(this, "Submit exactly two real test messages via primary Postfix as a local root sender?" +
+                Environment.NewLine + "From: " + from.Text + Environment.NewLine +
+                "Internal: " + internalRecipient.Text + Environment.NewLine +
+                "External: " + externalRecipient.Text + Environment.NewLine +
+                "MX: " + host.Text + Environment.NewLine +
+                "Ensure you control or have permission to use both recipients. Domain comparison alone does not prove recipient tenant membership." +
+                Environment.NewLine + "Postfix may queue or retry normal delivery. This app will not submit the same run ID again.",
+                "Confirm two live delivery tests", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            string sha = approvedSha, request = approvedRequest;
+            Invalidate();
+            SetBusy(true);
+            status.Text = "Submitting approved messages...";
+            try
+            {
+                using var json = JsonDocument.Parse(await remote("submit", request, sha));
+                var root = json.RootElement;
+                if (root.GetProperty("status").GetString() != "submission_recorded" ||
+                    root.GetProperty("run_id").GetString() != run.Text.Trim() ||
+                    root.GetProperty("plan_sha256").GetString() != sha ||
+                    root.GetProperty("inbox_verified").GetBoolean()) throw new InvalidDataException();
+                report.Text = JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true });
+                status.Text = "Submission attempts recorded. Refresh trace; local acceptance is not delivery.";
+            }
+            catch { status.Text = "Outcome uncertain. Keep this run ID and refresh trace. Do not resubmit."; }
+            finally { SetBusy(false); }
+        };
+        trace.Click += async (_, _) =>
+        {
+            if (busy) return;
+            Invalidate();
+            string request = Request();
+            SetBusy(true);
+            status.Text = "Reading matching ledger, journal and queue...";
+            try
+            {
+                using var json = JsonDocument.Parse(await remote("trace", request, null));
+                var root = json.RootElement;
+                if (root.GetProperty("status").GetString() != "trace_observed" ||
+                    root.GetProperty("run_id").GetString() != run.Text.Trim() ||
+                    root.GetProperty("inbox_verified").GetBoolean()) throw new InvalidDataException();
+                report.Text = JsonSerializer.Serialize(root, new JsonSerializerOptions { WriteIndented = true });
+                status.Text = "Trace observed. No new message sent; inbox arrival and TLS handshake remain unverified.";
+            }
+            catch { status.Text = "Trace unavailable. Check the original request/run ID and Linux logs; do not resend automatically."; }
+            finally { SetBusy(false); }
+        };
+        string[] labels = ["Accepted sender domain", "Envelope sender", "Microsoft 365 MX",
+            "Internal recipient (same domain)", "External recipient (different domain)", "Run ID (retain for later trace)"];
+        for (int i = 0; i < inputs.Length; i++)
+        {
+            // Keep each field and label in a compact row so high-DPI layout
+            // does not hide the result area.
+            var row = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, AutoSize = true };
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+            row.Controls.Add(new Label { Text = labels[i], AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
+            row.Controls.Add(inputs[i], 1, 0);
+            layout.Controls.Add(row, 0, i);
+        }
+        layout.RowCount = 9;
+        layout.RowStyles.Clear();
+        for (int i = 0; i < 7; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(status, 0, 6);
+        layout.Controls.Add(report, 0, 7);
+        layout.Controls.Add(buttons, 0, 8);
+        Controls.Add(layout);
+        CancelButton = close;
+    }
+}

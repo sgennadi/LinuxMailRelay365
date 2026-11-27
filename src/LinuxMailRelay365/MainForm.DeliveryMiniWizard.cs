@@ -201,7 +201,23 @@ internal sealed partial class MainForm
                     if (result.ExitCode != 0) throw new InvalidOperationException("Systemd action refused.");
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     return result.StdOut;
-                }, (owner, dns) => ReviewManagedConnectorBindingAsync(owner, context, dns));
+                }, (owner, dns) => ReviewManagedConnectorBindingAsync(owner, context, dns), owner =>
+                {
+                    using var probe = new PostfixM365DeliveryDialog(async (action, request, sha) =>
+                    {
+                        if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                        var endpoint = Endpoint();
+                        string script = EmbeddedAssets.BuildPostfixM365DeliveryProbe(action, request, sha);
+                        var timeout = TimeSpan.FromSeconds(420);
+                        var result = endpoint.Username == "root"
+                            ? await SshRemote.ExecuteAsync(endpoint, "bash -s", script, timeout)
+                            : await SshRemote.RunRootScriptAsync(endpoint, script, timeout);
+                        if (result.ExitCode != 0) throw new InvalidOperationException("Postfix probe refused or uncertain.");
+                        if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                        return result.StdOut;
+                    }, acceptedDomain.Text.Trim(), outboundFixedSender.Text.Trim(), outboundMxHost.Text.Trim());
+                    probe.ShowDialog(owner);
+                });
                 dialog.ShowDialog(this);
             };
             AddLine(page, smtp);

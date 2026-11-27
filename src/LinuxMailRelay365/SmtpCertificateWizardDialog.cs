@@ -12,14 +12,14 @@ internal sealed class SmtpCertificateWizardDialog : Form
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange)
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form> deliveryProbe)
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(580, 420);
         MinimumSize = new Size(420, 300);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 15, Padding = new Padding(16), AutoScroll = true };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 16, Padding = new Padding(16), AutoScroll = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 4; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -182,8 +182,11 @@ internal sealed class SmtpCertificateWizardDialog : Form
             finally { if (!IsDisposed) binding.Enabled = true; }
         };
         layout.Controls.Add(binding, 0, 13);
+        var delivery = new Button { Text = "Test delivery through primary Postfix", AutoSize = true };
+        delivery.Click += (_, _) => deliveryProbe(this);
+        layout.Controls.Add(delivery, 0, 14);
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
-        layout.Controls.Add(close, 0, 14);
+        layout.Controls.Add(close, 0, 15);
         Controls.Add(layout);
         CancelButton = close;
         identity.SelectedIndexChanged += (_, _) => RefreshPlan();
