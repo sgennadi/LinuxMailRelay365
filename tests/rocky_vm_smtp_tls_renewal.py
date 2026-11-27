@@ -7,6 +7,7 @@ external CA and the timer schedule to make the test deterministic.
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -36,6 +37,37 @@ def properties(fixture, unit, *keys):
     if set(values) != set(keys):
         raise ValueError("missing systemd properties")
     return values
+
+
+def timer_trigger_usec(fixture):
+    # systemctl show renders this Timer property as a human-readable
+    # duration on Rocky/systemd 252. D-Bus exposes the exact uint64 usec.
+    manager = "org.freedesktop.systemd1"
+    raw_path = fixture.run("busctl", "--system", "call", manager,
+                           "/org/freedesktop/systemd1", manager + ".Manager",
+                           "LoadUnit", "s", TIMER)
+    match = re.fullmatch(rb'o "(/org/freedesktop/systemd1/unit/[A-Za-z0-9_]+)"\n?', raw_path)
+    if not match:
+        raise ValueError("unexpected timer D-Bus object")
+    path = match.group(1).decode("ascii")
+    raw = fixture.run("busctl", "--system", "get-property", manager, path,
+                      manager + ".Timer", "LastTriggerUSecMonotonic")
+    match = re.fullmatch(rb"t (0|[1-9][0-9]{0,19})\n?", raw)
+    if not match:
+        raise ValueError("unexpected timer D-Bus timestamp")
+    value = int(match.group(1))
+    if value >= 2**64:
+        raise ValueError("timer timestamp outside uint64")
+    return value
+
+
+def verify_timer_trigger(fixture, state, previous_trigger):
+    timer = properties(fixture, TIMER, "Unit")
+    trigger = timer_trigger_usec(fixture)
+    if (timer["Unit"] != SERVICE or not previous_trigger < trigger
+            <= int(state["ExecMainStartTimestampMonotonic"])):
+        raise ValueError("new timer trigger not verified")
+    return trigger
 
 
 def service_state(fixture):
@@ -145,6 +177,7 @@ def run(fixture):
     fixture.run("systemctl", "daemon-reload")
     verify_units(fixture, dropins)
     old_start = int(service_state(fixture)["ExecMainStartTimestampMonotonic"])
+    previous_trigger = timer_trigger_usec(fixture)
     fixture.run("systemctl", "start", TIMER)
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
@@ -156,10 +189,8 @@ def run(fixture):
         time.sleep(1)
     else:
         raise RuntimeError("synthetic renewal service timeout")
-    timer = properties(fixture, TIMER, "LastTriggerUSecMonotonic", "Unit")
-    if (timer["Unit"] != SERVICE or not 0 < int(timer["LastTriggerUSecMonotonic"])
-            <= int(state["ExecMainStartTimestampMonotonic"])):
-        raise ValueError("timer trigger not verified")
+    verify_timer_trigger(fixture, state, previous_trigger)
+    print("LMR365_VM_CLIENT_TLS_TIMER_TRIGGER=verified_exact_usec", flush=True)
     fixture.run("systemctl", "stop", TIMER)
     if gen.current(fixture.ROOT) != wanted:
         raise ValueError("new certificate not activated")

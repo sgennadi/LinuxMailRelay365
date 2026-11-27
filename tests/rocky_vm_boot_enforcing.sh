@@ -226,6 +226,7 @@ if test "${LMR365_KVM_CLIENT_TLS_ACCEPTANCE:-false}" = "true"; then
         'LMR365_VM_CLIENT_TLS_RECOVERY=presented_verified' \
         'LMR365_VM_CLIENT_TLS_REBOOT_ORDER=verified_before_postfix' \
         'LMR365_VM_CLIENT_TLS_BOOT_RECOVERY=presented_verified' \
+        'LMR365_VM_CLIENT_TLS_TIMER_TRIGGER=verified_exact_usec' \
         'LMR365_VM_CLIENT_TLS_TIMER=synthetic_material_processed' \
         'LMR365_VM_CLIENT_TLS_TIMER_RENEWAL=presented_verified' \
         'LMR365_VM_CLIENT_TLS_RENEWAL_UNCHANGED=verified' \

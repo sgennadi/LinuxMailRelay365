@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("timer", ROOT / "tests/rocky_vm_smtp_tls_renewal.py")
@@ -36,3 +37,41 @@ class TimerRenewalEvidenceTests(unittest.TestCase):
                        "RENEWAL_MIXED=refused", "RENEWAL_REFUSAL=presented_verified",
                        "RENEWAL_REAL_CA=no"):
             self.assertIn("LMR365_VM_CLIENT_TLS_" + marker, shell)
+
+    def test_raw_dbus_timestamp_uses_uint64_microseconds(self):
+        fixture = Mock()
+        path = "/org/freedesktop/systemd1/unit/linuxmailrelay365_2dsmtp_2dacme_2drenew_2etimer"
+        fixture.run.side_effect = [('o "' + path + '"\n').encode(), b"t 11133612\n"]
+        self.assertEqual(M.timer_trigger_usec(fixture), 11133612)
+        self.assertEqual(fixture.run.call_args_list[0].args[-3:], ("LoadUnit", "s", M.TIMER))
+        self.assertEqual(fixture.run.call_args.args, (
+            "busctl", "--system", "get-property", "org.freedesktop.systemd1", path,
+            "org.freedesktop.systemd1.Timer", "LastTriggerUSecMonotonic"))
+
+    def test_invalid_timestamp_and_object_rejected(self):
+        path = b'o "/org/freedesktop/systemd1/unit/fixture_2etimer"\n'
+        for value in (b"11.133612s", b"t -1\n", b"u 12\n", b"t 18446744073709551616\n",
+                      b"t 12\nt 13\n", b"t 01\n"):
+            fixture = Mock()
+            fixture.run.side_effect = [path, value]
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                M.timer_trigger_usec(fixture)
+        fixture = Mock()
+        fixture.run.return_value = b'o "/unrelated"\n'
+        with self.assertRaises(ValueError):
+            M.timer_trigger_usec(fixture)
+        fixture.run.assert_called_once()
+
+    def test_timer_trigger_must_be_new_and_precede_service(self):
+        state = self.state(ExecMainStartTimestampMonotonic="120")
+        with patch.object(M, "properties", return_value={"Unit": M.SERVICE}), \
+             patch.object(M, "timer_trigger_usec", return_value=110):
+            self.assertEqual(M.verify_timer_trigger(Mock(), state, 100), 110)
+            with self.assertRaises(ValueError):
+                M.verify_timer_trigger(Mock(), state, 110)
+            with self.assertRaises(ValueError):
+                M.verify_timer_trigger(Mock(), self.state(), 100)
+        with patch.object(M, "properties", return_value={"Unit": "other.service"}), \
+             patch.object(M, "timer_trigger_usec", return_value=110):
+            with self.assertRaises(ValueError):
+                M.verify_timer_trigger(Mock(), state, 100)
