@@ -29,6 +29,7 @@ FILES = ("main.before", "master.before", "main.after")
 MANIFEST = "transaction.json"
 CONFIRM = "APPLY_STOPPED_PRIMARY_EOP_RELAYHOST"
 RESTORE = "RESTORE_STOPPED_PRIMARY_EOP_RELAYHOST"
+CHECK = "CHECK_STOPPED_PRIMARY_EOP"
 DNS = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+"
 EMPTY = tuple(sorted(set(P.EMPTY_SETTINGS + (
     "virtual_alias_domains", "virtual_alias_maps", "virtual_mailbox_domains",
@@ -288,12 +289,36 @@ def network_check(info):
     need(P.trust_store_digest(ca) == info["ca_sha256"],"trust_store_changed")
 
 
+def native_check():
+    # Native check may repair directory metadata. It is not read-only.
+    spec = importlib.util.spec_from_file_location(
+        "postfix_adapter", str(Path(__file__).with_name("smtp-tls-postfix.py")))
+    adapter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(adapter)
+    binary = adapter.trusted_invocation("/usr/sbin/postfix")
+    result = subprocess.run([binary, "-c", P.CONFIG, "check"], input=b"",
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            timeout=60, env=P.SYSTEM_ENV)
+    need(result.returncode == 0, "native_postfix_check_failed")
+
+
+def check_backup(config,parent,sha,uid,confirmation,guard,checker=native_check,
+                 reader=read_policy,master_check=P.inspect_master,ca_digest=P.trust_store_digest):
+    need(confirmation == CHECK, "explicit_check_required")
+    info,files = load_backup(parent,sha,uid)
+    verify(config,uid,info,files,"after",guard,reader,master_check,ca_digest)
+    checker()
+    verify(config,uid,info,files,"after",guard,reader,master_check,ca_digest)
+    return sha
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     modes=parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--review",action="store_true")
     modes.add_argument("--apply",action="store_true")
     modes.add_argument("--restore",metavar="BACKUP_SHA256")
+    modes.add_argument("--check",metavar="BACKUP_SHA256")
     parser.add_argument("--mx")
     parser.add_argument("--accepted-domain")
     parser.add_argument("--expected-sha256")
@@ -307,10 +332,12 @@ def main(argv=None):
     try:
         need(os.geteuid() == 0 and args.maintenance_confirmation == O.MAINTENANCE,
              "root_and_exclusive_maintenance_required")
-        if args.restore:
-            need(O.sha(args.restore) and args.confirm == RESTORE and
+        if args.restore is not None or args.check is not None:
+            backup_sha = args.restore if args.restore is not None else args.check
+            required = RESTORE if args.restore is not None else CHECK
+            need(O.sha(backup_sha) and args.confirm == required and
                  all(x is None for x in (args.mx,args.accepted_domain,args.expected_sha256)),
-                 "invalid_restore_request")
+                 "invalid_backup_operation_request")
         else:
             validate_target(args.mx,args.accepted_domain)
             need((args.apply and O.sha(args.expected_sha256) and args.confirm == CONFIRM) or
@@ -344,6 +371,12 @@ def main(argv=None):
             print("PRIMARY_EOP_OFFLINE_STATUS=applied_offline_not_started")
             print("PRIMARY_EOP_OFFLINE_BACKUP_SHA256="+sha)
             print("PRIMARY_EOP_OFFLINE_POSTFIX_CHANGED=yes")
+        elif args.check is not None:
+            attempted=True
+            sha=check_backup(config,parent,args.check,0,args.confirm,guard)
+            print("PRIMARY_EOP_OFFLINE_STATUS=checked_offline_not_started")
+            print("PRIMARY_EOP_OFFLINE_BACKUP_SHA256="+sha)
+            print("PRIMARY_EOP_OFFLINE_POSTFIX_CHANGED=no")
         else:
             attempted=True
             sha=restore(config,parent,args.restore,0,args.confirm,guard)
@@ -365,7 +398,7 @@ def main(argv=None):
             os.close(fd)
         print("PRIMARY_EOP_OFFLINE_SERVICE_STARTED=no")
         print("PRIMARY_EOP_OFFLINE_MAIL_SENT=no")
-        print("PRIMARY_EOP_OFFLINE_QUEUE_MODIFIED=no")
+        print("PRIMARY_EOP_OFFLINE_QUEUE_MODIFIED="+("not_verified" if args.check is not None and attempted else "no"))
     return 2
 
 

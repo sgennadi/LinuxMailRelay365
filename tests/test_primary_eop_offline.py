@@ -144,6 +144,51 @@ class PrimaryEopOfflineTests(unittest.TestCase):
             self.apply(sha)
         self.assertEqual((self.config/"main.cf").read_bytes(),self.main)
 
+    def test_native_check_only_after_verified_apply(self):
+        sha,_,_=self.review()
+        check=Mock()
+        with self.assertRaises(FileNotFoundError):
+            E.check_backup(self.fd,self.parent,sha,self.uid,E.CHECK,self.guard,
+                           check,self.reader,self.master_check,self.ca)
+        check.assert_not_called()
+        self.apply(sha)
+        with self.assertRaises(E.Refused):
+            E.check_backup(self.fd,self.parent,sha,self.uid,"wrong",self.guard,
+                           check,self.reader,self.master_check,self.ca)
+        check.assert_not_called()
+        self.assertEqual(E.check_backup(self.fd,self.parent,sha,self.uid,E.CHECK,self.guard,
+                                        check,self.reader,self.master_check,self.ca),sha)
+        check.assert_called_once()
+        self.restore(sha)
+        check.reset_mock()
+        with self.assertRaises(E.Refused):
+            E.check_backup(self.fd,self.parent,sha,self.uid,E.CHECK,self.guard,
+                           check,self.reader,self.master_check,self.ca)
+        check.assert_not_called()
+
+    def test_native_check_drift_detected(self):
+        sha,_,_=self.review()
+        self.apply(sha)
+        def drift():
+            with (self.config/"main.cf").open("ab") as stream:
+                stream.write(b"# changed during native check\n")
+        with self.assertRaises(E.Refused):
+            E.check_backup(self.fd,self.parent,sha,self.uid,E.CHECK,self.guard,
+                           drift,self.reader,self.master_check,self.ca)
+
+    def test_gui_resource_and_maintenance_contract(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        self.assertIn("manage-primary-eop-offline.py",(src/"LinuxMailRelay365.csproj").read_text())
+        assets=(src/"EmbeddedAssets.cs").read_text()
+        self.assertIn("CHECK_STOPPED_PRIMARY_EOP",assets)
+        self.assertIn(E.O.MAINTENANCE,assets)
+        ui=(src/"MainForm.PrimaryEopOffline.cs").read_text()
+        self.assertIn("maintenance.Checked",ui)
+        self.assertIn("ConfirmDestructive",ui)
+        self.assertIn('RunTenantConnectorManagerAsync(options, "Inspect")',ui)
+        self.assertIn("No automatic service start",ui)
+        self.assertIn("OpenPrimaryEopOfflineAsync(owner, context, mx)",(src/"MainForm.DeliveryMiniWizard.cs").read_text())
+
 
 if __name__=="__main__":
     unittest.main()

@@ -144,6 +144,7 @@
     <EmbeddedResource Include="../../linux/conditional-postfix-transaction.py" LogicalName="LinuxMailRelay365.linux.conditional-postfix-transaction.py" />
     <EmbeddedResource Include="../../linux/inspect-conditional-postfix-activation.py" LogicalName="LinuxMailRelay365.linux.inspect-conditional-postfix-activation.py" />
     <EmbeddedResource Include="../../linux/manage-conditional-postfix-offline.py" LogicalName="LinuxMailRelay365.linux.manage-conditional-postfix-offline.py" />
+    <EmbeddedResource Include="../../linux/manage-primary-eop-offline.py" LogicalName="LinuxMailRelay365.linux.manage-primary-eop-offline.py" />
     <EmbeddedResource Include="../../linux/compile-conditional-transports.py" LogicalName="LinuxMailRelay365.linux.compile-conditional-transports.py" />
     <EmbeddedResource Include="../../linux/conditional-transport-recovery.py" LogicalName="LinuxMailRelay365.linux.conditional-transport-recovery.py" />
     <EmbeddedResource Include="../../linux/conditional-transport-transaction.py" LogicalName="LinuxMailRelay365.linux.conditional-transport-transaction.py" />

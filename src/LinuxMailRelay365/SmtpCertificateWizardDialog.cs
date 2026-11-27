@@ -12,16 +12,16 @@ internal sealed class SmtpCertificateWizardDialog : Form
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form, string> deliveryProbe, string configuredMx = "", Func<Form, string, string, bool, Task>? stagedConnector = null, Func<Form, Task>? manageConnectors = null, Func<Form, string, Task<string>>? publicIpConnector = null, Func<Form, string, Task>? primaryAudit = null)
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form, string> deliveryProbe, string configuredMx = "", Func<Form, string, string, bool, Task>? stagedConnector = null, Func<Form, Task>? manageConnectors = null, Func<Form, string, Task<string>>? publicIpConnector = null, Func<Form, string, Task>? primaryAudit = null, Func<Form, string, Task>? primaryOffline = null)
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(740, 520);
         MinimumSize = new Size(460, 350);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 19, Padding = new Padding(16), AutoScroll = true };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 20, Padding = new Padding(16), AutoScroll = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 19; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 20; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         bool working = false;
         // Event handlers are registered before all controls exist. Assign the
         // complete refresh delegate only after every captured control is initialized.
@@ -236,12 +236,22 @@ internal sealed class SmtpCertificateWizardDialog : Form
             finally { if (!IsDisposed) SetWorking(false); }
         };
         layout.Controls.Add(audit, 0, 17);
+        var offline = new Button { Text = "Experimental: review / apply offline primary relayhost", AutoSize = true };
+        offline.Click += async (_, _) =>
+        {
+            if (working || primaryOffline is null || Identity != SmtpConnectorIdentity.PublicIp) return;
+            SetWorking(true);
+            try { await primaryOffline(this, sessionMx); }
+            catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, "Offline primary route workflow unavailable: " + ex.GetType().Name); }
+            finally { if (!IsDisposed) SetWorking(false); }
+        };
+        layout.Controls.Add(offline, 0, 18);
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var back = new Button { Text = "Back", AutoSize = true };
         var next = new Button { Text = "Next", AutoSize = true };
         var navigation = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         navigation.Controls.AddRange([back, next, close]);
-        layout.Controls.Add(navigation, 0, 18);
+        layout.Controls.Add(navigation, 0, 19);
         Controls.Add(layout);
         CancelButton = close;
 
@@ -270,11 +280,12 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 binding.Visible = exchange;
                 delivery.Visible = stage == SmtpWorkflowStage.Delivery;
                 audit.Visible = primaryAudit is not null && (first || deployment || stage == SmtpWorkflowStage.Delivery);
+                offline.Visible = primaryOffline is not null && !certificate && stage == SmtpWorkflowStage.Delivery;
                 renewal.Visible = scheduler.Visible = maintenance;
                 manage.Visible = manageConnectors is not null && (first || deployment || exchange);
                 publicIp.Visible = publicIpConnector is not null && first && !certificate;
                 foreach (Control control in new Control[] { identity, source, domain, scan, check, import,
-                    acme, rotate, binding, delivery, renewal, scheduler, manage, publicIp, audit, close })
+                    acme, rotate, binding, delivery, renewal, scheduler, manage, publicIp, audit, offline, close })
                     control.Enabled = !working && (control != source || certificate);
                 back.Enabled = !working && page > 0;
                 next.Enabled = !working && page < stages.Length - 1;
