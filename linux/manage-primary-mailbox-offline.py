@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Experimental offline primary single-mailbox XOAUTH2 review/apply/recovery.
+"""Experimental primary single-mailbox XOAUTH2 review/apply/recovery/start.
 
-Only a stopped default single Postfix instance with empty queues is supported.
-Exclusive maintenance is mandatory; no service control or message submission.
-The administrator must prevent concurrent config/credential changes, starts,
-submissions and OS/runtime updates. No SELinux-labelled or ACL files.
+Only a default single Postfix instance is supported. Exclusive maintenance,
+initially stopped Postfix and empty queues are mandatory. Only the explicit
+start operation controls the service; no automatic stop, rollback after
+start, or message submission. No SELinux-labelled or ACL files.
 """
 import argparse
 import importlib.util
@@ -28,6 +28,7 @@ X=load("primary_mailbox_transaction","primary-mailbox-transaction.py")
 O=load("primary_mailbox_maintenance","manage-conditional-postfix-offline.py")
 A=load("primary_mailbox_runtime","primary-mailbox-runtime.py")
 RECOVERY_PARENT="/var/lib"
+START="START_REVIEWED_PRIMARY_MAILBOX_ROUTE"
 SCOPE={"config_directory":O.P.CONFIG,"queue_directory":O.P.QUEUE,
        "multi_instance_enable":"no","multi_instance_directories":"",
        "mail_owner":"postfix"}
@@ -128,6 +129,91 @@ def verify_applied_host(config,queue,parent,revision,mailbox,tenant,client,confi
     return info["runtime_sha256"]
 
 
+def native_postfix(action):
+    # "check" may repair metadata; it is not a read-only command.
+    X.need(action in ("check","status"),"unexpected_native_action")
+    adapter=load("primary_mailbox_postfix_adapter","smtp-tls-postfix.py")
+    binary=adapter.trusted_invocation("/usr/sbin/postfix")
+    result=subprocess.run([binary,"-c",O.P.CONFIG,action],input=b"",
+                          stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                          timeout=60 if action=="check" else 20,
+                          env=O.P.SYSTEM_ENV,check=False)
+    X.need(result.returncode==0,"native_postfix_"+action+"_unverified")
+
+
+def native_start():
+    result=subprocess.run([O.P.trusted_tool("systemctl"),"start","postfix.service"],
+                          input=b"",stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                          timeout=60,env=O.P.SYSTEM_ENV,check=False)
+    X.need(result.returncode==0,"postfix_start_unverified")
+
+
+def running_status():
+    raw=O.P.system_command("systemctl",["show","postfix.service",
+                           "--property=LoadState","--property=ActiveState"])
+    X.need(O.P.key_values(raw,("LoadState","ActiveState"))==
+           {"LoadState":"loaded","ActiveState":"active"},"postfix_unit_not_active")
+    raw=O.P.system_command("systemctl",["list-units","--all","--type=service",
+                           "--no-legend","--no-pager","--plain","postfix*.service"])
+    seen=set()
+    for line in raw.splitlines():
+        fields=line.split()
+        X.need(len(fields)>=4 and fields[0].endswith(".service") and fields[0] not in seen,
+               "unexpected_postfix_unit_inventory")
+        seen.add(fields[0])
+        if fields[0] not in ("postfix.service","postfix@-.service"):
+            X.need(fields[2:4]==["inactive","dead"],"other_postfix_unit_not_stopped")
+    X.need("postfix.service" in seen,"missing_primary_postfix_unit")
+    native_postfix("status")
+
+
+def start_applied_host(config,queue,parent,revision,mailbox,tenant,client,
+                       confirmation,auth_confirmation,mark_check,mark_start,
+                       checker=native_postfix,starter=native_start):
+    """No automatic stop or file rollback once a service start is attempted."""
+    X.need(confirmation==START and auth_confirmation==A.CONFIRM and X.sha(revision),
+           "explicit_reviewed_start_required")
+    maintenance=host_guard(config,queue,parent)
+    maintenance()
+    identity=O.mail_identity()
+    info,files=X.load_backup(parent,revision,0)
+    X.need(info["mailbox"]==mailbox,"backup_mailbox_mismatch")
+    X.verify(config,0,info,files,"after",maintenance,read_native)
+    runtime=A.RuntimeGuard(tenant,client,auth_confirmation,expected_sha=info["runtime_sha256"])
+    X.need(runtime(mailbox)==info["runtime_sha256"],"applied_runtime_changed")
+    X.verify(config,0,info,files,"after",maintenance,read_native)
+    mark_check()
+    checker("check")
+    X.verify(config,0,info,files,"after",maintenance,read_native)
+    X.need(runtime(mailbox)==info["runtime_sha256"],"applied_runtime_changed")
+    X.verify(config,0,info,files,"after",maintenance,read_native)
+    maintenance()
+    X.need(O.mail_identity()==identity and X.phase(config,0,info,files)=="after",
+           "configuration_or_identity_changed_before_start")
+    mark_start()
+    starter()
+    # The stopped-instance and empty-queue guard no longer applies. Do not
+    # claim that no external submission or queue activity could have occurred.
+    def running_guard():
+        O.same_directory(config,O.P.CONFIG)
+        O.same_directory(queue,O.P.QUEUE)
+        O.same_directory(parent,RECOVERY_PARENT)
+        O.M.check_directory(config,0)
+        O.M.check_directory(parent,0)
+        X.need(O.mail_identity()==identity and not os.listxattr(config) and
+               not os.path.exists("/sys/fs/selinux/enforce"),"running_host_context_changed")
+        verify_scope(config)
+        running_status()
+    X.verify(config,0,info,files,"after",running_guard,read_native)
+    # Do not authenticate again after the service may accept mail. Observe
+    # the exact installed runtime, not an old cached AUTH result.
+    X.need(A.digest(A.installed_snapshot(mailbox,tenant,client))==info["runtime_sha256"],
+           "runtime_changed_after_start")
+    running_guard()
+    X.need(X.phase(config,0,info,files)=="after","configuration_changed_after_start")
+    return info["runtime_sha256"]
+
+
 def parse_request(args):
     A.need(args.maintenance_confirmation==O.MAINTENANCE,
            "explicit_exclusive_maintenance_required")
@@ -142,7 +228,11 @@ def parse_request(args):
     A.exact_guid(args.tenant_id)
     A.exact_guid(args.client_id)
     X.R.parse(X.R.encode({"mailbox":args.mailbox,"nonce":"0"*64}))
-    if args.verify_applied is not None:
+    if args.start is not None:
+        A.need(X.sha(args.start) and args.confirm==START and
+               args.expected_sha256 is None and args.auth_confirmation==A.CONFIRM,
+               "invalid_start_approval")
+    elif args.verify_applied is not None:
         A.need(X.sha(args.verify_applied) and args.confirm==A.CONFIRM and
                args.expected_sha256 is None and args.auth_confirmation is None,
                "invalid_applied_verification_approval")
@@ -162,6 +252,7 @@ def main(argv=None):
     modes.add_argument("--restore",metavar="BACKUP_SHA256")
     modes.add_argument("--inspect-backup",metavar="BACKUP_SHA256")
     modes.add_argument("--verify-applied",metavar="BACKUP_SHA256")
+    modes.add_argument("--start",metavar="BACKUP_SHA256")
     parser.add_argument("--mailbox")
     parser.add_argument("--tenant-id")
     parser.add_argument("--client-id")
@@ -172,6 +263,15 @@ def main(argv=None):
     args=parser.parse_args(argv)
     fds=[]
     attempted=False
+    check_attempted=False
+    start_attempted=False
+    start_verified=False
+    def mark_check():
+        nonlocal check_attempted
+        check_attempted=True
+    def mark_start():
+        nonlocal start_attempted
+        start_attempted=True
     def expired(*_):
         raise A.Refused("offline_operation_timeout")
     try:
@@ -209,6 +309,17 @@ def main(argv=None):
             print("PRIMARY_MAILBOX_OFFLINE_BACKUP_SHA256="+revision)
             print("PRIMARY_MAILBOX_OFFLINE_SMTP_AUTH=not_attempted")
             print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED=restored")
+        elif args.start is not None:
+            runtime=start_applied_host(config,queue,parent,args.start,args.mailbox,
+                                       args.tenant_id,args.client_id,args.confirm,args.auth_confirmation,
+                                       mark_check,mark_start)
+            start_verified=True
+            print("PRIMARY_MAILBOX_OFFLINE_STATUS=started_running_observed")
+            print("PRIMARY_MAILBOX_OFFLINE_BACKUP_SHA256="+args.start)
+            print("PRIMARY_MAILBOX_OFFLINE_RUNTIME_SHA256="+runtime)
+            print("PRIMARY_MAILBOX_OFFLINE_PHASE=after")
+            print("PRIMARY_MAILBOX_OFFLINE_SMTP_AUTH=observed")
+            print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED=no")
         elif args.verify_applied is not None:
             runtime=verify_applied_host(config,queue,parent,args.verify_applied,args.mailbox,
                                         args.tenant_id,args.client_id,args.confirm)
@@ -234,20 +345,22 @@ def main(argv=None):
             O.Refused,O.P.Refused,O.T.Refused,O.M.Refused,
             OSError,ValueError,TypeError,KeyError,RuntimeError,subprocess.SubprocessError):
         # No raw exception, token, config contents or SMTP transcript.
-        print("PRIMARY_MAILBOX_OFFLINE_STATUS=refused_or_unverified")
+        print("PRIMARY_MAILBOX_OFFLINE_STATUS="+("start_outcome_unverified" if start_attempted else
+              "native_check_outcome_unverified" if check_attempted else "refused_or_unverified"))
         print("PRIMARY_MAILBOX_OFFLINE_SMTP_AUTH=unverified")
-        print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED="+("inspect_recovery" if attempted else "no"))
+        print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED="+("inspect_recovery" if attempted or check_attempted else "no"))
     finally:
         signal.alarm(0)
         for fd in reversed(fds):
             os.close(fd)
-        print("PRIMARY_MAILBOX_OFFLINE_SERVICE_STARTED=no")
-        print("PRIMARY_MAILBOX_OFFLINE_MAIL_SUBMITTED=no")
-        # We do not mutate queues, but a refused maintenance check does not
-        # establish queue contents or absence of external activity.
-        print("PRIMARY_MAILBOX_OFFLINE_QUEUE_MODIFIED=no")
-    if attempted:
-        recovery=args.expected_sha256 if args.apply else args.restore
+        print("PRIMARY_MAILBOX_OFFLINE_SERVICE_STARTED="+("observed_running" if start_verified else
+              "unverified" if start_attempted else "no"))
+        print("PRIMARY_MAILBOX_OFFLINE_MAIL_SUBMITTED="+("not_verified" if start_attempted else "no"))
+        # Native check may repair metadata. Once start is attempted, external
+        # mail/queue activity cannot be ruled out even on timeout or failure.
+        print("PRIMARY_MAILBOX_OFFLINE_QUEUE_MODIFIED="+("not_verified" if check_attempted or start_attempted else "no"))
+    if attempted or args.start is not None:
+        recovery=args.start if args.start is not None else args.expected_sha256 if args.apply else args.restore
         if X.sha(recovery):
             # A retained identifier does not assert that backup creation
             # completed. Inspect before taking further action.

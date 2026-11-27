@@ -255,6 +255,56 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
             apply.assert_not_called()
             restore.assert_not_called()
 
+    def test_controlled_start_order_and_no_rollback_after_uncertain_start(self):
+        revision="b"*64
+        state={"identity_sha256":"a"*64}
+        info={"mailbox":MAIL,"runtime_sha256":A.digest(state)}
+        runtime=Mock(return_value=info["runtime_sha256"])
+        events=[]
+        guard=Mock()
+        def verify(config,uid,manifest,files,phase,check,native):
+            self.assertEqual(phase,"after")
+            check()
+        with patch.object(CLI,"host_guard",return_value=guard), \
+             patch.object(CLI.O,"mail_identity",return_value=(12,12)), \
+             patch.object(CLI.O,"same_directory"), \
+             patch.object(CLI.O.M,"check_directory"), \
+             patch.object(CLI.os,"listxattr",return_value=[]), \
+             patch.object(CLI.os.path,"exists",return_value=False), \
+             patch.object(CLI,"verify_scope"), \
+             patch.object(CLI,"running_status",side_effect=lambda:events.append("running")), \
+             patch.object(CLI.X,"load_backup",return_value=(info,{})), \
+             patch.object(CLI.X,"verify",side_effect=verify), \
+             patch.object(CLI.X,"phase",return_value="after"), \
+             patch.object(A,"RuntimeGuard",return_value=runtime) as factory, \
+             patch.object(A,"installed_snapshot",return_value=state), \
+             patch.object(CLI.X,"restore") as restore:
+            def call(checker,starter):
+                return CLI.start_applied_host(7,8,9,revision,MAIL,TENANT,CLIENT,
+                    CLI.START,A.CONFIRM,lambda:events.append("mark_check"),
+                    lambda:events.append("mark_start"),checker,starter)
+            checker=Mock(side_effect=lambda action:events.append(action))
+            starter=Mock(side_effect=lambda:events.append("start"))
+            self.assertEqual(call(checker,starter),info["runtime_sha256"])
+            self.assertEqual(events[:4],["mark_check","check","mark_start","start"])
+            self.assertIn("running",events)
+            factory.assert_called_once_with(TENANT,CLIENT,A.CONFIRM,expected_sha=info["runtime_sha256"])
+            restore.assert_not_called()
+            events.clear()
+            checker.side_effect=CLI.X.Refused("check failed")
+            starter.reset_mock()
+            with self.assertRaises(CLI.X.Refused):
+                call(checker,starter)
+            self.assertEqual(events,["mark_check"])
+            starter.assert_not_called()
+            events.clear()
+            checker.side_effect=lambda action:events.append(action)
+            starter.side_effect=subprocess.TimeoutExpired("start",60)
+            with self.assertRaises(subprocess.TimeoutExpired):
+                call(checker,starter)
+            self.assertEqual(events,["mark_check","check","mark_start"])
+            restore.assert_not_called()
+
     def test_cli_modes_confirmations_and_failure_report(self):
         from contextlib import redirect_stdout
         from io import StringIO
@@ -270,7 +320,8 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
              patch.object(CLI,"apply_host",return_value="b"*64) as apply, \
              patch.object(CLI,"restore_host",return_value="b"*64) as restore, \
              patch.object(CLI,"inspect_backup_host",return_value="pipe_only") as inspect, \
-             patch.object(CLI,"verify_applied_host",return_value="a"*64) as verify_applied:
+             patch.object(CLI,"verify_applied_host",return_value="a"*64) as verify_applied, \
+             patch.object(CLI,"start_applied_host") as start:
             def call(args):
                 stream=StringIO()
                 with redirect_stdout(stream):
@@ -315,13 +366,40 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
             self.assertIn("POSTFIX_CHANGED=no",report)
             self.assertIn("SERVICE_STARTED=no",report)
             verify_applied.assert_called_once_with(5,5,5,"b"*64,MAIL,TENANT,CLIENT,A.CONFIRM)
+            rc,report=call(["--start","b"*64,"--confirm",CLI.START]+identity)
+            self.assertEqual(rc,2)
+            start.assert_not_called()
+            def observe(*args):
+                args[-2]()
+                args[-1]()
+                return "a"*64
+            start.side_effect=observe
+            request=["--start","b"*64,"--confirm",CLI.START,"--auth-confirmation",A.CONFIRM]+identity
+            rc,report=call(request)
+            self.assertEqual(rc,0)
+            self.assertIn("STATUS=started_running_observed",report)
+            self.assertIn("SERVICE_STARTED=observed_running",report)
+            self.assertIn("QUEUE_MODIFIED=not_verified",report)
+            def uncertain(*args):
+                args[-2]()
+                args[-1]()
+                raise subprocess.TimeoutExpired("start",60)
+            start.side_effect=uncertain
+            rc,report=call(request)
+            self.assertEqual(rc,2)
+            self.assertIn("STATUS=start_outcome_unverified",report)
+            self.assertIn("SERVICE_STARTED=unverified",report)
+            self.assertIn("RECOVERY_SHA256="+"b"*64,report)
+            restore.assert_called_once()
 
-    def test_cli_keeps_both_locks_and_never_starts_service(self):
+    def test_cli_keeps_both_locks_and_only_explicit_start_controls_service(self):
         source=(ROOT/"linux/manage-primary-mailbox-offline.py").read_text()
         self.assertIn("fds.append(O.route_lock())",source)
         self.assertIn("fds.append(A.C.lock())",source)
-        self.assertIn("PRIMARY_MAILBOX_OFFLINE_MAIL_SUBMITTED=no",source)
-        self.assertNotIn("systemctl start",source)
+        self.assertIn('elif args.start is not None:',source)
+        self.assertIn('"start","postfix.service"',source)
+        self.assertNotIn('"stop","postfix.service"',source)
+        self.assertNotIn('"restart","postfix.service"',source)
 
 
 class OfflineGuiContracts(unittest.TestCase):
