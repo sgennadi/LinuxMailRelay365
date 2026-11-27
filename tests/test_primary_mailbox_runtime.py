@@ -367,7 +367,7 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
              patch.object(S.A.pwd,"getpwnam",return_value=Mock(pw_uid=999)), \
              patch.object(S.os,"lstat",return_value=Mock(st_uid=999)):
             result=S.collect("a"*64,lambda:"enforcing",Mock(return_value=raw),sample,
-                             Mock(return_value=(b"private config",identity)))
+                             Mock(return_value=(b"private config",identity)),lambda:S.DATA)
             self.assertEqual(result["status"],"manual_runtime_review_required")
             self.assertRegex(result["config_metadata_sha256"],r"^[a-f0-9]{64}$")
             for flag in ("write_allowed","runtime_verified","changes_applied","mail_sent","network_attempted"):
@@ -377,7 +377,7 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
             sample.side_effect=[("policy_match",{"label":"one"})]*len(result["labels"])+[("policy_mismatch",None)]*len(result["labels"])
             with self.assertRaises(ValueError):
                 S.collect("a"*64,lambda:"enforcing",Mock(return_value=raw),sample,
-                          Mock(return_value=(b"private config",identity)))
+                          Mock(return_value=(b"private config",identity)),lambda:S.DATA)
         inactive=S.collect("a"*64,lambda:"inactive_or_unavailable",Mock(side_effect=AssertionError("no commands")),
                            Mock(side_effect=AssertionError("no files")))
         self.assertFalse(inactive["write_allowed"])
@@ -395,7 +395,7 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
              patch.object(S.A.pwd,"getpwnam",return_value=Mock(pw_uid=999)), \
              patch.object(S.os,"lstat",return_value=Mock(st_uid=999)):
             def observe():
-                return S.enforcing_review_evidence(lambda:"enforcing",cmd,sample,read)
+                return S.enforcing_review_evidence(lambda:"enforcing",cmd,sample,read,lambda:S.DATA)
             evidence=observe()
             self.assertEqual(set(evidence["paths"]),set(S.FIXED)|set(S.DYNAMIC))
             self.assertEqual(evidence["identity_sha256"],S.A.C.sha(b"private config"))
@@ -413,6 +413,50 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
                 ("policy_match",{"label":"second"})]*count
             with self.assertRaisesRegex(ValueError,"policy_changed"):
                 observe()
+
+    def test_native_data_directory_scope_and_owner_permissions(self):
+        S=self.S
+        import stat
+        from types import SimpleNamespace
+        native=Mock(return_value=Mock(returncode=0,stderr=b"",
+                                    stdout=b"data_directory = /var/lib/postfix\n"))
+        self.assertEqual(S.native_data_directory(native),S.DATA)
+        native.assert_called_once_with("postconf",("-c","/etc/postfix","-x","data_directory"))
+        native.return_value.stdout=b"data_directory = /custom/postfix\n"
+        self.assertEqual(S.native_data_directory(native),"/custom/postfix")
+        for output in (b"",b"data_directory = /var/lib/postfix\nmail_owner = postfix\n",
+                       b"data_directory = /var/lib/postfix\ndata_directory = /other\n"):
+            native.return_value.stdout=output
+            with self.assertRaises((ValueError,S.A.R.E.Refused)):
+                S.native_data_directory(native)
+        for owner,mode,ok in ((999,0o700,True),(999,0o755,True),(0,0o755,False),
+                              (999,0o500,False),(999,0o600,False),
+                              (999,0o770,False),(999,0o777,False)):
+            meta=SimpleNamespace(st_uid=owner,st_mode=stat.S_IFDIR|mode)
+            self.assertEqual(S.data_directory_mode_ok(meta,999),ok)
+        identity=dict(tenant_id=TENANT,client_id=CLIENT,mailbox=MAIL,
+                      certificate=S.ROOT+"/app.crt",private_key=S.ROOT+"/app.key")
+        raw="SELinux Port Type Proto Port Number\nhttp_port_t tcp 443\nsmtp_port_t tcp 587\n"
+        sample=Mock(return_value=("policy_match",{"label":"fixture","metadata":[1,2]}))
+        reader=Mock(return_value=(b"identity",identity))
+        cmd=Mock(return_value=raw)
+        with patch.object(S.A.grp,"getgrnam",return_value=Mock(gr_gid=998)), \
+             patch.object(S.A.pwd,"getpwnam",return_value=Mock(pw_uid=999)), \
+             patch.object(S.os,"lstat",return_value=Mock(st_uid=999)):
+            state=S.collect("a"*64,lambda:"enforcing",cmd,sample,reader,lambda:"/custom/postfix")
+            self.assertEqual(state["labels"]["data_directory"],"unsupported_path")
+            self.assertEqual(state["status"],"policy_or_mode_review_required")
+            self.assertFalse(any(c[0][0] in (S.DATA,"/custom/postfix") for c in sample.call_args_list))
+            sample.reset_mock()
+            evidence=S.enforcing_review_evidence(lambda:"enforcing",cmd,sample,reader,lambda:S.DATA)
+            self.assertIn("data_directory",evidence["paths"])
+            sample.assert_any_call(S.DATA,"dir",cmd,999)
+            def deny(path,kind,command,uid):
+                return ("data_directory_permissions_review",None) if path==S.DATA else (
+                    "policy_match",{"label":"fixture","metadata":[1,2]})
+            sample.side_effect=deny
+            with self.assertRaisesRegex(ValueError,"policy_unverified"):
+                S.enforcing_review_evidence(lambda:"enforcing",cmd,sample,reader,lambda:S.DATA)
 
     def test_gui_bundle_does_not_unlock_enforcing_apply(self):
         src=ROOT/"src/LinuxMailRelay365"

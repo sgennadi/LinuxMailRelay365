@@ -4,7 +4,7 @@ namespace LinuxMailRelay365;
 
 internal static class PrimaryMailboxSelinuxClient
 {
-    private static readonly string[] Labels=["config_directory","main_cf","master_cf","queue_directory",
+    private static readonly string[] Labels=["config_directory","main_cf","master_cf","queue_directory","data_directory",
         "identity_directory","identity_config","transport","signer","recovery_parent","active_certificate","active_key_or_provider"];
     private static void Need(bool condition)
     {
@@ -17,7 +17,7 @@ internal static class PrimaryMailboxSelinuxClient
         PrimaryMailboxDeliveryClient.Exact(root,"version","nonce","status","mode","identity","labels","ports",
             "config_metadata_sha256","write_allowed","runtime_verified","changes_applied","mail_sent","network_attempted");
         string Read(string key)=>PrimaryMailboxDeliveryClient.Read(root,key);
-        Need(PrimaryMailboxOfflineClient.IsSha(nonce) && Read("nonce")==nonce && root.GetProperty("version").GetInt32()==1);
+        Need(PrimaryMailboxOfflineClient.IsSha(nonce) && Read("nonce")==nonce && root.GetProperty("version").GetInt32()==2);
         foreach(string flag in new[]{"write_allowed","runtime_verified","changes_applied","mail_sent","network_attempted"})
             Need(root.GetProperty(flag).ValueKind==JsonValueKind.False);
         string mode=Read("mode"),identity=Read("identity"),status=Read("status");
@@ -34,7 +34,9 @@ internal static class PrimaryMailboxSelinuxClient
         {
             string state=PrimaryMailboxDeliveryClient.Read(labels,name);
             Need(state is "not_checked" or "missing" or "unverified" or "label_missing" or
-                "policy_match" or "policy_match_generic" or "policy_mismatch");
+                "policy_match" or "policy_match_generic" or "policy_mismatch" or
+                "data_directory_permissions_review" or "unsupported_path");
+            Need(name=="data_directory" || state is not ("data_directory_permissions_review" or "unsupported_path"));
             Need(active || state=="not_checked");
             states.Add(name,state);
         }
@@ -56,6 +58,10 @@ internal static class PrimaryMailboxSelinuxClient
         var lines=new List<string>{"SELinux: "+mode,"Active identity: "+identity,"Result: "+status,"",
             "FILE CONTEXT POLICY (read-only)"};
         lines.AddRange(states.Select(x=>x.Key.Replace('_',' ')+": "+x.Value.Replace('_',' ')));
+        if(states["data_directory"]=="data_directory_permissions_review")
+            lines.Add("Postfix data_directory must be writable/searchable by its dedicated mail_owner. Review native package ownership and permissions; no automatic chmod/chown.");
+        if(states["data_directory"]=="unsupported_path")
+            lines.Add("A non-default Postfix data_directory requires manual review; this probe does not traverse custom paths.");
         lines.Add("");lines.Add("OUTBOUND POLICY PORT LABELS");
         lines.Add("TCP 443 / Entra HTTPS: "+portStates["443"]);
         lines.Add("TCP 587 / Microsoft 365 SMTP: "+portStates["587"]);
@@ -67,7 +73,7 @@ internal static class PrimaryMailboxSelinuxClient
     internal static bool SelfTest()
     {
         string nonce=new('a',64);
-        string good=JsonSerializer.Serialize(new {version=1,nonce,status="manual_runtime_review_required",
+        string good=JsonSerializer.Serialize(new {version=2,nonce,status="manual_runtime_review_required",
             mode="enforcing",identity="pem",labels=Labels.ToDictionary(k=>k,k=>"policy_match"),
             ports=new Dictionary<string,string>{{"443","expected_type"},{"587","expected_type"}},
             config_metadata_sha256=new string('b',64),write_allowed=false,runtime_verified=false,
@@ -78,6 +84,15 @@ internal static class PrimaryMailboxSelinuxClient
             good.Replace("\"network_attempted\":false","\"network_attempted\":true"),
             good.Replace("\"manual_runtime_review_required\"","\"ready\""),
             good.Replace("\"443\":\"expected_type\"","\"443\":\"different_or_ambiguous_type\"")})
+        {
+            try { Describe(bad,nonce);return false; } catch(InvalidDataException) {}
+        }
+        string denied=good.Replace("\"data_directory\":\"policy_match\"","\"data_directory\":\"data_directory_permissions_review\"")
+            .Replace("\"manual_runtime_review_required\"","\"policy_or_mode_review_required\"");
+        if(!Describe(denied,nonce).Contains("mail_owner",StringComparison.Ordinal)) return false;
+        foreach(string bad in new[]{denied.Replace("\"policy_or_mode_review_required\"","\"manual_runtime_review_required\""),
+            good.Replace("\"main_cf\":\"policy_match\"","\"main_cf\":\"unsupported_path\""),
+            good.Replace("\"version\":2","\"version\":1")})
         {
             try { Describe(bad,nonce);return false; } catch(InvalidDataException) {}
         }

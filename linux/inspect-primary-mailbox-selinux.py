@@ -28,11 +28,13 @@ A=load("primary_label_runtime","primary-mailbox-runtime.py")
 P=load("primary_label_native","inspect-conditional-postfix-activation.py")
 T=P.T
 ROOT="/etc/postfix/m365-oauth"
+DATA="/var/lib/postfix"
 FIXED={
     "config_directory":("/etc/postfix","dir"),
     "main_cf":("/etc/postfix/main.cf","file"),
     "master_cf":("/etc/postfix/master.cf","file"),
     "queue_directory":("/var/spool/postfix","dir"),
+    "data_directory":(DATA,"dir"),
     "identity_directory":(ROOT,"dir"),
     "identity_config":(ROOT+"/app.json","file"),
     "transport":("/usr/local/libexec/m365_xoauth2_transport.py","file"),
@@ -68,6 +70,28 @@ def policy_label(path,kind,command):
     label=T.checked_label(lines[0].encode("ascii"))
     return T.label_bytes(label).rstrip(b"\0")
 
+def native_data_directory(runner=A.R.command):
+    """Only the stock data directory is in this experimental review scope.
+
+    Query expanded native Postfix settings, not a text search of main.cf.
+    Never traverse an arbitrary custom path or write a master.lock probe.
+    """
+    result=runner("postconf",("-c","/etc/postfix","-x","data_directory"))
+    need(result.returncode==0 and not result.stderr.strip() and
+         len(result.stdout)<=4096,"data_directory_scope_unverified")
+    values=A.R.parameter_map(result.stdout.decode("utf-8","strict"))
+    need(set(values)=={"data_directory"},"data_directory_scope_unverified")
+    return values["data_directory"]
+
+
+def data_directory_mode_ok(meta,uid):
+    # Postfix documents data_directory as writable by the mail_owner.
+    # Require owner write/search, not a group or world-writable workaround.
+    return (type(uid) is int and uid>0 and stat.S_ISDIR(meta.st_mode) and
+            meta.st_uid==uid and meta.st_mode&0o300==0o300 and
+            not meta.st_mode&0o022)
+
+
 def sample_path(path,kind,command=P.system_command,uid=0):
     parent,name=os.path.split(path)
     fd=None
@@ -79,6 +103,8 @@ def sample_path(path,kind,command=P.system_command,uid=0):
         need((stat.S_ISDIR(first.st_mode) if kind=="dir" else
               stat.S_ISREG(first.st_mode) and first.st_nlink==1),
              "unexpected_object_type")
+        if path==DATA and not data_directory_mode_ok(first,uid):
+            return "data_directory_permissions_review",None
         need(first.st_uid==uid and not first.st_mode&0o022,
              "unsafe_object_metadata")
         flags=os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK
@@ -173,7 +199,8 @@ def port_states(raw):
             "no_specific_type" if not labels else "different_or_ambiguous_type"
             for port,labels in port_matches(raw).items()}
 
-def runtime_path_sample(command=P.system_command,sampler=sample_path,active_reader=A.read_active):
+def runtime_path_sample(command=P.system_command,sampler=sample_path,active_reader=A.read_active,
+                        data_reader=native_data_directory):
     paths=dict(FIXED)
     try:
         group=A.grp.getgrnam("m365mailer").gr_gid
@@ -198,16 +225,28 @@ def runtime_path_sample(command=P.system_command,sampler=sample_path,active_read
             except (OSError,ValueError):
                 results[name]=("unverified",None)
                 continue
+        elif name=="data_directory":
+            try:
+                selected=data_reader()
+                if selected!=DATA:
+                    results[name]=("unsupported_path",None)
+                    continue
+                need(type(queue_uid) is int and queue_uid>0,"postfix_owner_unverified")
+                owner=queue_uid
+            except (OSError,ValueError,UnicodeError,TypeError,A.R.E.Refused):
+                results[name]=("unverified",None)
+                continue
         else:
             owner=0
         results[name]=sampler(path,file_kind,command,owner)
     return kind,active_sha,results
 
 def enforcing_review_evidence(mode_reader=mode,command=P.system_command,
-                              sampler=sample_path,active_reader=A.read_active):
+                              sampler=sample_path,active_reader=A.read_active,
+                              data_reader=native_data_directory):
     """Private policy evidence, not proof of pipe-domain permission."""
     need(mode_reader()=="enforcing","enforcing_review_policy_unverified")
-    first=runtime_path_sample(command,sampler,active_reader)
+    first=runtime_path_sample(command,sampler,active_reader,data_reader)
     identity,active_sha,results=first
     need(identity in ("pem","managed_tpm2_reference") and
          type(active_sha) is str and A.R.SHA.fullmatch(active_sha) and
@@ -219,7 +258,7 @@ def enforcing_review_evidence(mode_reader=mode,command=P.system_command,
     raw=command("semanage",["port","-l"])
     need(all(state=="expected_type" for state in port_states(raw).values()),
          "enforcing_review_policy_unverified")
-    need(runtime_path_sample(command,sampler,active_reader)==first and
+    need(runtime_path_sample(command,sampler,active_reader,data_reader)==first and
          command("semanage",["port","-l"])==raw and mode_reader()=="enforcing",
          "enforcing_review_policy_changed")
     return {"identity_sha256":active_sha,"identity_mode":identity,
@@ -227,7 +266,7 @@ def enforcing_review_evidence(mode_reader=mode,command=P.system_command,
 
 
 def collect(nonce,mode_reader=mode,command=P.system_command,sampler=sample_path,
-            active_reader=A.read_active):
+            active_reader=A.read_active,data_reader=native_data_directory):
     observed=mode_reader()
     labels=dict.fromkeys(tuple(FIXED)+DYNAMIC,"not_checked")
     ports=dict.fromkeys(map(str,PORTS),"not_checked")
@@ -236,7 +275,7 @@ def collect(nonce,mode_reader=mode,command=P.system_command,sampler=sample_path,
     status="inactive_or_unverified"
     if observed in ("enforcing","permissive"):
         def sample():
-            return runtime_path_sample(command,sampler,active_reader)
+            return runtime_path_sample(command,sampler,active_reader,data_reader)
         first=sample()
         second=sample()
         need(first==second and mode_reader()==observed,"selinux_observation_changed")
@@ -260,7 +299,7 @@ def collect(nonce,mode_reader=mode,command=P.system_command,sampler=sample_path,
             all(state in ("policy_match","policy_match_generic") for state in labels.values()) and
             all(state=="expected_type" for state in ports.values())
         ) else "policy_or_mode_review_required"
-    return {"version":1,"nonce":nonce,"status":status,"mode":observed,
+    return {"version":2,"nonce":nonce,"status":status,"mode":observed,
             "identity":identity,"labels":labels,"ports":ports,"config_metadata_sha256":config_sha,
             "write_allowed":False,"runtime_verified":False,"changes_applied":False,
             "mail_sent":False,"network_attempted":False}

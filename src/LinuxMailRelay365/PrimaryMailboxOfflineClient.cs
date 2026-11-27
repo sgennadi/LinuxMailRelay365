@@ -145,7 +145,7 @@ internal static class PrimaryMailboxOfflineClient
             "tpm_device_metadata_review"=>"TPM2 resource-manager metadata is outside the supported security profile. Ask the Linux security administrator to review the device.",
             "selinux_offline_blocked"=>"Offline Apply on active SELinux is not enabled in this build. Use the read-only SELinux readiness check. Do not disable SELinux.",
             "enforcing_mode_required"=>"This separate review requires an actively enforcing SELinux host. Use ordinary Review for a supported non-SELinux host.",
-            "selinux_context_review"=>"The exact SELinux contexts or recovery policy could not be verified. Review the native labels and policy with the Linux security administrator. No automatic relabel is performed.",
+            "selinux_context_review"=>"The exact SELinux contexts, data directory ownership/permissions, port labels or recovery policy could not be verified. Run the read-only SELinux readiness check. No automatic relabel or chmod/chown is performed.",
             "extended_metadata_review"=>"The Postfix directory has extended metadata requiring manual review. Do not remove labels or ACLs to bypass this check.",
             _=>null
         };
