@@ -262,6 +262,8 @@ jobs:
       github.event.pull_request.head.ref == 'feature/primary-rc20-preflight' ||
       github.ref == 'refs/heads/feature/primary-rc20-updater-preflight' ||
       github.event.pull_request.head.ref == 'feature/primary-rc20-updater-preflight' ||
+      github.ref == 'refs/heads/feature/primary-rc20-combined' ||
+      github.event.pull_request.head.ref == 'feature/primary-rc20-combined' ||
       github.ref == 'refs/heads/release/v0.1.1-rc.20' ||
       github.event.pull_request.head.ref == 'release/v0.1.1-rc.20'
     runs-on: ubuntu-24.04
@@ -639,6 +641,8 @@ jobs:
         if: >-
           github.ref == 'refs/heads/feature/primary-rc20-updater-preflight' ||
           github.event.pull_request.head.ref == 'feature/primary-rc20-updater-preflight' ||
+          github.ref == 'refs/heads/feature/primary-rc20-combined' ||
+          github.event.pull_request.head.ref == 'feature/primary-rc20-combined' ||
           github.ref == 'refs/heads/release/v0.1.1-rc.20' ||
           github.event.pull_request.head.ref == 'release/v0.1.1-rc.20'
         shell: pwsh
@@ -2102,6 +2106,8 @@ jobs:
       github.event.pull_request.head.ref == 'feature/primary-rc20-preflight' ||
       github.ref == 'refs/heads/feature/primary-rc20-updater-preflight' ||
       github.event.pull_request.head.ref == 'feature/primary-rc20-updater-preflight' ||
+      github.ref == 'refs/heads/feature/primary-rc20-combined' ||
+      github.event.pull_request.head.ref == 'feature/primary-rc20-combined' ||
       github.ref == 'refs/heads/release/v0.1.1-rc.20' ||
       github.event.pull_request.head.ref == 'release/v0.1.1-rc.20'
     permissions:
@@ -2119,6 +2125,7 @@ jobs:
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/feature/primary-rc20-preflight' ||
       github.ref == 'refs/heads/feature/primary-rc20-updater-preflight' ||
+      github.ref == 'refs/heads/feature/primary-rc20-combined' ||
       github.ref == 'refs/heads/release/v0.1.1-rc.20')
     needs:
       - linux-tests

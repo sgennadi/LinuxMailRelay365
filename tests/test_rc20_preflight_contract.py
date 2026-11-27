@@ -36,7 +36,7 @@ class RC20PreflightContract(unittest.TestCase):
     def test_pinned_rc19_upgrade_step_is_mandatory_for_new_candidate(self):
         windows = job(CI, "windows-build")
         step = windows.split("- name: Test pinned published RC19 to candidate binary replacement and rollback (disposable)", 1)[1].split("      - name:", 1)[0]
-        for branch in ("feature/primary-rc20-updater-preflight", "release/v0.1.1-rc.20"):
+        for branch in ("feature/primary-rc20-updater-preflight", "feature/primary-rc20-combined", "release/v0.1.1-rc.20"):
             self.assertIn("github.ref == 'refs/heads/" + branch + "'", step)
             self.assertIn("github.event.pull_request.head.ref == '" + branch + "'", step)
         self.assertIn("-SourceTag 'v0.1.1-rc.19'", step)
@@ -45,7 +45,7 @@ class RC20PreflightContract(unittest.TestCase):
 
     def test_exact_branch_requires_both_native_guests(self):
         gate = job(CI, "rc20-full-native-vm")
-        for branch in ("feature/primary-rc20-preflight", "feature/primary-rc20-updater-preflight", "release/v0.1.1-rc.20"):
+        for branch in ("feature/primary-rc20-preflight", "feature/primary-rc20-updater-preflight", "feature/primary-rc20-combined", "release/v0.1.1-rc.20"):
             for name in ("rc20-full-native-vm", "rc14-native-transaction-fast"):
                 body = job(CI, name)
                 self.assertIn("github.ref == 'refs/heads/" + branch + "'", body)
