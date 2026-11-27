@@ -121,3 +121,16 @@ class ConnectorBindingTests(unittest.TestCase):
         self.assertIn("backup_acl_not_private",source)
         self.assertLess(source.index("Write-Settings-Backup $BackupPath"),source.index("Set-InboundConnector @settings"))
         self.assertIn("unreviewed_connector_setting_changed",source)
+
+    def test_settings_edit_gui_binds_inventory_and_retains_backup(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        ui=(src/"MainForm.SmtpConnectorSettings.cs").read_text()
+        self.assertLess(ui.index("ConfirmDestructive("),ui.index('WriteRestrictedGraphPayload(backup, "")'))
+        self.assertIn('"Apply", sha, edit, backup',ui)
+        self.assertIn('new FileInfo(backup).Length == 0',ui)
+        self.assertIn("connector remains disabled",ui)
+        runner=(src/"MainForm.CloudConnectorChanges.cs").read_text()
+        self.assertIn('Add("-ExpectedSenderDomains"',runner)
+        self.assertIn('Add("-BackupPath"',runner)
+        shell=(ROOT/"windows/Manage-LinuxMailRelay365Object.ps1").read_text()
+        self.assertIn("selected_settings_changed_refresh_inventory",shell)

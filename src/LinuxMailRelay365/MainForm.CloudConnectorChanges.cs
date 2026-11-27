@@ -58,7 +58,8 @@ internal sealed partial class MainForm
 
     private async Task<string> RunCloudConnectorOperationAsync(
         Guid tenantId, CloudConnectorObject connector, string operation,
-        string newName, string phase, string? expectedSha = null)
+        string newName, string phase, string? expectedSha = null,
+        ConnectorSettingsEdit? edit = null, string? backupPath = null)
     {
         string script = Path.Combine(dataDirectory, "Manage-LinuxMailRelay365Object.ps1");
         string report = Path.Combine(dataDirectory,
@@ -82,6 +83,26 @@ internal sealed partial class MainForm
             psi.ArgumentList.Add("-NewName");
             psi.ArgumentList.Add(newName);
         }
+        if (operation == "EditSettings")
+        {
+            if (edit is null || (phase == "Apply") != (backupPath is not null))
+                throw new ArgumentException("Reviewed edit and private backup path required.");
+            void Add(string key, string value)
+            {
+                if (value.Length == 0) return;
+                psi.ArgumentList.Add(key);
+                psi.ArgumentList.Add(value);
+            }
+            Add("-NewSenderDomains", edit.Domains);
+            Add("-NewPublicIps", edit.Ips);
+            Add("-NewCertificateName", edit.Certificate);
+            Add("-ExpectedSenderDomains", string.Join(",", connector.SenderDomains));
+            Add("-ExpectedPublicIps", string.Join(",", connector.SenderIps));
+            Add("-ExpectedCertificateName", connector.TlsCertificateName);
+            if (backupPath is not null) Add("-BackupPath", backupPath);
+        }
+        else if (edit is not null || backupPath is not null)
+            throw new ArgumentException("Unexpected settings edit arguments.");
         if (phase == "Apply")
         {
             if (expectedSha is null)

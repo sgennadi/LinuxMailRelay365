@@ -39,7 +39,7 @@ internal sealed partial class MainForm
         var list = new ListBox { Dock = DockStyle.Fill, HorizontalScrollbar = true };
         var details = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, Multiline = true, ScrollBars = ScrollBars.Both, WordWrap = false };
         var action = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
-        action.Items.AddRange(["Enable", "Disable", "Rename", "Delete"]);
+        action.Items.AddRange(["Enable", "Disable", "Rename", "Delete", "EditSettings"]);
         action.SelectedIndex = 0;
         var rename = new TextBox { Width = 240, MaxLength = 70, PlaceholderText = "LinuxMailRelay365 New Name" };
         var apply = new Button { Text = "Review selected change", AutoSize = true };
@@ -65,6 +65,7 @@ internal sealed partial class MainForm
                 "Enable" => !c.Enabled,
                 "Disable" => c.Enabled,
                 "Rename" or "Delete" => !c.Enabled,
+                "EditSettings" => !c.Enabled && CanEditConnectorSettings(c),
                 _ => false
             });
             close.Enabled = list.Enabled = !busy;
@@ -75,7 +76,7 @@ internal sealed partial class MainForm
                     Environment.NewLine + "Public IPs: " + string.Join(", ", c.SenderIps) +
                     Environment.NewLine + "TLS identity: " + c.TlsCertificateName +
                     Environment.NewLine + "Ownership: " + c.Ownership + Environment.NewLine +
-                    "Rename and delete require a disabled connector. Each change requires a fresh SHA review and typed consent.";
+                    "Rename, delete and settings edit require a disabled connector. Each change requires a fresh SHA review and typed consent.";
         }
         list.SelectedIndexChanged += (_, _) => UpdateControls();
         action.SelectedIndexChanged += (_, _) => UpdateControls();
@@ -92,8 +93,10 @@ internal sealed partial class MainForm
                 // Even an uncertain cloud mutation invalidates cached route approval.
                 connectorApproved.Checked = false;
                 previewedTenantConnectorSha = previewedTenantConnectorContext = null;
-                bool changed = await ExecuteCloudConnectorOperationAsync(dialog, inventory, selected,
-                    operation, rename.Text.Trim(), Guard);
+                bool changed = operation == "EditSettings"
+                    ? await EditCloudConnectorSettingsAsync(dialog, inventory, selected, Guard)
+                    : await ExecuteCloudConnectorOperationAsync(dialog, inventory, selected,
+                        operation, rename.Text.Trim(), Guard);
                 if (changed)
                 {
                     stale = true;

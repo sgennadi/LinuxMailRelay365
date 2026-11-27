@@ -13,6 +13,9 @@ param(
   [string]$NewPublicIps='',
   [string]$NewCertificateName='',
   [string]$BackupPath='',
+  [string]$ExpectedSenderDomains='',
+  [string]$ExpectedPublicIps='',
+  [string]$ExpectedCertificateName='',
   [string]$ExpectedSha256='',
   [string]$TypedConfirmation='',
   [string]$ResultPath='',
@@ -252,7 +255,8 @@ if ($Phase -eq 'Review') {
 }
 if ($Operation -ne 'Rename') { Require (-not $NewName) 'new_name_is_only_for_rename' }
 if ($Operation -ne 'EditSettings') {
-  Require (-not $NewSenderDomains -and -not $NewPublicIps -and -not $NewCertificateName -and -not $BackupPath) 'unexpected_edit_arguments'
+  Require (-not $NewSenderDomains -and -not $NewPublicIps -and -not $NewCertificateName -and -not $BackupPath -and
+    -not $ExpectedSenderDomains -and -not $ExpectedPublicIps -and -not $ExpectedCertificateName) 'unexpected_edit_arguments'
 } elseif ($Phase -eq 'Review') {
   Require (-not $BackupPath) 'review_cannot_create_backup'
 } else {
@@ -277,6 +281,15 @@ try {
   $edit=$null
   $editJson=''
   if ($Operation -eq 'EditSettings') {
+    # Reject stale UI inventory before review as well as before Apply.
+    $oldDomains=@(Exact-Domain-List (@($current.SenderDomains | ForEach-Object { [string]$_ }) -join ','))
+    $oldIps=@($current.SenderIPAddresses | ForEach-Object { [string]$_ } | Where-Object { $_ })
+    if ($oldIps.Count -gt 0) { $oldIps=@(Exact-IP-List ($oldIps -join ',')) }
+    $expectedIps=@()
+    if ($ExpectedPublicIps) { $expectedIps=@(Exact-IP-List $ExpectedPublicIps) }
+    Require (($oldDomains -join ',') -ceq (@(Exact-Domain-List $ExpectedSenderDomains) -join ',') -and
+      ($oldIps -join ',') -ceq ($expectedIps -join ',') -and
+      ([string]$current.TlsSenderCertificateName).ToLowerInvariant() -ceq $ExpectedCertificateName.Trim().ToLowerInvariant()) 'selected_settings_changed_refresh_inventory'
     $accepted=@(Get-AcceptedDomain -ErrorAction Stop)
     $edit=Reviewed-Settings $current $all $accepted $NewSenderDomains $NewPublicIps $NewCertificateName
     $editJson=$edit | ConvertTo-Json -Depth 4 -Compress
