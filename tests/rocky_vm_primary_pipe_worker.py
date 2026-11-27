@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import stat
 import sys
 
 PRODUCT=Path("/usr/local/libexec/m365_xoauth2_transport.py")
@@ -70,13 +71,66 @@ def context_type():
     need(len(fields)==4 and re.fullmatch(r"[A-Za-z0-9_]+",fields[2]),"context_read")
     return fields[2]
 
+# Fixed, non-secret failure classes. Never print arbitrary OpenSSL stderr,
+# assertion bytes, identity JSON or an exception containing file contents.
+TPM_FAILURES=frozenset(("tpm_device_denied","tpm_device_unverified","tpm_config",
+    "tpm_provider_signature","tpm_certificate","tpm_signature_mismatch",
+    "tpm_io","tpm_sign_unknown"))
+
+class FixtureSignFailure(Exception):
+    def __init__(self,reason):
+        super().__init__(reason if reason in TPM_FAILURES else "tpm_sign_unknown")
+
+def classify_tpm_error(stderr):
+    lines=stderr.strip().splitlines()
+    if len(lines)!=1:
+        return "tpm_sign_unknown"
+    text=lines[0]
+    exact={
+        "4.3.0 hardware_signature_unavailable_no_pem_fallback":"tpm_provider_signature",
+        "4.3.0 hardware_signer_certificate_invalid":"tpm_certificate",
+        "4.3.0 hardware_key_does_not_match_entra_certificate":"tpm_signature_mismatch",
+        "4.3.0 OAuth signer does not match public certificate":"tpm_signature_mismatch",
+        "4.3.0 OpenSSL operation failed; verify the certificate and key":"tpm_certificate",
+    }
+    if text in exact:
+        return exact[text]
+    if re.match(r"^4\.3\.0 (?:PermissionError|FileNotFoundError|OSError): ",text):
+        return "tpm_io"
+    return "tpm_sign_unknown"
+
+def tpm_device_probe():
+    # Check real pipe-domain open/close permission before provider execution.
+    # No TPM command, key access, permission or label change.
+    try:
+        fd=os.open("/dev/tpmrm0",os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+        try:
+            opened=os.fstat(fd)
+            current=os.lstat("/dev/tpmrm0")
+            need(stat.S_ISCHR(opened.st_mode) and
+                 (opened.st_dev,opened.st_ino,opened.st_rdev)==
+                 (current.st_dev,current.st_ino,current.st_rdev),"device_changed")
+        finally:
+            os.close(fd)
+    except PermissionError:
+        raise FixtureSignFailure("tpm_device_denied") from None
+    except (OSError,ValueError):
+        raise FixtureSignFailure("tpm_device_unverified") from None
+
 def real_sign(tpm_handle=None):
     sys.dont_write_bytecode=True
     sys.path.insert(0,str(PRODUCT.parent))
     spec=importlib.util.spec_from_file_location("lmr365_fixture_product",str(PRODUCT))
     transport=importlib.util.module_from_spec(spec)
     spec.loader.exec_module(transport)
-    config=transport.load_config()
+    if tpm_handle is not None:
+        tpm_device_probe()
+    try:
+        config=transport.load_config()
+    except Exception:
+        if tpm_handle is not None:
+            raise FixtureSignFailure("tpm_config") from None
+        raise
     need(config.get("mailbox")==MAILBOX and config.get("tenant_id")==
          "11111111-1111-1111-1111-111111111111" and config.get("client_id")==
          "22222222-2222-2222-2222-222222222222","fixture_identity")
@@ -98,6 +152,8 @@ def real_sign(tpm_handle=None):
     output,errors=io.StringIO(),io.StringIO()
     with redirect_stdout(output),redirect_stderr(errors):
         rc=transport.run(["--signing-check"])
+    if tpm_handle is not None and (rc!=0 or output.getvalue().strip()!=SUCCESS or errors.getvalue()):
+        raise FixtureSignFailure(classify_tpm_error(errors.getvalue()))
     need(rc==0 and output.getvalue().strip()==SUCCESS and not errors.getvalue(),
          "signing_result")
 
@@ -140,6 +196,9 @@ def run(argv=None):
              os.geteuid()==args.uid and os.getegid()==args.gid,"execution_context_changed")
         print(marker(nonce,network,tpm=args.tpm_handle is not None),flush=True)
         return 0
+    except FixtureSignFailure as error:
+        print("LMR365_PRIMARY_PIPE_FAIL="+str(error),flush=True)
+        return 75
     except Exception:
         print("LMR365_PRIMARY_PIPE_FAIL="+stage,flush=True)
         return 75

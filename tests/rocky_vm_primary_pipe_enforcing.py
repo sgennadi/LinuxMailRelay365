@@ -147,7 +147,9 @@ def wait_receipt(nonce,daemon,started,network=False,tpm=False):
         time.sleep(1)
     failures=set()
     for line in trusted_messages(rows,"pipe",daemon):
-        failures.update(re.findall(r"LMR365_PRIMARY_PIPE_FAIL=(identity|domain_after|domain|message|sign|network_443|network_587)\b",line))
+        allowed={"identity","domain_after","domain","message","sign","network_443","network_587"}|W.TPM_FAILURES
+        failures.update(code for code in re.findall(r"LMR365_PRIMARY_PIPE_FAIL=([a-z0-9_]+)\b",line)
+                        if code in allowed)
     print("LMR365_PRIMARY_VM_PIPE_DIAGNOSTIC=cleanup_rows_"+
           str(len(list(trusted_messages(rows,"cleanup",daemon))))+
           "_pipe_rows_"+str(len(list(trusted_messages(rows,"pipe",daemon))))+

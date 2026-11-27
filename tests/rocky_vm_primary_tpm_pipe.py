@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import stat
+import re
+import subprocess
 import uuid
 import pwd
 import grp
@@ -46,6 +48,44 @@ def snapshot(config):
 def policy_matches():
     for name in NAMES:
         command("/usr/sbin/matchpathcon","-V",P.CONFIG+"/"+name)
+
+def failure_diagnostics():
+    # Disposable boot-bound guest only. Report fixed native metadata and
+    # AVC records concerning the actual pipe domain; no message/secret dump.
+    F.disposable()
+    for path in ("/dev/tpmrm0",str(F.IDENTITY),str(F.IDENTITY/"app.json"),
+                 str(F.IDENTITY/"hardware-app.crt"),str(F.IDENTITY/"tpm2.cnf")):
+        try:
+            value=command("/usr/bin/stat","-c","%a %u %g %C",path).decode("ascii").strip()
+            if re.fullmatch(r"[0-7]+ [0-9]+ [0-9]+ [A-Za-z0-9_]+:[A-Za-z0-9_]+:[A-Za-z0-9_]+:[A-Za-z0-9_.,:-]+",value):
+                print("LMR365_TPM_PIPE_METADATA="+path+" "+value,flush=True)
+        except (OSError,ValueError,subprocess.SubprocessError):
+            print("LMR365_TPM_PIPE_METADATA_UNVERIFIED="+path,flush=True)
+    count=0
+    for argv in (("/usr/sbin/ausearch","-m","AVC,USER_AVC","-ts","recent","--raw"),
+                 ("/usr/bin/journalctl","-b","-k","--no-pager","-n","1000")):
+        try:
+            raw=command(*argv,timeout=15).decode("utf-8","replace")
+        except (OSError,subprocess.SubprocessError):
+            continue
+        for line in raw.splitlines():
+            if "avc:" not in line.lower() or "postfix_pipe_t:" not in line:
+                continue
+            # Extract only permission names, source/target type, and object
+            # class; omit paths, process arguments and raw audit text.
+            perms=re.search(r"avc:\s+denied\s+\{\s*([a-z_ ]+)\s*\}",line,re.I)
+            source=re.search(r"\bscontext=[^:\s]+:[^:\s]+:([A-Za-z0-9_]+):",line)
+            target=re.search(r"\btcontext=[^:\s]+:[^:\s]+:([A-Za-z0-9_]+):",line)
+            cls=re.search(r"\btclass=([A-Za-z0-9_]+)\b",line)
+            if perms and source and target and cls and source[1]=="postfix_pipe_t":
+                print("LMR365_TPM_PIPE_AVC="+source[1]+":"+target[1]+":"+cls[1]+":"+
+                      ",".join(perms[1].split()),flush=True)
+                count+=1
+                if count>=30:
+                    break
+        if count>=30:
+            break
+    print("LMR365_TPM_PIPE_AVC_COUNT="+str(count),flush=True)
 
 def main():
     F.disposable()
@@ -162,7 +202,11 @@ def main():
             command("/usr/bin/systemctl","start","postfix.service")
             need(command("/usr/bin/systemctl","is-active","postfix.service").strip()==b"active",
                  "fixture_postfix_start")
-            qid=F.submit_fixture(nonce,daemon,tpm=True)
+            try:
+                qid=F.submit_fixture(nonce,daemon,tpm=True)
+            except Exception:
+                failure_diagnostics()
+                raise
             F.disposable()
             print("LMR365_TPM_PIPE_DOMAIN=postfix_pipe_t",flush=True)
             print("LMR365_TPM_PIPE_PS256=verified_native_provider",flush=True)

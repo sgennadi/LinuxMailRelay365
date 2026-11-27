@@ -2,7 +2,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import socket
 import threading
 
@@ -59,6 +59,25 @@ class PipeFixtureTests(unittest.TestCase):
         self.assertIsNone(P.journal_receipt([cleanup,hardware],self.daemon,self.nonce,True))
         with self.assertRaises(ValueError):
             W.marker(self.nonce,True,True)
+
+    def test_tpm_failure_diagnostics_are_bounded_and_never_success(self):
+        expected={
+            "4.3.0 hardware_signature_unavailable_no_pem_fallback":"tpm_provider_signature",
+            "4.3.0 hardware_signer_certificate_invalid":"tpm_certificate",
+            "4.3.0 hardware_key_does_not_match_entra_certificate":"tpm_signature_mismatch",
+            "4.3.0 PermissionError: fixture path":"tpm_io",
+            "4.3.0 unexpected secret value":"tpm_sign_unknown",
+            "4.3.0 hardware_signature_unavailable_no_pem_fallback\nextra":"tpm_sign_unknown"}
+        for raw,code in expected.items():
+            self.assertEqual(W.classify_tpm_error(raw),code)
+        self.assertEqual(str(W.FixtureSignFailure("arbitrary private text")),"tpm_sign_unknown")
+        with patch.object(W.os,"open",side_effect=PermissionError("fixture")) as opener:
+            with self.assertRaisesRegex(W.FixtureSignFailure,"tpm_device_denied"):
+                W.tpm_device_probe()
+            opener.assert_called_once()
+        with patch.object(W.os,"open",side_effect=FileNotFoundError("fixture")):
+            with self.assertRaisesRegex(W.FixtureSignFailure,"tpm_device_unverified"):
+                W.tpm_device_probe()
 
     def test_network_client_uses_only_fixed_loopback_ports_and_exact_reply(self):
         for port in W.PORTS:
