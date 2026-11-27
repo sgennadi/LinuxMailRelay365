@@ -418,15 +418,18 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
             restore.assert_called_once_with(7,9,"b"*64,0,CLI.X.RESTORE,guard,CLI.read_native)
 
     def test_verify_scope_uses_actual_expanded_queue_and_single_instance(self):
-        def output(values):
+        def output(values,padded_empty=True):
             return Mock(returncode=0,stderr=b"",stdout="".join(
-                key+" = "+value+"\n" for key,value in values.items()).encode())
-        # Real postconf empty settings are printed as "key = " plus LF.
+                key+" ="+(" "+value if value or padded_empty else "")+"\n"
+                for key,value in values.items()).encode())
+        # Native empty parameters need not have a trailing separator space.
         values=dict(CLI.SCOPE)
         with patch.object(CLI.X,"snapshot",return_value=("main","master")), \
              patch.object(CLI.X.R,"command",return_value=output(values)) as command:
             CLI.verify_scope(7)
             self.assertEqual(command.call_args[0][0],"postconf")
+            command.return_value=output(values,padded_empty=False)
+            CLI.verify_scope(7)
             for key,value in (("queue_directory","/var/spool/another"),
                               ("multi_instance_enable","yes"),
                               ("mail_owner","other")):

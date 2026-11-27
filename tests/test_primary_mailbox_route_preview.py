@@ -177,6 +177,26 @@ class NativePrimaryCandidateTests(unittest.TestCase):
             with self.subTest(section=section,key=key),self.assertRaises(M.E.Refused):
                 M.compare_native_candidate(before,bad)
 
+    def test_native_parameter_spacing_and_empty_rhs(self):
+        for assignment in ("multi_instance_directories =\n",
+                           "multi_instance_directories = \n",
+                           "multi_instance_directories=\n",
+                           "multi_instance_directories\t=\t\n"):
+            self.assertEqual(M.parameter_map(assignment),{"multi_instance_directories":""})
+        self.assertEqual(M.parameter_map("relayhost=[relay.example.org]:587\n"
+            "mydestination = localhost, example.org\n"
+            "smtp_tls_policy_maps = hash:/etc/postfix/policy=x \n"),
+            {"relayhost":"[relay.example.org]:587",
+             "mydestination":"localhost, example.org",
+             "smtp_tls_policy_maps":"hash:/etc/postfix/policy=x "})
+        self.assertEqual(M.parameter_map(""),{})
+        for invalid in ("a = x\n\nb = y\n","a = x\n  continued\n",
+                        "a = x\n a = y\n","a = x\r\n","a = x\0",
+                        "a = x\v","a = x\n a=y","a=x\na = y\n",
+                        "a=x\x7f"):
+            with self.subTest(invalid=invalid),self.assertRaises(M.E.Refused):
+                M.parameter_map(invalid)
+
     def test_native_parser_rejects_duplicate_or_unexpected_scope(self):
         with self.assertRaises(M.E.Refused):
             M.parameter_map("relayhost = one\nrelayhost = two\n")

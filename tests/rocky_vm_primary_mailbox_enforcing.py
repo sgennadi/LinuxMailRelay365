@@ -117,6 +117,14 @@ def main():
             fds.append(O.P.open_directory(path,strict=path!=O.P.QUEUE))
         parent,config,queue=fds[-3:]
         prepare_fixture_labels(C,config,queue,parent)
+        # Only fixed, non-secret maintenance scope parameters in a disposable
+        # VM. Keep native whitespace visible to diagnose version differences.
+        scope=C.X.R.command("postconf",("-c",O.P.CONFIG,"-x",*C.SCOPE.keys()))
+        need(scope.returncode==0 and not scope.stderr.strip() and
+             len(scope.stdout)<=4096,"native_fixture_scope_unverified")
+        print("LMR365_PRIMARY_VM_SCOPE_OUTPUT="+repr(scope.stdout),flush=True)
+        need(C.X.R.parameter_map(scope.stdout.decode("utf-8","strict"))==C.SCOPE,
+             "native_fixture_scope_mismatch")
         policy,guard=C.native_selinux_offline(config,queue,parent)
         baseline=X.snapshot(config,0,policy)
         native=C.read_native()

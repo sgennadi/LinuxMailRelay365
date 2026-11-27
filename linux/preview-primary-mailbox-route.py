@@ -213,12 +213,24 @@ PRESERVED_KEYS = (
 
 
 def parameter_map(raw):
+    """Read native assignments without assuming a padded empty RHS.
+
+    Native Postfix versions may omit the space after '=' for empty values.
+    Preserve the RHS after the optional separator, including embedded '='
+    and trailing spaces. Do not accept duplicate keys, continuations,
+    unexpected lines or control characters.
+    """
+    need(type(raw) is str and not any(
+        (ord(c)<32 and c not in ("\n","\t")) or ord(c)==127 for c in raw),
+        "invalid_native_parameter_output")
     result={}
-    for line in raw.splitlines():
-        name,sep,value=line.partition(" = ")
-        need(sep and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*",name)
-             and name not in result,"ambiguous_native_parameter")
-        result[name]=value
+    lines=raw.split("\n")
+    if lines[-1]=="":
+        lines.pop()
+    for line in lines:
+        match=re.fullmatch(r"([A-Za-z][A-Za-z0-9_]*)[ \t]*=[ \t]?(.*)",line)
+        need(match is not None and match[1] not in result,"ambiguous_native_parameter")
+        result[match[1]]=match[2]
     return result
 
 
