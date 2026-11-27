@@ -9,6 +9,7 @@ start, or message submission. No SELinux-labelled or ACL files.
 import argparse
 import importlib.util
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -34,16 +35,16 @@ SCOPE={"config_directory":O.P.CONFIG,"queue_directory":O.P.QUEUE,
        "mail_owner":"postfix"}
 
 
-def verify_scope(config):
+def verify_scope(config,selinux=None):
     # An empty fixed spool is not evidence that a nonstandard instance has
     # an empty queue. Bind the expanded settings to the actual directory.
-    before=X.snapshot(config,0)
+    before=X.snapshot(config,0) if selinux is None else X.snapshot(config,0,selinux)
     result=X.R.command("postconf",("-c",O.P.CONFIG,"-x",*SCOPE.keys()))
     X.need(result.returncode==0 and not result.stderr.strip() and
            len(result.stdout)<=65536,"native_maintenance_scope_unverified")
     observed=X.R.parameter_map(result.stdout.decode("utf-8","strict"))
-    X.need(observed==SCOPE and X.snapshot(config,0)==before,
-           "unsupported_postfix_instance_or_spool")
+    after=X.snapshot(config,0) if selinux is None else X.snapshot(config,0,selinux)
+    X.need(observed==SCOPE and after==before,"unsupported_postfix_instance_or_spool")
 
 
 def host_guard(config,queue,parent=None):
@@ -57,6 +58,66 @@ def host_guard(config,queue,parent=None):
         # The native query must not be the last maintenance observation.
         O.maintenance(config,queue,identity)
     return maintenance
+
+
+def native_selinux_mode():
+    try:
+        raw=Path("/sys/fs/selinux/enforce").read_text(encoding="ascii").strip()
+    except (OSError,UnicodeError):
+        return "unverified"
+    return {"0":"permissive","1":"enforcing"}.get(raw,"unverified")
+
+
+def native_selinux_label(path,kind,command=O.P.system_command):
+    # Exact primary paths only. Recovery paths are derived from a validated
+    # transaction digest, never from an arbitrary user-provided filename.
+    base="/var/lib/"+X.BASE
+    dirs={"/etc/postfix","/var/lib",base}
+    files={"/etc/postfix/"+name for name in X.NAMES}
+    allowed=(kind=="dir" and (path in dirs or
+             re.fullmatch(re.escape(base)+r"/[a-f0-9]{64}",path))) or (
+             kind=="file" and (path in files or
+             re.fullmatch(re.escape(base)+r"/[a-f0-9]{64}/(?:"+
+                "|".join(re.escape(name) for name in X.FILES+(X.MANIFEST,))+r")",path)))
+    X.need(bool(allowed),"unsupported_selinux_policy_path")
+    raw=command("matchpathcon",["-N","-n","-m",kind,path])
+    lines=raw.splitlines()
+    X.need(len(lines)==1 and lines[0]==lines[0].strip(),"selinux_policy_label_unverified")
+    value=X.T.checked_label(lines[0].encode("ascii")+b"\0")
+    X.normalized_label(value)
+    return value
+
+
+def native_selinux_offline(config,queue,parent):
+    """Native stopped-host adapter for disposable Enforcing acceptance only.
+
+    Not reachable through main(), the GUI, or any ordinary Apply operation.
+    Both existing workflow locks and exclusive maintenance are the caller's
+    responsibility. No service control, policy edit or automatic relabel.
+    """
+    X.need(os.geteuid()==0 and native_selinux_mode()=="enforcing",
+           "native_enforcing_required")
+    identity=O.mail_identity()
+    def stopped():
+        O.same_directory(config,O.P.CONFIG)
+        O.same_directory(queue,O.P.QUEUE)
+        O.same_directory(parent,RECOVERY_PARENT)
+        O.M.check_directory(config,0)
+        O.M.check_directory(parent,0)
+        X.need(native_selinux_mode()=="enforcing" and O.mail_identity()==identity,
+               "native_selinux_maintenance_changed")
+        O.P.stopped_units()
+        O.P.no_postfix_processes()
+        O.P.empty_queue(queue)
+    stopped()
+    policy=X.SelinuxPolicy(config,parent,0,native_selinux_mode,native_selinux_label)
+    def guard():
+        stopped()
+        verify_scope(config,policy)
+        stopped()
+        X.need(policy.evidence()==policy.initial,"native_selinux_context_changed")
+    guard()
+    return policy,guard
 
 
 def read_native():

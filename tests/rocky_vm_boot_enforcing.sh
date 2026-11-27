@@ -182,6 +182,34 @@ scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'bash /tmp/lmr365-postfix-smoke.sh'
 
+# Native two-file XOAUTH2 transaction with real SELinux labels. This is
+# separate from SMTP AUTH/pipe acceptance and uses a boot-bound lab marker.
+if test "${LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE:-false}" = "true"; then
+    scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+        -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+        linux/manage-primary-mailbox-offline.py linux/primary-mailbox-transaction.py \
+        linux/primary-mailbox-runtime.py linux/manage-tpm-oauth-key.py \
+        linux/preview-primary-mailbox-route.py linux/export-hardware-oauth-cert.py \
+        linux/manage-primary-oauth-rotation.py linux/manage-conditional-postfix-offline.py \
+        linux/inspect-conditional-postfix-activation.py linux/conditional-postfix-transaction.py \
+        linux/stage-conditional-postfix-maps.py tests/rocky_vm_primary_mailbox_enforcing.py \
+        ci@127.0.0.1:/home/ci/
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'sudo dnf -y -q install policycoreutils && sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-primary-mailbox && sudo install -o root -g root -m 0644 /home/ci/manage-primary-mailbox-offline.py /home/ci/primary-mailbox-transaction.py /home/ci/primary-mailbox-runtime.py /home/ci/manage-tpm-oauth-key.py /home/ci/preview-primary-mailbox-route.py /home/ci/export-hardware-oauth-cert.py /home/ci/manage-primary-oauth-rotation.py /home/ci/manage-conditional-postfix-offline.py /home/ci/inspect-conditional-postfix-activation.py /home/ci/conditional-postfix-transaction.py /home/ci/stage-conditional-postfix-maps.py /home/ci/rocky_vm_primary_mailbox_enforcing.py /usr/local/libexec/lmr365-kvm-primary-mailbox/ && sudo restorecon -R /usr/local/libexec/lmr365-kvm-primary-mailbox && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-primary-mailbox-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-primary-mailbox-vm"'
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'sudo env GITHUB_ACTIONS=true timeout 900 python3 -I -B /usr/local/libexec/lmr365-kvm-primary-mailbox/rocky_vm_primary_mailbox_enforcing.py' | tee "$work/primary-mailbox"
+    for expected in \
+        'LMR365_PRIMARY_VM_REVIEW=native_policy_and_postconf' \
+        'LMR365_PRIMARY_VM_APPLY=verified_native_labels' \
+        'LMR365_PRIMARY_VM_BACKUP=verified_native_private_labels' \
+        'LMR365_PRIMARY_VM_RESTORE=exact_bytes_metadata_and_native' \
+        'LMR365_PRIMARY_VM_BASELINE=running_restored' \
+        'LMR365_PRIMARY_VM_REAL_OAUTH_AUTH=no' \
+        'LMR365_PRIMARY_VM_REAL_PIPE_DELIVERY=no'; do
+        grep -Fxq "$expected" "$work/primary-mailbox"
+    done
+fi
+
 # Opt-in outbound TLS certificate acceptance, before foreign-MTA scenarios.
 if test "${LMR365_KVM_CLIENT_TLS_ACCEPTANCE:-false}" = "true"; then
     scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \

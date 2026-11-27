@@ -304,6 +304,55 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
                       (ROOT/"linux/manage-conditional-postfix-offline.py").read_text())
 
 
+class NativePrimarySelinuxAdapterTests(unittest.TestCase):
+    def test_only_exact_config_and_recovery_policy_paths(self):
+        command=Mock(return_value="system_u:object_r:postfix_etc_t:s0\n")
+        expected=CLI.X.T.checked_label(b"system_u:object_r:postfix_etc_t:s0\0")
+        self.assertEqual(CLI.native_selinux_label("/etc/postfix/main.cf","file",command),expected)
+        command.assert_called_once_with("matchpathcon",["-N","-n","-m","file","/etc/postfix/main.cf"])
+        base="/var/lib/"+CLI.X.BASE+"/"+"a"*64
+        self.assertEqual(CLI.native_selinux_label(base+"/main.before","file",command),expected)
+        self.assertEqual(CLI.native_selinux_label(base,"dir",command),expected)
+        command.reset_mock()
+        for path,kind in (("/etc/shadow","file"),("/etc/postfix/main.cf","dir"),
+                          (base+"/../main.before","file"),(base+"/other","file"),
+                          (base.upper(),"dir")):
+            with self.assertRaises(CLI.X.Refused):
+                CLI.native_selinux_label(path,kind,command)
+        command.assert_not_called()
+        for raw in ("system_u:object_r:default_t:s0\n","invalid\n","one\ntwo\n"):
+            command.return_value=raw
+            with self.assertRaises(CLI.X.Refused):
+                CLI.native_selinux_label("/etc/postfix/main.cf","file",command)
+
+    def test_bound_stopped_guard_rechecks_mode_scope_and_queue(self):
+        policy=Mock(initial={"mode":"enforcing"})
+        policy.evidence.return_value=policy.initial
+        with patch.object(CLI.os,"geteuid",return_value=0), \
+             patch.object(CLI,"native_selinux_mode",return_value="enforcing") as mode, \
+             patch.object(CLI.O,"mail_identity",return_value=(12,12)), \
+             patch.object(CLI.O,"same_directory"),patch.object(CLI.O.M,"check_directory"), \
+             patch.object(CLI.O.P,"stopped_units") as stopped, \
+             patch.object(CLI.O.P,"no_postfix_processes"), \
+             patch.object(CLI.O.P,"empty_queue") as empty, \
+             patch.object(CLI.X,"SelinuxPolicy",return_value=policy), \
+             patch.object(CLI,"verify_scope") as scope:
+            bound,guard=CLI.native_selinux_offline(7,8,9)
+            self.assertIs(bound,policy)
+            scope.assert_called_once_with(7,policy)
+            self.assertGreaterEqual(stopped.call_count,3)
+            empty.assert_called_with(8)
+            mode.return_value="permissive"
+            with self.assertRaises(CLI.X.Refused):
+                guard()
+            mode.return_value="enforcing"
+            empty.side_effect=CLI.X.Refused("queue not empty")
+            with self.assertRaises(CLI.X.Refused):
+                guard()
+        source=(ROOT/"linux/manage-primary-mailbox-offline.py").read_text()
+        self.assertNotIn("native_selinux_offline(",source.split("def main(argv=None):",1)[1])
+
+
 class OfflineReviewIntegrationTests(unittest.TestCase):
     def test_review_host_supplies_actual_guard_to_transaction(self):
         runtime=Mock(return_value="a"*64)
