@@ -47,3 +47,18 @@ class PublicIpConnectorInspectionContracts(unittest.TestCase):
         section = source.split("if ($Action -eq 'Inspect' -and $PublicIpv4)",1)[1].split("if ($Action -eq 'Inspect')",1)[0]
         self.assertIn("CHANGES_APPLIED=no", section)
         self.assertNotIn("New-InboundConnector", section)
+
+    def test_public_ip_wizard_requires_separate_confirmation(self):
+        src = ROOT / "src/LinuxMailRelay365"
+        main = (src/"MainForm.SmtpPublicIpConnector.cs").read_text()
+        ui = (src/"SmtpPublicIpConnectorDialog.cs").read_text()
+        self.assertIn('RunTenantConnectorManagerAsync(options, "Inspect")', main)
+        self.assertIn('RunTenantConnectorManagerAsync(options, "Preview")', main)
+        self.assertLess(main.index("ConfirmDestructive("), main.index('RunTenantConnectorManagerAsync(options, "Apply", sha)'))
+        self.assertIn("acceptedDomainApproved.Checked", main)
+        self.assertIn("Confirm external IP observation", ui)
+        self.assertIn("smtp_egress_verified", ui)
+        self.assertIn("ipv4Verified", ui)
+        self.assertIn("ip.Text.Trim().Length == 0", ui)
+        self.assertIn("OpenPublicIpConnectorAsync(owner, context, mx)", (src/"MainForm.DeliveryMiniWizard.cs").read_text())
+        self.assertIn("sessionMx = await publicIpConnector", (src/"SmtpCertificateWizardDialog.cs").read_text())

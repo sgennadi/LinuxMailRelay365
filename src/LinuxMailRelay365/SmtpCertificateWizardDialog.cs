@@ -12,16 +12,16 @@ internal sealed class SmtpCertificateWizardDialog : Form
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form, string> deliveryProbe, string configuredMx = "", Func<Form, string, string, bool, Task>? stagedConnector = null, Func<Form, Task>? manageConnectors = null)
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form, string> deliveryProbe, string configuredMx = "", Func<Form, string, string, bool, Task>? stagedConnector = null, Func<Form, Task>? manageConnectors = null, Func<Form, string, Task<string>>? publicIpConnector = null)
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(740, 520);
         MinimumSize = new Size(460, 350);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 17, Padding = new Padding(16), AutoScroll = true };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 18, Padding = new Padding(16), AutoScroll = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 17; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 18; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         bool working = false;
         // Event handlers are registered before all controls exist. Assign the
         // complete refresh delegate only after every captured control is initialized.
@@ -216,12 +216,22 @@ internal sealed class SmtpCertificateWizardDialog : Form
             finally { if (!IsDisposed) SetWorking(false); }
         };
         layout.Controls.Add(manage, 0, 15);
+        var publicIp = new Button { Text = "Discover IP / review or create Public IP Connector", AutoSize = true };
+        publicIp.Click += async (_, _) =>
+        {
+            if (working || publicIpConnector is null || Identity != SmtpConnectorIdentity.PublicIp) return;
+            SetWorking(true);
+            try { sessionMx = await publicIpConnector(this, sessionMx); }
+            catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, "Public IP Connector workflow refused: " + ex.GetType().Name); }
+            finally { if (!IsDisposed) SetWorking(false); }
+        };
+        layout.Controls.Add(publicIp, 0, 16);
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var back = new Button { Text = "Back", AutoSize = true };
         var next = new Button { Text = "Next", AutoSize = true };
         var navigation = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         navigation.Controls.AddRange([back, next, close]);
-        layout.Controls.Add(navigation, 0, 16);
+        layout.Controls.Add(navigation, 0, 17);
         Controls.Add(layout);
         CancelButton = close;
 
@@ -251,8 +261,9 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 delivery.Visible = stage == SmtpWorkflowStage.Delivery;
                 renewal.Visible = scheduler.Visible = maintenance;
                 manage.Visible = manageConnectors is not null && (first || deployment || exchange);
+                publicIp.Visible = publicIpConnector is not null && first && !certificate;
                 foreach (Control control in new Control[] { identity, source, domain, scan, check, import,
-                    acme, rotate, binding, delivery, renewal, scheduler, manage, close })
+                    acme, rotate, binding, delivery, renewal, scheduler, manage, publicIp, close })
                     control.Enabled = !working && (control != source || certificate);
                 back.Enabled = !working && page > 0;
                 next.Enabled = !working && page < stages.Length - 1;
@@ -269,7 +280,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 {
                     SmtpWorkflowStage.Identity => certificate
                         ? "Choose the certificate source. The certificate DNS identity is independent of the Linux hostname."
-                        : "Public IP authentication does not require a client certificate. Review or create the tenant IP connector and the Postfix route in the main delivery configuration before sending test messages.",
+                        : "Public IP authentication does not require a client certificate. Open Discover IP / review or create Public IP Connector to observe HTTPS egress, check MX and SMTP 25, and separately inspect or create the tenant Connector. The actual Postfix route must still be reviewed before sending.",
                     SmtpWorkflowStage.Certificate => Source switch
                     {
                         SmtpCertificateSource.Existing => "Discover and validate an existing certificate. Validation alone does not create a staged candidate; use Import or the ACME staging workflow if a candidate is needed.",

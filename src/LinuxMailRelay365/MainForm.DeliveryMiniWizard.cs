@@ -284,7 +284,8 @@ internal sealed partial class MainForm
                     probe.ShowDialog(owner);
                 }, outboundMxHost.Text.Trim(),
                     (owner, candidate, dns, create) => ReviewStagedConnectorAsync(owner, context, candidate, dns, create),
-                    owner => InspectWizardConnectorsAsync(owner, context));
+                    owner => InspectWizardConnectorsAsync(owner, context),
+                    (owner, mx) => OpenPublicIpConnectorAsync(owner, context, mx));
                 dialog.ShowDialog(this);
             };
             AddLine(page, smtp);
