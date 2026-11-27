@@ -228,6 +228,79 @@ class ManagedTpmRuntimeTests(unittest.TestCase):
                 A.tpm_public_evidence("0x81010001",self.identity["certificate"])
 
 
+class PrimarySelinuxReadinessTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec=importlib.util.spec_from_file_location("primary_label_probe",
+            ROOT/"linux/inspect-primary-mailbox-selinux.py")
+        cls.S=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.S)
+
+    def test_ports_are_policy_metadata_not_network_permission(self):
+        S=self.S
+        raw=("SELinux Port Type Proto Port Number\n"
+             "http_port_t tcp 80, 443\nsmtp_port_t tcp 25, 465, 587\n"
+             "unreserved_port_t tcp 1024-65535\nreserved_port_t tcp 1-1023\n")
+        self.assertEqual(S.port_states(raw),{"443":"expected_type","587":"expected_type"})
+        self.assertEqual(S.port_states(raw+"other_t tcp 587\n")["587"],"different_or_ambiguous_type")
+        self.assertEqual(S.port_states(raw.replace("465, 587","465"))["587"],"no_specific_type")
+        with self.assertRaises(ValueError):
+            S.port_states(raw+"bad_t tcp 70000\n")
+
+    def test_fixed_credential_references_and_hardware_scope(self):
+        S=self.S
+        identity=dict(tenant_id=TENANT,client_id=CLIENT,mailbox=MAIL,
+                      certificate=S.ROOT+"/app.crt",private_key=S.ROOT+"/app.key")
+        self.assertEqual(S.credential_paths(identity)[0],"pem")
+        with self.assertRaises(ValueError):
+            S.credential_paths(dict(identity,private_key="/tmp/key"))
+        with self.assertRaises(ValueError):
+            S.credential_paths(dict(identity,private_key=S.ROOT+"/../key"))
+        hardware=dict(identity)
+        hardware.pop("private_key")
+        hardware["certificate"]=S.ROOT+"/hardware-app.crt"
+        hardware["signer"]={"type":"openssl-provider","provider":"tpm2",
+            "provider_config":S.ROOT+"/tpm2.cnf","key_ref":"handle:0x81010001"}
+        self.assertEqual(S.credential_paths(hardware)[0],"managed_tpm2_reference")
+        hardware["signer"]["provider"]="pkcs11"
+        self.assertEqual(S.credential_paths(hardware)[0],"custom_hardware")
+
+    def test_report_is_read_only_and_fails_on_observed_drift(self):
+        S=self.S
+        identity=dict(tenant_id=TENANT,client_id=CLIENT,mailbox=MAIL,
+                      certificate=S.ROOT+"/app.crt",private_key=S.ROOT+"/app.key")
+        raw="SELinux Port Type Proto Port Number\nhttp_port_t tcp 443\nsmtp_port_t tcp 587\n"
+        sample=Mock(return_value=("policy_match",{"label":"test","metadata":[1,2]}))
+        with patch.object(S.A.grp,"getgrnam",return_value=Mock(gr_gid=998)), \
+             patch.object(S.A.pwd,"getpwnam",return_value=Mock(pw_uid=999)), \
+             patch.object(S.os,"lstat",return_value=Mock(st_uid=999)):
+            result=S.collect("a"*64,lambda:"enforcing",Mock(return_value=raw),sample,
+                             Mock(return_value=(b"private config",identity)))
+            self.assertEqual(result["status"],"manual_runtime_review_required")
+            self.assertRegex(result["config_metadata_sha256"],r"^[a-f0-9]{64}$")
+            for flag in ("write_allowed","runtime_verified","changes_applied","mail_sent","network_attempted"):
+                self.assertFalse(result[flag])
+            self.assertNotIn("private config",str(result))
+            self.assertNotIn(S.ROOT,str(result))
+            sample.side_effect=[("policy_match",{"label":"one"})]*len(result["labels"])+[("policy_mismatch",None)]*len(result["labels"])
+            with self.assertRaises(ValueError):
+                S.collect("a"*64,lambda:"enforcing",Mock(return_value=raw),sample,
+                          Mock(return_value=(b"private config",identity)))
+        inactive=S.collect("a"*64,lambda:"inactive_or_unavailable",Mock(side_effect=AssertionError("no commands")),
+                           Mock(side_effect=AssertionError("no files")))
+        self.assertFalse(inactive["write_allowed"])
+        self.assertIsNone(inactive["config_metadata_sha256"])
+
+    def test_gui_bundle_does_not_unlock_enforcing_apply(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        self.assertIn("BuildPrimaryMailboxSelinuxReadiness",(src/"EmbeddedAssets.cs").read_text())
+        self.assertIn("inspect-primary-mailbox-selinux.py",(src/"LinuxMailRelay365.csproj").read_text())
+        self.assertIn("InspectPrimaryMailboxSelinuxAsync",(src/"MainForm.PrimaryMailboxRoute.cs").read_text())
+        self.assertIn("PrimaryMailboxSelinuxClient.SelfTest",(src/"Program.cs").read_text())
+        self.assertIn('need(not os.path.exists("/sys/fs/selinux/enforce")',
+                      (ROOT/"linux/manage-conditional-postfix-offline.py").read_text())
+
+
 class OfflineReviewIntegrationTests(unittest.TestCase):
     def test_review_host_supplies_actual_guard_to_transaction(self):
         runtime=Mock(return_value="a"*64)

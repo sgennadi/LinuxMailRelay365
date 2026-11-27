@@ -524,6 +524,18 @@ internal static class EmbeddedAssets
         return script;
     }
 
+    internal static string BuildPrimaryMailboxSelinuxReadiness(string nonce)
+    {
+        if(!PrimaryMailboxOfflineClient.IsSha(nonce)) throw new ArgumentException("Invalid diagnostic nonce.");
+        var script=PrimaryMailboxBundle(false);
+        const string file="inspect-primary-mailbox-selinux.py";
+        script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_PRIMARY_SELINUX_ASSET'\n")
+            .Append(Encode(Text("LinuxMailRelay365.linux."+file)))
+            .Append("\nLMR365_PRIMARY_SELINUX_ASSET\n");
+        return script.Append("/usr/bin/python3 -I -B \"$work/").Append(file)
+            .Append("\" --nonce=").Append(nonce).Append('\n').ToString();
+    }
+
     internal static string BuildPrimaryMailboxLocalProbe(string action,string request,string backupSha,string? sha)
     {
         if(action is not ("local-discover" or "local-diagnose" or "local-preview" or "local-submit" or "local-trace" or "local-mailbox") ||

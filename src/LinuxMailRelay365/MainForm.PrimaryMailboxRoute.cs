@@ -24,10 +24,37 @@ internal sealed partial class MainForm
             OpenPrimaryMailboxOfflineAsync,false,"check","primary-mailbox-offline");
         AddAction(page,T("Тест доставки XOAUTH2 / Queue ID","XOAUTH2 delivery test / Queue ID","בדיקת מסירה XOAUTH2"),
             OpenPrimaryMailboxDeliveryAsync,false,"check","primary-mailbox-delivery");
+        AddAction(page,T("Диагностика SELinux (без изменений)","SELinux readiness (read-only)","בדיקת מוכנות SELinux (קריאה בלבד)"),
+            InspectPrimaryMailboxSelinuxAsync,false,"check","primary-mailbox-selinux");
         AddLine(page,MailFlowText(T(
             "Требуется остановленный Postfix, пустая очередь, активная PEM- или управляемая TPM2-идентичность и отдельное подтверждение. Служба не запускается автоматически.",
             "Requires stopped Postfix, empty queues, an active PEM or managed TPM2 identity and separate approval. No automatic service start.",
             "נדרש Postfix כבוי, תורים ריקים וזהות PEM או TPM2 פעילה. אין הפעלה אוטומטית."),width,warning:true));
+    }
+
+    private async Task InspectPrimaryMailboxSelinuxAsync()
+    {
+        string context=TryCurrentIdentity() ?? throw new InvalidOperationException("Discover Linux first.");
+        var endpoint=Endpoint();
+        void Guard()
+        {
+            RequireSameArchiveConnection(endpoint,allowFirstPin:true);
+            if(TryCurrentIdentity()!=context || !HasMailDiscovery() || inspectedMail?.Mta!="postfix" ||
+                selectedMailTarget!=MailFlowIntent.TargetM365 || selectedMailScenario!=MailScenarioPlanner.ReplaceRelay ||
+                mailTransport.SelectedIndex!=0 || oauthSenderMode.SelectedIndex!=0)
+                throw new InvalidOperationException("Primary Postfix XOAUTH2 selection or Linux host changed.");
+        }
+        Guard();
+        string nonce=Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        string script=EmbeddedAssets.BuildPrimaryMailboxSelinuxReadiness(nonce);
+        var result=endpoint.Username=="root"
+            ? await SshRemote.ExecuteAsync(endpoint,"bash -s",script,TimeSpan.FromMinutes(4))
+            : await SshRemote.RunRootScriptAsync(endpoint,script,TimeSpan.FromMinutes(4));
+        Guard();
+        if(result.ExitCode!=0) throw new InvalidOperationException("SELinux readiness unavailable or context changed.");
+        string report=PrimaryMailboxSelinuxClient.Describe(result.StdOut,nonce);
+        WriteLine("Primary XOAUTH2 SELinux readiness observed; no policy or configuration changes.");
+        MessageBox.Show(this,report,"Primary Postfix | SELinux readiness",MessageBoxButtons.OK,MessageBoxIcon.Information);
     }
 
     private async Task PreviewPrimaryMailboxRouteAsync()
