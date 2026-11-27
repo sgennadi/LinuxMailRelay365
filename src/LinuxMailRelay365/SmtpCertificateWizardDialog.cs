@@ -12,7 +12,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form, string> deliveryProbe, string configuredMx = "")
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form, string> deliveryProbe, string configuredMx = "", Func<Form, string, string, bool, Task>? stagedConnector = null)
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
@@ -159,7 +159,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 MessageBox.Show(this, "Select TLS certificate authentication first.");
                 return;
             }
-            using var dialog = new SmtpTlsRotationDialog(rotateTls, domain.Text.Trim(), acceptedDomain, sessionMx);
+            using var dialog = new SmtpTlsRotationDialog(rotateTls, domain.Text.Trim(), acceptedDomain, sessionMx, stagedConnector);
             dialog.ShowDialog(this);
             sessionMx = dialog.SessionMx;
             domain.Text = dialog.SessionCertificateName;
@@ -262,7 +262,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
                         SmtpCertificateSource.Import => "Import a certificate and private key into a protected staged generation. No activation occurs here.",
                         _ => "Review DNS, test staging, evaluate production material and stage an eligible certificate. No activation occurs here."
                     },
-                    SmtpWorkflowStage.Deployment => "Select a staged generation. Discover MX and test STARTTLS before a separate deployment review and explicit activation. Confirm the intended tenant connector independently; the active binding check is on the next page.",
+                    SmtpWorkflowStage.Deployment => "Select a staged generation. Discover MX and test STARTTLS before a separate deployment review and explicit activation. Review or create the tenant Connector for the staged certificate in the deployment dialog before activation; verify the active binding on the next page.",
                     SmtpWorkflowStage.Binding => "Read-only review of the active managed Linux certificate and exact tenant Connector. Create or change connectors using the separate main configuration workflow.",
                     SmtpWorkflowStage.Delivery => "Review the actual primary route, explicitly approve test messages, then refresh the Linux trace and Exchange Message Trace. Local submission or TLS success is not inbox delivery.",
                     _ => "Inspect renewal state, timers and recovery services. Each live action requires its own review."

@@ -10,7 +10,7 @@ internal sealed class SmtpTlsRotationDialog : Form
     // Session-only context. Never writes the main routing plan.
     internal string SessionMx { get; private set; } = "";
     internal string SessionCertificateName { get; private set; } = "";
-    internal SmtpTlsRotationDialog(Func<string, string?, string?, string?, Task<string>> remote, string dnsName, string acceptedDomain = "", string configuredMx = "")
+    internal SmtpTlsRotationDialog(Func<string, string?, string?, string?, Task<string>> remote, string dnsName, string acceptedDomain = "", string configuredMx = "", Func<Form, string, string, bool, Task>? stagedConnector = null)
     {
         Text = "SMTP TLS | Reviewed deployment";
         StartPosition = FormStartPosition.CenterParent;
@@ -44,12 +44,14 @@ internal sealed class SmtpTlsRotationDialog : Form
         var preview = new Button { Text = "Review", AutoSize = true };
         var activate = new Button { Text = "Activate reviewed deployment", AutoSize = true, Enabled = false };
         var candidateTls = new Button { Text = "Test staged certificate STARTTLS", AutoSize = true };
+        var connectorReview = new Button { Text = "Review Exchange Connector", AutoSize = true, Visible = stagedConnector is not null };
+        var connectorCreate = new Button { Text = "Preview / create NEW Connector", AutoSize = true, Visible = stagedConnector is not null };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         var recovery = new Button { Text = "Review interrupted transaction", AutoSize = true };
         var selinux = new Button { Text = "Review SELinux contexts", AutoSize = true };
         var avc = new Button { Text = "Recent SELinux AVC denials", AutoSize = true };
-        buttons.Controls.AddRange([refresh, preview, candidateTls, activate, recovery, selinux, avc, close]);
+        buttons.Controls.AddRange([refresh, candidateTls, connectorReview, connectorCreate, preview, activate, recovery, selinux, avc, close]);
         bool busy = false;
         string? approvedSha = null;
         string? approvedName = null;
@@ -66,6 +68,7 @@ internal sealed class SmtpTlsRotationDialog : Form
         {
             busy = value;
             discoverMx.Enabled = mx.Enabled = candidateTls.Enabled = domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = recovery.Enabled = selinux.Enabled = avc.Enabled = close.Enabled = !value;
+            connectorReview.Enabled = connectorCreate.Enabled = !value && stagedConnector is not null;
             activate.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
@@ -300,6 +303,33 @@ internal sealed class SmtpTlsRotationDialog : Form
             }
             finally { SetBusy(false); }
         };
+        async Task StagedConnectorAsync(bool create)
+        {
+            if (busy || stagedConnector is null) return;
+            string? name = candidates.SelectedItem as string;
+            string dns = domain.Text.Trim().ToLowerInvariant();
+            if (name is null || Uri.CheckHostName(dns) != UriHostNameType.Dns)
+            {
+                status.Text = "Select a staged certificate and its exact DNS name.";
+                return;
+            }
+            Invalidate();
+            SetBusy(true);
+            status.Text = create ? "Reviewing NEW tenant Connector creation..." : "Reviewing staged identity and Exchange Connector...";
+            try
+            {
+                await stagedConnector(this, name, dns, create);
+                status.Text = "Connector workflow closed. Review the actual tenant state and run a fresh deployment review.";
+            }
+            catch (Exception ex)
+            {
+                status.Text = "Connector review refused or outcome uncertain: " + ex.GetType().Name + ". Reinspect the tenant before retrying.";
+                status.ForeColor = Color.DarkOrange;
+            }
+            finally { SetBusy(false); }
+        }
+        connectorReview.Click += async (_, _) => await StagedConnectorAsync(false);
+        connectorCreate.Click += async (_, _) => await StagedConnectorAsync(true);
         activate.Click += async (_, _) =>
         {
             if (busy || approvedSha is null || approvedName is null || approvedDomain is null || approvedMode is null) return;

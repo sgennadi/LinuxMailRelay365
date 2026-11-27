@@ -86,3 +86,18 @@ class ConnectorBindingTests(unittest.TestCase):
              patch.object(M,"read_file",return_value=b"CA"):
             with self.assertRaises(ValueError):
                 M.candidate_connector_binding("candidate-"+"a"*64,"relay.example.org",checker,validator,lambda _: nullcontext())
+
+    def test_staged_connector_gui_separate_inspect_and_create(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        main=(src/"MainForm.SmtpConnectorBinding.cs").read_text()
+        staged=main.split("private async Task ReviewStagedConnectorAsync",1)[1]
+        self.assertIn('BuildSmtpTlsRotation("candidate-binding-preview"',staged)
+        self.assertIn('RunTenantConnectorManagerAsync(options, "Inspect")',staged)
+        self.assertIn('RunTenantConnectorManagerAsync(options, "Preview")',staged)
+        self.assertLess(staged.index("ConfirmDestructive("),staged.index('RunTenantConnectorManagerAsync(options, "Apply", cloudSha)'))
+        self.assertIn("acceptedDomainApproved.Checked",staged)
+        self.assertNotIn("connectorApproved.Checked = true",staged)
+        ui=(src/"SmtpTlsRotationDialog.cs").read_text()
+        self.assertIn("StagedConnectorAsync(false)",ui)
+        self.assertIn("StagedConnectorAsync(true)",ui)
+        self.assertIn("Invalidate();",ui)
