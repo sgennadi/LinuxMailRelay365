@@ -281,36 +281,42 @@ def compare_native_candidate(before,after):
          "native_pipe_not_exact")
 
 
+def native_candidate_snapshots(raw,candidate,snapshot=native_snapshot):
+    """Internal native before/after evidence, never exported."""
+    E.trusted_directory(Path("/run"))
+    live=snapshot(ROOT)
+    need(config_bytes()==raw,"live_configuration_changed")
+    with tempfile.TemporaryDirectory(prefix="lmr365-primary-native-",dir="/run") as work:
+        directory=Path(work)
+        E.trusted_directory(directory)
+        need(stat.S_IMODE(directory.stat().st_mode)==0o700,"native_stage_not_private")
+        for index,blob in enumerate((raw,candidate)):
+            for name,data in zip(("main.cf","master.cf"),blob):
+                if index==0:
+                    fd=os.open(str(directory/name),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+                    with os.fdopen(fd,"wb") as stream:
+                        stream.write(data)
+                else:
+                    # Only overwrite the two files in our private scratch directory.
+                    with (directory/name).open("wb") as stream:
+                        stream.write(data)
+            sampled=snapshot(directory)
+            if index==0:
+                baseline=sampled
+                need(baseline==live,"alternate_config_baseline_differs")
+            else:
+                compare_native_candidate(baseline,sampled)
+                checked=sampled
+        need(config_bytes()==raw and snapshot(ROOT)==live and config_bytes()==raw,
+             "live_configuration_changed_during_native_review")
+        return live,checked
+
+
 def native_candidate_validation(raw,candidate,snapshot=native_snapshot):
     """Private alternate-config postconf only; never call postfix check/start."""
     try:
-        E.trusted_directory(Path("/run"))
-        live=snapshot(ROOT)
-        need(config_bytes()==raw,"live_configuration_changed")
-        with tempfile.TemporaryDirectory(prefix="lmr365-primary-native-",dir="/run") as work:
-            directory=Path(work)
-            E.trusted_directory(directory)
-            need(stat.S_IMODE(directory.stat().st_mode)==0o700,"native_stage_not_private")
-            for index,blob in enumerate((raw,candidate)):
-                for name,data in zip(("main.cf","master.cf"),blob):
-                    if index==0:
-                        fd=os.open(str(directory/name),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-                        with os.fdopen(fd,"wb") as stream:
-                            stream.write(data)
-                    else:
-                        # Only overwrite the two files in our private scratch directory.
-                        with (directory/name).open("wb") as stream:
-                            stream.write(data)
-                sampled=snapshot(directory)
-                if index==0:
-                    baseline=sampled
-                    need(baseline==live,"alternate_config_baseline_differs")
-                else:
-                    compare_native_candidate(baseline,sampled)
-                    checked=sampled
-            need(config_bytes()==raw and snapshot(ROOT)==live and config_bytes()==raw,
-                 "live_configuration_changed_during_native_review")
-            return "verified",E.digest(encode({"before":live,"after":checked}))
+        before,after=native_candidate_snapshots(raw,candidate,snapshot)
+        return "verified",E.digest(encode({"before":before,"after":after}))
     except (E.Refused,OSError,ValueError,KeyError,TypeError,UnicodeError,subprocess.TimeoutExpired):
         # Never emit native output: main.cf may contain sensitive values.
         return "review_required",""

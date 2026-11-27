@@ -73,6 +73,8 @@ jobs:
           python3 -m py_compile linux/manage-primary-oauth-rotation.py
           python3 -m unittest discover -v -s tests -p test_primary_oauth_rotation.py
           python3 -m unittest discover -v -s tests -p test_primary_mailbox_route_preview.py
+          python3 -m py_compile linux/primary-mailbox-transaction.py
+          python3 -m unittest discover -v -s tests -p test_primary_mailbox_transaction.py
           python3 -m py_compile linux/export-hardware-oauth-cert.py
           python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
           python3 -m py_compile linux/audit-oauth-sender-map.py
@@ -452,6 +454,8 @@ jobs:
           python3 -m py_compile linux/manage-primary-oauth-rotation.py
           python3 -m unittest discover -v -s tests -p test_primary_oauth_rotation.py
           python3 -m unittest discover -v -s tests -p test_primary_mailbox_route_preview.py
+          python3 -m py_compile linux/primary-mailbox-transaction.py
+          python3 -m unittest discover -v -s tests -p test_primary_mailbox_transaction.py
           python3 -m py_compile linux/export-hardware-oauth-cert.py
           python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
           python3 -m py_compile linux/m365_xoauth2_transport.py linux/manage-m365-delivery-acceptance.py
