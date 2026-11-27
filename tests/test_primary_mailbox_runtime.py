@@ -70,11 +70,11 @@ class RuntimeGuardTests(unittest.TestCase):
         runner=Mock(return_value=Mock(returncode=0,stdout=A.SUCCESS,stderr=b""))
         with patch.object(A.os,"geteuid",return_value=0):
             A.run_auth(self.state,runner)
-            args=runner.call_args.args[0]
+            args=runner.call_args[0][0]
             self.assertEqual(args,["/usr/bin/python3","-E","-s","-B",
                 "/usr/local/libexec/m365_xoauth2_transport.py","--smtp-auth-check",
                 "--config","/etc/postfix/m365-oauth/app.json"])
-            kw=runner.call_args.kwargs
+            kw=runner.call_args[1]
             self.assertEqual(kw["env"],A.ENV)
             self.assertEqual(kw["input"],b"")
             self.assertEqual(kw["timeout"],120)
@@ -180,7 +180,7 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
         with patch.object(CLI.X,"snapshot",return_value=("main","master")), \
              patch.object(CLI.X.R,"command",return_value=output(values)) as command:
             CLI.verify_scope(7)
-            self.assertEqual(command.call_args.args[0],"postconf")
+            self.assertEqual(command.call_args[0][0],"postconf")
             for key,value in (("queue_directory","/var/spool/another"),
                               ("multi_instance_enable","yes"),
                               ("mail_owner","other")):
