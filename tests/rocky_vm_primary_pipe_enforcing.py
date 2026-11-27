@@ -224,6 +224,46 @@ def submit_fixture(nonce,daemon,network=False):
     command("/usr/sbin/sendmail","-i","-f","<>","--",W.RECIPIENT,data=message)
     return wait_receipt(nonce,daemon,started,network)
 
+def review_installed_fixture(C,config,queue,parent,policy,guard,baseline,native,uid,gid):
+    """Native installed-runtime review; only cloud AUTH is synthetic.
+
+    Both product maintenance locks are held by the boot-bound fixture.
+    No synthetic identity reader, runtime snapshot or native Postfix sampler.
+    """
+    disposable()
+    guard()
+    tenant="11111111-1111-1111-1111-111111111111"
+    client="22222222-2222-2222-2222-222222222222"
+    observations=[]
+    original=C.A.RuntimeGuard
+    recovery=Path(C.RECOVERY_PARENT)/C.X.BASE
+    def backup_inventory():
+        return tuple(sorted(str(p.relative_to(recovery)) for p in recovery.rglob("*")))
+    before=backup_inventory()
+    def fixture_auth(state):
+        need(state["version"]==1 and state["mailbox"]==W.MAILBOX and
+             state["tenant"]==tenant and state["client"]==client and
+             state["uid"]==uid and state["gid"]==gid and state["groups"]==[gid],
+             "review_fixture_runtime_unverified")
+        observations.append(C.A.digest(state))
+    def factory(t,a,confirm):
+        need((t,a,confirm)==(tenant,client,C.A.CONFIRM),"review_fixture_identity_unverified")
+        return original(t,a,confirm,auth=fixture_auth)
+    try:
+        C.A.RuntimeGuard=factory
+        need(C.review_enforcing_host(config,queue,parent,W.MAILBOX,tenant,client,
+                                     C.ENFORCING_REVIEW) is None,
+             "enforcing_review_exported_authorization")
+        need(bool(observations) and len(set(observations))==1,
+             "enforcing_review_missing_synthetic_auth")
+        guard()
+        need(C.X.snapshot(config,0,policy)==baseline and C.read_native()==native and
+             backup_inventory()==before,"enforcing_review_modified_baseline")
+        print("LMR365_PRIMARY_VM_ENFORCING_REVIEW=native_runtime_synthetic_auth",flush=True)
+    finally:
+        C.A.RuntimeGuard=original
+
+
 def run(C,config,queue,policy,guard,baseline,native,files):
     disposable()
     X=C.X
@@ -231,6 +271,7 @@ def run(C,config,queue,policy,guard,baseline,native,files):
     need(X.snapshot(config,0,policy)==baseline and C.read_native()==native,
          "pipe_requires_exact_restored_baseline")
     uid,gid=install_fixture()
+    review_installed_fixture(C,config,queue,policy.parent,policy,guard,baseline,native,uid,gid)
     nonce=uuid.uuid4().hex
     network_nonce=uuid.uuid4().hex
     need(network_nonce!=nonce,"duplicate_fixture_nonce")

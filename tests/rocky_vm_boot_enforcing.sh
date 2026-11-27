@@ -209,6 +209,7 @@ if test "${LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE:-false}" = "true"; then
         'LMR365_PRIMARY_VM_APPLY=verified_native_labels' \
         'LMR365_PRIMARY_VM_BACKUP=verified_native_private_labels' \
         'LMR365_PRIMARY_VM_RESTORE=exact_bytes_metadata_and_native' \
+        'LMR365_PRIMARY_VM_ENFORCING_REVIEW=native_runtime_synthetic_auth' \
         'LMR365_PRIMARY_VM_PIPE_DOMAIN=postfix_pipe_t' \
         'LMR365_PRIMARY_VM_PIPE_PS256=verified_fixture_certificate' \
         'LMR365_PRIMARY_VM_PIPE_QUEUE=correlated_and_empty' \
