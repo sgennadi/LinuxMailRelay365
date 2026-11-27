@@ -163,7 +163,13 @@ def port_policy():
     spec.loader.exec_module(probe)
     raw=command("/usr/sbin/semanage","port","-l",timeout=30)
     need(len(raw)<=131072,"fixture_port_policy_too_large")
-    states=probe.port_states(raw.decode("utf-8","strict"))
+    decoded=raw.decode("utf-8","strict")
+    matches=probe.port_matches(decoded,include_generic=True)
+    states=probe.port_states(decoded)
+    # Only the fixed TCP targets' label names, never the full host policy.
+    for port in W.PORTS:
+        print("LMR365_PRIMARY_VM_PIPE_PORT_POLICY_"+str(port)+"="+
+              ",".join(sorted(matches[port]))+";"+states[str(port)],flush=True)
     need(states=={"443":"expected_type","587":"expected_type"},
          "fixture_port_policy_types_unverified")
     return raw

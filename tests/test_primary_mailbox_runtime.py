@@ -314,6 +314,14 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
              "http_port_t tcp 80, 443\nsmtp_port_t tcp 25, 465, 587\n"
              "unreserved_port_t tcp 1024-65535\nreserved_port_t tcp 1-1023\n")
         self.assertEqual(S.port_states(raw),{"443":"expected_type","587":"expected_type"})
+        stock=raw+"hi_reserved_port_t tcp 512-1023\n"
+        self.assertEqual(S.port_states(stock),{"443":"expected_type","587":"expected_type"})
+        self.assertEqual(S.port_matches(stock,include_generic=True)[587],
+                         {"smtp_port_t","reserved_port_t","hi_reserved_port_t"})
+        self.assertEqual(S.port_states(stock.replace("465, 587","465"))["587"],"no_specific_type")
+        for custom in ("hi_reserved_port_t tcp 587\n","hi_reserved_port_t tcp 580-590\n",
+                       "other_t tcp 587\n"):
+            self.assertEqual(S.port_states(stock+custom)["587"],"different_or_ambiguous_type")
         self.assertEqual(S.port_states(raw+"other_t tcp 587\n")["587"],"different_or_ambiguous_type")
         self.assertEqual(S.port_states(raw.replace("465, 587","465"))["587"],"no_specific_type")
         with self.assertRaises(ValueError):

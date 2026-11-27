@@ -141,7 +141,7 @@ def credential_paths(identity):
         identity_mode="custom_hardware"
     return identity_mode,dict(active_certificate=cert,active_key_or_provider=provider)
 
-def port_states(raw):
+def port_matches(raw,include_generic=False):
     need(type(raw) is str and len(raw)<=131072,"port_policy_unverified")
     lines=[line.strip() for line in raw.splitlines() if line.strip()]
     need(bool(lines) and lines[0].split()==["SELinux","Port","Type","Proto","Port","Number"],
@@ -156,13 +156,22 @@ def port_states(raw):
             need(interval is not None,"port_policy_range_unverified")
             lo,hi=int(interval[1]),int(interval[2] or interval[1])
             need(0<=lo<=hi<=65535,"port_policy_range_unverified")
-            if protocol=="tcp" and label not in ("reserved_port_t","unreserved_port_t","port_t"):
+            # The stock high-reserved interval is a generic fallback,
+            # not a second specific assignment of SMTP Submission. Do not
+            # disregard a custom hi_reserved_port_t single port or range.
+            generic=(label in ("reserved_port_t","unreserved_port_t","port_t") or
+                     (label=="hi_reserved_port_t" and (lo,hi)==(512,1023)))
+            if protocol=="tcp" and (include_generic or not generic):
                 for port in PORTS:
                     if lo<=port<=hi:
                         matches[port].add(label)
+    return matches
+
+
+def port_states(raw):
     return {str(port):"expected_type" if labels=={PORTS[port]} else
             "no_specific_type" if not labels else "different_or_ambiguous_type"
-            for port,labels in matches.items()}
+            for port,labels in port_matches(raw).items()}
 
 def collect(nonce,mode_reader=mode,command=P.system_command,sampler=sample_path,
             active_reader=A.read_active):
