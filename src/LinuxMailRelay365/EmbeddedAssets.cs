@@ -54,6 +54,11 @@ internal static class EmbeddedAssets
         return command;
     }
 
+    internal static string SmtpAcmeInspectCommand =>
+        "/usr/bin/python3 -I -B -c 'import base64;exec(base64.b64decode(\"" +
+        Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux.smtp-acme-plan.py"))) +
+        "\"))' --inspect";
+
     internal static string SmtpCertificateDiscovery => "set -eu\n/usr/bin/python3 - <<'LMR365_CERT_DISCOVERY'\n" + Text("LinuxMailRelay365.linux.smtp-cert-discovery.py") + "\nLMR365_CERT_DISCOVERY\n";
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");

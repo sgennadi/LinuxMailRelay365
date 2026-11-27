@@ -4,6 +4,8 @@ import json
 import re
 import sys
 import hashlib
+import shutil
+import subprocess
 
 def dns(value):
     if not isinstance(value,str) or len(value)>253:
@@ -23,6 +25,8 @@ def plan(request):
     if provider not in ("manual","dns-azure","dns-cloudflare","dns-route53",
                         "dns-google","dns-rfc2136"):
         raise ValueError("unsupported provider")
+    if len("_acme-challenge."+name)>253:
+        raise ValueError("challenge name too long")
     result=dict(version=1,certificate_name=name,accepted_domain=domain,
                 challenge="_acme-challenge."+name,provider=provider,
                 renewal_method="manual" if provider=="manual" else "plugin_candidate",
@@ -32,12 +36,65 @@ def plan(request):
         separators=(",",":")).encode("ascii")).hexdigest()
     return result
 
+def summarize_answer(text, record_type):
+    # Never return TXT values, resolver output or CAA contents to the GUI.
+    status=re.search(r"\bstatus:\s*([A-Z]+),",text)
+    if not status:
+        return "unverified"
+    if status.group(1)=="NXDOMAIN":
+        return "nxdomain"
+    if status.group(1)!="NOERROR":
+        return "dns_error"
+    for line in text.splitlines():
+        fields=line.split(None,4)
+        if not line.startswith(";") and len(fields)==5 and fields[2]=="IN" and fields[3]==record_type:
+            return "answer_present"
+    return "no_matching_answer"
+
+
+def query(dig, name, record_type):
+    if not dig:
+        return "dig_missing"
+    try:
+        result=subprocess.run([dig,"-r","+time=3","+tries=1","+noall",
+            "+comments","+answer",name+".",record_type],
+            stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=6,
+            check=False,text=True,encoding="utf-8",errors="replace")
+        if result.returncode!=0 or len(result.stdout)>262144:
+            return "unverified"
+        return summarize_answer(result.stdout,record_type)
+    except (OSError,subprocess.SubprocessError):
+        return "unverified"
+
+
+def inspect(request):
+    result=plan(request)
+    dig=shutil.which("dig",path="/usr/bin:/bin")
+    certbot=shutil.which("certbot",path="/usr/bin:/bin:/usr/local/bin:/snap/bin")
+    result["status"]="read_only_plan"
+    result["dns_observations"]={
+        "challenge_txt":query(dig,result["challenge"],"TXT"),
+        "challenge_cname":query(dig,result["challenge"],"CNAME"),
+        "certificate_name_caa":query(dig,result["certificate_name"],"CAA"),
+        "selected_domain_ns":query(dig,result["accepted_domain"],"NS"),
+    }
+    result["certbot_executable_detected"]=bool(certbot)
+    result["dns_provider_credentials_verified"]=False
+    result["effective_caa_policy_verified"]=False
+    result["dns_ownership_verified"]=False
+    result["automatic_renewal_verified"]=False
+    return result
+
+
 if __name__=="__main__":
     try:
         raw=sys.stdin.buffer.read(16385)
         if len(raw)>16384:
             raise ValueError("request too large")
-        print(json.dumps(plan(json.loads(raw.decode("utf-8")))))
+        request=json.loads(raw.decode("utf-8"))
+        if sys.argv[1:] not in ([],["--inspect"]):
+            raise ValueError("invalid arguments")
+        print(json.dumps(inspect(request) if sys.argv[1:] else plan(request)))
     except (ValueError,KeyError,TypeError):
         print(json.dumps({"status":"refused","issuance_supported":False}))
         sys.exit(1)

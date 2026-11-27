@@ -149,7 +149,15 @@ internal sealed partial class MainForm
                     var generation = await SmtpCertificateTransfer.StageAsync(Endpoint(), leaf, chain, domain);
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     return generation;
-                });
+                }, async request =>
+                {
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    var result = await SshRemote.ExecuteAsync(Endpoint(),
+                        EmbeddedAssets.SmtpAcmeInspectCommand, request, TimeSpan.FromSeconds(45));
+                    if (result.ExitCode != 0) throw new InvalidOperationException("ACME inspection refused.");
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    return result.StdOut;
+                }, acceptedDomain.Text.Trim());
                 dialog.ShowDialog(this);
             };
             AddLine(page, smtp);
