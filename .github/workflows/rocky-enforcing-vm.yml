@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - feature/private-smtp-auth-tls
+      - feature/post-rc19-primary-mailbox-candidate
     paths:
       - .github/workflows/rocky-enforcing-vm.yml
       - tests/rocky_vm_*.sh
@@ -19,11 +20,20 @@ on:
       - tests/rehearse_sendmail_v2_metadata.py
       - linux/manage-rhel-selinux-sidecar-context.py
       - linux/manage-rhel-selinux-port.py
+      - linux/smtp-tls-*.py
+      - linux/review-smtp-tls-*.py
+      - linux/manage-smtp-tls-initial.py
+      - linux/stage-smtp-relay-certificate.py
+      - linux/check-smtp-relay-certificate.py
   workflow_dispatch:
   workflow_call:
     inputs:
       queue-acceptance:
         description: Verify native Sendmail queue transitions under real SELinux Enforcing
+        type: boolean
+        default: false
+      client-tls-acceptance:
+        description: Verify outbound Postfix TLS client certificate in a disposable VM
         type: boolean
         default: false
 
@@ -47,6 +57,7 @@ jobs:
         shell: bash
         run: |
           python3 -m py_compile linux/manage-multi-mailbox-proof-timer.py linux/refresh-multi-mailbox-proof.py linux/audit-oauth-ingress.py linux/audit-oauth-sender-map.py
+          python3 -m py_compile tests/rocky_vm_smtp_client_tls_enforcing.py
           bash -n tests/rocky_vm_multi_proof_timer_enforcing.sh tests/rocky_vm_boot_enforcing.sh tests/rocky_vm_sendmail_systemd_enforcing.sh
           python3 -m py_compile linux/foreign-mta-config-backup.py linux/restore-foreign-mta-config.py tests/rocky_vm_sendmail_product_restore.py
           python3 -m py_compile linux/inspect-mail-queue.py tests/smoke_native_sendmail_queue_preview.py
@@ -57,4 +68,5 @@ jobs:
         shell: bash
         env:
           LMR365_KVM_QUEUE_ACCEPTANCE: ${{ inputs.queue-acceptance || false }}
+          LMR365_KVM_CLIENT_TLS_ACCEPTANCE: ${{ inputs.client-tls-acceptance || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' }}
         run: bash tests/rocky_vm_boot_enforcing.sh

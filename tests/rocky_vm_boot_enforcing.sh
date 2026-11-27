@@ -182,6 +182,31 @@ scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'bash /tmp/lmr365-postfix-smoke.sh'
 
+# Opt-in outbound TLS certificate acceptance, before foreign-MTA scenarios.
+if test "${LMR365_KVM_CLIENT_TLS_ACCEPTANCE:-false}" = "true"; then
+    scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+        -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+        linux/stage-smtp-relay-certificate.py linux/check-smtp-relay-certificate.py \
+        linux/smtp-tls-generation.py linux/smtp-tls-transaction.py linux/smtp-tls-activate.py \
+        linux/smtp-tls-postfix.py linux/smtp-tls-validate-generation.py linux/smtp-tls-selinux-prepare.py \
+        linux/smtp-tls-initial-backup.py linux/smtp-tls-initial-candidate.py linux/smtp-tls-initial-journal.py \
+        linux/smtp-tls-initial-deploy.py linux/plan-smtp-tls-initial.py linux/manage-smtp-tls-initial.py \
+        tests/rocky_vm_smtp_client_tls_enforcing.py ci@127.0.0.1:/home/ci/
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'sudo dnf -y -q install openssl policycoreutils && sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-client-tls && sudo install -o root -g root -m 0644 /home/ci/stage-smtp-relay-certificate.py /home/ci/check-smtp-relay-certificate.py /home/ci/smtp-tls-*.py /home/ci/plan-smtp-tls-initial.py /home/ci/manage-smtp-tls-initial.py /home/ci/rocky_vm_smtp_client_tls_enforcing.py /usr/local/libexec/lmr365-kvm-client-tls/ && sudo restorecon -R /usr/local/libexec/lmr365-kvm-client-tls && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-client-tls-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-client-tls-vm"'
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'sudo env GITHUB_ACTIONS=true python3 -I -B /usr/local/libexec/lmr365-kvm-client-tls/rocky_vm_smtp_client_tls_enforcing.py' | tee "$work/client-tls"
+    for expected in \
+        'LMR365_VM_CLIENT_TLS_INITIAL=presented_verified' \
+        'LMR365_VM_CLIENT_TLS_ROTATION=presented_verified' \
+        'LMR365_VM_CLIENT_TLS_ROLLBACK=presented_verified' \
+        'LMR365_VM_CLIENT_TLS_RECOVERY=presented_verified' \
+        'LMR365_VM_CLIENT_TLS_BASELINE=restored_exact_bytes' \
+        'LMR365_VM_CLIENT_TLS_EXTERNAL_DELIVERY=no'; do
+        grep -Fxq "$expected" "$work/client-tls"
+    done
+fi
+
 # Run actual sidecar installers under guest SELinux Enforcing and verify
 # that they refuse safely without changing primary Postfix or mail queues.
 scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
