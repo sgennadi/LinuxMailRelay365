@@ -10,7 +10,7 @@ import argparse
 import importlib.util
 from pathlib import Path
 
-def receive(stream, root, validate):
+def receive(stream, root, validate, stage=None):
     if os.geteuid() != 0:
         raise ValueError("root required")
     root = Path(root)
@@ -44,13 +44,21 @@ def receive(stream, root, validate):
         report = validate(directory)
         if report.get("status") != "local_checks_passed":
             raise ValueError("certificate validation refused")
+        if stage is not None:
+            generation = stage(directory)
+            for path in directory.iterdir():
+                path.unlink()
+            directory.rmdir()
+            return {"status": "staged_locally_validated", "generation": generation,
+                    "exchange_acceptance": "unverified", "apply_supported": False}
         return {"status": "received_locally_validated", "directory": str(directory),
                 "exchange_acceptance": "unverified",
                 "apply_supported": False}
     except BaseException:
-        for path in directory.iterdir():
-            path.unlink()
-        directory.rmdir()
+        if directory.exists():
+            for path in directory.iterdir():
+                path.unlink()
+            directory.rmdir()
         raise
 
 if __name__ == "__main__":
@@ -66,7 +74,15 @@ if __name__ == "__main__":
             return checker.inspect(str(directory / "certificate.pem"),
                 str(directory / "chain.pem"), args.domain, "auto",
                 str(directory / "key.pem"))
-        print(json.dumps(receive(sys.stdin.buffer, "/etc/postfix/lmr365-smtp-tls", validate)))
+        stage_spec = importlib.util.spec_from_file_location("smtp_cert_stage",
+            str(Path(__file__).resolve().with_name("stage-smtp-relay-certificate.py")))
+        stager = importlib.util.module_from_spec(stage_spec)
+        stage_spec.loader.exec_module(stager)
+        def stage(directory):
+            return stager.stage(str(directory / "certificate.pem"),
+                str(directory / "chain.pem"), str(directory / "key.pem"),
+                args.domain, "auto")
+        print(json.dumps(receive(sys.stdin.buffer, "/etc/postfix/lmr365-smtp-tls", validate, stage)))
     except Exception:
         print(json.dumps({"status": "refused", "apply_supported": False}))
         sys.exit(1)
