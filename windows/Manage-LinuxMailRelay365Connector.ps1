@@ -26,7 +26,8 @@ function Test-Dns([string]$value) {
 function Test-PublicIPv4([string]$value) {
     $ip = [System.Net.IPAddress]::None
     if (-not [System.Net.IPAddress]::TryParse($value,[ref]$ip) -or
-        $ip.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+        $ip.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or
+        $ip.ToString() -cne $value) {
         return $false
     }
     $b = $ip.GetAddressBytes()
@@ -34,7 +35,8 @@ function Test-PublicIPv4([string]$value) {
         ($b[0] -eq 169 -and $b[1] -eq 254) -or
         ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or
         ($b[0] -eq 192 -and ($b[1] -eq 168 -or
-            ($b[1] -eq 0 -and $b[2] -in @(0,2)))) -or
+            ($b[1] -eq 0 -and $b[2] -in @(0,2)) -or
+            ($b[1] -eq 88 -and $b[2] -eq 99))) -or
         ($b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127) -or
         ($b[0] -eq 198 -and ($b[1] -in @(18,19) -or
             ($b[1] -eq 51 -and $b[2] -eq 100))) -or
@@ -54,6 +56,17 @@ function Get-CertificateOverlap([string]$existing, [string]$requested) {
     }
     if (Test-Dns $existing) { return 'none' }
     return 'unknown'
+}
+function Get-IPv4Overlap([string]$existing,[string]$requested) {
+    # Exact addresses and /32 only; never assume a range is disjoint.
+    if (-not $existing) { return 'unknown' }
+    if ($existing.EndsWith('/32')) { $existing=$existing.Substring(0,$existing.Length-3) }
+    $parsed=[System.Net.IPAddress]::None
+    if (-not [System.Net.IPAddress]::TryParse($existing,[ref]$parsed) -or
+        $parsed.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or
+        $parsed.ToString() -cne $existing) { return 'unknown' }
+    if ($existing -ceq $requested) { return 'exact' }
+    return 'none'
 }
 function Fingerprint([guid]$tenant,[string]$domain,[string]$name,
                      [string]$ident,[object[]]$connectors) {
@@ -86,6 +99,10 @@ if ($SelfTest) {
         (Get-CertificateOverlap '<I>CN=Issuer<S>CN=example.org' 'relay.example.org') -ne 'unknown') {
         throw 'Certificate overlap selftest failed'
     }
+    if ((Get-IPv4Overlap '8.8.8.8/32' '8.8.8.8') -ne 'exact' -or
+        (Get-IPv4Overlap '8.8.4.4' '8.8.8.8') -ne 'none' -or
+        (Get-IPv4Overlap '8.8.8.0/24' '8.8.8.8') -ne 'unknown' -or
+        (Test-PublicIPv4 '127.1')) { throw 'IPv4 identity selftest failed' }
     Write-Output 'EXO_CONNECTOR_MANAGER_SELF_TEST=pass'
     Write-Output 'CHANGES_APPLIED=no'
     return
@@ -150,6 +167,40 @@ try {
     }
     $connectors = @(Get-InboundConnector -ErrorAction Stop)
     if ($connectors.Count -gt 500) { throw 'Connector count requires manual inspection.' }
+    if ($Action -eq 'Inspect' -and $PublicIpv4) {
+        $exact=0
+        $compatible=0
+        $conflicts=0
+        $nameTaken=0
+        foreach ($item in $connectors) {
+            if ([string]$item.Name -ieq $ConnectorName) { $nameTaken++ }
+            $ips=@($item.SenderIPAddresses | Where-Object { [string]$_ })
+            $matches=@($ips | ForEach-Object { Get-IPv4Overlap ([string]$_) $PublicIpv4 })
+            if ('unknown' -in $matches) { $conflicts++ }
+            if ('exact' -in $matches) {
+                $exact++
+                $senderDomains=@($item.SenderDomains | ForEach-Object { [string]$_ })
+                if ($ips.Count -eq 1 -and [string]$item.ConnectorType -eq 'OnPremises' -and
+                    $item.Enabled -eq $true -and $item.CloudServicesMailEnabled -eq $false -and
+                    $item.TreatMessagesAsInternal -eq $false -and
+                    -not [string]$item.TlsSenderCertificateName -and $AcceptedDomain -in $senderDomains) {
+                    $compatible++
+                }
+            }
+        }
+        $binding=if ($exact -eq 1 -and $compatible -eq 1 -and $conflicts -eq 0) {
+            'exact_enabled_connector_observed'
+        } elseif ($exact -eq 0 -and $conflicts -eq 0) {
+            'no_matching_connector'
+        } else { 'manual_review_required' }
+        $lines=@('EXO_CONNECTOR_TENANT=exact_match','EXO_CONNECTOR_ACCEPTED_DOMAIN=verified',
+            "EXO_CONNECTOR_PUBLIC_IPV4=$PublicIpv4","EXO_CONNECTOR_BINDING=$binding",
+            "EXO_CONNECTOR_EXACT_COUNT=$exact","EXO_CONNECTOR_CONFLICT_COUNT=$conflicts",
+            "EXO_CONNECTOR_NAME_TAKEN=$nameTaken",'EXO_CONNECTOR_DELIVERY_VERIFIED=no','CHANGES_APPLIED=no')
+        [IO.File]::WriteAllText($ResultPath,($lines -join [Environment]::NewLine)+[Environment]::NewLine,
+            [Text.UTF8Encoding]::new($false))
+        return
+    }
     if ($Action -eq 'Inspect') {
         if (-not $CertificateName) { throw 'Inspect requires a certificate DNS identity.' }
         $exact = 0
@@ -195,11 +246,12 @@ try {
         if ($PublicIpv4) {
             foreach ($ip in @($item.SenderIPAddresses)) {
                 $value = [string]$ip
-                if ($value -eq $PublicIpv4 -or $value -eq "$PublicIpv4/32") {
+                $overlap=Get-IPv4Overlap $value $PublicIpv4
+                if ($overlap -eq 'exact') {
                     throw 'Existing Connector claims the egress IPv4.'
                 }
-                if ($value.Contains('/')) {
-                    throw 'Existing Connector contains an IP range; review overlap manually.'
+                if ($overlap -eq 'unknown') {
+                    throw 'Existing Connector contains an IP range or unknown syntax; review overlap manually.'
                 }
             }
         }
@@ -257,7 +309,11 @@ try {
         }
         if ($PublicIpv4) {
             $actualIps = @($created[0].SenderIPAddresses | ForEach-Object { [string]$_ })
-            if ($PublicIpv4 -notin $actualIps -and "$PublicIpv4/32" -notin $actualIps) {
+            if ($actualIps.Count -ne 1 -or
+                (Get-IPv4Overlap $actualIps[0] $PublicIpv4) -ne 'exact' -or
+                [string]$created[0].TlsSenderCertificateName -or
+                $created[0].CloudServicesMailEnabled -ne $false -or
+                $created[0].TreatMessagesAsInternal -ne $false) {
                 throw 'New Connector source IP differs from reviewed public egress identity.'
             }
         }

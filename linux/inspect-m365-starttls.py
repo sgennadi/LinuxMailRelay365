@@ -269,6 +269,52 @@ def public_mx(domain, runner=subprocess.run):
     return report
 
 
+IP_OBSERVERS = (
+    ("ipify", "https://api.ipify.org/"),
+    ("aws_checkip", "https://checkip.amazonaws.com/"),
+)
+
+
+def observe_public_ipv4(runner=subprocess.run):
+    """HTTPS source-IP observations only; do not infer SMTP NAT or ownership."""
+    report = dict(version=1, status="unverified", observations=[], suggested_ipv4=None,
+                  smtp_egress_verified=False, static_ip_verified=False,
+                  ownership_verified=False, postfix_modified=False, mail_sent=False)
+    for name, url in IP_OBSERVERS:
+        row = dict(provider=name, status="unavailable", ipv4=None)
+        try:
+            result = runner(["/usr/bin/curl", "-q", "--ipv4", "--noproxy", "*",
+                             "--proto", "=https", "--connect-timeout", "4",
+                             "--max-time", "7", "--max-filesize", "128",
+                             "--fail", "--silent", url],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=9,
+                            env={"PATH":"/usr/bin:/bin", "LC_ALL":"C", "HOME":"/nonexistent"})
+            if result.returncode == 0 and len(result.stdout) <= 128:
+                value = result.stdout.decode("ascii", "strict").strip()
+                ip = ipaddress.IPv4Address(value)
+                if (str(ip) == value and ip.is_global and not ip.is_multicast
+                        and not ip.is_reserved and not ip.is_unspecified):
+                    row.update(status="observed", ipv4=value)
+                else:
+                    row["status"] = "nonpublic_or_invalid"
+        except FileNotFoundError:
+            row["status"] = "curl_missing"
+        except ValueError:
+            row["status"] = "nonpublic_or_invalid"
+        except (OSError, subprocess.SubprocessError):
+            pass
+        report["observations"].append(row)
+    values = [row["ipv4"] for row in report["observations"] if row["status"] == "observed"]
+    if len(values) == 2:
+        if values[0] == values[1]:
+            report.update(status="https_sources_agree", suggested_ipv4=values[0])
+        else:
+            report["status"] = "https_sources_disagree"
+    elif values:
+        report["status"] = "single_source_only"
+    return report
+
+
 def main():
     try:
         signal.signal(signal.SIGALRM, alarm_handler)
@@ -283,6 +329,8 @@ def main():
             report = inspect(request["mx"])
         elif set(request) == {"accepted_domain"}:
             report = public_mx(request["accepted_domain"])
+        elif request == {"observe_public_ipv4": True} and request["observe_public_ipv4"] is True:
+            report = observe_public_ipv4()
         else:
             raise ValueError("invalid request")
         print(json.dumps(report))

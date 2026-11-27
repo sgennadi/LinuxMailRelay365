@@ -35,3 +35,15 @@ class ConnectorProvisionContracts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublicIpConnectorInspectionContracts(unittest.TestCase):
+    def test_public_ipv4_inspection_and_conflict_guard(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("function Get-IPv4Overlap", source)
+        self.assertIn("$Action -eq 'Inspect' -and $PublicIpv4", source)
+        self.assertIn("EXO_CONNECTOR_PUBLIC_IPV4=$PublicIpv4", source)
+        self.assertIn("$overlap=Get-IPv4Overlap $value $PublicIpv4", source)
+        section = source.split("if ($Action -eq 'Inspect' -and $PublicIpv4)",1)[1].split("if ($Action -eq 'Inspect')",1)[0]
+        self.assertIn("CHANGES_APPLIED=no", section)
+        self.assertNotIn("New-InboundConnector", section)

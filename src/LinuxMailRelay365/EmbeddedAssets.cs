@@ -312,6 +312,13 @@ internal static class EmbeddedAssets
             "\"))' <<'LMR365_STARTTLS_REQUEST'\n" + payload + "\nLMR365_STARTTLS_REQUEST\n";
     }
 
+    internal static string BuildM365PublicIpv4Observation()
+    {
+        return "/usr/bin/python3 -I -B -c 'import base64;exec(base64.b64decode(\"" +
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux.m365-starttls-diagnosis.py"))) +
+            "\"))' <<'LMR365_PUBLIC_IPV4_REQUEST'\n{\"observe_public_ipv4\":true}\nLMR365_PUBLIC_IPV4_REQUEST\n";
+    }
+
     internal static string BuildM365MxDiscovery(string acceptedDomain)
     {
         if (!Regex.IsMatch(acceptedDomain, @"\A[a-z0-9.-]{1,253}\z") ||

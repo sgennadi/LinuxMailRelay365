@@ -157,3 +157,43 @@ class PublicMxTests(unittest.TestCase):
         ui = (src/"SmtpTlsRotationDialog.cs").read_text()
         self.assertIn("existing.Length == 0", ui)
         self.assertIn("Existing value preserved", ui)
+
+
+class PublicIpv4ObservationTests(unittest.TestCase):
+    def observe(self, a, b):
+        runner = Mock(side_effect=[Mock(returncode=0, stdout=a), Mock(returncode=0, stdout=b)])
+        report = M.observe_public_ipv4(runner)
+        self.assertEqual(runner.call_count, 2)
+        for call in runner.call_args_list:
+            args = call.args[0]
+            self.assertEqual(args[:3], ["/usr/bin/curl", "-q", "--ipv4"])
+            self.assertIn("--noproxy", args)
+            self.assertIn("=https", args)
+            self.assertNotIn("--insecure", args)
+            self.assertEqual(call.kwargs["timeout"], 9)
+        for flag in ("smtp_egress_verified", "static_ip_verified", "ownership_verified", "postfix_modified", "mail_sent"):
+            self.assertFalse(report[flag])
+        return report
+
+    def test_agreement_is_only_https_hint(self):
+        result = self.observe(b"8.8.8.8\n", b"8.8.8.8")
+        self.assertEqual(result["status"], "https_sources_agree")
+        self.assertEqual(result["suggested_ipv4"], "8.8.8.8")
+
+    def test_mismatch_and_invalid_response_no_suggestion(self):
+        for a, b, state in (
+            (b"8.8.8.8", b"8.8.4.4", "https_sources_disagree"),
+            (b"8.8.8.8", b"10.0.0.1", "single_source_only"),
+            (b"224.0.0.1", b"100.64.0.1", "unverified"),
+            (b"::1", b"8.8.8.8 extra", "unverified"),
+            (b"x"*129, b"192.0.2.1", "unverified")):
+            with self.subTest(state=state):
+                result = self.observe(a, b)
+                self.assertEqual(result["status"], state)
+                self.assertIsNone(result["suggested_ipv4"])
+
+    def test_missing_curl_no_install(self):
+        runner = Mock(side_effect=FileNotFoundError())
+        result = M.observe_public_ipv4(runner)
+        self.assertEqual(result["status"], "unverified")
+        self.assertEqual([x["status"] for x in result["observations"]], ["curl_missing", "curl_missing"])
