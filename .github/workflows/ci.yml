@@ -19,18 +19,30 @@ jobs:
           # Compile critical Python entrypoints before launching the 600+ unit
           # tests. A SyntaxError must fail this job immediately.
           python3 -m py_compile linux/manage-multi-mailbox-proof-timer.py linux/refresh-multi-mailbox-proof.py linux/audit-oauth-ingress.py linux/audit-oauth-sender-map.py linux/m365-multi-mailbox-transport.py linux/manage-multi-mailbox-postfix.py linux/restore-multi-mailbox-postfix.py tests/test_multi_mailbox_proof_timer.py tests/test_multi_mailbox_wizard_runtime.py
-          bash -n tests/smoke_native_exim_offline_restore.sh tests/smoke_native_sendmail_backup.sh
+          # bash -n accepts one script; additional names become positional arguments.
+          for script in tests/smoke_native_exim_offline_restore.sh tests/smoke_native_sendmail_backup.sh; do
+            bash -n "$script" || exit 1
+          done
           bash -n tests/smoke_real_proof_timer_systemd.sh
-          bash -n tests/rocky_vm_sendmail_systemd_enforcing.sh tests/rocky_vm_boot_enforcing.sh tests/rocky_vm_tls_auth_enforcing.sh tests/rocky_vm_isolated_postfix_enforcing.sh tests/rocky_vm_multi_proof_timer_enforcing.sh
+          # bash -n accepts one script; additional names become positional arguments.
+          for script in tests/rocky_vm_sendmail_systemd_enforcing.sh tests/rocky_vm_boot_enforcing.sh tests/rocky_vm_tls_auth_enforcing.sh tests/rocky_vm_isolated_postfix_enforcing.sh tests/rocky_vm_multi_proof_timer_enforcing.sh; do
+            bash -n "$script" || exit 1
+          done
           python3 -m py_compile tests/rocky_vm_sendmail_stopped_config_restore.py
           python3 -m py_compile tests/rocky_vm_sendmail_stopped_dual_config_restore.py
           python3 -m py_compile linux/foreign-mta-config-backup.py linux/restore-foreign-mta-config.py tests/rocky_vm_sendmail_product_restore.py
           python3 -m unittest discover -v -s tests -p test_sendmail_v2_transaction.py
           python3 -m unittest discover -v -s tests -p test_rocky_vm_sendmail_product_restore.py
           python3 -m py_compile tests/rocky_vm_sendmail_post_reboot_check.py
-          bash -n tests/rocky_vm_isolated_postfix_enforcing.sh tests/rocky_vm_sidecar_installer_guard.sh tests/smoke_rhel_selinux_offline_policy.sh tests/smoke_rhel_native_foreign_mta.sh tests/smoke_native_foreign_mta.sh tests/smoke_authenticated_from_guard_loopback.sh tests/smoke_local_postfix_delivery.sh tests/smoke_fresh_direct_send.sh tests/smoke_fresh_connector.sh tests/smoke_scoped_recovery.sh tests/smoke_scoped_auth_recovery.sh tests/smoke_from_owner_milter.sh linux/install-sidecar-from-guard.sh
+          # bash -n accepts one script; additional names become positional arguments.
+          for script in tests/rocky_vm_isolated_postfix_enforcing.sh tests/rocky_vm_sidecar_installer_guard.sh tests/smoke_rhel_selinux_offline_policy.sh tests/smoke_rhel_native_foreign_mta.sh tests/smoke_native_foreign_mta.sh tests/smoke_authenticated_from_guard_loopback.sh tests/smoke_local_postfix_delivery.sh tests/smoke_fresh_direct_send.sh tests/smoke_fresh_connector.sh tests/smoke_scoped_recovery.sh tests/smoke_scoped_auth_recovery.sh tests/smoke_from_owner_milter.sh linux/install-sidecar-from-guard.sh; do
+            bash -n "$script" || exit 1
+          done
           bash -n linux/inspect-mail-submission.sh
-          bash -n linux/probe-linux.sh linux/install-postfix-m365-xoauth2.sh linux/mail-config-recovery.sh linux/install-preserve-postfix-sidecar.sh linux/install-direct-send-sidecar.sh linux/install-connector-sidecar.sh linux/network-firewall.sh linux/enable-sidecar-auth-tls.sh linux/restore-sidecar-auth-tls.sh linux/rotate-sidecar-tls.sh linux/install-health-monitor.sh
+          # bash -n accepts one script; additional names become positional arguments.
+          for script in linux/probe-linux.sh linux/install-postfix-m365-xoauth2.sh linux/mail-config-recovery.sh linux/install-preserve-postfix-sidecar.sh linux/install-direct-send-sidecar.sh linux/install-connector-sidecar.sh linux/network-firewall.sh linux/enable-sidecar-auth-tls.sh linux/restore-sidecar-auth-tls.sh linux/rotate-sidecar-tls.sh linux/install-health-monitor.sh; do
+            bash -n "$script" || exit 1
+          done
           python3 -m py_compile linux/check-google-smtp.py linux/check-custom-smtp.py
           python3 linux/check-google-smtp.py --self-test
           python3 linux/check-custom-smtp.py --self-test

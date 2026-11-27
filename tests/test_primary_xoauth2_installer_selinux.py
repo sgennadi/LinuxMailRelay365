@@ -78,6 +78,35 @@ SELINUX_SETUP_MODE="$SETUP_MODE"
         self.assertNotIn("setenforce 0",SCRIPT)
 
 
+class WorkflowShellSyntaxTests(unittest.TestCase):
+    def test_all_workflow_shell_syntax_checks_validate_one_script_at_a_time(self):
+        # A multi-file bash -n command silently ignores invalid later files.
+        import re
+        for path in (".github/workflows/ci.yml", ".github/workflows/rocky-enforcing-vm.yml"):
+            source=(ROOT/path).read_text()
+            for line in source.splitlines():
+                if re.match(r"^\s*bash -n ",line):
+                    args=line.strip().split()
+                    self.assertTrue(len(args)==3 or args==["bash","-n",'"$script"',"||","exit","1"],
+                                    path+": "+line)
+            self.assertIn('bash -n "$script" || exit 1',source)
+
+    def test_shell_syntax_loop_rejects_invalid_second_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good=Path(tmp)/"good.sh"
+            bad=Path(tmp)/"bad.sh"
+            good.write_text("echo OK\n")
+            bad.write_text("fi\n")
+            command='for script in "$@"; do bash -n "$script" || exit 1; done'
+            result=subprocess.run(["bash","-c",command,"syntax-check",str(good),str(bad)],
+                stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+            self.assertNotEqual(result.returncode,0)
+            bad.write_text("echo OK\n")
+            result=subprocess.run(["bash","-c",command,"syntax-check",str(good),str(bad)],
+                stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+
+
 class PrimaryVmReceiptTests(unittest.TestCase):
     def test_every_required_marker_is_checked_by_actual_bash(self):
         source=(ROOT/"tests/rocky_vm_boot_enforcing.sh").read_text()
