@@ -119,6 +119,7 @@ class RuntimeGuardTests(unittest.TestCase):
              patch.object(A.grp,"getgrnam",return_value=group), \
              patch.object(A.os,"getgrouplist",return_value=[998]), \
              patch.object(A.R.E,"trusted_directory"), \
+             patch.object(A,"read_active",return_value=(current["raw"],identity)), \
              patch.object(A.C,"current",return_value=current), \
              patch.object(A.R.E,"active_inventory",return_value=inventory), \
              patch.object(A.R.E,"secure_read",return_value=b"same code") as reader, \
@@ -133,6 +134,98 @@ class RuntimeGuardTests(unittest.TestCase):
             reader.side_effect=[b"bundle",b"modified"]
             with self.assertRaisesRegex(A.Refused,"runtime_version_mismatch"):
                 A.installed_snapshot(MAIL,TENANT,CLIENT)
+
+
+class ManagedTpmRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.identity={"mailbox":MAIL,"tenant_id":TENANT,"client_id":CLIENT,
+                       "certificate":"/etc/postfix/m365-oauth/hardware-app.crt",
+                       "signer":{"type":"openssl-provider","provider":"tpm2",
+                                 "key_ref":"handle:0x81010001",
+                                 "provider_config":"/etc/postfix/m365-oauth/tpm2.cnf"}}
+        self.config=A.T.PROVIDER_TEMPLATE.encode("ascii")
+        self.cert=b"public certificate"
+        self.public={"public_key_sha256":"a"*64,"device":[1,2,3,0,998,0o20660],
+                     "readpublic":["trusted"]}
+
+    def test_exact_managed_tpm_dependencies_and_no_pem_fallback(self):
+        def read(path,*args,**kwargs):
+            if str(path)==self.identity["certificate"]:
+                return self.cert
+            self.assertEqual(str(path),self.identity["signer"]["provider_config"])
+            return self.config
+        with patch.object(A.R.E,"secure_read",side_effect=read), \
+             patch.object(A.R.E,"der_from_pem",return_value=b"der"), \
+             patch.object(A,"tpm_public_evidence",return_value=self.public) as public:
+            result=A.managed_tpm_snapshot(self.identity,998)
+            self.assertEqual(result["hardware"]["provider"],"tpm2")
+            self.assertEqual(result["hardware"]["key_ref"],"handle:0x81010001")
+            self.assertNotIn("key_sha256",result)
+            public.assert_called_once_with("0x81010001",self.identity["certificate"])
+            for change in ({"provider":"pkcs11"},{"key_ref":"handle:0x81000001"},
+                           {"key_ref":"/etc/postfix/m365-oauth/tpm2-app.key"},
+                           {"provider_config":"/etc/postfix/m365-oauth/other.cnf"}):
+                with self.assertRaises(A.Refused):
+                    A.managed_tpm_snapshot(dict(self.identity,signer=dict(self.identity["signer"],**change)),998)
+            with self.assertRaises(A.Refused):
+                A.managed_tpm_snapshot(dict(self.identity,private_key="/tmp/pem"),998)
+            self.config+=b"\n.include /tmp/unreviewed.cnf\n"
+            with self.assertRaises(A.Refused):
+                A.managed_tpm_snapshot(self.identity,998)
+            self.assertEqual(public.call_count,1)
+
+    def test_active_tpm_snapshot_uses_installed_identity_not_staged_pem(self):
+        raw=b"active hardware identity"
+        cert_sha="c"*64
+        inventory={"mailbox":MAIL,"tenant":TENANT,"client":CLIENT,
+                   "identity_sha":A.C.sha(raw),"certificate_sha":cert_sha}
+        credentials={"certificate_sha256":cert_sha,"certificate_file_sha256":"d"*64,
+                     "hardware":{"provider":"tpm2","public_key_sha256":"b"*64}}
+        account=Mock(pw_name="m365mailer",pw_uid=998,pw_gid=998)
+        with patch.object(A.os,"geteuid",return_value=0), \
+             patch.object(A.pwd,"getpwnam",return_value=account), \
+             patch.object(A.grp,"getgrnam",return_value=Mock(gr_gid=998)), \
+             patch.object(A.os,"getgrouplist",return_value=[998]), \
+             patch.object(A.R.E,"trusted_directory"), \
+             patch.object(A,"read_active",return_value=(raw,self.identity)), \
+             patch.object(A.R.E,"active_inventory",return_value=inventory), \
+             patch.object(A,"managed_tpm_snapshot",return_value=credentials), \
+             patch.object(A.C,"current",side_effect=AssertionError("no PEM fallback")), \
+             patch.object(A.R.E,"secure_read",return_value=b"same installed code"), \
+             patch.object(A,"reject_import_artifacts"), \
+             patch.object(A,"system_executable",return_value=["trusted"]):
+            state=A.installed_snapshot(MAIL,TENANT,CLIENT)
+            self.assertEqual(state["version"],2)
+            self.assertEqual(state["hardware"]["provider"],"tpm2")
+            self.assertNotIn("key_sha256",state)
+            self.assertNotIn(raw.decode(),str(state))
+            first=A.digest(state)
+            credentials["hardware"]["public_key_sha256"]="e"*64
+            self.assertNotEqual(A.digest(A.installed_snapshot(MAIL,TENANT,CLIENT)),first)
+            credentials["certificate_sha256"]="f"*64
+            with self.assertRaises(A.Refused):
+                A.installed_snapshot(MAIL,TENANT,CLIENT)
+
+    def test_tpm_public_read_only_command_and_certificate_match(self):
+        import stat
+        device=Mock(st_dev=1,st_ino=2,st_rdev=3,st_uid=0,st_gid=998,
+                    st_mode=stat.S_IFCHR|0o660)
+        with patch.object(A.T,"check_hardware"), \
+             patch.object(A.T,"DEVICE",Mock(lstat=Mock(return_value=device))), \
+             patch.object(A,"system_executable",return_value=["trusted"]), \
+             patch.object(A.tempfile,"TemporaryDirectory") as temporary, \
+             patch.object(A.T,"run_command") as runner, \
+             patch.object(A.R.E,"secure_read",return_value=b"public key\n"), \
+             patch.object(A.C,"openssl",side_effect=[b"public key\n",b""]) as openssl:
+            temporary.return_value.__enter__.return_value="/run/test-private"
+            result=A.tpm_public_evidence("0x81010001",self.identity["certificate"])
+            self.assertRegex(result["public_key_sha256"],r"^[a-f0-9]{64}$")
+            args=runner.call_args.args[0]
+            self.assertEqual(args,["/usr/bin/tpm2_readpublic","-c","0x81010001","-f","pem",
+                                   "-o","/run/test-private/public.pem"])
+            openssl.side_effect=[b"different public key",b""]
+            with self.assertRaises(A.Refused):
+                A.tpm_public_evidence("0x81010001",self.identity["certificate"])
 
 
 class OfflineReviewIntegrationTests(unittest.TestCase):
@@ -411,6 +504,7 @@ class OfflineGuiContracts(unittest.TestCase):
         project=(src/"LinuxMailRelay365.csproj").read_text()
         for file in ("manage-primary-mailbox-offline.py","primary-mailbox-transaction.py",
                      "primary-mailbox-runtime.py","preview-primary-mailbox-route.py","smtp-tls-postfix.py",
+                     "manage-tpm-oauth-key.py",
                      "manage-primary-oauth-rotation.py","m365_xoauth2_transport.py",
                      "m365_hardware_signer.py","export-hardware-oauth-cert.py",
                      "manage-conditional-postfix-offline.py","inspect-conditional-postfix-activation.py",

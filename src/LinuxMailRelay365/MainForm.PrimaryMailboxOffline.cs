@@ -36,7 +36,7 @@ internal sealed partial class MainForm
             Dock=DockStyle.Top,Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Height=82,
             Text="Host: "+endpoint.Username+"@"+endpoint.Host+":"+endpoint.Port+Environment.NewLine+
                 "Changes the common outbound transport to one M365 sender. From and envelope sender are rewritten. "+
-                "Local routes and existing SMTP listeners must be preserved. PEM identity only; no SELinux/ACL support. "+
+                "Local routes and existing SMTP listeners must be preserved. Active PEM or managed persistent TPM2 identity; no SELinux/ACL support. "+
                 "No automatic service start."
         };
         var inputs=new TableLayoutPanel { Dock=DockStyle.Top,AutoSize=true,ColumnCount=2,RowCount=3 };
@@ -172,7 +172,7 @@ internal sealed partial class MainForm
             ClearReview();ClearInspection();Update();
             if(!ConfirmDestructive("Review primary mailbox and SMTP AUTH",
                 TargetDescription(identity)+Environment.NewLine+
-                "Use the exact installed PEM identity to authenticate to Microsoft 365 as m365mailer. "+
+                "Use the exact installed PEM or managed TPM2 identity to authenticate to Microsoft 365 as m365mailer. "+
                 "No message will be submitted. Confirm the exclusive offline maintenance conditions.",
                 PrimaryMailboxOfflineClient.Auth,dialog)) return;
             await RunAsync("Reviewing installed runtime, SMTP AUTH and native Postfix candidate...",async () =>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Installed primary software-PEM runtime guard; no mail submission.
+"""Installed primary PEM or managed persistent TPM2 runtime guard; no mail submission.
 
 Use from a single-threaded trusted root CLI. Authentication is an observation,
 not a delivery or SELinux execution-domain assertion. No persistent receipt.
@@ -13,6 +13,7 @@ from pathlib import Path
 import pwd
 import stat
 import subprocess
+import tempfile
 import time
 import uuid
 
@@ -36,6 +37,7 @@ def load(name, filename):
 
 R = load("runtime_primary_route", "preview-primary-mailbox-route.py")
 C = load("runtime_primary_pem", "manage-primary-oauth-rotation.py")
+T = load("runtime_primary_tpm", "manage-tpm-oauth-key.py")
 
 
 class Refused(Exception):
@@ -88,6 +90,83 @@ def reject_import_artifacts(directory):
             raise Refused("installed_signer_bytecode_requires_review")
 
 
+def read_active(group):
+    root=Path(ACTIVE).parent
+    R.E.trusted_directory(root)
+    raw,identity=R.E.read_identity(Path(ACTIVE),root,group)
+    def unique(pairs):
+        result={}
+        for key,value in pairs:
+            need(key not in result,"duplicate_active_identity_field")
+            result[key]=value
+        return result
+    need(json.loads(raw.decode("utf-8"),object_pairs_hook=unique)==identity,
+         "active_identity_parse_mismatch")
+    return raw,identity
+
+
+def tpm_public_evidence(handle,certificate):
+    # No TPM key creation, eviction or export. Read only the public key
+    # from the managed persistent handle, using the kernel resource manager.
+    T.check_hardware()
+    device=T.DEVICE.lstat()
+    need(stat.S_ISCHR(device.st_mode) and device.st_uid==0 and not device.st_mode&0o002,
+         "untrusted_tpm_resource_manager")
+    binary=system_executable(str(T.COMMANDS["readpublic"]))
+    with tempfile.TemporaryDirectory(prefix="lmr365-tpm-runtime-",dir="/run") as work:
+        public=Path(work)/"public.pem"
+        T.run_command([str(T.COMMANDS["readpublic"]),"-c",handle,
+                       "-f","pem","-o",str(public)],timeout=35,
+                      operation="managed_tpm_handle_unreadable")
+        raw=R.E.secure_read(public,16384,modes=(0o600,0o640,0o644))
+    expected=C.openssl(["x509","-pubkey","-noout","-in",certificate]).strip()
+    need(bool(expected) and expected==raw.strip(),"tpm_handle_certificate_mismatch")
+    C.openssl(["x509","-in",certificate,"-noout","-checkend","0"])
+    need(system_executable(str(T.COMMANDS["readpublic"]))==binary,
+         "tpm_readpublic_changed")
+    after=T.DEVICE.lstat()
+    def fingerprint(value):
+        return [value.st_dev,value.st_ino,value.st_rdev,value.st_uid,value.st_gid,value.st_mode]
+    need(fingerprint(after)==fingerprint(device),"tpm_resource_manager_changed")
+    return {"public_key_sha256":hashlib.sha256(expected).hexdigest(),
+            "device":fingerprint(device),"readpublic":binary}
+
+
+def managed_tpm_snapshot(identity,group):
+    root=Path(ACTIVE).parent
+    need(set(identity)=={"tenant_id","client_id","mailbox","certificate","signer"},
+         "unexpected_hardware_identity_fields")
+    spec=identity["signer"]
+    need(type(spec) is dict and set(spec)=={"type","provider","key_ref","provider_config"},
+         "invalid_hardware_signer_fields")
+    need(spec["type"]=="openssl-provider" and spec["provider"]=="tpm2",
+         "only_managed_tpm2_provider_supported")
+    reference=spec["key_ref"]
+    need(type(reference) is str and reference.startswith("handle:") and
+         T.HANDLE.fullmatch(reference[len("handle:"):]) is not None,
+         "only_managed_persistent_tpm2_handle_supported")
+    # Deliberately accept only the exact provisioner's standalone template;
+    # arbitrary .include, module paths, PIN files and PKCS#11 dependencies
+    # cannot be represented by the present runtime evidence contract.
+    provider=str(root/"tpm2.cnf")
+    certificate=str(root/"hardware-app.crt")
+    need(spec["provider_config"]==provider and identity["certificate"]==certificate,
+         "managed_tpm_reference_mismatch")
+    config=R.E.secure_read(provider,32768,group)
+    need(config==T.PROVIDER_TEMPLATE.encode("ascii"),"managed_tpm_provider_config_changed")
+    cert=R.E.secure_read(certificate,R.E.MAX_PEM,modes=(0o640,0o644))
+    der=R.E.der_from_pem(cert)
+    public=tpm_public_evidence(reference[len("handle:"):],certificate)
+    need(R.E.secure_read(provider,32768,group)==config and
+         R.E.secure_read(certificate,R.E.MAX_PEM,modes=(0o640,0o644))==cert,
+         "managed_tpm_dependencies_changed")
+    return {"certificate_sha256":hashlib.sha256(der).hexdigest(),
+            "certificate_file_sha256":hashlib.sha256(cert).hexdigest(),
+            "hardware":{"provider":"tpm2","key_ref":reference,
+                        "provider_config_sha256":hashlib.sha256(config).hexdigest(),
+                        **public}}
+
+
 def installed_snapshot(mailbox, tenant, client):
     try:
         need(os.geteuid() == 0, "root_required")
@@ -102,16 +181,29 @@ def installed_snapshot(mailbox, tenant, client):
         need(account.pw_name == "m365mailer" and account.pw_uid > 0 and
              account.pw_gid == group.gr_gid > 0 and groups == [group.gr_gid],
              "unsupported_service_account_or_groups")
-        active = C.current(group.gr_gid)
-        identity = active["identity"]
+        raw,identity=read_active(group.gr_gid)
         need(identity["tenant_id"] == tenant and identity["client_id"] == client and
              identity["mailbox"].lower() == mailbox,
              "selected_primary_identity_mismatch")
         inventory = R.E.active_inventory("primary")
         need(inventory["tenant"] == tenant and inventory["client"] == client and
              inventory["mailbox"] == mailbox and
-             inventory["identity_sha"] == C.sha(active["raw"]),
+             inventory["identity_sha"] == C.sha(raw),
              "active_identity_inventory_mismatch")
+        if "signer" in identity:
+            credentials=managed_tpm_snapshot(identity,group.gr_gid)
+            need(credentials["certificate_sha256"]==inventory["certificate_sha"],
+                 "active_tpm_certificate_inventory_mismatch")
+            version=2
+        else:
+            active=C.current(group.gr_gid)
+            need(active["raw"]==raw and active["identity"]==identity,
+                 "active_pem_identity_changed")
+            # Keep existing PEM v1 digest stable for existing backups.
+            credentials={"certificate_sha256":inventory["certificate_sha"],
+                         "certificate_file_sha256":active["cert_sha"],
+                         "key_sha256":active["key_sha"]}
+            version=1
         sources = {}
         for name in (TRANSPORT,SIGNER):
             bundled = R.E.secure_read(HERE/name,1048576,modes=(0o600,0o640,0o644,0o755))
@@ -119,19 +211,18 @@ def installed_snapshot(mailbox, tenant, client):
             need(bundled == installed,"installed_runtime_version_mismatch")
             sources[name] = hashlib.sha256(installed).hexdigest()
         reject_import_artifacts(LIBEXEC)
-        return {"version":1,"mailbox":mailbox,"tenant":tenant,"client":client,
+        need(read_active(group.gr_gid)==(raw,identity),"active_identity_changed")
+        need(R.E.active_inventory("primary")==inventory,"active_certificate_changed")
+        return {"version":version,"mailbox":mailbox,"tenant":tenant,"client":client,
                 "uid":account.pw_uid,"gid":group.gr_gid,"groups":groups,
-                "identity_sha256":inventory["identity_sha"],
-                "certificate_sha256":inventory["certificate_sha"],
-                "certificate_file_sha256":active["cert_sha"],
-                "key_sha256":active["key_sha"],"sources":sources,
+                "identity_sha256":inventory["identity_sha"],**credentials,"sources":sources,
                 "python":system_executable("/usr/bin/python3"),
                 "openssl":system_executable("/usr/bin/openssl")}
     except Refused:
         raise
-    except (R.E.Refused,C.Refused,OSError,KeyError,ValueError,TypeError,
+    except (R.E.Refused,C.Refused,T.Refused,OSError,KeyError,ValueError,TypeError,
             subprocess.SubprocessError):
-        raise Refused("primary_pem_runtime_not_verified") from None
+        raise Refused("primary_runtime_not_verified") from None
 
 
 def run_auth(state, runner=subprocess.run):

@@ -501,6 +501,7 @@ internal static class EmbeddedAssets
             ("manage-primary-mailbox-offline.py","manage-primary-mailbox-offline.py"),
             ("primary-mailbox-transaction.py","primary-mailbox-transaction.py"),
             ("primary-mailbox-runtime.py","primary-mailbox-runtime.py"),
+            ("manage-tpm-oauth-key.py","tpm-oauth-provision.py"),
             ("smtp-tls-postfix.py","smtp-tls-postfix.py"),
             ("preview-primary-mailbox-route.py","primary-mailbox-route-preview.py"),
             ("export-hardware-oauth-cert.py","entra-public-cert-export.py"),
