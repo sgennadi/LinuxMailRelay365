@@ -40,7 +40,9 @@ internal sealed class PostfixM365DeliveryDialog : Form
         var tls = new Button { Text = "Diagnose STARTTLS (no mail)", AutoSize = true };
         var managedTls = new Button { Text = "STARTTLS with active client certificate", AutoSize = true };
         var local = new Button { Text = "Local UNIX mailbox test", AutoSize = true };
-        buttons.Controls.AddRange([local, preview, submit, trace, cloudTrace, tls, managedTls, close]);
+        var center = new Button { Text = "Delivery diagnostics center", AutoSize = true };
+        buttons.Controls.AddRange([center, local, preview, submit, trace, cloudTrace, tls, managedTls, close]);
+        string localRecipient = "", localRun = "";
         TextBox[] inputs = [domain, from, host, internalRecipient, externalRecipient, run];
         string? approvedSha = null, approvedRequest = null;
         bool busy = false;
@@ -63,7 +65,7 @@ internal sealed class PostfixM365DeliveryDialog : Form
         {
             busy = value;
             foreach (var input in inputs) input.Enabled = !value;
-            local.Enabled = preview.Enabled = trace.Enabled = cloudTrace.Enabled = tls.Enabled = managedTls.Enabled = close.Enabled = !value;
+            center.Enabled = local.Enabled = preview.Enabled = trace.Enabled = cloudTrace.Enabled = tls.Enabled = managedTls.Enabled = close.Enabled = !value;
             submit.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
@@ -74,6 +76,17 @@ internal sealed class PostfixM365DeliveryDialog : Form
             Invalidate();
             using var dialog = new PostfixLocalDeliveryDialog(remote);
             dialog.ShowDialog(this);
+            localRecipient = dialog.SessionRecipient;
+            localRun = dialog.SessionRunId;
+        };
+        center.Click += (_, _) =>
+        {
+            if (busy) return;
+            Invalidate();
+            using var dialog = new PostfixDeliveryCenterDialog(remote, exchangeTrace, Request(), localRecipient, localRun);
+            dialog.ShowDialog(this);
+            localRecipient = dialog.SessionRecipient;
+            localRun = dialog.SessionRunId;
         };
         preview.Click += async (_, _) =>
         {

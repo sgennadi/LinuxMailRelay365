@@ -85,7 +85,7 @@ internal sealed partial class MainForm
         dialog.ShowDialog(owner);
     }
 
-    private static (string Summary, bool Review) FormatPrimaryPostfixAudit(string json, string domain, string mx)
+    internal static (string Summary, bool Review) FormatPrimaryPostfixAudit(string json, string domain, string mx)
     {
         if (json.Length > 65536 || json.Contains('\0')) throw new InvalidDataException("Invalid audit size.");
         using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 10 });

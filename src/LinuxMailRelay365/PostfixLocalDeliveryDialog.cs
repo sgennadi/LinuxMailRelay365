@@ -10,6 +10,8 @@ namespace LinuxMailRelay365;
 
 internal sealed class PostfixLocalDeliveryDialog : Form
 {
+    internal string SessionRecipient { get; private set; } = "";
+    internal string SessionRunId { get; private set; } = "";
     internal PostfixLocalDeliveryDialog(Func<string, string, string?, Task<string>> remote)
     {
         Text = "Primary Postfix | Local UNIX mailbox test";
@@ -340,7 +342,12 @@ internal sealed class PostfixLocalDeliveryDialog : Form
         foreach (var field in new[] { recipient, run })
             field.TextChanged += (_, _) => { InvalidateReview(); UpdateControls(); };
         copy.Click += (_, _) => Clipboard.SetText(run.Text.Trim());
-        FormClosing += (_, e) => { if (busy) e.Cancel = true; };
+        FormClosing += (_, e) =>
+        {
+            if (busy) { e.Cancel = true; return; }
+            SessionRecipient = recipient.Text.Trim();
+            SessionRunId = run.Text.Trim();
+        };
         layout.Controls.Add(intro,0,0);
         layout.Controls.Add(new Label { Text = "Exact local UNIX user @ Postfix hostname", AutoSize = true },0,1);
         layout.Controls.Add(recipient,0,2);

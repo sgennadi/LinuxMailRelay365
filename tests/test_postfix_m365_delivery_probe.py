@@ -532,3 +532,35 @@ class LocalAccountDiscoveryTests(unittest.TestCase):
         self.assertIn("submission_approved",section)
         self.assertNotIn("approvedSha = sha",section)
         self.assertNotIn('remote("local-submit"',section)
+
+
+class DeliveryCenterContracts(unittest.TestCase):
+    def test_center_is_read_only_and_separates_observations(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        ui=(src/"PostfixDeliveryCenterDialog.cs").read_text()
+        for action in ("local-trace","local-mailbox","trace","audit"):
+            self.assertIn('remote("'+action+'"',ui)
+        for action in ("submit","local-submit","preview","local-preview"):
+            self.assertNotIn('remote("'+action+'"',ui)
+        self.assertIn("Confirm test mailbox observation",ui)
+        self.assertIn("if (busy) { e.Cancel = true; return; }",ui)
+        self.assertIn("Reset(localAgent); Reset(localBox);",ui)
+        self.assertIn("DateTimeOffset.UtcNow",ui)
+        self.assertIn("Copy diagnostic report",ui)
+        section=ui.split("all.Click +=",1)[1].split("foreach (var field",1)[0]
+        self.assertNotIn("DoMailbox()",section)
+        self.assertNotIn("DoRelay(true)",section)
+        self.assertIn("DoRelay(false)",section)
+
+    def test_center_checks_context_and_does_not_promote_delivery_evidence(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        evidence=(src/"PostfixDeliveryCenterEvidence.cs").read_text()
+        for marker in ("RequestSha(request,keys)","TraceContext(root,request,true)",
+                       "TraceContext(root,request,false)","MainForm.FormatPrimaryPostfixAudit",
+                       "not inbox confirmation","absence does not establish delivery failure",
+                       "FalseFlags(root,", "mailbox_verified"):
+            self.assertIn(marker,evidence)
+        self.assertIn("new PostfixDeliveryCenterDialog(remote, exchangeTrace, Request()", 
+                      (src/"PostfixM365DeliveryDialog.cs").read_text())
+        self.assertIn("localRecipient = dialog.SessionRecipient",
+                      (src/"PostfixM365DeliveryDialog.cs").read_text())
