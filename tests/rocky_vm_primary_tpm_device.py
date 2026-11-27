@@ -71,6 +71,39 @@ def set_fixture_mode(original,gid,mode):
     need((observed.st_uid,observed.st_gid,stat.S_IMODE(observed.st_mode))==(0,gid,mode),
          "vtpm_fixture_permissions_unverified")
 
+def check_postfix_scope():
+    """Rocky 9 active baseline or Rocky 10 strictly stopped primary queue."""
+    disposable()
+    release=dict(line.split("=",1) for line in Path("/etc/os-release").read_text().splitlines()
+                 if "=" in line)
+    version=release.get("VERSION_ID","").strip('"')
+    need(command("/usr/sbin/postconf","-h","inet_interfaces").strip()==b"loopback-only",
+         "fixture_postfix_scope_unverified")
+    if version=="9.9":
+        need(command("/usr/sbin/postqueue","-j").strip()==b"","vtpm_queue_changed")
+        return "running_empty_native_queue"
+    need(version=="10.3","unsupported_vtpm_guest_version")
+    spec=importlib.util.spec_from_file_location("fixture_vtpm_queue_guard",
+        str(HERE/"inspect-conditional-postfix-activation.py"))
+    P=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(P)
+    for name,expected in (("config_directory",P.CONFIG),("queue_directory",P.QUEUE),
+                          ("multi_instance_enable","no"),("multi_instance_directories",""),
+                          ("mail_owner","postfix"),("relayhost","")):
+        need(command("/usr/sbin/postconf","-x","-h",name).decode("ascii").strip()==expected,
+             "fixture_postfix_scope_unverified")
+    P.stopped_units()
+    P.no_postfix_processes()
+    fd=P.open_directory(P.QUEUE,strict=False)
+    try:
+        P.empty_queue(fd)
+    finally:
+        os.close(fd)
+    P.stopped_units()
+    P.no_postfix_processes()
+    return "stopped_empty_native_queue"
+
+
 def main():
     disposable()
     os.umask(0o077)
@@ -92,9 +125,8 @@ def main():
     print("LMR365_VM_VTPM_UTILITIES=verified_native_executables",flush=True)
     need(T.read_capabilities()==set(),"vtpm_persistent_inventory_not_empty")
     need(not os.path.lexists(str(IDENTITY)),"existing_vtpm_identity")
-    need(command("/usr/sbin/postqueue","-j").strip()==b"" and
-         command("/usr/sbin/postconf","-h","inet_interfaces").strip()==b"loopback-only",
-         "fixture_postfix_scope_unverified")
+    postfix_scope=check_postfix_scope()
+    print("LMR365_VM_VTPM_POSTFIX_SCOPE="+postfix_scope,flush=True)
     absent_account()
     original=DEVICE.lstat()
     need(stat.S_ISCHR(original.st_mode) and
@@ -186,7 +218,7 @@ def main():
         else:
             command("/usr/sbin/groupdel",ACCOUNT)
         absent_account()
-        need(command("/usr/sbin/postqueue","-j").strip()==b"","vtpm_queue_changed")
+        need(check_postfix_scope()==postfix_scope,"vtpm_queue_or_service_changed")
         disposable()
         MARKER.unlink()
         print("LMR365_VM_VTPM_DEVICE=original_metadata_restored",flush=True)

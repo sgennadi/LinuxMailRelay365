@@ -12,6 +12,7 @@ on:
       - feature/primary-xoauth2-pipe-enforcing
       - feature/primary-xoauth2-pipe-network-enforcing
       - feature/primary-tpm-virtual-device
+      - feature/primary-tpm-provider-isolated
     paths:
       - .github/workflows/rocky-enforcing-vm.yml
       - tests/rocky_vm_*.sh
@@ -85,7 +86,7 @@ jobs:
       - name: Boot official checksum-verified Rocky 9.9 VM and verify SELinux Enforcing
         shell: bash
         env:
-          LMR365_KVM_VTPM_ACCEPTANCE: ${{ github.ref_name == 'feature/primary-tpm-virtual-device' }}
+          LMR365_KVM_VTPM_ACCEPTANCE: ${{ github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated' }}
           LMR365_KVM_QUEUE_ACCEPTANCE: ${{ inputs.queue-acceptance || false }}
           LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE: ${{ github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' || github.ref_name == 'feature/primary-xoauth2-pipe-enforcing' || github.ref_name == 'feature/primary-xoauth2-pipe-network-enforcing' }}
           LMR365_KVM_CLIENT_TLS_ACCEPTANCE: ${{ inputs.client-tls-acceptance || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' }}
@@ -93,7 +94,7 @@ jobs:
 
   kvm-native-tpm-provider:
     name: Rocky 10.3 native OpenSSL TPM2 provider acceptance (swtpm)
-    if: github.ref_name == 'feature/primary-tpm-virtual-device'
+    if: github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

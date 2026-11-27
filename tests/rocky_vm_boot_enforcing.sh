@@ -215,19 +215,26 @@ grep -Eq '^SELINUX_ACCEPTANCE_STATUS=(smtp_port_policy_review|file_context_revie
 echo "LMR365_GUEST_DOCTOR_ENFORCING=verified_read_only"
 fi
 
-# Test an actual guest Postfix daemon under SELinux Enforcing. Its SMTP
-# listener is loopback-only; do not create mail or contact any relay.
-scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
-    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
-    tests/rocky_vm_postfix_enforcing.sh ci@127.0.0.1:/tmp/lmr365-postfix-smoke.sh
-ssh "${ssh_opts[@]}" ci@127.0.0.1 \
-    'bash /tmp/lmr365-postfix-smoke.sh'
+run_postfix_smoke() {
+    # Test an actual guest Postfix daemon under SELinux Enforcing. Its SMTP
+    # listener is loopback-only; do not create mail or contact any relay.
+    scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+        -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+        tests/rocky_vm_postfix_enforcing.sh ci@127.0.0.1:/tmp/lmr365-postfix-smoke.sh
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'bash /tmp/lmr365-postfix-smoke.sh'
+}
+if test "$expected_version" = 9.9; then
+    run_postfix_smoke
+fi
 
 # Independent virtual TPM acceptance. The native pipe tests remain separate.
 if test "${LMR365_KVM_VTPM_ACCEPTANCE:-false}" = "true"; then
     scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
         -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
         linux/manage-tpm-oauth-key.py tests/rocky_vm_primary_tpm_device.py \
+        linux/inspect-conditional-postfix-activation.py linux/conditional-postfix-transaction.py \
+        linux/stage-conditional-postfix-maps.py \
         ci@127.0.0.1:/home/ci/
     ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash -s' <<'VTPM_SETUP' | tee "$work/vtpm-receipt"
 set -Eeuo pipefail
@@ -235,6 +242,13 @@ sudo dnf -y -q install tpm2-tools openssl policycoreutils
 provider=unavailable
 source /etc/os-release
 if test "$VERSION_ID" = 10.3; then
+    # TPM acceptance precedes the still-mandatory Postfix startup smoke.
+    sudo dnf -y -q install postfix
+    sudo systemctl stop postfix.service
+    sudo postconf -e 'inet_interfaces = loopback-only'
+    sudo postconf -e 'inet_protocols = ipv4'
+    sudo postconf -e 'relayhost ='
+    sudo postfix check
     # Mandatory distro-native provider; no third-party repo or source build.
     sudo dnf -y -q install tpm2-openssl
     rpm -q tpm2-openssl
@@ -251,7 +265,7 @@ else
     fi
 fi
 sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-vtpm
-sudo install -o root -g root -m 0644 /home/ci/manage-tpm-oauth-key.py /home/ci/rocky_vm_primary_tpm_device.py /usr/local/libexec/lmr365-kvm-vtpm/
+sudo install -o root -g root -m 0644 /home/ci/manage-tpm-oauth-key.py /home/ci/rocky_vm_primary_tpm_device.py /home/ci/inspect-conditional-postfix-activation.py /home/ci/conditional-postfix-transaction.py /home/ci/stage-conditional-postfix-maps.py /usr/local/libexec/lmr365-kvm-vtpm/
 sudo restorecon -R /usr/local/libexec/lmr365-kvm-vtpm
 sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-vtpm-vm
 sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-vtpm-vm"
@@ -290,7 +304,10 @@ VTPM_SETUP
     # END VTPM_PROVIDER_RECEIPT_CHECK
 fi
 if test "$expected_version" = 10.3; then
+    grep -Fxq 'LMR365_VM_VTPM_POSTFIX_SCOPE=stopped_empty_native_queue' "$work/vtpm-receipt"
     echo "LMR365_GUEST_VTPM_NATIVE_PROVIDER_ONLY=passed"
+    run_postfix_smoke
+    echo "LMR365_GUEST_VTPM_ROCKY10_POSTFIX_SMOKE=passed"
     exit 0
 fi
 

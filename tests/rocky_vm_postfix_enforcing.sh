@@ -17,8 +17,18 @@ sudo postconf -e 'smtpd_tls_security_level = none'
 test "$(sudo postconf -h inet_interfaces)" = "loopback-only"
 test -z "$(sudo postconf -h relayhost)"
 sudo postfix check
-sudo systemctl enable --now postfix.service
-sudo systemctl is-active --quiet postfix.service
+if ! sudo systemctl enable --now postfix.service ||
+   ! sudo systemctl is-active --quiet postfix.service; then
+    # Disposable VM only: keep the failed result and capture diagnostics.
+    echo "LMR365_POSTFIX_START=failed"
+    sudo systemctl status postfix.service --no-pager -l || true
+    sudo journalctl -b -u postfix.service --no-pager -n 100 || true
+    sudo journalctl -b SYSLOG_IDENTIFIER=postfix/master --no-pager -n 100 || true
+    sudo journalctl -b SYSLOG_IDENTIFIER=postfix/postfix-script --no-pager -n 100 || true
+    if test -f /var/log/maillog; then sudo tail -n 60 /var/log/maillog || true; fi
+    if command -v ausearch >/dev/null; then sudo ausearch -m AVC,USER_AVC -ts boot -i | tail -n 60 || true; fi
+    exit 1
+fi
 
 # Confirm an actual process in the Postfix SELinux domain and a strictly
 # loopback listener. Any wildcard/public listener fails the acceptance.
