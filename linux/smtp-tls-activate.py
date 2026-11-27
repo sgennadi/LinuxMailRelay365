@@ -38,10 +38,11 @@ def activate(root,candidate,generation,transaction,check,reload,validate_tls):
             transaction.record(root,previous,candidate,"rolled_back")
             raise
 
-def recover(root,generation,transaction,check,reload):
+def recover(root,generation,transaction,check,reload,before_recover=lambda: None):
     """Conservatively restore previous generation after an interrupted renewal."""
     root=Path(root)
     with transaction.deployment_lock(root):
+        before_recover()
         journal=root/"deployment.json"
         if not journal.exists():
             return "no_transaction"

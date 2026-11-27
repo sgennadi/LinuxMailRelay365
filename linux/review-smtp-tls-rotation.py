@@ -325,9 +325,168 @@ def execute(candidate, domain, expected, prepare_fn=prepare, activate_fn=None, i
             "mail_sent": False}
 
 
+PENDING_PHASES = ("prepared", "switched", "rollback_required")
+TERMINAL_PHASES = ("verified", "rolled_back")
+
+
+def recovery_journal(name):
+    path = ROOT / name
+    if not os.path.lexists(path):
+        return None, "absent"
+    raw = read_file(path, 16384, True)
+    state = json.loads(raw, object_pairs_hook=strict_object)
+    if state.get("version") != 1 or state.get("phase") not in PENDING_PHASES + TERMINAL_PHASES:
+        raise ValueError("unknown journal version or phase")
+    return state, digest(raw)
+
+
+def verified_backup(state):
+    name = state.get("backup")
+    if not isinstance(name, str) or not re.fullmatch(r"initial-backup-[A-Za-z0-9_]+", name):
+        raise ValueError("invalid backup reference")
+    original, candidate = state.get("original_sha256"), state.get("candidate_sha256")
+    if not all(isinstance(v, str) and SHA.fullmatch(v) for v in (original, candidate)) or original == candidate:
+        raise ValueError("invalid configuration hashes")
+    backup = ROOT / name
+    directory(backup, True)
+    data = read_file(backup / "main.cf", 8 * 1024 * 1024, True)
+    raw_meta = read_file(backup / "manifest.json", 16384, True)
+    meta = json.loads(raw_meta, object_pairs_hook=strict_object)
+    if (set(meta) != {"sha256", "uid", "gid", "mode"} or meta["sha256"] != original
+            or meta["uid"] != 0 or type(meta["gid"]) is not int or meta["gid"] < 0
+            or type(meta["mode"]) is not int or not 0 <= meta["mode"] <= 0o777
+            or meta["mode"] & 0o022 or digest(data) != original):
+        raise ValueError("invalid backup metadata or contents")
+    if digest(load("smtp-tls-initial-candidate").build(data)) != candidate:
+        raise ValueError("backup does not reproduce reviewed TLS change")
+    return backup, digest(raw_meta)
+
+
+def recovery_plan(pf=None):
+    if not os.path.lexists(ROOT):
+        return {"status": "no_transaction", "apply_supported": False,
+                "exchange_acceptance": "unverified", "mail_sent": False}
+    directory(ROOT, True)
+    pf = pf or load("smtp-tls-postfix").Postfix()
+    state = config_state(pf)
+    active = active_generation()
+    initial, initial_sha = recovery_journal("initial-deployment.json")
+    rotation, rotation_sha = recovery_journal("deployment.json")
+    pending_initial = initial is not None and initial["phase"] in PENDING_PHASES
+    pending_rotation = rotation is not None and rotation["phase"] in PENDING_PHASES
+    phases = {"initial": initial["phase"] if initial else "absent",
+              "rotation": rotation["phase"] if rotation else "absent"}
+    if not pending_initial and not pending_rotation:
+        terminal_journals(active, state["main_sha256"])
+        return {"status": "no_pending_transaction", "phases": phases,
+                "apply_supported": False, "exchange_acceptance": "unverified", "mail_sent": False}
+    if pending_initial and rotation is not None:
+        raise ValueError("overlapping transaction history")
+    if pf.run(pf.postconf, "-h", "config_directory") != str(CONFIG) or pf.run(pf.postconf, "-h", "multi_instance_directories"):
+        raise ValueError("unsupported Postfix configuration")
+    backup_meta_sha = None
+    if pending_initial:
+        mode = "initial"
+        original, candidate = initial["original_sha256"], initial["candidate_sha256"]
+        _, backup_meta_sha = verified_backup(initial)
+        if state["main_sha256"] not in (original, candidate):
+            raise ValueError("configuration drift; manual recovery required")
+        bootstrap = initial.get("bootstrap_generation")
+        if bootstrap is not None and (not isinstance(bootstrap, str) or not GEN.fullmatch(bootstrap) or active not in (None, bootstrap)):
+            raise ValueError("unexpected bootstrap pointer")
+        # Preserve the staged pointer; the previous main.cf is restored instead.
+        current_tls = pf.run(pf.postconf, "-h", "smtp_tls_chain_files")
+        if (state["main_sha256"] == candidate and current_tls != EXPECTED) or (state["main_sha256"] == original and current_tls):
+            raise ValueError("unexpected effective client TLS setting")
+        target = original
+    else:
+        mode = "rotation"
+        previous, candidate = rotation.get("previous"), rotation.get("candidate")
+        if previous == candidate or active not in (previous, candidate):
+            raise ValueError("unexpected active generation")
+        verify_files(previous)
+        verify_files(candidate)
+        if initial is not None:
+            if initial["phase"] != "verified" or state["main_sha256"] != initial.get("candidate_sha256"):
+                raise ValueError("initial configuration drift")
+        pf.verify_managed()
+        target = previous
+    pf.run(pf.postfix, "status")
+    selinux = selinux_mode()
+    material = {"mode": mode, "phases": phases, "active": active, "restore_target": target,
+                "state": state, "initial_journal_sha256": initial_sha,
+                "rotation_journal_sha256": rotation_sha, "backup_metadata_sha256": backup_meta_sha,
+                "selinux": selinux}
+    sha = digest(json.dumps(material, sort_keys=True, separators=(",", ":")).encode())
+    if (config_state(pf) != state or active_generation() != active
+            or recovery_journal("initial-deployment.json")[1] != initial_sha
+            or recovery_journal("deployment.json")[1] != rotation_sha):
+        raise ValueError("recovery state changed during review")
+    return dict(material, status="recovery_review_ready", plan_sha256=sha,
+                apply_supported=selinux in ("disabled", "not_detected"),
+                exchange_acceptance="unverified", mail_sent=False)
+
+
+def execute_recovery(expected, plan_fn=recovery_plan):
+    pf = load("smtp-tls-postfix").Postfix()
+    preview = plan_fn(pf)
+    if preview.get("plan_sha256") != expected or not preview["apply_supported"]:
+        raise ValueError("review changed or recovery unsupported")
+    tx = load("smtp-tls-transaction")
+
+    def guard_review():
+        current = plan_fn(pf)
+        if current.get("plan_sha256") != expected or not current["apply_supported"]:
+            raise ValueError("recovery plan changed under lock")
+
+    def guard_config(main_sha):
+        if config_state(pf) != dict(preview["state"], main_sha256=main_sha):
+            raise ValueError("configuration changed during recovery")
+
+    def check():
+        main_sha = preview["restore_target"] if preview["mode"] == "initial" else preview["state"]["main_sha256"]
+        guard_config(main_sha)
+        pf.run(pf.postfix, "check")
+        guard_config(main_sha)
+
+    def reload():
+        check()
+        pf.run(pf.postfix, "status")
+        pf.run(pf.postfix, "reload")
+        pf.run(pf.postfix, "status")
+        check()
+
+    if preview["mode"] == "initial":
+        with tx.deployment_lock(ROOT):
+            guard_review()
+            state, _ = recovery_journal("initial-deployment.json")
+            backup, _ = verified_backup(state)
+            target = CONFIG / "main.cf"
+            journal = load("smtp-tls-initial-journal")
+            restore_module = load("smtp-tls-initial-backup")
+
+            def restore(path, sha):
+                guard_config(sha)
+                if path != backup:
+                    raise ValueError("backup reference changed")
+                verified_backup(state)
+                restore_module.restore(path, sha, target)
+
+            result = journal.recover(ROOT, state, lambda: read_file(target, 8 * 1024 * 1024),
+                restore, check, reload,
+                lambda *args: journal.record(ROOT, *args, bootstrap_generation=state.get("bootstrap_generation")))
+    else:
+        result = load("smtp-tls-activate").recover(ROOT, load("smtp-tls-generation"), tx,
+            check, reload, before_recover=guard_review)
+    if result != "restored":
+        raise ValueError("unexpected recovery result")
+    return {"status": "restored", "mode": preview["mode"], "plan_sha256": expected,
+            "exchange_acceptance": "unverified", "mail_sent": False}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("inventory", "preview", "activate"))
+    parser.add_argument("action", choices=("inventory", "preview", "activate", "recovery-preview", "recover"))
     parser.add_argument("--candidate")
     parser.add_argument("--domain")
     parser.add_argument("--expected-sha")
@@ -340,6 +499,14 @@ def main():
             if any((args.candidate, args.domain, args.expected_sha)):
                 raise ValueError("unexpected arguments")
             report = inventory()
+        elif args.action == "recovery-preview":
+            if any((args.candidate, args.domain, args.expected_sha)):
+                raise ValueError("unexpected recovery preview arguments")
+            report = recovery_plan()
+        elif args.action == "recover":
+            if args.candidate or args.domain or not SHA.fullmatch(args.expected_sha or ""):
+                raise ValueError("reviewed recovery SHA required")
+            report = execute_recovery(args.expected_sha)
         elif args.action == "preview":
             if args.expected_sha or not args.candidate or not args.domain:
                 raise ValueError("invalid preview arguments")

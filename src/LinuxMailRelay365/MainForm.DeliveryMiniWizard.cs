@@ -182,7 +182,7 @@ internal sealed partial class MainForm
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     var endpoint = Endpoint();
                     string script = EmbeddedAssets.BuildSmtpTlsRotation(action, candidate, domain, sha);
-                    var timeout = TimeSpan.FromSeconds(action == "activate" ? 600 : 180);
+                    var timeout = TimeSpan.FromSeconds(action is "activate" or "recover" ? 600 : 180);
                     var result = endpoint.Username == "root"
                         ? await SshRemote.ExecuteAsync(endpoint, "bash -s", script, timeout)
                         : await SshRemote.RunRootScriptAsync(endpoint, script, timeout);

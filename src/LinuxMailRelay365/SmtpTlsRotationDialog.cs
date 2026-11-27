@@ -30,7 +30,8 @@ internal sealed class SmtpTlsRotationDialog : Form
         var activate = new Button { Text = "Activate reviewed deployment", AutoSize = true, Enabled = false };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
-        buttons.Controls.AddRange([refresh, preview, activate, close]);
+        var recovery = new Button { Text = "Review interrupted transaction", AutoSize = true };
+        buttons.Controls.AddRange([refresh, preview, activate, recovery, close]);
         bool busy = false;
         string? approvedSha = null;
         string? approvedName = null;
@@ -45,7 +46,7 @@ internal sealed class SmtpTlsRotationDialog : Form
         void SetBusy(bool value)
         {
             busy = value;
-            domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = close.Enabled = !value;
+            domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = recovery.Enabled = close.Enabled = !value;
             activate.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
@@ -151,6 +152,72 @@ internal sealed class SmtpTlsRotationDialog : Form
             catch
             {
                 status.Text = "Activation refused or outcome uncertain. Inspect the Linux transaction journal before retry.";
+            }
+            finally { SetBusy(false); }
+        };
+        recovery.Click += async (_, _) =>
+        {
+            if (busy) return;
+            Invalidate();
+            SetBusy(true);
+            bool started = false;
+            status.Text = "Inspecting interrupted transactions...";
+            try
+            {
+                using var json = JsonDocument.Parse(await remote("recovery-preview", null, null, null));
+                var root = json.RootElement;
+                string? state = root.GetProperty("status").GetString();
+                if (state is "no_transaction" or "no_pending_transaction")
+                {
+                    status.Text = "No interrupted transaction to recover.";
+                    return;
+                }
+                if (state != "recovery_review_ready" || root.GetProperty("mail_sent").GetBoolean())
+                    throw new InvalidDataException("Unexpected recovery review.");
+                string sha = root.GetProperty("plan_sha256").GetString() ?? "";
+                string? mode = root.GetProperty("mode").GetString();
+                if (!Regex.IsMatch(sha, @"\A[a-f0-9]{64}\z") || mode is not ("initial" or "rotation"))
+                    throw new InvalidDataException();
+                report.Text = "Recovery type: " + mode + Environment.NewLine +
+                    "Journal phases: " + root.GetProperty("phases").GetRawText() + Environment.NewLine +
+                    "Active generation: " + (root.GetProperty("active").GetString() ?? "none") + Environment.NewLine +
+                    "Restore target: " + root.GetProperty("restore_target").GetString() + Environment.NewLine +
+                    "SELinux: " + root.GetProperty("selinux").GetString() + Environment.NewLine +
+                    "Configuration SHA review: " + root.GetProperty("state").GetRawText() + Environment.NewLine +
+                    "Recovery plan SHA-256: " + sha + Environment.NewLine +
+                    "Restoration does not verify certificate expiry or mail delivery. No staged certificates are deleted.";
+                if (!root.GetProperty("apply_supported").GetBoolean())
+                {
+                    status.Text = "Recovery preview only; manual review required.";
+                    return;
+                }
+                string impact = mode == "initial"
+                    ? "Restore the original main.cf from its verified backup and reload Postfix. The staged pointer may remain unused."
+                    : "Restore the previous certificate generation and reload Postfix. The previous certificate may be expired.";
+                if (MessageBox.Show(this, impact + Environment.NewLine + Environment.NewLine +
+                    "Proceed with the reviewed recovery? Do not edit Postfix concurrently.",
+                    "Confirm interrupted TLS recovery", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                {
+                    status.Text = "Recovery cancelled before execution.";
+                    return;
+                }
+                started = true;
+                status.Text = "Recovering reviewed transaction...";
+                using var result = JsonDocument.Parse(await remote("recover", null, null, sha));
+                var outcome = result.RootElement;
+                if (outcome.GetProperty("status").GetString() != "restored" ||
+                    outcome.GetProperty("plan_sha256").GetString() != sha ||
+                    outcome.GetProperty("mode").GetString() != mode)
+                    throw new InvalidDataException();
+                status.Text = "Previous configuration restored and Postfix reloaded. Delivery remains unverified.";
+                report.AppendText(Environment.NewLine + Environment.NewLine + status.Text);
+            }
+            catch (Exception ex)
+            {
+                status.Text = started
+                    ? "Recovery outcome uncertain. Inspect the Linux journal before retrying."
+                    : "Recovery refused: " + ex.GetType().Name + ". Review the Linux journal.";
             }
             finally { SetBusy(false); }
         };
