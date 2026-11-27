@@ -87,6 +87,23 @@ def completed(state, previous=0, failure=False):
             and state["ExecMainStatus"] == "0")
 
 
+def verify_elapsed_timer(fixture, trigger):
+    state = properties(fixture, TIMER, "ActiveState", "SubState")
+    if state != {"ActiveState": "active", "SubState": "elapsed"} or timer_trigger_usec(fixture) != trigger:
+        raise ValueError("one-shot timer was not retained in elapsed state")
+
+
+def verify_unchanged(fixture, state, old_start, gen, wanted, journal, saved, trigger):
+    if not completed(state, old_start):
+        print("LMR365_VM_CLIENT_TLS_REPEAT_SERVICE_STATE=" + json.dumps(state, sort_keys=True), flush=True)
+        raise ValueError("repeat service execution evidence unavailable")
+    if gen.current(fixture.ROOT) != wanted:
+        raise ValueError("repeat renewal changed active generation")
+    if journal.read_bytes() != saved:
+        raise ValueError("repeat renewal changed journal bytes")
+    verify_elapsed_timer(fixture, trigger)
+
+
 def lineage(fixture):
     base = ACME / "config"
     archive = base / "archive" / LINEAGE
@@ -160,7 +177,7 @@ def run(fixture):
     for name in UNITS:
         fixture.create_file(fixture.UNIT_DIR / name, (fixture.LIB / "systemd" / name).read_bytes(), 0o644)
     overrides = {SERVICE: "[Service]\nExecStart=\nExecStart=" + COMMAND + "\n",
-                 TIMER: "[Timer]\nOnCalendar=\nOnActiveSec=2s\nAccuracySec=1s\nRandomizedDelaySec=0\nPersistent=false\n"}
+                 TIMER: "[Timer]\nOnCalendar=\nOnActiveSec=2s\nAccuracySec=1s\nRandomizedDelaySec=0\nPersistent=false\nRemainAfterElapse=yes\n"}
     dropins = {}
     for name, content in overrides.items():
         directory = fixture.UNIT_DIR / (name + ".d")
@@ -189,9 +206,11 @@ def run(fixture):
         time.sleep(1)
     else:
         raise RuntimeError("synthetic renewal service timeout")
-    verify_timer_trigger(fixture, state, previous_trigger)
+    trigger = verify_timer_trigger(fixture, state, previous_trigger)
     print("LMR365_VM_CLIENT_TLS_TIMER_TRIGGER=verified_exact_usec", flush=True)
-    fixture.run("systemctl", "stop", TIMER)
+    # Keep the elapsed one-shot timer active so systemd retains its
+    # referenced service and execution metadata across manual starts.
+    verify_elapsed_timer(fixture, trigger)
     if gen.current(fixture.ROOT) != wanted:
         raise ValueError("new certificate not activated")
     gen.validate(fixture.ROOT, wanted)
@@ -205,9 +224,7 @@ def run(fixture):
     old_start = int(state["ExecMainStartTimestampMonotonic"])
     fixture.run("systemctl", "start", SERVICE, timeout=180)
     state = service_state(fixture)
-    if (not completed(state, old_start) or gen.current(fixture.ROOT) != wanted
-            or journal.read_bytes() != saved):
-        raise ValueError("unchanged renewal modified active transaction")
+    verify_unchanged(fixture, state, old_start, gen, wanted, journal, saved, trigger)
     print("LMR365_VM_CLIENT_TLS_RENEWAL_UNCHANGED=verified", flush=True)
     # Certbot archive versions must not be mixed. A bad lineage must fail
     # before switching or rewriting the active certificate.
@@ -217,15 +234,20 @@ def run(fixture):
     old_start = int(state["ExecMainStartTimestampMonotonic"])
     result = subprocess.run(["systemctl", "start", SERVICE], stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, timeout=180, env=fixture.ENV)
-    if (result.returncode == 0 or not completed(service_state(fixture), old_start, failure=True)
-            or gen.current(fixture.ROOT) != wanted or journal.read_bytes() != saved):
-        raise ValueError("mixed renewal lineage was not refused")
+    refused = service_state(fixture)
+    if result.returncode == 0 or not completed(refused, old_start, failure=True):
+        print("LMR365_VM_CLIENT_TLS_REFUSAL_SERVICE_STATE=" + json.dumps(refused, sort_keys=True), flush=True)
+        raise ValueError("mixed renewal lineage failure not verified")
+    if gen.current(fixture.ROOT) != wanted or journal.read_bytes() != saved:
+        raise ValueError("mixed renewal lineage changed active transaction")
+    verify_elapsed_timer(fixture, trigger)
     fixture.probe("renewed", "renewal_refusal")
     print("LMR365_VM_CLIENT_TLS_RENEWAL_MIXED=refused", flush=True)
     if (fixture.sha(fixture.MAIN.read_bytes()) != main_sha
             or fixture.sha(fixture.MASTER.read_bytes()) != master_sha
             or fixture.run("getenforce").strip() != b"Enforcing"):
         raise ValueError("renewal changed configuration or enforcement")
+    fixture.run("systemctl", "stop", TIMER)
     fixture.run("systemctl", "reset-failed", SERVICE)
     fixture.run("systemctl", "stop", SERVICE, RECOVERY)
     for name in UNITS:

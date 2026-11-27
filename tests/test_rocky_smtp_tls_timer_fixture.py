@@ -75,3 +75,30 @@ class TimerRenewalEvidenceTests(unittest.TestCase):
              patch.object(M, "timer_trigger_usec", return_value=110):
             with self.assertRaises(ValueError):
                 M.verify_timer_trigger(Mock(), state, 100)
+
+    def test_elapsed_timer_must_retain_original_trigger(self):
+        with patch.object(M, "properties", return_value={"ActiveState":"active","SubState":"elapsed"}), \
+             patch.object(M, "timer_trigger_usec", return_value=110):
+            M.verify_elapsed_timer(Mock(),110)
+            with self.assertRaises(ValueError):
+                M.verify_elapsed_timer(Mock(),111)
+        with patch.object(M, "properties", return_value={"ActiveState":"inactive","SubState":"dead"}):
+            with self.assertRaises(ValueError):
+                M.verify_elapsed_timer(Mock(),110)
+
+    def test_repeat_failure_distinguishes_service_and_journal(self):
+        fixture, gen, journal = Mock(), Mock(), Mock()
+        gen.current.return_value = "wanted"
+        journal.read_bytes.return_value = b"saved"
+        with patch.object(M, "verify_elapsed_timer") as timer:
+            M.verify_unchanged(fixture,self.state(),99,gen,"wanted",journal,b"saved",50)
+            timer.assert_called_once_with(fixture,50)
+            with self.assertRaisesRegex(ValueError,"execution evidence unavailable"):
+                M.verify_unchanged(fixture,self.state(),100,gen,"wanted",journal,b"saved",50)
+            gen.current.return_value = "wrong"
+            with self.assertRaisesRegex(ValueError,"active generation"):
+                M.verify_unchanged(fixture,self.state(),99,gen,"wanted",journal,b"saved",50)
+            gen.current.return_value = "wanted"
+            journal.read_bytes.return_value = b"changed"
+            with self.assertRaisesRegex(ValueError,"journal bytes"):
+                M.verify_unchanged(fixture,self.state(),99,gen,"wanted",journal,b"saved",50)
