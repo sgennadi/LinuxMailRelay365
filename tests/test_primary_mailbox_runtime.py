@@ -448,5 +448,91 @@ class OfflineGuiContracts(unittest.TestCase):
         self.assertIn("PrimaryMailboxOfflineClient.SelfTest",(src/"Program.cs").read_text())
 
 
+class PrimaryMailboxDeliveryProbeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec=importlib.util.spec_from_file_location("primary_delivery_probe",
+            ROOT/"linux/probe-primary-mailbox-delivery.py")
+        cls.D=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.D)
+
+    def setUp(self):
+        self.req={"run_id":"1"*32,"sender":MAIL,"internal":"test@example.org",
+                  "external":"test@example.net","accepted_domain":"example.org",
+                  "backup_sha256":"b"*64,"tenant_id":TENANT,"client_id":CLIENT}
+
+    def row(self,kind,message):
+        return {"SYSLOG_IDENTIFIER":"postfix/"+kind,"_COMM":kind,
+                "_EXE":"/usr/lib/postfix/sbin/"+kind,"MESSAGE":message}
+
+    def test_request_and_conservative_route_policy(self):
+        D=self.D
+        self.assertEqual(D.validate_request(self.req),self.req)
+        for key,value in (("backup_sha256","bad"),("external","other@example.org"),
+                          ("internal","x@example.net"),("sender","x\n@example.org")):
+            with self.assertRaises(Exception):
+                D.validate_request(dict(self.req,**{key:value}))
+        values={key:"" for key in D.EMPTY}
+        values.update(D.C.SCOPE,default_transport="m365xoauth2:",relay_transport="m365xoauth2:",
+                      relayhost="",syslog_name="postfix",cleanup_service_name="cleanup",
+                      mydestination="localhost, server.example.net",relay_domains="",
+                      m365xoauth2_destination_recipient_limit="1",sendmail_path="/usr/sbin/sendmail")
+        self.assertEqual(D.policy(values.__getitem__,"",self.req),values)
+        for key,value in (("always_bcc","x@example.net"),("mydestination","example.net"),
+                          ("default_transport","smtp"),("relayhost","old.example.net"),
+                          ("syslog_name","other"),("transport_maps","hash:/etc/postfix/routes")):
+            with self.assertRaises(ValueError):
+                D.policy(dict(values,**{key:value}).__getitem__,"",self.req)
+        with self.assertRaises(ValueError):
+            D.policy(values.__getitem__,"m365xoauth2/unix/argv=other",self.req)
+
+    def test_exact_pipe_trace_and_no_inbox_claim(self):
+        D=self.D
+        qid="ABC12345"
+        cleanup=self.row("cleanup",qid+": message-id="+D.P.message_id(self.req,"internal"))
+        prefix=qid+": to=<test@example.org>, relay=m365xoauth2, delay=1, "
+        success=self.row("pipe",prefix+"dsn=2.0.0, status=sent (delivered via m365xoauth2 service (2.0.0 Accepted by Microsoft 365 SMTP))")
+        result=D.correlate(self.req,"internal",[cleanup,success],[],"local_submission_accepted")
+        self.assertEqual(result["queue_id"],qid)
+        self.assertEqual(result["transport"],"exchange_smtp_accepted")
+        self.assertNotIn("inbox_verified",result)
+        spoof=dict(success,_EXE="/tmp/pipe")
+        self.assertEqual(D.correlate(self.req,"internal",[cleanup,spoof],[],"attempted")["transport"],"unknown")
+        forged=dict(success,MESSAGE=prefix+"dsn=2.0.0, status=sent (untrusted text 2.0.0 Accepted by Microsoft 365 SMTP)")
+        self.assertEqual(D.correlate(self.req,"internal",[cleanup,forged],[],"attempted")["transport"],
+                         "pipe_sent_exchange_unverified")
+        deferred=self.row("pipe",prefix+"dsn=4.3.0, status=deferred (secret diagnostics)")
+        result=D.correlate(self.req,"internal",[cleanup,deferred],[],"attempted")
+        self.assertEqual(result["transport"],"deferred")
+        self.assertNotIn("secret",str(result))
+        bounce=self.row("pipe",prefix+"dsn=5.0.0, status=bounced (failed)")
+        self.assertEqual(D.correlate(self.req,"internal",[cleanup,success,bounce],[],"attempted")["transport"],
+                         "correlation_unavailable")
+        self.assertEqual(D.correlate(self.req,"internal",[cleanup,success],[],"not_attempted")["transport"],
+                         "not_attempted")
+
+    def test_submit_requires_exact_approval_and_reuses_durable_ledger(self):
+        D=self.D
+        fresh=Mock()
+        runner=Mock()
+        with patch.object(D.P,"submit",return_value={"status":"submission_recorded"}) as submit:
+            for confirm,sha in (("wrong","a"*64),(D.CONFIRM,"wrong")):
+                with self.assertRaises(ValueError):
+                    D.submit(self.req,sha,confirm,fresh,runner)
+            submit.assert_not_called()
+            self.assertEqual(D.submit(self.req,"a"*64,D.CONFIRM,fresh,runner)["status"],"submission_recorded")
+            submit.assert_called_once_with(self.req,"a"*64,prepare_fn=fresh,runner=runner)
+
+    def test_source_uses_running_backup_guard_and_never_flushes_or_retries(self):
+        source=(ROOT/"linux/probe-primary-mailbox-delivery.py").read_text()
+        self.assertIn('X.verify(config,0,info,files,"after",guard,C.read_native)',source)
+        self.assertIn('A.installed_snapshot(req["sender"],req["tenant_id"],req["client_id"])',source)
+        self.assertIn('fds.append(O.route_lock())',source)
+        self.assertIn('fds.append(A.C.lock())',source)
+        self.assertIn('P.submit(req,expected,prepare_fn=prepare_fn,runner=runner)',source)
+        self.assertNotIn("postqueue -f",source)
+        self.assertNotIn("systemctl start",source)
+
+
 if __name__=="__main__":
     unittest.main()
