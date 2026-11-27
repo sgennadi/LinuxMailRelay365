@@ -12,9 +12,12 @@ internal sealed class PostfixLocalDeliveryDialog : Form
 {
     internal string SessionRecipient { get; private set; } = "";
     internal string SessionRunId { get; private set; } = "";
-    internal PostfixLocalDeliveryDialog(Func<string, string, string?, Task<string>> remote)
+    internal PostfixLocalDeliveryDialog(Func<string, string, string?, Task<string>> remote, string? primaryBackupSha = null)
     {
-        Text = "Primary Postfix | Local UNIX mailbox test";
+        if(primaryBackupSha is not null && !PrimaryMailboxOfflineClient.IsSha(primaryBackupSha))
+            throw new ArgumentException("Exact primary migration backup SHA required.");
+        Text = primaryBackupSha is null ? "Primary Postfix | Local UNIX mailbox test" :
+            "Primary XOAUTH2 migration | Local UNIX mailbox test";
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(730, 520);
@@ -29,6 +32,9 @@ internal sealed class PostfixLocalDeliveryDialog : Form
             Text = "Send one explicitly approved local test to a non-privileged UNIX user at the exact Postfix hostname. " +
                 "Standard aliases and .forward paths are checked for this recipient. Existing forwarding or custom maps, transports and rewriting are refused. Do not change mail settings just to pass this test. " +
                 "Trace observes only the delivery agent. A separate approved mailbox check searches bounded local headers for this test only." };
+        if(primaryBackupSha is not null)
+            intro.Text="Applied migration SHA: "+primaryBackupSha+Environment.NewLine+
+                "Local delivery is reviewed independently of Microsoft 365 authentication. "+intro.Text;
         var recipient = new TextBox { Dock = DockStyle.Top, MaxLength = 254, PlaceholderText = "testuser@mail.example.org" };
         var run = new TextBox { Dock = DockStyle.Top, MaxLength = 32, Text = Guid.NewGuid().ToString("N") };
         var status = new Label { AutoSize = true, Text = "Enter a designated local mailbox." };
@@ -49,10 +55,17 @@ internal sealed class PostfixLocalDeliveryDialog : Form
         var attempted = new HashSet<string>(StringComparer.Ordinal);
         bool Valid() => Regex.IsMatch(run.Text.Trim(), @"\A[a-f0-9]{32}\z") &&
             Regex.IsMatch(recipient.Text.Trim(), @"\A[a-z_][a-z0-9_-]{0,31}@[a-z0-9.-]+\z");
-        string Request() => JsonSerializer.Serialize(new SortedDictionary<string,string>(StringComparer.Ordinal)
+        string Request()
         {
-            ["recipient"] = recipient.Text.Trim(), ["run_id"] = run.Text.Trim()
-        }, new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+            var fields=new SortedDictionary<string,string>(StringComparer.Ordinal)
+            {
+                ["recipient"]=recipient.Text.Trim(),["run_id"]=run.Text.Trim()
+            };
+            if(primaryBackupSha is not null) fields["backup_sha256"]=primaryBackupSha;
+            return JsonSerializer.Serialize(fields,new JsonSerializerOptions {Encoder=JavaScriptEncoder.UnsafeRelaxedJsonEscaping});
+        }
+        string DiscoveryRequest()=>primaryBackupSha is null ? "{\"discover_local_accounts\":true}" :
+            JsonSerializer.Serialize(new {backup_sha256=primaryBackupSha,discover_local_accounts=true});
         void InvalidateReview() { approvedSha = approvedRequest = null; }
         void UpdateControls()
         {
@@ -101,7 +114,7 @@ internal sealed class PostfixLocalDeliveryDialog : Form
             InvalidateReview();
             await RunAsync("Discovering local account candidates...", async () =>
             {
-                using var doc = JsonDocument.Parse(await remote("local-discover", "{\"discover_local_accounts\":true}", null));
+                using var doc = JsonDocument.Parse(await remote("local-discover", DiscoveryRequest(), null));
                 var root = doc.RootElement;
                 if (StringField(root,"status") != "local_account_candidates") throw new InvalidDataException();
                 foreach (string flag in new[] { "mailboxes_verified", "mail_sent", "postfix_modified", "content_exported" })
@@ -218,6 +231,7 @@ internal sealed class PostfixLocalDeliveryDialog : Form
                     "Mailbox kind: " + kind + Environment.NewLine +
                     "Alias lookup: " + alias + Environment.NewLine + ".forward: " + forward +
                     Environment.NewLine + "Review SHA-256: " + sha +
+                    (primaryBackupSha is null?"":Environment.NewLine+"Applied migration SHA: "+primaryBackupSha)+
                     Environment.NewLine + "No mail sent. This is a point-in-time check, not a guarantee of queued delivery routing.";
                 status.Text = "Local route reviewed.";
             });

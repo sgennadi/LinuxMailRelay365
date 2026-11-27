@@ -72,11 +72,12 @@ internal sealed partial class MainForm
         var send=new Button {Text="Send two reviewed tests",AutoSize=true};
         var trace=new Button {Text="Refresh trace (no send)",AutoSize=true};
         var cloudTrace=new Button {Text="Exchange Message Trace",AutoSize=true};
+        var localMailbox=new Button {Text="Test local UNIX delivery",AutoSize=true};
         var copy=new Button {Text="Copy trace request",AutoSize=true};
         var resume=new Button {Text="Resume trace from clipboard",AutoSize=true};
         var close=new Button {Text="Close",AutoSize=true,DialogResult=DialogResult.Cancel};
         var buttons=new FlowLayoutPanel {Dock=DockStyle.Fill,AutoSize=true,WrapContents=true};
-        buttons.Controls.AddRange([review,send,trace,cloudTrace,copy,resume,close]);
+        buttons.Controls.AddRange([review,send,trace,cloudTrace,localMailbox,copy,resume,close]);
         bool busy=false,traceOnly=false;
         PrimaryMailboxDeliveryRequest? approvedRequest=null,lockedRequest=null;
         string? approvedSha=null,traceSha=null;
@@ -100,6 +101,7 @@ internal sealed partial class MainForm
             review.Enabled=!busy && !traceOnly && controlled.Checked && valid;
             send.Enabled=review.Enabled && approvedRequest==request && PrimaryMailboxOfflineClient.IsSha(approvedSha);
             trace.Enabled=cloudTrace.Enabled=!busy && valid;
+            localMailbox.Enabled=!busy && PrimaryMailboxOfflineClient.IsSha(backup.Text.Trim());
             copy.Enabled=!busy && valid;
             resume.Enabled=!busy && !traceOnly;
             foreach(var field in inputs) field.ReadOnly=busy || traceOnly;
@@ -223,6 +225,30 @@ internal sealed partial class MainForm
                     SetStatus("Exchange trace unavailable; local evidence retained. Do not resend.",Color.DarkOrange);
                 }
             });
+        };
+        localMailbox.Click+=(_,_) =>
+        {
+            if(!localMailbox.Enabled) return;
+            string recoverySha=backup.Text.Trim();
+            ClearReview();Update();
+            async Task<string> LocalRemote(string action,string request,string? sha)
+            {
+                Guard();
+                if(backup.Text.Trim()!=recoverySha)
+                    throw new InvalidOperationException("Local migration context changed.");
+                string script=EmbeddedAssets.BuildPrimaryMailboxLocalProbe(action,request,recoverySha,sha);
+                var result=endpoint.Username=="root"
+                    ? await SshRemote.ExecuteAsync(endpoint,"bash -s",script,TimeSpan.FromMinutes(9))
+                    : await SshRemote.RunRootScriptAsync(endpoint,script,TimeSpan.FromMinutes(9));
+                Guard();
+                if(result.ExitCode!=0 || result.StdOut.Length>65536)
+                    throw new InvalidOperationException("Migration local probe refused or outcome unavailable.");
+                return result.StdOut;
+            }
+            using var localDialog=new PostfixLocalDeliveryDialog(LocalRemote,recoverySha);
+            localDialog.ShowDialog(dialog);
+            SetStatus("Local mailbox test closed. Review again before any cloud submission.",SystemColors.ControlText);
+            Update();
         };
         copy.Click+=(_,_) =>
         {

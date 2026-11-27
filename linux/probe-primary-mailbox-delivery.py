@@ -28,6 +28,8 @@ C=load("primary_probe_offline","manage-primary-mailbox-offline.py")
 P=load("primary_probe_existing","review-postfix-m365-delivery.py")
 X,A,O=C.X,C.A,C.O
 CONFIRM="SEND_REVIEWED_PRIMARY_MAILBOX_TESTS"
+LOCAL_CONFIRM="SEND_REVIEWED_PRIMARY_LOCAL_TEST"
+LOCAL_ACTIONS=("local-discover","local-diagnose","local-preview","local-submit","local-trace","local-mailbox")
 KEYS={"run_id","sender","internal","external","accepted_domain","backup_sha256",
       "tenant_id","client_id"}
 EMPTY=tuple(sorted(set(P.EMPTY+("always_bcc","sender_bcc_maps","recipient_bcc_maps",
@@ -136,12 +138,13 @@ def submit(req,expected,confirm,prepare_fn,runner=subprocess.run):
     # rechecks the exact plan for each message and never retries uncertainty.
     return P.submit(req,expected,prepare_fn=prepare_fn,runner=runner)
 
-def journal_rows(started,adapter,runner=subprocess.run):
+def journal_rows(started,adapter,runner=subprocess.run,transport="pipe"):
+    need(transport in ("pipe","local"),"unsupported_journal_transport")
     try:
         binary=adapter.trusted_binary("/usr/bin/journalctl")
         result=runner([binary,"--no-pager","-o","json","-n","4000",
                        "--since=@"+str(max(0,started-5)),"-t","postfix/cleanup",
-                       "-t","postfix/pipe"],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+                       "-t","postfix/"+transport],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                       timeout=25,env=P.ENV)
         if result.returncode or len(result.stdout)>8*1024*1024:
             return [],"journal_unavailable"
@@ -210,9 +213,91 @@ def trace(req,adapter=None):
                                         for role in P.ROLES},
             "inbox_verified":False,"automatic_retry":False}
 
+def local_context(req,action):
+    need(type(req) is dict and X.sha(req.get("backup_sha256")),"backup_sha_required")
+    local={k:v for k,v in req.items() if k!="backup_sha256"}
+    if action=="local-discover":
+        need(local=={"discover_local_accounts":True} and local["discover_local_accounts"] is True,
+             "explicit_discovery_required")
+    else:
+        P.local_request(local)
+    return local
+
+def applied_local_guard(req,config,queue,parent):
+    identity=O.mail_identity()
+    def guard():
+        running_guard(config,queue,parent,identity)
+    info,files=X.load_backup(parent,req["backup_sha256"],0)
+    def verify():
+        X.verify(config,0,info,files,"after",guard,C.read_native)
+    verify()
+    return verify,info["native_after_sha256"]
+
+def prepare_local_migration(req,config,queue,parent,prepare_fn=P.prepare_local):
+    local=local_context(req,"local-preview")
+    verify,native_sha=applied_local_guard(req,config,queue,parent)
+    plan=prepare_fn(local)
+    verify()
+    need(X.sha(plan.get("plan_sha256")),"local_plan_missing")
+    evidence={"version":1,"request_sha256":P.digest(P.canonical(req)),
+              "native_sha256":native_sha,"local_plan_sha256":plan["plan_sha256"]}
+    # Bind the reviewed local account/alias/forwarding/storage policy to
+    # the exact applied migration. Local delivery does not use OAuth.
+    return dict(plan,plan_sha256=P.digest(P.canonical(evidence)))
+
+def trace_local_migration(req,adapter=None):
+    local=local_context(req,"local-trace")
+    started,events,plan=P.ledger(req,("local",),include_plan=True)
+    adapter=adapter or P.load_adapter()
+    rows,source=journal_rows(started,adapter,transport="local")
+    result=P.correlate_local(local,list(verified_messages(rows,"cleanup")),
+            list(verified_messages(rows,"local")),P.queue_rows(adapter),events["local"])
+    return {"status":"local_trace_observed","run_id":local["run_id"],"source":source,
+            "request_sha256":P.digest(P.canonical(req)),"started_unix":started,
+            "outcome":result,"mailbox_verified":False,"automatic_retry":False}
+
+def local_operation(action,req,config,queue,parent,expected,confirm):
+    local=local_context(req,action)
+    if action=="local-submit":
+        need(X.sha(expected) and confirm==LOCAL_CONFIRM,"local_submission_approval_required")
+    else:
+        need(expected is None and confirm is None,"unexpected_local_approval")
+    def fresh(request):
+        need(request==local,"local_request_changed")
+        return prepare_local_migration(req,config,queue,parent)
+    if action=="local-preview":
+        report=fresh(local)
+        report.pop("_binary")
+        report.pop("_mailbox")
+        return report
+    if action=="local-submit":
+        return P.submit_local(local,expected,prepare_fn=fresh,ledger_request=req)
+    if action=="local-mailbox":
+        def ledger(request,roles,include_plan=False):
+            need(request==local and roles==("local",),"local_ledger_context_changed")
+            return P.ledger(req,roles,include_plan=include_plan)
+        report=P.observe_local_mailbox(local,ledger_fn=ledger,prepare_fn=fresh)
+        # Existing scanner returns the local recipient/run hash; expose the
+        # full migration-bound ledger request hash to the Windows dialog.
+        report["request_sha256"]=P.digest(P.canonical(req))
+        return report
+    verify,_=applied_local_guard(req,config,queue,parent)
+    if action=="local-discover":
+        report=P.local_discovery(local)
+        verify()
+        return report
+    if action=="local-diagnose":
+        # The existing metadata probe permanently drops privileges; perform
+        # the final privileged route verification BEFORE that boundary.
+        def drop(account):
+            verify()
+            P.drop_mailbox_privileges(account)
+        return P.diagnose_local_route(local,drop=drop)
+    raise ValueError("invalid_local_operation")
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action",choices=("preview","submit","trace"))
+    parser.add_argument("action",choices=("preview","submit","trace")+LOCAL_ACTIONS)
     parser.add_argument("--expected-sha")
     parser.add_argument("--confirm")
     args=parser.parse_args(argv)
@@ -224,18 +309,26 @@ def main(argv=None):
         A.R.E.trusted_directory(HERE)
         raw=sys.stdin.buffer.read(4097)
         need(0<len(raw)<=4096,"request_size")
-        req=validate_request(json.loads(raw,object_pairs_hook=P.strict_object))
-        run=req["run_id"]
-        if args.action!="submit":
+        req=json.loads(raw,object_pairs_hook=P.strict_object)
+        is_local=args.action in LOCAL_ACTIONS
+        if is_local:
+            local_context(req,args.action)
+        else:
+            validate_request(req)
+        run=req.get("run_id")
+        if args.action not in ("submit","local-submit"):
             need(args.expected_sha is None and args.confirm is None,"unexpected_approval")
         else:
-            need(X.sha(args.expected_sha) and args.confirm==CONFIRM,"approval_required")
+            need(X.sha(args.expected_sha) and args.confirm==(LOCAL_CONFIRM if is_local else CONFIRM),
+                 "approval_required")
         def expired(*_):
             raise ValueError("probe_timeout")
         signal.signal(signal.SIGALRM,expired)
         signal.alarm(480)
         if args.action=="trace":
             report=trace(req)
+        elif args.action=="local-trace":
+            report=trace_local_migration(req)
         else:
             fds.append(O.route_lock())
             fds.append(A.C.lock())
@@ -244,7 +337,9 @@ def main(argv=None):
             parent,config,queue=fds[-3:]
             def fresh(request):
                 return prepare(request,config,queue,parent)
-            if args.action=="preview":
+            if is_local:
+                report=local_operation(args.action,req,config,queue,parent,args.expected_sha,args.confirm)
+            elif args.action=="preview":
                 report=fresh(req)
                 report.pop("_binary")
             else:

@@ -523,6 +523,28 @@ internal static class EmbeddedAssets
         return script;
     }
 
+    internal static string BuildPrimaryMailboxLocalProbe(string action,string request,string backupSha,string? sha)
+    {
+        if(action is not ("local-discover" or "local-diagnose" or "local-preview" or "local-submit" or "local-trace" or "local-mailbox") ||
+            !PrimaryMailboxOfflineClient.IsSha(backupSha) || request.Length>4096 ||
+            (action=="local-submit"?!PrimaryMailboxOfflineClient.IsSha(sha):sha is not null))
+            throw new ArgumentException("Invalid migration-local probe approval.");
+        using var doc=System.Text.Json.JsonDocument.Parse(request);
+        var root=doc.RootElement;
+        if(action=="local-discover")
+            PrimaryMailboxDeliveryClient.Exact(root,"backup_sha256","discover_local_accounts");
+        else
+            PrimaryMailboxDeliveryClient.Exact(root,"backup_sha256","recipient","run_id");
+        if(root.GetProperty("backup_sha256").GetString()!=backupSha)
+            throw new InvalidDataException("Local migration recovery SHA changed.");
+        var script=PrimaryMailboxBundle(true);
+        script.Append("base64 -d <<'LMR365_PRIMARY_DELIVERY_REQUEST' | /usr/bin/python3 -I -B \"$work/probe-primary-mailbox-delivery.py\" ")
+            .Append(action);
+        if(action=="local-submit")
+            script.Append(" --expected-sha=").Append(sha).Append(" --confirm=SEND_REVIEWED_PRIMARY_LOCAL_TEST");
+        return script.Append('\n').Append(Encode(request)).Append("\nLMR365_PRIMARY_DELIVERY_REQUEST\n").ToString();
+    }
+
     internal static string BuildPrimaryMailboxDeliveryProbe(string action,PrimaryMailboxDeliveryRequest request,
         string? sha,string? confirmation)
     {

@@ -780,11 +780,19 @@ def local_message(req):
             "Operator-approved local mailbox test. Run: "+req["run_id"]+"\r\n").encode("ascii")
 
 
-def submit_local(req,expected,prepare_fn=prepare_local,runner=subprocess.run):
+def submit_local(req,expected,prepare_fn=prepare_local,runner=subprocess.run,ledger_request=None):
     local_request(req)
     if not SHA.fullmatch(expected or "") or prepare_fn(req)["plan_sha256"]!=expected:
         raise ValueError("stale local review")
-    fd=reserve(req,expected)
+    # Migration callers may reserve the full context while reusing the
+    # same strictly validated local recipient and fixed message generator.
+    if ledger_request is not None:
+        if (type(ledger_request) is not dict or set(ledger_request)!=set(req)|{"backup_sha256"} or
+                any(ledger_request[k]!=v for k,v in req.items()) or
+                not isinstance(ledger_request["backup_sha256"],str) or
+                not SHA.fullmatch(ledger_request["backup_sha256"])):
+            raise ValueError("invalid local migration ledger request")
+    fd=reserve(req if ledger_request is None else ledger_request,expected)
     try:
         plan=prepare_fn(req)
         if plan["plan_sha256"]!=expected:

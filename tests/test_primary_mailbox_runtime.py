@@ -479,6 +479,12 @@ class PrimaryMailboxDeliveryGuiContracts(unittest.TestCase):
         self.assertIn("JavaScriptEncoder.UnsafeRelaxedJsonEscaping",parser)
         self.assertIn("PrimaryMailboxDeliveryClient.SelfTest",(src/"Program.cs").read_text())
         self.assertIn("OpenPrimaryMailboxDeliveryAsync",(src/"MainForm.PrimaryMailboxRoute.cs").read_text())
+        self.assertIn("BuildPrimaryMailboxLocalProbe",assets)
+        self.assertIn("new PostfixLocalDeliveryDialog(LocalRemote,recoverySha)",ui)
+        self.assertIn("localMailbox.Enabled=!busy && PrimaryMailboxOfflineClient.IsSha",ui)
+        local=(src/"PostfixLocalDeliveryDialog.cs").read_text()
+        self.assertIn('fields["backup_sha256"]=primaryBackupSha',local)
+        self.assertIn("DiscoveryRequest()",local)
 
 
 class PrimaryMailboxDeliveryProbeTests(unittest.TestCase):
@@ -572,6 +578,63 @@ class PrimaryMailboxDeliveryProbeTests(unittest.TestCase):
             submit.assert_not_called()
             self.assertEqual(D.submit(self.req,"a"*64,D.CONFIRM,fresh,runner)["status"],"submission_recorded")
             submit.assert_called_once_with(self.req,"a"*64,prepare_fn=fresh,runner=runner)
+
+    def test_local_migration_review_binds_backup_without_oauth(self):
+        D=self.D
+        req={"run_id":"1"*32,"recipient":"testuser@server.example.org","backup_sha256":"b"*64}
+        local={"run_id":req["run_id"],"recipient":req["recipient"]}
+        verify=Mock()
+        prepare=Mock(return_value={"plan_sha256":"a"*64,"_binary":"sendmail","_mailbox":{}})
+        with patch.object(D,"applied_local_guard",return_value=(verify,"c"*64)), \
+             patch.object(D.A,"installed_snapshot",side_effect=AssertionError("no OAuth for local")):
+            result=D.prepare_local_migration(req,7,8,9,prepare)
+            self.assertNotEqual(result["plan_sha256"],"a"*64)
+            prepare.assert_called_once_with(local)
+            verify.assert_called_once()
+            self.assertNotEqual(D.prepare_local_migration(dict(req,backup_sha256="d"*64),7,8,9,prepare)["plan_sha256"],
+                                result["plan_sha256"])
+        with self.assertRaises(ValueError):
+            D.local_context(dict(req,backup_sha256="wrong"),"local-preview")
+
+    def test_local_submission_and_mailbox_ledger_bind_full_migration(self):
+        D=self.D
+        req={"run_id":"1"*32,"recipient":"testuser@server.example.org","backup_sha256":"b"*64}
+        local={"run_id":req["run_id"],"recipient":req["recipient"]}
+        with patch.object(D.P,"submit_local",return_value={"status":"local_submission_recorded"}) as submit:
+            with self.assertRaises(ValueError):
+                D.local_operation("local-submit",req,7,8,9,"a"*64,"wrong")
+            submit.assert_not_called()
+            self.assertEqual(D.local_operation("local-submit",req,7,8,9,"a"*64,D.LOCAL_CONFIRM)["status"],
+                             "local_submission_recorded")
+            self.assertEqual(submit.call_args.args[:2],(local,"a"*64))
+            self.assertEqual(submit.call_args.kwargs["ledger_request"],req)
+        def observe(request,ledger_fn,prepare_fn):
+            self.assertEqual(request,local)
+            ledger_fn(request,("local",),include_plan=True)
+            return {"request_sha256":"old"}
+        with patch.object(D.P,"observe_local_mailbox",side_effect=observe), \
+             patch.object(D.P,"ledger") as ledger:
+            report=D.local_operation("local-mailbox",req,7,8,9,None,None)
+            ledger.assert_called_once_with(req,("local",),include_plan=True)
+            self.assertEqual(report["request_sha256"],D.P.digest(D.P.canonical(req)))
+
+    def test_local_migration_trace_uses_local_agent_and_exact_ledger(self):
+        D=self.D
+        req={"run_id":"1"*32,"recipient":"testuser@server.example.org","backup_sha256":"b"*64}
+        local={"run_id":req["run_id"],"recipient":req["recipient"]}
+        qid="ABC12345"
+        cleanup=self.row("cleanup",qid+": message-id="+D.P.local_message_id(local))
+        agent=self.row("local",qid+": to=<"+local["recipient"]+">, relay=local, dsn=2.0.0, status=sent (delivered to mailbox)")
+        adapter=Mock()
+        with patch.object(D.P,"ledger",return_value=(123,{"local":"attempted"},"a"*64)) as ledger, \
+             patch.object(D,"journal_rows",return_value=([cleanup,agent],"journal_recent_only")) as journal, \
+             patch.object(D.P,"queue_rows",return_value=[]):
+            report=D.trace_local_migration(req,adapter)
+        ledger.assert_called_once_with(req,("local",),include_plan=True)
+        journal.assert_called_once_with(123,adapter,transport="local")
+        self.assertEqual(report["outcome"]["transport"],"local_agent_accepted")
+        self.assertEqual(report["request_sha256"],D.P.digest(D.P.canonical(req)))
+        self.assertFalse(report["mailbox_verified"])
 
     def test_source_uses_running_backup_guard_and_never_flushes_or_retries(self):
         source=(ROOT/"linux/probe-primary-mailbox-delivery.py").read_text()
