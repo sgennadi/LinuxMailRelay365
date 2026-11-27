@@ -41,7 +41,7 @@ internal sealed partial class MainForm
             Dock=DockStyle.Top,Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Height=82,
             Text="Host: "+endpoint.Username+"@"+endpoint.Host+":"+endpoint.Port+Environment.NewLine+
                 "Changes the common outbound transport to one M365 sender. From and envelope sender are rewritten. "+
-                "Local routes and existing SMTP listeners must be preserved. Active PEM or managed persistent TPM2 identity; no SELinux/ACL support. "+
+                "Local routes and SMTP listeners must be preserved. Active PEM or managed TPM2 identity. SELinux Enforcing: separate review only; Apply remains blocked. "+
                 "No automatic service start."
         };
         var inputs=new TableLayoutPanel { Dock=DockStyle.Top,AutoSize=true,ColumnCount=2,RowCount=3 };
@@ -71,6 +71,7 @@ internal sealed partial class MainForm
             Text="Review requires the exact installed mailbox and application. Recovery does not require working cloud credentials." };
         var report=new TextBox { Dock=DockStyle.Fill,Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Both,WordWrap=false };
         var review=new Button { Text="Review + SMTP AUTH",AutoSize=true };
+        var enforcingReview=new Button { Text="Enforcing Review (no Apply)",AutoSize=true };
         var apply=new Button { Text="Backup / Apply",AutoSize=true };
         var inspect=new Button { Text="Inspect backup",AutoSize=true };
         var verifyApplied=new Button { Text="Reverify applied + AUTH",AutoSize=true };
@@ -79,7 +80,7 @@ internal sealed partial class MainForm
         var copy=new Button { Text="Copy SHA",AutoSize=true };
         var close=new Button { Text="Close",AutoSize=true,DialogResult=DialogResult.Cancel };
         var actions=new FlowLayoutPanel { Dock=DockStyle.Fill,AutoSize=true,WrapContents=true };
-        actions.Controls.AddRange([review,apply,inspect,verifyApplied,start,restore,copy,close]);
+        actions.Controls.AddRange([review,enforcingReview,apply,inspect,verifyApplied,start,restore,copy,close]);
         bool busy=false, mutationAttempted=false, startAttempted=false;
         PrimaryMailboxOfflineReceipt? approved=null;
         string? inspectedSha=null, inspectedPhase=null;
@@ -105,6 +106,7 @@ internal sealed partial class MainForm
         {
             bool ready=!busy && !startAttempted && maintenance.Checked, target=TryTarget(out var identity);
             review.Enabled=ready && target && !mutationAttempted;
+            enforcingReview.Enabled=review.Enabled;
             apply.Enabled=review.Enabled && approved is not null && approvedIdentity==identity &&
                 recovery.Text.Trim()==approved.Sha;
             inspect.Enabled=ready && PrimaryMailboxOfflineClient.IsSha(recovery.Text.Trim());
@@ -159,7 +161,7 @@ internal sealed partial class MainForm
                 busy=false;Update();
             }
         }
-        async Task<PrimaryMailboxOfflineReceipt> LinuxAsync(string action,
+        async Task<string> LinuxOutputAsync(string action,
             (string Mailbox,Guid Tenant,Guid Client)? target,string? sha,string? approval,string? authApproval=null)
         {
             Guard();
@@ -172,12 +174,18 @@ internal sealed partial class MainForm
             Guard();
             if(result.ExitCode!=0)
             {
-                if(result.ExitCode==2 && action=="review" &&
+                if(result.ExitCode==2 && (action is "review" or "review-enforcing") &&
                     PrimaryMailboxOfflineClient.ReviewFailureGuidance(result.StdOut) is { } guidance)
                     throw new PrimaryMailboxReviewRefusedException(guidance);
                 throw new InvalidOperationException("Offline manager refused or result unavailable.");
             }
-            return PrimaryMailboxOfflineClient.Parse(result.StdOut,action,sha);
+            return result.StdOut;
+        }
+        async Task<PrimaryMailboxOfflineReceipt> LinuxAsync(string action,
+            (string Mailbox,Guid Tenant,Guid Client)? target,string? sha,string? approval,string? authApproval=null)
+        {
+            string output=await LinuxOutputAsync(action,target,sha,approval,authApproval);
+            return PrimaryMailboxOfflineClient.Parse(output,action,sha);
         }
         string TargetDescription((string Mailbox,Guid Tenant,Guid Client) identity)=>
             "Host: "+endpoint.Host+":"+endpoint.Port+Environment.NewLine+"Mailbox: "+identity.Mailbox+
@@ -205,6 +213,32 @@ internal sealed partial class MainForm
                     Environment.NewLine+"Native comparison and no-mail SMTP AUTH observed. No delivery test."+
                     Environment.NewLine+"Retain the review SHA before the separate Apply.";
                 status.Text="Reviewed; no configuration change or mail submission.";
+                status.ForeColor=Color.SeaGreen;
+            });
+        };
+        enforcingReview.Click+=async (_,_) =>
+        {
+            if(!enforcingReview.Enabled || !TryTarget(out var identity)) return;
+            ClearReview();ClearInspection();Update();
+            if(!ConfirmDestructive("Enforcing review (no Apply)",
+                TargetDescription(identity)+Environment.NewLine+
+                "Inspect exact native SELinux contexts, future backup policy and candidate configuration. "+
+                "Authenticate to Microsoft 365 using the installed identity without submitting mail. "+
+                "No Apply SHA, backup, service start or SELinux policy change. Confirm exclusive maintenance.",
+                PrimaryMailboxOfflineClient.EnforcingReview,dialog)) return;
+            await RunAsync("Checking Enforcing policy, native candidate and SMTP AUTH...",async () =>
+            {
+                string output=await LinuxOutputAsync("review-enforcing",identity,null,PrimaryMailboxOfflineClient.EnforcingReview);
+                PrimaryMailboxOfflineClient.ValidateEnforcingReview(output);
+                if(!TryTarget(out var current) || current!=identity)
+                    throw new InvalidOperationException("Mailbox identity changed.");
+                report.Text=TargetDescription(identity)+Environment.NewLine+
+                    "Exact SELinux contexts and proposed native route verified."+Environment.NewLine+
+                    "Future backup-path policy and no-mail SMTP AUTH observed."+Environment.NewLine+
+                    "No live Postfix configuration or queue changes. Service remains stopped."+Environment.NewLine+
+                    "No actual pipe-domain authentication or delivery tested."+Environment.NewLine+
+                    "No Apply approval issued. Keep the original recovery SHA if present.";
+                status.Text="Enforcing review verified; Apply not authorized.";
                 status.ForeColor=Color.SeaGreen;
             });
         };

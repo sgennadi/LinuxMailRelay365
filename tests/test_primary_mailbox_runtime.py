@@ -441,6 +441,35 @@ class NativePrimarySelinuxAdapterTests(unittest.TestCase):
 
 
 class OfflineReviewIntegrationTests(unittest.TestCase):
+    def test_enforcing_review_is_observational_and_returns_no_revision(self):
+        runtime=Mock(return_value="a"*64)
+        policy=Mock(initial={"mode":"enforcing"})
+        guard=Mock()
+        info={"version":2,"selinux":policy.initial,"runtime_sha256":"a"*64}
+        with patch.object(CLI,"native_selinux_offline",return_value=(policy,guard)) as native, \
+             patch.object(A,"RuntimeGuard",return_value=runtime) as factory, \
+             patch.object(CLI.X,"review",return_value=("b"*64,info,{})) as review, \
+             patch.object(CLI.X,"apply") as apply,patch.object(CLI.X,"restore") as restore, \
+             patch.object(policy,"save") as save,patch.object(CLI,"native_start") as start:
+            self.assertIsNone(CLI.review_enforcing_host(7,8,9,MAIL,TENANT,CLIENT,CLI.ENFORCING_REVIEW))
+            native.assert_called_once_with(7,8,9)
+            factory.assert_called_once_with(TENANT,CLIENT,A.CONFIRM)
+            review.assert_called_once_with(7,0,MAIL,guard,runtime,selinux=policy)
+            self.assertEqual(policy.private_paths.call_count,2)
+            policy.private_paths.assert_called_with("b"*64)
+            self.assertGreaterEqual(guard.call_count,3)
+            for item in (apply,restore,save,start):
+                item.assert_not_called()
+            policy.private_paths.side_effect=CLI.X.Refused("policy changed")
+            with self.assertRaises(CLI.X.Refused):
+                CLI.review_enforcing_host(7,8,9,MAIL,TENANT,CLIENT,CLI.ENFORCING_REVIEW)
+            for item in (apply,restore,save,start):
+                item.assert_not_called()
+            native.reset_mock()
+            with self.assertRaises(A.Refused):
+                CLI.review_enforcing_host(7,8,9,MAIL,TENANT,CLIENT,A.CONFIRM)
+            native.assert_not_called()
+
     def test_review_host_supplies_actual_guard_to_transaction(self):
         runtime=Mock(return_value="a"*64)
         def review(config,uid,mailbox,maintenance,guard):
@@ -625,6 +654,7 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
              patch.object(CLI.O,"route_lock",return_value=3) as lock, \
              patch.object(CLI.A.C,"lock",return_value=4), \
              patch.object(CLI.O.P,"open_directory",side_effect=lambda *a,**k:5), \
+             patch.object(CLI,"review_enforcing_host") as enforcing, \
              patch.object(CLI,"review_host") as review, \
              patch.object(CLI,"apply_host",return_value="b"*64) as apply, \
              patch.object(CLI,"restore_host",return_value="b"*64) as restore, \
@@ -639,6 +669,23 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
             rc,report=call(["--apply","--expected-sha256","b"*64,"--confirm",CLI.X.APPLY]+identity)
             self.assertEqual(rc,2)
             lock.assert_not_called()
+            apply.assert_not_called()
+            rc,report=call(["--review-enforcing","--confirm",A.CONFIRM]+identity)
+            self.assertEqual(rc,2)
+            enforcing.assert_not_called()
+            rc,report=call(["--review-enforcing","--confirm",CLI.ENFORCING_REVIEW,
+                            "--expected-sha256","b"*64]+identity)
+            self.assertEqual(rc,2)
+            enforcing.assert_not_called()
+            rc,report=call(["--review-enforcing","--confirm",CLI.ENFORCING_REVIEW]+identity)
+            self.assertEqual(rc,0)
+            enforcing.assert_called_once_with(5,5,5,MAIL,TENANT,CLIENT,CLI.ENFORCING_REVIEW)
+            self.assertIn("STATUS=enforcing_review_observed",report)
+            self.assertIn("SELINUX=exact_contexts_observed",report)
+            self.assertIn("NATIVE_CANDIDATE=verified",report)
+            self.assertIn("SMTP_AUTH=observed",report)
+            self.assertIn("POSTFIX_CHANGED=no",report)
+            self.assertNotIn("SHA256=",report)
             apply.assert_not_called()
             for kind,reason,code in (
                     (A.Refused,"unsupported_service_account_or_groups","service_account_review"),

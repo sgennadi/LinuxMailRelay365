@@ -8,6 +8,7 @@ internal static class PrimaryMailboxOfflineClient
 {
     internal const string Maintenance = "I_HAVE_PREVENTED_CONCURRENT_MAIL_AND_CONFIG_CHANGES";
     internal const string Auth = "VERIFY_PRIMARY_MAILBOX_SMTP_AUTH";
+    internal const string EnforcingReview = "REVIEW_ENFORCING_PRIMARY_MAILBOX_SMTP_AUTH";
     internal const string Apply = "APPLY_STOPPED_PRIMARY_MAILBOX_ROUTE";
     internal const string Restore = "RESTORE_STOPPED_PRIMARY_MAILBOX_ROUTE";
     internal const string Start = "START_REVIEWED_PRIMARY_MAILBOX_ROUTE";
@@ -21,7 +22,7 @@ internal static class PrimaryMailboxOfflineClient
     {
         if (maintenance != Maintenance) throw new ArgumentException("Exclusive maintenance approval required.");
         string args;
-        if (action is "review" or "apply" or "verify-applied" or "start")
+        if (action is "review" or "review-enforcing" or "apply" or "verify-applied" or "start")
         {
             if (mailbox is null || !PrimaryMailboxRoutePreview.ValidMailbox(mailbox) ||
                 tenant is null || tenant == Guid.Empty || client is null || client == Guid.Empty)
@@ -32,6 +33,8 @@ internal static class PrimaryMailboxOfflineClient
                 " --client-id=" + client.Value.ToString("D");
             if (action == "review" && sha is null && confirmation == Auth && authConfirmation is null)
                 args = "--review" + target + " --confirm=" + Auth;
+            else if (action == "review-enforcing" && sha is null && confirmation == EnforcingReview && authConfirmation is null)
+                args = "--review-enforcing" + target + " --confirm=" + EnforcingReview;
             else if (action == "apply" && IsSha(sha) && confirmation == Apply && authConfirmation == Auth)
                 args = "--apply" + target + " --expected-sha256=" + sha +
                     " --confirm=" + Apply + " --auth-confirmation=" + Auth;
@@ -94,6 +97,28 @@ internal static class PrimaryMailboxOfflineClient
         return new(sha!,runtime,phase);
     }
 
+    // A labelled review has no SHA, backup or Apply receipt. Its dedicated
+    // validator is deliberately incompatible with Parse and mutation actions.
+    internal static void ValidateEnforcingReview(string output)
+    {
+        var expected = new HashSet<string>(StringComparer.Ordinal) {
+            "STATUS=enforcing_review_observed","SELINUX=exact_contexts_observed",
+            "NATIVE_CANDIDATE=verified","SMTP_AUTH=observed","POSTFIX_CHANGED=no",
+            "SERVICE_STARTED=no","MAIL_SUBMITTED=no","QUEUE_MODIFIED=no"
+        };
+        if(output.Length>4096 || output.Contains('\0'))
+            throw new InvalidDataException("Invalid Enforcing review receipt.");
+        foreach(string line in output.Replace("\r\n","\n",StringComparison.Ordinal).Split('\n'))
+        {
+            if(line.Length==0) continue;
+            if(!line.StartsWith(Prefix,StringComparison.Ordinal) ||
+                !expected.Remove(line[Prefix.Length..]))
+                throw new InvalidDataException("Unexpected Enforcing review evidence.");
+        }
+        if(expected.Count!=0)
+            throw new InvalidDataException("Incomplete Enforcing review evidence.");
+    }
+
     // The failure channel is separate from the successful receipt parser.
     // No remote exception, path, identity, or SMTP transcript is displayed.
     // Only an exact read-only refusal envelope with one known reason is useful.
@@ -119,6 +144,8 @@ internal static class PrimaryMailboxOfflineClient
             "tpm_device_changed"=>"TPM2 resource-manager evidence changed during the review. Rediscover the Linux host and obtain a fresh review.",
             "tpm_device_metadata_review"=>"TPM2 resource-manager metadata is outside the supported security profile. Ask the Linux security administrator to review the device.",
             "selinux_offline_blocked"=>"Offline Apply on active SELinux is not enabled in this build. Use the read-only SELinux readiness check. Do not disable SELinux.",
+            "enforcing_mode_required"=>"This separate review requires an actively enforcing SELinux host. Use ordinary Review for a supported non-SELinux host.",
+            "selinux_context_review"=>"The exact SELinux contexts or recovery policy could not be verified. Review the native labels and policy with the Linux security administrator. No automatic relabel is performed.",
             "extended_metadata_review"=>"The Postfix directory has extended metadata requiring manual review. Do not remove labels or ACLs to bypass this check.",
             _=>null
         };
@@ -173,6 +200,25 @@ internal static class PrimaryMailboxOfflineClient
             ReviewFailureGuidance(refused+Row("REVIEW_GUIDANCE","private server output")) is not null ||
             ReviewFailureGuidance(review+Row("REVIEW_GUIDANCE","tpm_device_access_review")) is not null)
             return false;
+        string enforcing=Row("STATUS","enforcing_review_observed")+Row("SELINUX","exact_contexts_observed")+
+            Row("NATIVE_CANDIDATE","verified")+Row("SMTP_AUTH","observed")+Row("POSTFIX_CHANGED","no")+common;
+        ValidateEnforcingReview(enforcing);
+        foreach(string bad in new[] {enforcing+Row("SHA256",a),
+            enforcing+Row("RUNTIME_SHA256",b),enforcing+Row("STATUS","enforcing_review_observed"),
+            enforcing.Replace("SELINUX=exact_contexts_observed","SELINUX=unverified"),
+            enforcing.Replace("SMTP_AUTH=observed","SMTP_AUTH=unverified"),
+            enforcing.Replace("POSTFIX_CHANGED=no","POSTFIX_CHANGED=yes"),
+            enforcing.Replace("NATIVE_CANDIDATE=verified","NATIVE_CANDIDATE=unknown"),
+            enforcing.Replace(Row("QUEUE_MODIFIED","no"),"")})
+        {
+            try { ValidateEnforcingReview(bad);return false; } catch(InvalidDataException) {}
+        }
+        try { Parse(enforcing,"review",null);return false; } catch(InvalidDataException) {}
+        try { ValidateEnforcingReview(review);return false; } catch(InvalidDataException) {}
+        try { Arguments("review-enforcing",Maintenance,mail,tenant,app,a,EnforcingReview,null);return false; } catch(ArgumentException) {}
+        try { Arguments("review-enforcing",Maintenance,mail,tenant,app,null,Auth,null);return false; } catch(ArgumentException) {}
+        if(!Arguments("review-enforcing",Maintenance,mail,tenant,app,null,EnforcingReview,null)
+            .Contains("--confirm="+EnforcingReview,StringComparison.Ordinal)) return false;
         string args=Arguments("apply",Maintenance,mail,tenant,app,a,Apply,Auth);
         if (!args.Contains("--expected-sha256="+a,StringComparison.Ordinal) ||
             !args.Contains("--auth-confirmation="+Auth,StringComparison.Ordinal) ||

@@ -4,7 +4,8 @@
 Only a default single Postfix instance is supported. Exclusive maintenance,
 initially stopped Postfix and empty queues are mandatory. Only the explicit
 start operation controls the service; no automatic stop, rollback after
-start, or message submission. No SELinux-labelled or ACL files.
+start, or message submission. Writes to SELinux-labelled or ACL files remain
+blocked. Separate Enforcing review is observational and issues no Apply SHA.
 """
 import argparse
 import importlib.util
@@ -30,6 +31,7 @@ O=load("primary_mailbox_maintenance","manage-conditional-postfix-offline.py")
 A=load("primary_mailbox_runtime","primary-mailbox-runtime.py")
 RECOVERY_PARENT="/var/lib"
 START="START_REVIEWED_PRIMARY_MAILBOX_ROUTE"
+ENFORCING_REVIEW="REVIEW_ENFORCING_PRIMARY_MAILBOX_SMTP_AUTH"
 SCOPE={"config_directory":O.P.CONFIG,"queue_directory":O.P.QUEUE,
        "multi_instance_enable":"no","multi_instance_directories":"",
        "mail_owner":"postfix"}
@@ -89,9 +91,9 @@ def native_selinux_label(path,kind,command=O.P.system_command):
 
 
 def native_selinux_offline(config,queue,parent):
-    """Native stopped-host adapter for disposable Enforcing acceptance only.
+    """Native stopped-host adapter for disposable acceptance and read-only review.
 
-    Not reachable through main(), the GUI, or any ordinary Apply operation.
+    Not reachable through ordinary Apply, Restore or Start operations.
     Both existing workflow locks and exclusive maintenance are the caller's
     responsibility. No service control, policy edit or automatic relabel.
     """
@@ -133,6 +135,31 @@ def review_host(config,queue,mailbox,tenant,client,confirmation):
     X.need(runtime(mailbox)==info["runtime_sha256"],"runtime_review_changed")
     maintenance()
     return revision,info["runtime_sha256"]
+
+
+def review_enforcing_host(config,queue,parent,mailbox,tenant,client,confirmation):
+    """Inspect the v2 candidate without exporting its Apply/recovery revision.
+
+    Native postconf uses private scratch, never writes the live files. The
+    explicitly approved AUTH diagnostic requests a token and authenticates
+    without submitting mail. No backup, service control or policy changes.
+    """
+    A.need(confirmation==ENFORCING_REVIEW,"explicit_enforcing_review_required")
+    policy,maintenance=native_selinux_offline(config,queue,parent)
+    maintenance()
+    runtime=A.RuntimeGuard(tenant,client,A.CONFIRM)
+    revision,info,_=X.review(config,0,mailbox,maintenance,runtime,selinux=policy)
+    X.need(X.sha(revision) and info["version"]==2 and
+           info["selinux"]==policy.initial and X.sha(info["runtime_sha256"]),
+           "enforcing_review_evidence_unverified")
+    # Verify policy for the derived future backup paths, without creating
+    # them or reading/modifying an existing backup tree.
+    policy.private_paths(revision)
+    maintenance()
+    X.need(runtime(mailbox)==info["runtime_sha256"],"runtime_review_changed")
+    policy.private_paths(revision)
+    maintenance()
+    # Deliberately return no revision or reusable authorization.
 
 
 def apply_host(config,queue,parent,mailbox,tenant,client,reviewed,confirmation,auth_confirmation):
@@ -300,6 +327,9 @@ def parse_request(args):
     elif args.apply:
         A.need(X.sha(args.expected_sha256) and args.confirm==X.APPLY and
                args.auth_confirmation==A.CONFIRM,"invalid_apply_approval")
+    elif args.review_enforcing:
+        A.need(args.confirm==ENFORCING_REVIEW and args.expected_sha256 is None and
+               args.auth_confirmation is None,"invalid_enforcing_review_approval")
     else:
         A.need(args.confirm==A.CONFIRM and args.expected_sha256 is None and
                args.auth_confirmation is None,"invalid_review_approval")
@@ -314,10 +344,17 @@ REVIEW_GUIDANCE={
     "invalid_tpm_resource_manager_fingerprint":"tpm_device_metadata_review",
     "selinux_metadata_restore_not_implemented":"selinux_offline_blocked",
     "extended_directory_metadata_unsupported":"extended_metadata_review",
+    "native_enforcing_required":"enforcing_mode_required",
+    "selinux_enforcing_required":"enforcing_mode_required",
+    "selinux_label_policy_mismatch":"selinux_context_review",
+    "unsafe_transaction_policy_context":"selinux_context_review",
+    "selinux_policy_anchor_changed":"selinux_context_review",
+    "native_selinux_context_changed":"selinux_context_review",
+    "selinux_recovery_policy_changed":"selinux_context_review",
 }
 
 def review_guidance(error):
-    if type(error) not in (A.Refused,O.Refused):
+    if type(error) not in (A.Refused,O.Refused,X.Refused):
         return None
     return REVIEW_GUIDANCE.get(str(error))
 
@@ -326,6 +363,7 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     modes=parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--review",action="store_true")
+    modes.add_argument("--review-enforcing",action="store_true")
     modes.add_argument("--apply",action="store_true")
     modes.add_argument("--restore",metavar="BACKUP_SHA256")
     modes.add_argument("--inspect-backup",metavar="BACKUP_SHA256")
@@ -370,6 +408,14 @@ def main(argv=None):
             print("PRIMARY_MAILBOX_OFFLINE_STATUS=reviewed_experimental")
             print("PRIMARY_MAILBOX_OFFLINE_SHA256="+revision)
             print("PRIMARY_MAILBOX_OFFLINE_RUNTIME_SHA256="+runtime)
+            print("PRIMARY_MAILBOX_OFFLINE_SMTP_AUTH=observed")
+            print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED=no")
+        elif args.review_enforcing:
+            review_enforcing_host(config,queue,parent,args.mailbox,args.tenant_id,
+                                  args.client_id,args.confirm)
+            print("PRIMARY_MAILBOX_OFFLINE_STATUS=enforcing_review_observed")
+            print("PRIMARY_MAILBOX_OFFLINE_SELINUX=exact_contexts_observed")
+            print("PRIMARY_MAILBOX_OFFLINE_NATIVE_CANDIDATE=verified")
             print("PRIMARY_MAILBOX_OFFLINE_SMTP_AUTH=observed")
             print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED=no")
         elif args.apply:
@@ -427,7 +473,7 @@ def main(argv=None):
               "native_check_outcome_unverified" if check_attempted else "refused_or_unverified"))
         print("PRIMARY_MAILBOX_OFFLINE_SMTP_AUTH=unverified")
         print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED="+("inspect_recovery" if attempted or check_attempted else "no"))
-        if args.review and not attempted and not check_attempted and not start_attempted:
+        if (args.review or args.review_enforcing) and not attempted and not check_attempted and not start_attempted:
             guidance=review_guidance(error)
             if guidance is not None:
                 print("PRIMARY_MAILBOX_OFFLINE_REVIEW_GUIDANCE="+guidance)

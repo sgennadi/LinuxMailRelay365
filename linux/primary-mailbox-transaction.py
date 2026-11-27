@@ -4,7 +4,8 @@
 Mandatory caller guards must establish exclusive maintenance, stopped
 single primary Postfix, empty queues, trusted installed OAuth runtime and
 fresh no-mail SMTP AUTH. Unlabelled v1 or explicitly policy-bound SELinux v2.
-The production CLI still refuses active SELinux until native acceptance.
+The production CLI still refuses active SELinux writes; a separate review
+can observe the labelled candidate without providing Apply authorization.
 """
 from contextlib import contextmanager
 import importlib.util
@@ -74,7 +75,7 @@ def valid_selinux_evidence(value):
 
 
 class SelinuxPolicy:
-    """Private v2 adapter; NOT wired into the production CLI.
+    """Private v2 adapter; production CLI may use it for observational review only.
 
     Only a bound Enforcing host, exact current file contexts and a uniform
     non-generic recovery-tree policy are accepted. The caller supplies a
