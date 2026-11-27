@@ -71,6 +71,33 @@ internal sealed partial class MainForm
             ["sender"] = canonical["sender"], ["internal"] = canonical["internal"],
             ["external"] = canonical["external"], ["started_unix"] = started, ["attempted"] = attempted
         });
+        return await RunRecordedExchangeTraceAsync(id,runId,attempted,payload,Guard);
+    }
+
+    private async Task<string> ReadPrimaryMailboxExchangeTraceAsync(PrimaryMailboxDeliveryRequest request,
+        PrimaryMailboxDeliveryReceipt local,Action requireLinuxContext)
+    {
+        Guid id=request.Tenant;
+        void Guard()
+        {
+            requireLinuxContext();
+            CheckCloudTenant(id);
+            if(!Guid.TryParse(tenant.Text.Trim(),out Guid selectedId) || selectedId!=id ||
+                (discoveredTenants.Count>1 && tenantSelector.SelectedItem is not TenantOption) ||
+                (tenantSelector.SelectedItem is TenantOption selected && selected.Id!=id) ||
+                mailTransport.SelectedIndex!=0 || oauthSenderMode.SelectedIndex!=0)
+                throw new InvalidOperationException("Select the same Microsoft 365 tenant and primary XOAUTH2 route.");
+        }
+        Guard();
+        var (payload,attempted)=PrimaryMailboxDeliveryClient.ExchangeTracePayload(request,local,DateTimeOffset.UtcNow);
+        return await RunRecordedExchangeTraceAsync(id,request.RunId,attempted,payload,Guard);
+    }
+
+    private async Task<string> RunRecordedExchangeTraceAsync(Guid id,string runId,List<string> attempted,
+        string payload,Action Guard)
+    {
+        Guard();
+        string[] roles=["internal","external"];
         Directory.CreateDirectory(dataDirectory);
         string prefix = Path.Combine(dataDirectory, "message-trace-" + Guid.NewGuid().ToString("N"));
         string script = prefix + ".ps1", input = prefix + "-request.json", output = prefix + "-result.json";
@@ -90,6 +117,8 @@ internal sealed partial class MainForm
             Guard();
             using var response = JsonDocument.Parse(await File.ReadAllTextAsync(output));
             var root = response.RootElement;
+            PrimaryMailboxDeliveryClient.Exact(root,"version","status","tenant_id","run_id","outcomes","inbox_verified","changes_applied");
+            PrimaryMailboxDeliveryClient.Exact(root.GetProperty("outcomes"),roles);
             if (root.GetProperty("version").GetInt32() != 1 ||
                 root.GetProperty("status").GetString() != "exchange_trace_observed" ||
                 root.GetProperty("tenant_id").GetString() != id.ToString("D") ||
@@ -100,6 +129,7 @@ internal sealed partial class MainForm
             foreach (string role in roles)
             {
                 var item = root.GetProperty("outcomes").GetProperty(role);
+                PrimaryMailboxDeliveryClient.Exact(item,"state","count");
                 string? state = item.GetProperty("state").GetString();
                 int count = item.GetProperty("count").GetInt32();
                 if (state is not ("not_attempted" or "not_observed" or "ambiguous" or "delivered" or "pending"

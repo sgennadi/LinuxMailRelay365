@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Text.Json;
 using System.Windows.Forms;
 
 namespace LinuxMailRelay365;
@@ -58,7 +59,7 @@ internal sealed partial class MainForm
         var results=new DataGridView {Dock=DockStyle.Top,Height=140,ReadOnly=true,AllowUserToAddRows=false,
             AllowUserToDeleteRows=false,AllowUserToOrderColumns=false,RowHeadersVisible=false,
             AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill,SelectionMode=DataGridViewSelectionMode.FullRowSelect};
-        foreach(string name in new[]{"Role","Submission","Transport","Queue ID","Queue","DSN"})
+        foreach(string name in new[]{"Role","Submission","Transport","Queue ID","Queue","DSN","Exchange trace"})
             results.Columns.Add(name,name);
         var details=new TextBox {Dock=DockStyle.Fill,ReadOnly=true,Multiline=true,ScrollBars=ScrollBars.Both,
             WordWrap=false,MinimumSize=new Size(0,100)};
@@ -70,11 +71,12 @@ internal sealed partial class MainForm
         var review=new Button {Text="Review running route",AutoSize=true};
         var send=new Button {Text="Send two reviewed tests",AutoSize=true};
         var trace=new Button {Text="Refresh trace (no send)",AutoSize=true};
+        var cloudTrace=new Button {Text="Exchange Message Trace",AutoSize=true};
         var copy=new Button {Text="Copy trace request",AutoSize=true};
         var resume=new Button {Text="Resume trace from clipboard",AutoSize=true};
         var close=new Button {Text="Close",AutoSize=true,DialogResult=DialogResult.Cancel};
         var buttons=new FlowLayoutPanel {Dock=DockStyle.Fill,AutoSize=true,WrapContents=true};
-        buttons.Controls.AddRange([review,send,trace,copy,resume,close]);
+        buttons.Controls.AddRange([review,send,trace,cloudTrace,copy,resume,close]);
         bool busy=false,traceOnly=false;
         PrimaryMailboxDeliveryRequest? approvedRequest=null,lockedRequest=null;
         string? approvedSha=null,traceSha=null;
@@ -97,7 +99,7 @@ internal sealed partial class MainForm
             bool valid=TryRequest(out var request);
             review.Enabled=!busy && !traceOnly && controlled.Checked && valid;
             send.Enabled=review.Enabled && approvedRequest==request && PrimaryMailboxOfflineClient.IsSha(approvedSha);
-            trace.Enabled=!busy && valid;
+            trace.Enabled=cloudTrace.Enabled=!busy && valid;
             copy.Enabled=!busy && valid;
             resume.Enabled=!busy && !traceOnly;
             foreach(var field in inputs) field.ReadOnly=busy || traceOnly;
@@ -187,6 +189,39 @@ internal sealed partial class MainForm
                 var receipt=await Remote("trace",request,traceSha);
                 traceSha=receipt.PlanSha;ShowReceipt(receipt);
                 SetStatus("Trace observed; no new message submitted. Inbox arrival remains unverified.",Color.SeaGreen);
+            });
+        };
+        cloudTrace.Click+=async (_,_) =>
+        {
+            if(!cloudTrace.Enabled || !TryRequest(out var request) ||
+                (lockedRequest is not null && lockedRequest!=request)) return;
+            LockTrace(request,traceSha);
+            await Execute("Validating the local run ledger before Exchange Online trace...",async ()=>{
+                var local=await Remote("trace",request,traceSha);
+                traceSha=local.PlanSha;ShowReceipt(local);
+                try
+                {
+                    SetStatus("Reading Exchange Online; sign in to the selected tenant if prompted.",SystemColors.ControlText);
+                    string raw=await ReadPrimaryMailboxExchangeTraceAsync(request,local,Guard);
+                    Guard();
+                    using var document=JsonDocument.Parse(raw);
+                    var outcomes=document.RootElement.GetProperty("outcomes");
+                    foreach(DataGridViewRow row in results.Rows)
+                    {
+                        string role=(string)row.Cells[0].Value!;
+                        row.Cells[6].Value=outcomes.GetProperty(role).GetProperty("state").GetString();
+                    }
+                    details.AppendText(Environment.NewLine+Environment.NewLine+"Exchange Online (service-reported):"+
+                        Environment.NewLine+raw+Environment.NewLine+
+                        "Delivered is service-reported; inbox arrival is not verified. Not observed can mean trace latency.");
+                    SetStatus("Exchange trace observed. No mail sent and no tenant changes.",Color.SeaGreen);
+                }
+                catch(Exception ex)
+                {
+                    details.AppendText(Environment.NewLine+"Exchange trace unavailable ("+ex.GetType().Name+
+                        "). Check the selected tenant, permissions, run age and trace latency. Local evidence retained.");
+                    SetStatus("Exchange trace unavailable; local evidence retained. Do not resend.",Color.DarkOrange);
+                }
             });
         };
         copy.Click+=(_,_) =>

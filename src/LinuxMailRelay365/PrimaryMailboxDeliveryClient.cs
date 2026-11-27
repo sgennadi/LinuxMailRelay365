@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -18,13 +20,22 @@ internal sealed record PrimaryMailboxDeliveryRequest(string RunId,string Sender,
         MailValid(External) && DomainValid(Domain) && DomainOf(Sender)==Domain &&
         DomainOf(Internal)==Domain && DomainOf(External)!=Domain && Internal!=External &&
         PrimaryMailboxOfflineClient.IsSha(BackupSha) && Tenant!=Guid.Empty && Client!=Guid.Empty;
-    internal string Json()
+    private SortedDictionary<string,string> Fields()
     {
         if(!Valid()) throw new InvalidDataException("Invalid primary mailbox delivery request.");
-        return JsonSerializer.Serialize(new Dictionary<string,string> {
+        return new(StringComparer.Ordinal) {
             ["run_id"]=RunId,["sender"]=Sender,["internal"]=Internal,["external"]=External,
             ["accepted_domain"]=Domain,["backup_sha256"]=BackupSha,
-            ["tenant_id"]=Tenant.ToString("D"),["client_id"]=Client.ToString("D")});
+            ["tenant_id"]=Tenant.ToString("D"),["client_id"]=Client.ToString("D")};
+    }
+    internal string Json()=>JsonSerializer.Serialize(Fields());
+    internal string RequestSha()
+    {
+        // All fields are strictly validated ASCII. Match the compact sorted
+        // Python ledger representation, including unescaped '+' and '%'.
+        byte[] raw=JsonSerializer.SerializeToUtf8Bytes(Fields(),
+            new JsonSerializerOptions {Encoder=JavaScriptEncoder.UnsafeRelaxedJsonEscaping});
+        return Convert.ToHexString(SHA256.HashData(raw)).ToLowerInvariant();
     }
     internal static PrimaryMailboxDeliveryRequest Parse(string raw)
     {
@@ -45,7 +56,8 @@ internal sealed record PrimaryMailboxDeliveryRequest(string RunId,string Sender,
 }
 
 internal sealed record PrimaryMailboxDeliveryRow(string Role,string Submission,string Transport,string QueueId,string Queue,string Dsn);
-internal sealed record PrimaryMailboxDeliveryReceipt(string PlanSha,string? RuntimeSha,string Source,PrimaryMailboxDeliveryRow[] Rows);
+internal sealed record PrimaryMailboxDeliveryReceipt(string PlanSha,string? RuntimeSha,string Source,PrimaryMailboxDeliveryRow[] Rows,
+    long? StartedUnix=null,string? RequestSha=null);
 
 internal static class PrimaryMailboxDeliveryClient
 {
@@ -82,7 +94,8 @@ internal static class PrimaryMailboxDeliveryClient
         else if(action=="submit")
             Exact(root,"status","run_id","plan_sha256","outcomes","inbox_verified","automatic_retry");
         else
-            Exact(root,"status","run_id","plan_sha256","source","outcomes","inbox_verified","automatic_retry");
+            Exact(root,"status","run_id","plan_sha256","source","started_unix","request_sha256",
+                "outcomes","inbox_verified","automatic_retry");
         string sha=ReadRoot("plan_sha256");
         Need(ReadRoot("status")==status && ReadRoot("run_id")==request.RunId &&
              PrimaryMailboxOfflineClient.IsSha(sha) && (expectedSha is null || sha==expectedSha) &&
@@ -99,6 +112,15 @@ internal static class PrimaryMailboxDeliveryClient
         if(action=="submit") Need(PrimaryMailboxOfflineClient.IsSha(expectedSha));
         string source=action=="trace"?ReadRoot("source"):"";
         Need(action!="trace" || source is "journal_recent_only" or "journal_unavailable");
+        long? started=null;
+        string? requestSha=null;
+        if(action=="trace")
+        {
+            started=root.GetProperty("started_unix").GetInt64();
+            requestSha=ReadRoot("request_sha256");
+            Need(started.Value>0 && started.Value<=DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds() &&
+                requestSha==request.RequestSha());
+        }
         var outcomes=root.GetProperty("outcomes");
         Need(outcomes.ValueKind==JsonValueKind.Object);
         string[] keys=outcomes.EnumerateObject().Select(p=>p.Name).ToArray();
@@ -142,8 +164,35 @@ internal static class PrimaryMailboxDeliveryClient
         }
         if(action=="submit" && rows[1].Submission!="not_attempted")
             Need(rows[0].Submission=="local_submission_accepted");
-        return new(sha,null,source,rows.ToArray());
+        return new(sha,null,source,rows.ToArray(),started,requestSha);
     }
+    internal static (string Payload,List<string> Attempted) ExchangeTracePayload(
+        PrimaryMailboxDeliveryRequest request,PrimaryMailboxDeliveryReceipt local,DateTimeOffset now)
+    {
+        Need(request.Valid() && PrimaryMailboxOfflineClient.IsSha(local.PlanSha) &&
+             local.RequestSha==request.RequestSha() && local.StartedUnix.HasValue &&
+             local.Source is "journal_recent_only" or "journal_unavailable");
+        long started=local.StartedUnix!.Value;
+        Need(started>=now.AddDays(-7).ToUnixTimeSeconds() &&
+             started<=now.AddMinutes(5).ToUnixTimeSeconds());
+        Need(local.Rows.Length==2 && local.Rows.Select(r=>r.Role).OrderBy(x=>x,StringComparer.Ordinal)
+             .SequenceEqual(new[]{"external","internal"}));
+        var attempted=new List<string>();
+        foreach(string role in new[]{"internal","external"})
+        {
+            var row=local.Rows.Single(r=>r.Role==role);
+            if(row.Submission is "attempted" or "local_submission_accepted" or "submission_uncertain")
+                attempted.Add(role);
+            else Need(row.Submission=="not_attempted");
+        }
+        Need(attempted.Count>0);
+        return (JsonSerializer.Serialize(new Dictionary<string,object> {
+            ["run_id"]=request.RunId,["accepted_domain"]=request.Domain,["sender"]=request.Sender,
+            ["internal"]=request.Internal,["external"]=request.External,
+            ["started_unix"]=started,["attempted"]=attempted
+        }),attempted);
+    }
+
     internal static bool SelfTest()
     {
         string a=new('a',64),b=new('b',64),run=new('1',32);
@@ -158,8 +207,10 @@ internal static class PrimaryMailboxDeliveryClient
         string submit=JsonSerializer.Serialize(new {status="submission_recorded",run_id=run,plan_sha256=a,
             outcomes=new Dictionary<string,string>{{"internal","local_submission_accepted"},{"external","submission_uncertain"}},
             inbox_verified=false,automatic_retry=false});
+        long started=DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeSeconds();
         string trace=JsonSerializer.Serialize(new {status="trace_observed",run_id=run,plan_sha256=a,
-            source="journal_recent_only",outcomes=new Dictionary<string,object>{
+            source="journal_recent_only",started_unix=started,request_sha256=request.RequestSha(),
+            outcomes=new Dictionary<string,object>{
                 ["internal"]=new {submission="local_submission_accepted",transport="exchange_smtp_accepted",
                     queue_id="ABC12345",queue="not_observed",dsn="2.0.0"},
                 ["external"]=new {submission="submission_uncertain",transport="correlation_unavailable"}},
@@ -175,6 +226,24 @@ internal static class PrimaryMailboxDeliveryClient
             try { Parse(bad,"trace",request,a);return false; } catch(InvalidDataException) {}
         }
         try { Parse(trace,"trace",request,b);return false; } catch(InvalidDataException) {}
+        try { Parse(trace,"trace",request with { External="other@example.net" },a);return false; }
+        catch(InvalidDataException) {}
+        var local=Parse(trace,"trace",request,a);
+        var cloud=ExchangeTracePayload(request,local,DateTimeOffset.UtcNow);
+        if(!cloud.Attempted.SequenceEqual(new[]{"internal","external"})) return false;
+        using(var payload=Document(cloud.Payload))
+        {
+            Exact(payload.RootElement,"run_id","accepted_domain","sender","internal","external","started_unix","attempted");
+            if(payload.RootElement.GetProperty("started_unix").GetInt64()!=started) return false;
+        }
+        var partial=local with { Rows=[local.Rows[0],local.Rows[1] with {Submission="not_attempted"}] };
+        if(!ExchangeTracePayload(request,partial,DateTimeOffset.UtcNow).Attempted.SequenceEqual(new[]{"internal"})) return false;
+        foreach(var bad in new[]{local with { RequestSha=b },local with { StartedUnix=started-8*86400 },
+            local with { StartedUnix=started+86400 },
+            local with { Rows=[local.Rows[0] with {Submission="not_attempted"},local.Rows[1] with {Submission="not_attempted"}] }})
+        {
+            try { ExchangeTracePayload(request,bad,DateTimeOffset.UtcNow);return false; } catch(InvalidDataException) {}
+        }
         string bundle=EmbeddedAssets.BuildPrimaryMailboxDeliveryProbe("submit",request,a,Confirm);
         return bundle.Contains("probe-primary-mailbox-delivery.py",StringComparison.Ordinal) &&
             bundle.Contains("review-postfix-m365-delivery.py",StringComparison.Ordinal) &&

@@ -205,7 +205,8 @@ def trace(req,adapter=None):
     rows,source=journal_rows(started,adapter)
     queue=P.queue_rows(adapter)
     return {"status":"trace_observed","run_id":req["run_id"],"plan_sha256":plan,
-            "source":source,"outcomes":{role:correlate(req,role,rows,queue,events[role])
+            "source":source,"started_unix":started,"request_sha256":P.digest(P.canonical(req)),
+            "outcomes":{role:correlate(req,role,rows,queue,events[role])
                                         for role in P.ROLES},
             "inbox_verified":False,"automatic_retry":False}
 

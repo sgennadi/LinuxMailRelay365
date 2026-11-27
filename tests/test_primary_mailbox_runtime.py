@@ -465,6 +465,18 @@ class PrimaryMailboxDeliveryGuiContracts(unittest.TestCase):
         self.assertIn("review.Enabled=!busy && !traceOnly",ui)
         self.assertIn("LockTrace(request,null)",ui)
         self.assertIn("Copy trace request",ui)
+        self.assertIn('ReadPrimaryMailboxExchangeTraceAsync(request,local,Guard)',ui)
+        cloud=ui.split("cloudTrace.Click+=",1)[1].split("copy.Click+=",1)[0]
+        self.assertLess(cloud.index('Remote("trace"'),cloud.index("ReadPrimaryMailboxExchangeTraceAsync"))
+        self.assertNotIn('Remote("submit"',cloud)
+        shared=(src/"MainForm.PostfixExchangeTrace.cs").read_text()
+        self.assertIn("CheckCloudTenant(id)",shared)
+        self.assertIn("ExchangeTracePayload(request,local,DateTimeOffset.UtcNow)",shared)
+        self.assertIn("RunRecordedExchangeTraceAsync(id,request.RunId,attempted,payload,Guard)",shared)
+        parser=(src/"PrimaryMailboxDeliveryClient.cs").read_text()
+        self.assertIn("requestSha==request.RequestSha()",parser)
+        self.assertIn("now.AddDays(-7)",parser)
+        self.assertIn("JavaScriptEncoder.UnsafeRelaxedJsonEscaping",parser)
         self.assertIn("PrimaryMailboxDeliveryClient.SelfTest",(src/"Program.cs").read_text())
         self.assertIn("OpenPrimaryMailboxDeliveryAsync",(src/"MainForm.PrimaryMailboxRoute.cs").read_text())
 
@@ -506,6 +518,23 @@ class PrimaryMailboxDeliveryProbeTests(unittest.TestCase):
                 D.policy(dict(values,**{key:value}).__getitem__,"",self.req)
         with self.assertRaises(ValueError):
             D.policy(values.__getitem__,"m365xoauth2/unix/argv=other",self.req)
+
+    def test_trace_binds_full_request_and_ledger_time_for_cloud_query(self):
+        D=self.D
+        events={"internal":"attempted","external":"not_attempted"}
+        adapter=Mock()
+        with patch.object(D.P,"ledger",return_value=(123,events,"a"*64)) as ledger, \
+             patch.object(D,"journal_rows",return_value=([],"journal_unavailable")), \
+             patch.object(D.P,"queue_rows",return_value=None):
+            report=D.trace(self.req,adapter)
+        ledger.assert_called_once_with(self.req,include_plan=True)
+        self.assertEqual(report["request_sha256"],D.P.digest(D.P.canonical(self.req)))
+        self.assertEqual(report["started_unix"],123)
+        self.assertEqual(report["plan_sha256"],"a"*64)
+        self.assertEqual(report["outcomes"]["internal"]["submission"],"attempted")
+        self.assertEqual(report["outcomes"]["external"]["submission"],"not_attempted")
+        self.assertFalse(report["inbox_verified"])
+        self.assertFalse(report["automatic_retry"])
 
     def test_exact_pipe_trace_and_no_inbox_claim(self):
         D=self.D
