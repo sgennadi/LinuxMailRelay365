@@ -203,6 +203,63 @@ class MultiMailboxRestoreTests(unittest.TestCase):
                 artifact.unlink()
         self.assertEqual(len(restore.preview()["sha"]), 64)
 
+    def test_acceptance_timer_binding_and_effective_unit_checks(self):
+        map_sha,marker_sha="a"*64,"b"*64
+        state={"map":map_sha,"service":"c"*64,"timer":"d"*64}
+        state["plan"]=digest(json.dumps(
+            dict(state,route=marker_sha),sort_keys=True,
+            separators=(",",":")).encode("ascii"))
+        # Model the already protected, manifest-pinned installed module.
+        code=(
+            "from pathlib import Path\n"
+            "SERVICE=Path('/etc/systemd/system/linuxmailrelay365-multi-proof.service')\n"
+            "TIMER=Path('/etc/systemd/system/linuxmailrelay365-multi-proof.timer')\n"
+            "def installed(): return "+repr(state)+"\n"
+            "def systemctl(*args): return True\n"
+            "def receipt_age_status(sha): return 'fresh_ttl_only'\n"
+        ).encode("ascii")
+        def show(args):
+            self.assertEqual(args[:2],["systemctl","show"])
+            prop=args[2].split("=",1)[1]
+            return {"LoadState":"loaded",
+                    "FragmentPath":"/etc/systemd/system/"+args[-1],
+                    "NeedDaemonReload":"no","DropInPaths":""}[prop]
+        with mock.patch.object(install,"run",side_effect=show) as native:
+            result=restore.acceptance_timer(code,map_sha,marker_sha)
+            self.assertEqual(result["mode"],"managed_timer")
+            self.assertEqual(result["plan"],state["plan"])
+            self.assertEqual(native.call_count,8)
+            for invalid,sha,marker in (
+                (code,"e"*64,marker_sha),
+                (code,map_sha,"e"*64),
+                (code.replace(b"fresh_ttl_only",b"expired"),map_sha,marker_sha),
+                (code.replace(b"return True",b"return False"),map_sha,marker_sha)):
+                with self.assertRaisesRegex(restore.Refused,"managed_proof_timer_not_verified"):
+                    restore.acceptance_timer(invalid,sha,marker)
+            native.side_effect=lambda args: "/foreign/drop-in.conf" if "DropInPaths" in args[2] else show(args)
+            with self.assertRaisesRegex(restore.Refused,"managed_proof_timer_not_verified"):
+                restore.acceptance_timer(code,map_sha,marker_sha)
+
+    def test_acceptance_review_does_not_authorize_restore_with_timer(self):
+        self.assertEqual(restore.acceptance_preview()["review"]["acceptance_proof"],
+                         {"mode":"manual"})
+        artifact=restore.TIMER_ARTIFACTS[0]
+        artifact.write_text("timer\n")
+        with self.assertRaisesRegex(restore.Refused,"managed_proof_timer_not_verified"):
+            restore.acceptance_preview()
+        expected={"mode":"managed_timer","plan":"a"*64}
+        with mock.patch.object(restore,"acceptance_timer",return_value=expected) as check:
+            result=restore.acceptance_preview()
+            self.assertEqual(result["review"]["acceptance_proof"],expected)
+            check.assert_called_once()
+            self.assertEqual(check.call_args[0][0],
+                             self.source["manage-multi-mailbox-proof-timer.py"])
+        with self.assertRaisesRegex(restore.Refused,"must_be_disabled_before_restore"):
+            restore.preview()
+        with self.assertRaisesRegex(restore.Refused,"must_be_disabled_before_restore"):
+            restore.apply_offline(result["sha"],self.backup_id,restore.CONFIRM)
+        self.assertEqual((self.conf/"main.cf").read_bytes(),self.installed["main.cf"])
+
     def test_restore_apply_refuses_when_timer_exists_without_modifying_mail(self):
         state = restore.preview()
         timerunit = restore.TIMER_ARTIFACTS[1]
