@@ -191,16 +191,38 @@ if test "${LMR365_KVM_CLIENT_TLS_ACCEPTANCE:-false}" = "true"; then
         linux/smtp-tls-postfix.py linux/smtp-tls-validate-generation.py linux/smtp-tls-selinux-prepare.py \
         linux/smtp-tls-initial-backup.py linux/smtp-tls-initial-candidate.py linux/smtp-tls-initial-journal.py \
         linux/smtp-tls-initial-deploy.py linux/plan-smtp-tls-initial.py linux/manage-smtp-tls-initial.py \
+        linux/manage-smtp-tls-renewal.py linux/systemd/linuxmailrelay365-smtp-tls-initial-recovery.service \
+        linux/systemd/linuxmailrelay365-smtp-tls-prestart.service \
         tests/rocky_vm_smtp_client_tls_enforcing.py ci@127.0.0.1:/home/ci/
     ssh "${ssh_opts[@]}" ci@127.0.0.1 \
-        'sudo dnf -y -q install openssl policycoreutils && sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-client-tls && sudo install -o root -g root -m 0644 /home/ci/stage-smtp-relay-certificate.py /home/ci/check-smtp-relay-certificate.py /home/ci/smtp-tls-*.py /home/ci/plan-smtp-tls-initial.py /home/ci/manage-smtp-tls-initial.py /home/ci/rocky_vm_smtp_client_tls_enforcing.py /usr/local/libexec/lmr365-kvm-client-tls/ && sudo restorecon -R /usr/local/libexec/lmr365-kvm-client-tls && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-client-tls-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-client-tls-vm"'
+        'sudo dnf -y -q install openssl policycoreutils && sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-client-tls && sudo install -o root -g root -m 0644 /home/ci/stage-smtp-relay-certificate.py /home/ci/check-smtp-relay-certificate.py /home/ci/smtp-tls-*.py /home/ci/plan-smtp-tls-initial.py /home/ci/manage-smtp-tls-initial.py /home/ci/manage-smtp-tls-renewal.py /home/ci/rocky_vm_smtp_client_tls_enforcing.py /usr/local/libexec/lmr365-kvm-client-tls/ && sudo restorecon -R /usr/local/libexec/lmr365-kvm-client-tls && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-client-tls-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-client-tls-vm"'
     ssh "${ssh_opts[@]}" ci@127.0.0.1 \
-        'sudo env GITHUB_ACTIONS=true python3 -I -B /usr/local/libexec/lmr365-kvm-client-tls/rocky_vm_smtp_client_tls_enforcing.py' | tee "$work/client-tls"
+        'sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-client-tls/systemd && sudo install -o root -g root -m 0644 /home/ci/linuxmailrelay365-smtp-tls-initial-recovery.service /home/ci/linuxmailrelay365-smtp-tls-prestart.service /usr/local/libexec/lmr365-kvm-client-tls/systemd/ && sudo restorecon -R /usr/local/libexec/lmr365-kvm-client-tls'
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'sudo env GITHUB_ACTIONS=true python3 -I -B /usr/local/libexec/lmr365-kvm-client-tls/rocky_vm_smtp_client_tls_enforcing.py --prepare-reboot' | tee "$work/client-tls"
+    grep -Fxq 'LMR365_VM_CLIENT_TLS_REBOOT_PREPARED=switched' "$work/client-tls"
+    client_tls_boot="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 'cat /proc/sys/kernel/random/boot_id')"
+    [[ "$client_tls_boot" =~ ^[0-9a-f-]{36}$ ]] || exit 1
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 'sudo systemctl reboot' >/dev/null 2>&1 || true
+    client_tls_rebooted=no
+    for i in $(seq 1 90); do
+        client_tls_new_boot="$(ssh "${ssh_opts[@]}" ci@127.0.0.1 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)"
+        if [[ "$client_tls_new_boot" =~ ^[0-9a-f-]{36}$ ]] && test "$client_tls_new_boot" != "$client_tls_boot"; then
+            client_tls_rebooted=yes
+            break
+        fi
+        sleep 5
+    done
+    test "$client_tls_rebooted" = yes || { echo "LMR365_VM_CLIENT_TLS_REBOOT_TIMEOUT"; exit 1; }
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+        'state=$(sudo timeout 90 systemctl is-system-running --wait || true); case "$state" in running|degraded) ;; *) echo LMR365_VM_CLIENT_TLS_BOOT_STATE_UNVERIFIED; exit 1;; esac; sudo env GITHUB_ACTIONS=true python3 -I -B /usr/local/libexec/lmr365-kvm-client-tls/rocky_vm_smtp_client_tls_enforcing.py --verify-reboot' | tee -a "$work/client-tls"
     for expected in \
         'LMR365_VM_CLIENT_TLS_INITIAL=presented_verified' \
         'LMR365_VM_CLIENT_TLS_ROTATION=presented_verified' \
         'LMR365_VM_CLIENT_TLS_ROLLBACK=presented_verified' \
         'LMR365_VM_CLIENT_TLS_RECOVERY=presented_verified' \
+        'LMR365_VM_CLIENT_TLS_REBOOT_ORDER=verified_before_postfix' \
+        'LMR365_VM_CLIENT_TLS_BOOT_RECOVERY=presented_verified' \
         'LMR365_VM_CLIENT_TLS_BASELINE=restored_exact_bytes' \
         'LMR365_VM_CLIENT_TLS_EXTERNAL_DELIVERY=no'; do
         grep -Fxq "$expected" "$work/client-tls"

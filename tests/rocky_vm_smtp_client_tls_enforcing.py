@@ -25,6 +25,16 @@ ROOT = Path("/etc/postfix/lmr365-smtp-tls")
 MARKER = Path("/run/lmr365-disposable-client-tls-vm")
 MAIN = Path("/etc/postfix/main.cf")
 MASTER = Path("/etc/postfix/master.cf")
+PRODUCT_LIB = Path("/usr/local/libexec/linuxmailrelay365")
+UNIT_DIR = Path("/etc/systemd/system")
+BOOT_UNITS = ("linuxmailrelay365-smtp-tls-initial-recovery.service",
+              "linuxmailrelay365-smtp-tls-prestart.service")
+BOOT_HELPERS = ("manage-smtp-tls-initial.py", "manage-smtp-tls-renewal.py",
+                "smtp-tls-generation.py", "smtp-tls-transaction.py", "smtp-tls-activate.py",
+                "smtp-tls-postfix.py", "smtp-tls-initial-backup.py", "smtp-tls-initial-candidate.py",
+                "smtp-tls-initial-journal.py", "smtp-tls-initial-deploy.py",
+                "plan-smtp-tls-initial.py", "check-smtp-relay-certificate.py")
+BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 IDENTITY = "relay.lab.invalid"
 SENDER = "sender@source.lab.invalid"
 RECIPIENT = "sink@destination.lab.invalid"
@@ -212,7 +222,170 @@ def probe(name, label):
     print("LMR365_VM_CLIENT_TLS_" + label.upper() + "=presented_verified", flush=True)
 
 
-def main():
+def boot_id():
+    value = BOOT_ID.read_text().strip()
+    if not re.fullmatch(r"[a-f0-9-]{36}", value):
+        raise ValueError("invalid boot ID")
+    return value
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def create_file(path, data, mode=0o600):
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "wb") as stream:
+        os.fchmod(stream.fileno(), mode)
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def verify_units():
+    if run("systemctl", "is-enabled", "postfix.service").strip() != b"enabled":
+        raise ValueError("Postfix automatic startup not enabled")
+    for helper in BOOT_HELPERS:
+        path = PRODUCT_LIB / helper
+        st = path.lstat()
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022
+                or st.st_nlink != 1 or path.read_bytes() != (LIB / helper).read_bytes()):
+            raise ValueError("fixture recovery helper changed")
+    for name in BOOT_UNITS:
+        source, target = LIB / "systemd" / name, UNIT_DIR / name
+        st = target.lstat()
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022
+                or st.st_nlink != 1 or target.read_bytes() != source.read_bytes()):
+            raise ValueError("fixture recovery unit changed")
+        if (run("systemctl", "show", name, "--property=FragmentPath", "--value").decode().strip() != str(target)
+                or run("systemctl", "show", name, "--property=DropInPaths", "--value").strip()
+                or run("systemctl", "show", name, "--property=NeedDaemonReload", "--value").strip() != b"no"):
+            raise ValueError("effective recovery unit unverified")
+        if run("systemctl", "is-enabled", name).strip() != b"enabled":
+            raise ValueError("boot recovery unit not enabled")
+    required = run("systemctl", "show", "postfix.service", "--property=Requires", "--value").decode().split()
+    if not all(name in required for name in BOOT_UNITS):
+        raise ValueError("Postfix boot recovery dependencies missing")
+    for name in BOOT_UNITS:
+        before = run("systemctl", "show", name, "--property=Before", "--value").decode().split()
+        if "postfix.service" not in before:
+            raise ValueError("recovery ordering missing")
+
+
+def install_boot_recovery():
+    if os.path.lexists(PRODUCT_LIB) or any(os.path.lexists(UNIT_DIR / name) for name in BOOT_UNITS):
+        raise ValueError("existing product recovery installation")
+    PRODUCT_LIB.mkdir(mode=0o755)
+    for name in BOOT_HELPERS:
+        create_file(PRODUCT_LIB / name, (LIB / name).read_bytes(), 0o644)
+    for name in BOOT_UNITS:
+        create_file(UNIT_DIR / name, (LIB / "systemd" / name).read_bytes(), 0o644)
+    run("restorecon", "-R", str(PRODUCT_LIB))
+    for name in BOOT_UNITS:
+        run("restorecon", str(UNIT_DIR / name))
+    run("systemctl", "daemon-reload")
+    run("systemctl", "enable", *BOOT_UNITS)
+    verify_units()
+
+
+def prepare_reboot(baseline, master_sha, first, second, gen, tx):
+    # This is reached only after the current-boot disposable guard and the
+    # existing successful local delivery/recovery probes.
+    install_boot_recovery()
+    with tx.deployment_lock(ROOT):
+        tx.record(ROOT, second, first, "prepared")
+        gen.switch(ROOT, first, second)
+        tx.record(ROOT, second, first, "switched")
+    if gen.current(ROOT) != first:
+        raise ValueError("interrupted rotation not staged")
+    create_file(WORK / "baseline.cf", baseline)
+    state = {"version": 1, "boot_id": boot_id(), "previous": second, "candidate": first,
+             "baseline_sha256": sha(baseline), "main_sha256": sha(MAIN.read_bytes()),
+             "master_sha256": master_sha}
+    create_file(WORK / "reboot.json", json.dumps(state, sort_keys=True).encode())
+    os.sync()
+    print("LMR365_VM_CLIENT_TLS_REBOOT_PREPARED=switched", flush=True)
+
+
+def verify_boot_event(rows, unit, message, current_boot, postfix_active):
+    events = [row for row in rows if row.get("_SYSTEMD_UNIT") == unit
+              and row.get("_BOOT_ID") == current_boot.replace("-", "")
+              and row.get("MESSAGE") == message]
+    if len(events) != 1:
+        raise ValueError("missing or ambiguous current-boot recovery event")
+    stamp = int(events[0]["__MONOTONIC_TIMESTAMP"])
+    if not 0 < stamp < postfix_active:
+        raise ValueError("recovery was not observed before Postfix activation")
+
+
+def verify_reboot():
+    os_release = Path("/etc/os-release").read_bytes()
+    if (os.geteuid() != 0 or os.environ.get("GITHUB_ACTIONS") != "true"
+            or (b'ID="rocky"' not in os_release and b"\nID=rocky\n" not in os_release)
+            or run("hostname", "-s").strip() != b"rocky-selinux-ci"
+            or Path("/proc/1/comm").read_text().strip() != "systemd"
+            or run("getenforce").strip() != b"Enforcing"
+            or Path("/sys/fs/selinux/enforce").read_text().strip() != "1"):
+        raise RuntimeError("disposable enforcing guest required")
+    backup = load("smtp-tls-initial-backup")
+    state = json.loads(backup.read_private(WORK / "reboot.json", 8192), object_pairs_hook=backup.strict_object)
+    baseline = backup.read_private(WORK / "baseline.cf", 8388608)
+    current_boot = boot_id()
+    if (set(state) != {"version", "boot_id", "previous", "candidate", "baseline_sha256",
+                       "main_sha256", "master_sha256"} or state["version"] != 1
+            or not re.fullmatch(r"[a-f0-9-]{36}", state["boot_id"]) or state["boot_id"] == current_boot
+            or sha(baseline) != state["baseline_sha256"] or sha(MAIN.read_bytes()) != state["main_sha256"]
+            or sha(MASTER.read_bytes()) != state["master_sha256"]):
+        raise ValueError("fixture reboot evidence changed")
+    gen = load("smtp-tls-generation")
+    for name in ("previous", "candidate"):
+        gen.validate(ROOT, state[name])
+    if state["previous"] == state["candidate"] or gen.current(ROOT) != state["previous"]:
+        raise ValueError("previous certificate not restored")
+    journal = json.loads(backup.read_private(ROOT / "deployment.json", 16384), object_pairs_hook=backup.strict_object)
+    if journal != {"version": 1, "phase": "rolled_back", "previous": state["previous"], "candidate": state["candidate"]}:
+        raise ValueError("rotation recovery journal mismatch")
+    verify_units()
+    run("systemctl", "is-active", "--quiet", "postfix.service")
+    active = int(run("systemctl", "show", "postfix.service", "--property=ActiveEnterTimestampMonotonic", "--value"))
+    for unit, message in zip(BOOT_UNITS, ("INITIAL_TLS=unchanged", "TLS_TRANSACTION=restored")):
+        rows = [json.loads(line) for line in run("journalctl", "-b", "-u", unit, "--no-pager",
+                "-n", "100", "-o", "json").splitlines()]
+        verify_boot_event(rows, unit, message, current_boot, active)
+    print("LMR365_VM_CLIENT_TLS_REBOOT_ORDER=verified_before_postfix", flush=True)
+    if (run("postconf", "-h", "-x", "relayhost").strip() != b"[127.0.0.2]:25"
+            or run("postconf", "-h", "-x", "smtp_fallback_relay").strip()
+            or run("postqueue", "-j").strip()):
+        raise ValueError("isolated fixture route not verified after reboot")
+    probe("second", "boot_recovery")
+    run("systemctl", "stop", "postfix.service")
+    run("systemctl", "disable", *BOOT_UNITS)
+    for name in BOOT_UNITS:
+        (UNIT_DIR / name).unlink()
+    run("systemctl", "daemon-reload")
+    shutil.rmtree(PRODUCT_LIB)
+    restore_baseline(baseline, state["master_sha256"])
+
+
+def restore_baseline(baseline, master_sha):
+    if hashlib.sha256(MASTER.read_bytes()).hexdigest() != master_sha:
+        raise RuntimeError("master.cf changed")
+    run("systemctl", "stop", "postfix.service")
+    MAIN.write_bytes(baseline)
+    run("restorecon", str(MAIN))
+    run("postfix", "check")
+    run("systemctl", "start", "postfix.service")
+    if MAIN.read_bytes() != baseline or run("postqueue", "-j").strip():
+        raise RuntimeError("baseline restore failed")
+    if run("getenforce").strip() != b"Enforcing":
+        raise RuntimeError("SELinux no longer enforcing")
+    shutil.rmtree(ROOT)
+    shutil.rmtree(WORK)
+    print("LMR365_VM_CLIENT_TLS_BASELINE=restored_exact_bytes")
+    print("LMR365_VM_CLIENT_TLS_EXTERNAL_DELIVERY=no")
+
+
+def main(prepare_boot=False):
     guard()
     os.umask(0o077)
     WORK.mkdir(mode=0o700)
@@ -320,24 +493,18 @@ def main():
     if activate.recover(ROOT, gen, tx, pf.check, pf.reload) != "restored" or gen.current(ROOT) != second:
         raise RuntimeError("interrupted transaction recovery failed")
     probe("second", "recovery")
-    if hashlib.sha256(MASTER.read_bytes()).hexdigest() != master_sha:
-        raise RuntimeError("master.cf changed")
-    # Restore only the disposable lab's baseline before later VM scenarios.
-    run("systemctl", "stop", "postfix.service")
-    MAIN.write_bytes(baseline)
-    run("restorecon", str(MAIN))
-    run("postfix", "check")
-    run("systemctl", "start", "postfix.service")
-    if MAIN.read_bytes() != baseline or run("postqueue", "-j").strip():
-        raise RuntimeError("baseline restore failed")
-    if run("getenforce").strip() != b"Enforcing":
-        raise RuntimeError("SELinux no longer enforcing")
-    # Only fixture directories created after the current-boot guard.
-    shutil.rmtree(ROOT)
-    shutil.rmtree(WORK)
-    print("LMR365_VM_CLIENT_TLS_BASELINE=restored_exact_bytes")
-    print("LMR365_VM_CLIENT_TLS_EXTERNAL_DELIVERY=no")
+    if prepare_boot:
+        prepare_reboot(baseline, master_sha, first, second, gen, tx)
+    else:
+        restore_baseline(baseline, master_sha)
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--prepare-reboot"]:
+        main(prepare_boot=True)
+    elif sys.argv[1:] == ["--verify-reboot"]:
+        verify_reboot()
+    elif not sys.argv[1:]:
+        main()
+    else:
+        raise SystemExit("invalid fixture arguments")

@@ -23,6 +23,8 @@ on:
       - linux/smtp-tls-*.py
       - linux/review-smtp-tls-*.py
       - linux/manage-smtp-tls-initial.py
+      - linux/manage-smtp-tls-renewal.py
+      - linux/systemd/linuxmailrelay365-smtp-tls-*.service
       - linux/stage-smtp-relay-certificate.py
       - linux/check-smtp-relay-certificate.py
   workflow_dispatch:
@@ -48,7 +50,7 @@ jobs:
   kvm-host-capability:
     name: Verify nested KVM availability on GitHub-hosted Ubuntu
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
         with:
