@@ -5,6 +5,9 @@ import subprocess
 import unittest
 from unittest.mock import Mock,patch
 
+# RHEL 8 uses Python 3.6: inspect mock calls via tuple indexing,
+# not the .args/.kwargs properties introduced in Python 3.8.
+
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location("primary_offline_cli",
     ROOT/"linux/manage-primary-mailbox-offline.py")
@@ -220,7 +223,7 @@ class ManagedTpmRuntimeTests(unittest.TestCase):
             temporary.return_value.__enter__.return_value="/run/test-private"
             result=A.tpm_public_evidence("0x81010001",self.identity["certificate"])
             self.assertRegex(result["public_key_sha256"],r"^[a-f0-9]{64}$")
-            args=runner.call_args.args[0]
+            args=runner.call_args[0][0]
             self.assertEqual(args,["/usr/bin/tpm2_readpublic","-c","0x81010001","-f","pem",
                                    "-o","/run/test-private/public.pem"])
             openssl.side_effect=[b"different public key",b""]
@@ -773,8 +776,8 @@ class PrimaryMailboxDeliveryProbeTests(unittest.TestCase):
             submit.assert_not_called()
             self.assertEqual(D.local_operation("local-submit",req,7,8,9,"a"*64,D.LOCAL_CONFIRM)["status"],
                              "local_submission_recorded")
-            self.assertEqual(submit.call_args.args[:2],(local,"a"*64))
-            self.assertEqual(submit.call_args.kwargs["ledger_request"],req)
+            self.assertEqual(submit.call_args[0][:2],(local,"a"*64))
+            self.assertEqual(submit.call_args[1]["ledger_request"],req)
         def observe(request,ledger_fn,prepare_fn):
             self.assertEqual(request,local)
             ledger_fn(request,("local",),include_plan=True)
