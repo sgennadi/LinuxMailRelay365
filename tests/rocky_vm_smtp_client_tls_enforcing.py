@@ -74,7 +74,8 @@ def guard():
             raise RuntimeError("unsafe fixture config")
     for key in ("transport_maps", "sender_dependent_relayhost_maps", "sender_dependent_default_transport_maps",
                 "smtp_fallback_relay", "content_filter", "canonical_maps", "virtual_alias_maps"):
-        if run("postconf", "-h", key).strip():
+        # Expand Postfix defaults such as smtp_fallback_relay = $fallback_relay.
+        if run("postconf", "-h", "-x", key).strip():
             raise RuntimeError("nonstandard lab route: " + key)
     MARKER.unlink()
 
@@ -200,7 +201,10 @@ def main():
     run("postconf", "-e", "relayhost = [127.0.0.2]:25",
         "smtp_tls_security_level = encrypt", "smtp_sasl_auth_enable = no",
         "smtp_connection_cache_on_demand = no", "smtp_connection_cache_destinations =",
-        "smtp_tls_loglevel = 1", "smtp_tls_wrappermode = no")
+        "smtp_tls_loglevel = 1", "smtp_tls_wrappermode = no", "smtp_fallback_relay =")
+    if (run("postconf", "-h", "-x", "relayhost").strip() != b"[127.0.0.2]:25" or
+            run("postconf", "-h", "-x", "smtp_fallback_relay").strip()):
+        raise RuntimeError("loopback-only relay not verified")
     run("postfix", "reload")
     certificates()
     stage = load("stage-smtp-relay-certificate")
