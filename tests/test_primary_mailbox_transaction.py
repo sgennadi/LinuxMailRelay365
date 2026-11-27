@@ -185,5 +185,133 @@ class PrimaryMailboxTransactionTests(unittest.TestCase):
         self.assertEqual(self.pair(),self.raw)
 
 
+class LabeledPrimaryMailboxTransactionTests(PrimaryMailboxTransactionTests):
+    """Exercise the private v2 adapter using real inode-bound user xattrs.
+
+    This simulates label storage and drift, not SELinux kernel enforcement.
+    All inherited transaction tests also execute on the labeled path.
+    """
+    def setUp(self):
+        super().setUp()
+        self.xattr="user.lmr365_test_selinux"
+        patcher=patch.object(X.T,"SELINUX_XATTR",self.xattr)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.config_label=X.T.checked_label(b"system_u:object_r:postfix_etc_t:s0\0")
+        self.private_label=X.T.checked_label(b"system_u:object_r:var_lib_t:s0\0")
+        self.mode="enforcing"
+        self.overrides={}
+        try:
+            os.setxattr(self.fd,self.xattr,X.T.label_bytes(self.config_label))
+            os.setxattr(self.parent,self.xattr,X.T.label_bytes(self.private_label))
+            for name in X.NAMES:
+                os.setxattr(str(self.config/name),self.xattr,X.T.label_bytes(self.config_label))
+        except OSError as error:
+            self.skipTest("filesystem does not support test user xattrs: "+str(error))
+        self.policy=X.SelinuxPolicy(self.fd,self.parent,self.uid,lambda:self.mode,self.policy_label)
+
+    def policy_label(self,path,kind):
+        return self.overrides.get((path,kind),
+            self.config_label if path=="/etc/postfix" or path.startswith("/etc/postfix/") else self.private_label)
+
+    def review(self):
+        return X.review(self.fd,self.uid,self.mailbox,self.guard,self.runtime,
+                        lambda:self.sample,self.identity,self.compare,selinux=self.policy)
+
+    def apply(self,revision):
+        return X.apply(self.fd,self.parent,revision,self.uid,X.APPLY,self.guard,
+                       self.review,self.native,self.runtime,selinux=self.policy)
+
+    def restore(self,revision):
+        return X.restore(self.fd,self.parent,revision,self.uid,X.RESTORE,self.guard,self.native,
+                         selinux=self.policy)
+
+    # Inherited tests that call the core directly use its v1 contract.
+    # Exercise their equivalent labeled behavior explicitly here.
+    def test_apply_restore_order_and_backup(self):
+        revision,info,files=self.review()
+        self.assertEqual(info["version"],2)
+        self.assertEqual(info["main_meta"]["selinux"],self.config_label)
+        self.assertEqual(info["selinux"]["recovery_parent"],self.private_label)
+        self.apply(revision)
+        self.assertEqual(self.pair(),self.candidate)
+        self.assertEqual(X.load_backup(self.parent,revision,self.uid,self.policy),(info,files))
+        with self.assertRaises(X.Refused):
+            X.load_backup(self.parent,revision,self.uid)
+        folder=self.root/X.BASE/revision
+        for path in (folder.parent,folder,*folder.iterdir()):
+            self.assertEqual(os.getxattr(str(path),self.xattr),X.T.label_bytes(self.private_label))
+        self.restore(revision)
+        self.assertEqual(self.pair(),self.raw)
+        for name in X.NAMES:
+            self.assertEqual(os.getxattr(str(self.config/name),self.xattr),X.T.label_bytes(self.config_label))
+
+    def test_interruption_between_files_recovers(self):
+        revision,info,files=self.review()
+        original=X.T.atomic_write
+        def crash(fd,name,*args,**kwargs):
+            original(fd,name,*args,**kwargs)
+            if name=="master.cf":
+                raise KeyboardInterrupt()
+        with patch.object(X.T,"atomic_write",side_effect=crash),self.assertRaises(KeyboardInterrupt):
+            self.apply(revision)
+        self.assertEqual(X.phase(self.fd,self.uid,info,files,self.policy),"pipe_only")
+        self.restore(revision)
+        self.assertEqual(self.pair(),self.raw)
+
+    def test_native_failure_rolls_back(self):
+        revision,_,_=self.review()
+        def native():
+            return {"unexpected":True} if self.pair()==self.candidate else self.native()
+        with self.assertRaisesRegex(X.Refused,"native_effective_configuration_mismatch"):
+            X.apply(self.fd,self.parent,revision,self.uid,X.APPLY,self.guard,
+                    self.review,native,self.runtime,selinux=self.policy)
+        self.assertEqual(self.pair(),self.raw)
+
+    def test_policy_drift_blocks_writes_and_restore(self):
+        revision,_,_=self.review()
+        changed=X.T.checked_label(b"system_u:object_r:other_t:s0\0")
+        self.overrides[("/etc/postfix/main.cf","file")]=changed
+        with self.assertRaises(X.Refused):
+            self.apply(revision)
+        self.assertEqual(self.pair(),self.raw)
+        self.assertFalse((self.root/X.BASE).exists())
+        self.overrides.clear()
+        self.apply(revision)
+        self.overrides[("/var/lib/"+X.BASE+"/"+revision+"/main.before","file")]=changed
+        with self.assertRaises(X.Refused):
+            self.restore(revision)
+        self.assertEqual(self.pair(),self.candidate)
+        self.overrides.clear()
+        self.mode="permissive"
+        with self.assertRaises(X.Refused):
+            self.restore(revision)
+        self.assertEqual(self.pair(),self.candidate)
+        self.mode="enforcing"
+        self.restore(revision)
+
+    def test_recovery_label_tampering_is_not_repaired(self):
+        revision,_,_=self.review()
+        self.apply(revision)
+        file=self.root/X.BASE/revision/"main.before"
+        os.setxattr(str(file),self.xattr,X.T.label_bytes(self.config_label))
+        with self.assertRaises(X.Refused):
+            self.restore(revision)
+        self.assertEqual(os.getxattr(str(file),self.xattr),X.T.label_bytes(self.config_label))
+        self.assertEqual(self.pair(),self.candidate)
+
+    def test_unreviewed_attributes_and_missing_policy_refused(self):
+        os.setxattr(str(self.config/"main.cf"),"user.extra",b"x")
+        with self.assertRaises(X.Refused):
+            self.review()
+        os.removexattr(str(self.config/"main.cf"),"user.extra")
+        with self.assertRaises(X.Refused):
+            X.snapshot(self.fd,self.uid)
+        revision,info,files=self.review()
+        with self.assertRaises(X.Refused):
+            X.save_backup(self.parent,revision,info,files,self.uid)
+        self.assertFalse((self.root/X.BASE).exists())
+
+
 if __name__=="__main__":
     unittest.main()
