@@ -19,7 +19,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(580, 420);
         MinimumSize = new Size(420, 300);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 9, Padding = new Padding(16), AutoScroll = true };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 10, Padding = new Padding(16), AutoScroll = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 4; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -105,8 +105,15 @@ internal sealed class SmtpCertificateWizardDialog : Form
         };
         layout.Controls.Add(domain, 0, 6);
         layout.Controls.Add(check, 0, 7);
+        var import = new Button { Text = "Inspect certificate files", AutoSize = true };
+        import.Click += (_, _) =>
+        {
+            using var dialog = new SmtpCertificateImportDialog();
+            dialog.ShowDialog(this);
+        };
+        layout.Controls.Add(import, 0, 8);
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
-        layout.Controls.Add(close, 0, 8);
+        layout.Controls.Add(close, 0, 9);
         Controls.Add(layout);
         CancelButton = close;
         identity.SelectedIndexChanged += (_, _) => RefreshPlan();
