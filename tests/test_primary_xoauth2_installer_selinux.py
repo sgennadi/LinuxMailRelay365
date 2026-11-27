@@ -77,5 +77,28 @@ SELINUX_SETUP_MODE="$SETUP_MODE"
         self.assertNotIn("restorecon -R",SCRIPT)
         self.assertNotIn("setenforce 0",SCRIPT)
 
+
+class PrimaryVmReceiptTests(unittest.TestCase):
+    def test_every_required_marker_is_checked_by_actual_bash(self):
+        source=(ROOT/"tests/rocky_vm_boot_enforcing.sh").read_text()
+        block=source.split("# BEGIN PRIMARY_VM_RECEIPT_CHECK\n",1)[1].split(
+            "# END PRIMARY_VM_RECEIPT_CHECK",1)[0]
+        required=["LMR365_PRIMARY_VM_FIXTURE_POLICY=exact_context_baseline","LMR365_PRIMARY_VM_REVIEW=native_policy_and_postconf","LMR365_PRIMARY_VM_APPLY=verified_native_labels","LMR365_PRIMARY_VM_BACKUP=verified_native_private_labels","LMR365_PRIMARY_VM_RESTORE=exact_bytes_metadata_and_native","LMR365_PRIMARY_VM_BASELINE=running_restored","LMR365_PRIMARY_VM_REAL_OAUTH_AUTH=no","LMR365_PRIMARY_VM_REAL_PIPE_DELIVERY=no"]
+        mismatch="LMR365_PRIMARY_VM_LABEL_MISMATCH=refused_without_write"
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt=Path(tmp)/"primary-mailbox"
+            def run(rows):
+                receipt.write_text("\n".join(rows)+"\n")
+                return subprocess.run(["bash","-c","set -Eeuo pipefail\nwork=\"$1\"\n"+block,
+                    "receipt-check",tmp],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+            rows=[mismatch]+required
+            good=run(rows)
+            self.assertEqual(good.returncode,0,good.stderr)
+            self.assertEqual(run(["LMR365_PRIMARY_VM_LABEL_MISMATCH=not_present"]+required).returncode,0)
+            for i in range(len(rows)):
+                with self.subTest(missing=rows[i]):
+                    self.assertNotEqual(run(rows[:i]+rows[i+1:]).returncode,0)
+            self.assertNotEqual(run([mismatch]+required[:-1]+["prefix "+required[-1]]).returncode,0)
+
 if __name__=="__main__":
     unittest.main()
