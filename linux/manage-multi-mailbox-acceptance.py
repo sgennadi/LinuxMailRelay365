@@ -103,7 +103,13 @@ def prepare(request, auditor=None, restorer=None):
     restorer = restorer or source("restore-multi-mailbox-postfix.py",
                                   "multi_acceptance_restore")
     verified = validate_request(request, auditor)
-    state = restorer.preview()
+    try:
+        state = restorer.acceptance_preview()
+        proof_mode = state["review"]["acceptance_proof"]["mode"]
+        if proof_mode not in ("manual", "managed_timer"):
+            raise ValueError("unsupported proof mode")
+    except Exception:
+        raise Refused("active_delivery_route_or_proof_not_verified") from None
     installer = restorer.install
     gid = grp.getgrnam("m365mailer").gr_gid
     map_bytes = auditor.secure_read(str(installer.RUNTIME), auditor.MAX_MAP,
@@ -142,7 +148,8 @@ def prepare(request, auditor=None, restorer=None):
     approved = digest(json.dumps(evidence, sort_keys=True,
                                  separators=(",", ":")).encode("ascii"))
     return {"sha": approved, "request": verified, "evidence": evidence,
-            "route": state, "installer": installer, "auditor": auditor}
+            "route": state, "installer": installer, "auditor": auditor,
+            "proof_mode": proof_mode}
 
 
 def private_ledger(run_id, root=ROOT):
@@ -283,15 +290,24 @@ def send_reviewed(plan, approved_sha, confirm, runner=subprocess.run,
             # Root checks actual running security components and m365multi
             # transport before EACH recipient. Each proof expires in 120 sec.
             map_sha = current["evidence"]["runtime_map_sha256"]
-            proof = refresh.inspect(map_sha)
-            refresh.publish(proof)
+            try:
+                proof = refresh.inspect(map_sha)
+                if current["proof_mode"] == "manual":
+                    refresh.publish(proof)
+                # Do not race the managed timer by publishing its receipt.
+                # Repeat all route, policy and receipt checks before SMTP.
+                after_proof = prepare(request, restorer=restorer)
+                if after_proof["sha"] != approved_sha:
+                    raise Refused("route_changed_after_proof_review")
+            except Exception:
+                raise Refused("multi_delivery_proof_not_verified_before_" + role) from None
             submission = {"sender": request["sender"],
                           "recipient": request[role],
                           "role": role, "run_id": request["run_id"]}
             encoded = json.dumps(submission, sort_keys=True,
                                  separators=(",", ":")).encode("ascii")
             cmd = [executable, "-u", "m365mailer", "--", "/usr/bin/python3",
-                   str(current["installer"].TARGET /
+                   str(after_proof["installer"].TARGET /
                        "m365-multi-mailbox-transport.py"),
                    "--acceptance-test", "--expected-map-sha256", map_sha]
             event(ledger_fd, role, "attempted")
