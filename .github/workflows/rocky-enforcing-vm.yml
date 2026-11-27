@@ -11,11 +11,15 @@ on:
       - feature/post-rc19-primary-mailbox-candidate
       - feature/primary-xoauth2-pipe-enforcing
       - feature/primary-xoauth2-pipe-network-enforcing
+      - feature/primary-tpm-virtual-device
+      - feature/primary-tpm-provider-isolated
+      - feature/primary-release-integration
     paths:
       - .github/workflows/rocky-enforcing-vm.yml
       - tests/rocky_vm_*.sh
       - tests/rocky_vm_*.py
       - linux/primary-mailbox-*.py
+      - linux/manage-tpm-oauth-key.py
       - linux/m365_xoauth2_transport.py
       - linux/m365_hardware_signer.py
       - linux/inspect-primary-mailbox-selinux.py
@@ -69,6 +73,7 @@ jobs:
         run: |
           python3 -m py_compile linux/manage-multi-mailbox-proof-timer.py linux/refresh-multi-mailbox-proof.py linux/audit-oauth-ingress.py linux/audit-oauth-sender-map.py
           python3 -m py_compile tests/rocky_vm_smtp_client_tls_enforcing.py tests/rocky_vm_smtp_tls_renewal.py
+          python3 -m py_compile tests/rocky_vm_primary_tpm_device.py linux/manage-tpm-oauth-key.py
           python3 -m py_compile tests/rocky_vm_primary_mailbox_enforcing.py tests/rocky_vm_primary_pipe_enforcing.py tests/rocky_vm_primary_pipe_worker.py linux/manage-primary-mailbox-offline.py linux/primary-mailbox-transaction.py
           # bash -n accepts one script; additional names become positional arguments.
           for script in tests/rocky_vm_multi_proof_timer_enforcing.sh tests/rocky_vm_boot_enforcing.sh tests/rocky_vm_sendmail_systemd_enforcing.sh; do
@@ -82,7 +87,30 @@ jobs:
       - name: Boot official checksum-verified Rocky 9.9 VM and verify SELinux Enforcing
         shell: bash
         env:
+          LMR365_KVM_VTPM_ACCEPTANCE: ${{ github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated' }}
           LMR365_KVM_QUEUE_ACCEPTANCE: ${{ inputs.queue-acceptance || false }}
-          LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE: ${{ github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' || github.ref_name == 'feature/primary-xoauth2-pipe-enforcing' || github.ref_name == 'feature/primary-xoauth2-pipe-network-enforcing' }}
-          LMR365_KVM_CLIENT_TLS_ACCEPTANCE: ${{ inputs.client-tls-acceptance || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' }}
+          LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE: ${{ github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' || github.ref_name == 'feature/primary-xoauth2-pipe-enforcing' || github.ref_name == 'feature/primary-xoauth2-pipe-network-enforcing' || github.ref_name == 'feature/primary-release-integration' }}
+          LMR365_KVM_CLIENT_TLS_ACCEPTANCE: ${{ inputs.client-tls-acceptance || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' || github.ref_name == 'feature/primary-release-integration' }}
+        run: bash tests/rocky_vm_boot_enforcing.sh
+
+  kvm-native-tpm-provider:
+    name: Rocky 10.3 native OpenSSL TPM2 provider acceptance (swtpm)
+    if: github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated' || github.ref_name == 'feature/primary-release-integration' || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Check fixture syntax
+        shell: bash
+        run: |
+          bash -n tests/rocky_vm_boot_enforcing.sh
+          python3 -m py_compile tests/rocky_vm_primary_tpm_device.py linux/manage-tpm-oauth-key.py
+      - name: Boot Rocky 10.3 and require native TPM2 provider PS256
+        shell: bash
+        env:
+          LMR365_KVM_ROCKY_MAJOR: '10'
+          LMR365_KVM_VTPM_ACCEPTANCE: 'true'
+          LMR365_KVM_VTPM_PROVIDER_REQUIRED: 'true'
         run: bash tests/rocky_vm_boot_enforcing.sh
