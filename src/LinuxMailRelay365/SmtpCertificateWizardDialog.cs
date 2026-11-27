@@ -23,6 +23,14 @@ internal sealed class SmtpCertificateWizardDialog : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 17; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         bool working = false;
+        // Event handlers are registered before all controls exist. Assign the
+        // complete refresh delegate only after every captured control is initialized.
+        Action refreshPlan = () => { };
+        void SetWorking(bool value)
+        {
+            working = value;
+            refreshPlan();
+        }
         int page = 0;
         string sessionMx = configuredMx;
         FormClosing += (_, e) => { if (working) e.Cancel = true; };
@@ -75,7 +83,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 picker.Controls.Add(list);
                 picker.Controls.Add(choose);
                 list.SelectedIndex = 0;
-                if (picker.ShowDialog(this) == DialogResult.OK) RefreshPlan();
+                if (picker.ShowDialog(this) == DialogResult.OK) refreshPlan();
             }
             catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, "Discovery failed: " + ex.GetType().Name); }
             finally { if (!IsDisposed) { scan.Enabled = true; SetWorking(false); } }
@@ -163,7 +171,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
             dialog.ShowDialog(this);
             sessionMx = dialog.SessionMx;
             domain.Text = dialog.SessionCertificateName;
-            RefreshPlan();
+            refreshPlan();
         };
         layout.Controls.Add(rotate, 0, 11);
         var scheduler = new Button { Text = "Manage renewal schedule and recovery services", AutoSize = true };
@@ -217,12 +225,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
         Controls.Add(layout);
         CancelButton = close;
 
-        void SetWorking(bool value)
-        {
-            working = value;
-            RefreshPlan();
-        }
-        void RefreshPlan()
+        refreshPlan = () =>
         {
             var stages = SmtpCertificateWizardPlan.Workflow(Identity);
             page = Math.Clamp(page, 0, stages.Length - 1);
@@ -289,13 +292,13 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 next.Text = page == stages.Length - 1 ? "Next" : "Next >";
             }
             finally { layout.ResumeLayout(true); }
-        }
-        back.Click += (_, _) => { if (!working && page > 0) { page--; RefreshPlan(); } };
-        next.Click += (_, _) => { if (!working && page < SmtpCertificateWizardPlan.Workflow(Identity).Length - 1) { page++; RefreshPlan(); } };
-        identity.SelectedIndexChanged += (_, _) => { page = 0; RefreshPlan(); };
-        source.SelectedIndexChanged += (_, _) => RefreshPlan();
+        };
+        back.Click += (_, _) => { if (!working && page > 0) { page--; refreshPlan(); } };
+        next.Click += (_, _) => { if (!working && page < SmtpCertificateWizardPlan.Workflow(Identity).Length - 1) { page++; refreshPlan(); } };
+        identity.SelectedIndexChanged += (_, _) => { page = 0; refreshPlan(); };
+        source.SelectedIndexChanged += (_, _) => refreshPlan();
         layout.SizeChanged += (_, _) =>
             summary.MaximumSize = new Size(Math.Max(200, layout.ClientSize.Width - 48), 0);
-        RefreshPlan();
+        refreshPlan();
     }
 }
