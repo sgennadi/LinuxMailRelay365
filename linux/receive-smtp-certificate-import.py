@@ -6,9 +6,11 @@ import os
 import sys
 import tempfile
 import stat
+import argparse
+import importlib.util
 from pathlib import Path
 
-def receive(stream, root):
+def receive(stream, root, validate):
     if os.geteuid() != 0:
         raise ValueError("root required")
     root = Path(root)
@@ -39,7 +41,11 @@ def receive(stream, root):
                 handle.write(value)
                 handle.flush()
                 os.fsync(handle.fileno())
-        return {"status": "received_unverified", "directory": str(directory),
+        report = validate(directory)
+        if report.get("status") != "local_checks_passed":
+            raise ValueError("certificate validation refused")
+        return {"status": "received_locally_validated", "directory": str(directory),
+                "exchange_acceptance": "unverified",
                 "apply_supported": False}
     except BaseException:
         for path in directory.iterdir():
@@ -49,7 +55,18 @@ def receive(stream, root):
 
 if __name__ == "__main__":
     try:
-        print(json.dumps(receive(sys.stdin.buffer, "/etc/postfix/lmr365-smtp-tls")))
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--domain", required=True)
+        args = parser.parse_args()
+        spec = importlib.util.spec_from_file_location("smtp_cert_check",
+            str(Path(__file__).resolve().with_name("check-smtp-relay-certificate.py")))
+        checker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checker)
+        def validate(directory):
+            return checker.inspect(str(directory / "certificate.pem"),
+                str(directory / "chain.pem"), args.domain, "auto",
+                str(directory / "key.pem"))
+        print(json.dumps(receive(sys.stdin.buffer, "/etc/postfix/lmr365-smtp-tls", validate)))
     except Exception:
         print(json.dumps({"status": "refused", "apply_supported": False}))
         sys.exit(1)
