@@ -76,11 +76,19 @@ def native_data_directory(runner=A.R.command):
     Query expanded native Postfix settings, not a text search of main.cf.
     Never traverse an arbitrary custom path or write a master.lock probe.
     """
-    result=runner("postconf",("-c","/etc/postfix","-x","data_directory"))
+    # Bind the owner and queue settings to the same native observation.
+    # Otherwise a non-default instance could be misreported as ready merely
+    # because the unused stock directory has acceptable metadata.
+    result=runner("postconf",("-c","/etc/postfix","-x","data_directory",
+                              "mail_owner","queue_directory"))
     need(result.returncode==0 and not result.stderr.strip() and
          len(result.stdout)<=4096,"data_directory_scope_unverified")
     values=A.R.parameter_map(result.stdout.decode("utf-8","strict"))
-    need(set(values)=={"data_directory"},"data_directory_scope_unverified")
+    need(set(values)=={"data_directory","mail_owner","queue_directory"},
+         "data_directory_scope_unverified")
+    need(values["mail_owner"]=="postfix" and
+         values["queue_directory"]==FIXED["queue_directory"][0],
+         "native_postfix_scope_unverified")
     return values["data_directory"]
 
 

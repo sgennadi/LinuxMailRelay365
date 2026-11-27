@@ -418,17 +418,31 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
         S=self.S
         import stat
         from types import SimpleNamespace
+        scope=b"mail_owner = postfix\nqueue_directory = /var/spool/postfix\n"
         native=Mock(return_value=Mock(returncode=0,stderr=b"",
-                                    stdout=b"data_directory = /var/lib/postfix\n"))
+                                    stdout=b"data_directory = /var/lib/postfix\n"+scope))
         self.assertEqual(S.native_data_directory(native),S.DATA)
-        native.assert_called_once_with("postconf",("-c","/etc/postfix","-x","data_directory"))
-        native.return_value.stdout=b"data_directory = /custom/postfix\n"
+        native.assert_called_once_with("postconf",("-c","/etc/postfix","-x","data_directory",
+                                                   "mail_owner","queue_directory"))
+        native.return_value.stdout=b"data_directory = /custom/postfix\n"+scope
         self.assertEqual(S.native_data_directory(native),"/custom/postfix")
         for output in (b"",b"data_directory = /var/lib/postfix\nmail_owner = postfix\n",
-                       b"data_directory = /var/lib/postfix\ndata_directory = /other\n"):
+                       b"data_directory = /var/lib/postfix\ndata_directory = /other\n"+scope,
+                       b"data_directory = /var/lib/postfix\n"+scope.replace(b"mail_owner = postfix",b"mail_owner = other"),
+                       b"data_directory = /var/lib/postfix\n"+scope.replace(b"/var/spool/postfix",b"/custom/queue"),
+                       b"data_directory = /var/lib/postfix\n"+scope+b"mail_owner = postfix\n",
+                       b"data_directory = /var/lib/postfix\n"+scope+b"extra = unexpected\n"):
             native.return_value.stdout=output
             with self.assertRaises((ValueError,S.A.R.E.Refused)):
                 S.native_data_directory(native)
+        native.return_value.stdout=b"data_directory = /var/lib/postfix\n"+scope
+        native.return_value.stderr=b"warning: fixture"
+        with self.assertRaises(ValueError):
+            S.native_data_directory(native)
+        native.return_value.stderr=b""
+        native.return_value.returncode=1
+        with self.assertRaises(ValueError):
+            S.native_data_directory(native)
         for owner,mode,ok in ((999,0o700,True),(999,0o755,True),(0,0o755,False),
                               (999,0o500,False),(999,0o600,False),
                               (999,0o770,False),(999,0o777,False)):
