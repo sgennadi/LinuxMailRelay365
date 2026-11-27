@@ -51,6 +51,14 @@ on:
         description: Verify outbound Postfix TLS client certificate in a disposable VM
         type: boolean
         default: false
+      primary-mailbox-acceptance:
+        description: Verify primary mailbox transaction, runtime review and actual local pipe
+        type: boolean
+        default: false
+      native-tpm-provider-acceptance:
+        description: Require the separate Rocky 10 native TPM2 provider and Postfix smoke
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -89,13 +97,13 @@ jobs:
         env:
           LMR365_KVM_VTPM_ACCEPTANCE: ${{ github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated' }}
           LMR365_KVM_QUEUE_ACCEPTANCE: ${{ inputs.queue-acceptance || false }}
-          LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE: ${{ github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' || github.ref_name == 'feature/primary-xoauth2-pipe-enforcing' || github.ref_name == 'feature/primary-xoauth2-pipe-network-enforcing' || github.ref_name == 'feature/primary-release-integration' }}
+          LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE: ${{ inputs.primary-mailbox-acceptance || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' || github.ref_name == 'feature/primary-xoauth2-pipe-enforcing' || github.ref_name == 'feature/primary-xoauth2-pipe-network-enforcing' || github.ref_name == 'feature/primary-release-integration' }}
           LMR365_KVM_CLIENT_TLS_ACCEPTANCE: ${{ inputs.client-tls-acceptance || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' || github.ref_name == 'feature/primary-release-integration' }}
         run: bash tests/rocky_vm_boot_enforcing.sh
 
   kvm-native-tpm-provider:
     name: Rocky 10.3 native OpenSSL TPM2 provider acceptance (swtpm)
-    if: github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated' || github.ref_name == 'feature/primary-release-integration' || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate'
+    if: inputs.native-tpm-provider-acceptance || github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated' || github.ref_name == 'feature/primary-release-integration' || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

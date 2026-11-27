@@ -91,6 +91,7 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_primary_mailbox_runtime.py
           python3 -m unittest discover -v -s tests -p test_primary_pipe_vm_fixture.py
           python3 -m unittest discover -v -s tests -p test_primary_xoauth2_installer_selinux.py
+          python3 -m unittest discover -v -s tests -p test_rc20_preflight_contract.py
           python3 -m py_compile linux/export-hardware-oauth-cert.py
           python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
           python3 -m py_compile linux/audit-oauth-sender-map.py
@@ -256,7 +257,11 @@ jobs:
       github.ref == 'refs/heads/feature/post-rc17-sendmail-v2' ||
       github.event.pull_request.head.ref == 'feature/post-rc17-sendmail-v2' ||
       github.ref == 'refs/heads/release/v0.1.1-rc.19' ||
-      github.event.pull_request.head.ref == 'release/v0.1.1-rc.19'
+      github.event.pull_request.head.ref == 'release/v0.1.1-rc.19' ||
+      github.ref == 'refs/heads/feature/primary-rc20-preflight' ||
+      github.event.pull_request.head.ref == 'feature/primary-rc20-preflight' ||
+      github.ref == 'refs/heads/release/v0.1.1-rc.20' ||
+      github.event.pull_request.head.ref == 'release/v0.1.1-rc.20'
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
@@ -2062,3 +2067,59 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "LinuxMailRelay365 v0.1.1 RC19 (UNSIGNED TEST ONLY)" --prerelease \
             --notes "UNSIGNED TEST RC19. Includes RC18 recovery capabilities, native Postfix/Exim/Sendmail queue management, selected Sendmail MTA/MSP Retry/Flush and verified Quarantine/Release, refresh with fresh samples and latched unknown-outcome protection, shared accessible colors, scrollable DPI-aware queue dialogs, and safer portable updater transaction ownership and pinned rollback digests. Sendmail online Delete is NOT supported; Postfix held and Exim frozen deletion remain scoped experimental operations. The exact release commit must pass the complete Linux/Windows gates, native EL8/EL9 Sendmail matrix, real disposable Rocky 9.9 KVM SELinux Enforcing queue transitions and recovery/reboot continuity, 79 WinForms captures, and pinned published RC18 to RC19 binary replacement/backup/rollback rehearsal. No live provider delivery, physical TPM/HSM, physical 200% DPI, native ARM64 runtime, or interactive non-elevated helper acceptance is claimed. Active SELinux writes for multi-provider routing remain blocked. Full-tree Sendmail Restore and automatic Resume remain incomplete. Use a disposable nonproduction host and independent verified backup. Existing releases remain immutable. NOT Stable or production approved."
+
+  rc20-full-native-vm:
+    name: Same-commit full Rocky 9 and Rocky 10 native acceptance for RC20
+    if: >-
+      github.ref == 'refs/heads/feature/primary-rc20-preflight' ||
+      github.event.pull_request.head.ref == 'feature/primary-rc20-preflight' ||
+      github.ref == 'refs/heads/release/v0.1.1-rc.20' ||
+      github.event.pull_request.head.ref == 'release/v0.1.1-rc.20'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/rocky-enforcing-vm.yml
+    with:
+      queue-acceptance: true
+      client-tls-acceptance: true
+      primary-mailbox-acceptance: true
+      native-tpm-provider-acceptance: true
+
+  rc20-preflight-result:
+    name: Verify all RC20 preflight gates on the same commit without publication
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/feature/primary-rc20-preflight' ||
+      github.ref == 'refs/heads/release/v0.1.1-rc.20')
+    needs:
+      - linux-tests
+      - rc14-native-transaction-fast
+      - ubuntu-real-proof-timer-systemd
+      - ubuntu-clean-postfix-bootstrap
+      - ubuntu-native-foreign-mta-smoke
+      - ubuntu-postfix-smoke
+      - ubuntu-fresh-direct-send-smoke
+      - ubuntu-fresh-connector-smoke
+      - rhel-family-readonly-smoke
+      - rhel-native-foreign-mta-smoke
+      - rhel-native-sendmail-queues
+      - rhel-selinux-offline-policy-smoke
+      - windows-build
+      - rc20-full-native-vm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Confirm tested SHA and verify gate contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -m unittest discover -v -s tests -p test_rc20_preflight_contract.py
+          echo "RC20_PREFLIGHT_SHA=$GITHUB_SHA"
+          echo 'RC20_PREFLIGHT_PUBLISHED=no'
+          echo 'RC20_PREFLIGHT_LIVE_M365_VERIFIED=no'
+          echo 'RC20_PREFLIGHT_TPM_PIPE_VERIFIED=no'
+          echo 'RC20_PREFLIGHT_PRODUCTION_AUTHORIZED=no'
