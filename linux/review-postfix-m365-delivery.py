@@ -656,7 +656,7 @@ def local_policy(read,overrides,req):
             "spool_directory":spool}
 
 
-def alias_evidence(alias,user,adapter,runner=subprocess.run,reader=read_file):
+def alias_evidence(alias,user,adapter,runner=subprocess.run,reader=read_file,diagnostic=False):
     if not alias:
         return {"status":"not_configured"}
     if alias not in ALIAS_MAPS or not LOCAL_USER.fullmatch(user):
@@ -672,14 +672,16 @@ def alias_evidence(alias,user,adapter,runner=subprocess.run,reader=read_file):
     # or output, and both protected source/database must remain unchanged.
     result=runner([tool,"-c",str(CONFIG),"-q",user,alias],input=b"",
                   stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20,env=ENV)
-    if result.returncode!=1 or result.stdout or result.stderr:
-        raise ValueError("alias found or lookup unavailable")
     if files()!=before:
         raise ValueError("alias map changed")
+    if diagnostic and result.returncode==0 and not result.stderr:
+        return {"status":"alias_entry_observed"}
+    if result.returncode!=1 or result.stdout or result.stderr:
+        raise ValueError("alias found or lookup unavailable")
     return {"status":"recipient_not_found","files":before}
 
 
-def forward_evidence(account,settings,read_default_filter,read_filter):
+def forward_evidence(account,settings,read_default_filter,read_filter,diagnostic=False):
     if not settings["forward_path"]:
         return {"status":"not_configured"}
     # Only an unambiguous ASCII home and the distribution's default
@@ -708,6 +710,8 @@ def forward_evidence(account,settings,read_default_filter,read_filter):
                 os.stat(name,dir_fd=fd,follow_symlinks=False)
             except FileNotFoundError:
                 continue
+            if diagnostic:
+                return {"status":"forward_entry_observed"}
             raise ValueError("forwarding file present")
         current=path.lstat()
         if (current.st_dev,current.st_ino,current.st_uid,current.st_mode)!=(st.st_dev,st.st_ino,st.st_uid,st.st_mode):
@@ -1122,9 +1126,187 @@ def observe_local_mailbox(req,ledger_fn=ledger,prepare_fn=prepare_local,
     return result
 
 
+DISCOVERY_LIMIT=200
+
+
+def discover_local_accounts(raw,host,limit=DISCOVERY_LIMIT):
+    """Bounded names only: no NSS enumeration, homes, groups or credentials."""
+    if not DNS.fullmatch(host) or len(host)>253 or type(limit) is not int or not 1<=limit<=DISCOVERY_LIMIT:
+        raise ValueError("unsupported local hostname or discovery limit")
+    candidates=[]
+    names=set()
+    for line in raw.decode("utf-8","strict").splitlines():
+        row=line.split(":")
+        if len(row)!=7 or row[0] in names:
+            raise ValueError("malformed or duplicate local passwd entry")
+        names.add(row[0])
+        try:
+            uid,gid=int(row[2]),int(row[3])
+        except ValueError:
+            raise ValueError("malformed local account identity")
+        if (not 1000<=uid<65534 or gid<=0 or not row[5].startswith("/") or
+                row[5] in ("/","/root","/nonexistent") or
+                not row[6] or row[6].endswith(("/nologin","/false"))):
+            continue
+        address=row[0]+"@"+host
+        try:
+            local_request({"recipient":address,"run_id":"0"*32})
+        except ValueError:
+            continue
+        candidates.append(address)
+    candidates.sort()
+    return candidates[:limit],len(candidates)>limit
+
+
+def local_discovery(req,adapter=None,reader=read_file):
+    if req!={"discover_local_accounts":True} or req["discover_local_accounts"] is not True:
+        raise ValueError("explicit account discovery required")
+    adapter=adapter or load_adapter()
+    pf=adapter.Postfix()
+    def read(key):
+        return pf.run(pf.postconf,"-h","-x",key)
+    if read("config_directory")!=str(CONFIG) or read("multi_instance_directories"):
+        raise ValueError("not default single instance")
+    host=read("myhostname")
+    destinations=[v.lower() for v in re.split(r"[\s,]+",read("mydestination")) if v]
+    if host not in destinations:
+        raise ValueError("hostname is not an explicit local destination")
+    path=Path("/etc/passwd")
+    before=reader(path,4*1024*1024)
+    rows,truncated=discover_local_accounts(before,host)
+    if (reader(path,4*1024*1024)!=before or read("myhostname")!=host or
+            read("config_directory")!=str(CONFIG) or read("multi_instance_directories") or
+            [v.lower() for v in re.split(r"[\s,]+",read("mydestination")) if v]!=destinations):
+        raise ValueError("account discovery context changed")
+    return {"status":"local_account_candidates","hostname":host,"recipients":rows,
+            "truncated":truncated,"mailboxes_verified":False,"mail_sent":False,
+            "postfix_modified":False,"content_exported":False}
+
+
+def mailbox_presence(context,mail_gid):
+    """Metadata only, executed as the selected account. Never open message bodies."""
+    account,settings=context["account"],context["settings"]
+    uid=account["uid"]
+    try:
+        if settings["mailbox_kind"]=="maildir":
+            fd=open_mail_directory(account["home"],uid)
+            try:
+                try:
+                    box=os.open("Maildir",os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+                except FileNotFoundError:
+                    return "not_present"
+                try:
+                    safe_directory(box,uid)
+                    for name in ("new","cur"):
+                        child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=box)
+                        try:
+                            safe_directory(child,uid)
+                        finally:
+                            os.close(child)
+                    return "storage_observed"
+                finally:
+                    os.close(box)
+            finally:
+                os.close(fd)
+        if settings["mailbox_kind"]!="system_spool":
+            return "unverified"
+        spool=os.path.realpath(settings["spool_directory"])
+        if spool not in ("/var/mail","/var/spool/mail"):
+            return "unverified"
+        fd=open_mail_directory(spool,0,mail_gid)
+        try:
+            try:
+                file=os.open(settings["user"],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_NOATIME,dir_fd=fd)
+            except FileNotFoundError:
+                return "not_present"
+            try:
+                st=os.fstat(file)
+                if (not stat.S_ISREG(st.st_mode) or st.st_uid!=uid or st.st_nlink!=1 or
+                        st.st_mode&0o002 or (st.st_mode&0o020 and (mail_gid is None or st.st_gid!=mail_gid))):
+                    return "unverified"
+                return "storage_observed"
+            finally:
+                os.close(file)
+        finally:
+            os.close(fd)
+    except (OSError,ValueError):
+        return "unverified"
+
+
+def diagnose_local_route(req,adapter=None,account_reader=local_account,
+                         alias_reader=alias_evidence,forward_reader=forward_evidence,
+                         drop=drop_mailbox_privileges,presence=mailbox_presence,reader=read_file):
+    """No submit approval: report selected route and metadata only."""
+    local_request(req)
+    result={"status":"local_route_observation","run_id":req["run_id"],"recipient":req["recipient"],
+            "policy":"unverified","alias":"unverified","forward":"unverified",
+            "mailbox_kind":None,"storage":"not_inspected","mail_sent":False,
+            "postfix_modified":False,"content_exported":False,"submission_approved":False}
+    adapter=adapter or load_adapter()
+    pf=adapter.Postfix()
+    def read(key):
+        args=("-h",key) if key=="forward_path" else ("-h","-x",key)
+        return pf.run(pf.postconf,*args)
+    def hashes():
+        return {name:digest(reader(CONFIG/name,8*1024*1024)) for name in ("main.cf","master.cf")}
+    try:
+        before=hashes()
+        settings=local_policy(read,pf.run(pf.postconf,"-P"),req)
+        account=account_reader(settings["user"])
+    except (OSError,ValueError,KeyError,RuntimeError,subprocess.SubprocessError):
+        result["policy"]="manual_review_required"
+        return result
+    def observe():
+        values=[]
+        try:
+            a=alias_reader(settings["alias_map"],settings["user"],adapter,diagnostic=True)
+            values.append(a["status"] if a["status"] in
+                          ("not_configured","recipient_not_found","alias_entry_observed") else "unverified")
+        except (OSError,ValueError,KeyError,RuntimeError,subprocess.SubprocessError):
+            values.append("unverified")
+        try:
+            v=forward_reader(account,settings,
+                lambda:pf.run(pf.postconf,"-d","-h","forward_expansion_filter"),
+                lambda:read("forward_expansion_filter"),diagnostic=True)
+            values.append(v["status"] if v["status"] in
+                          ("not_configured","no_forward_file_observed","forward_entry_observed") else "unverified")
+        except (OSError,ValueError,KeyError,RuntimeError,subprocess.SubprocessError):
+            values.append("unverified")
+        return tuple(values)
+    alias,forward=observe()
+    try:
+        if (hashes()!=before or local_policy(read,pf.run(pf.postconf,"-P"),req)!=settings or
+                account_reader(settings["user"])!=account or observe()!=(alias,forward) or hashes()!=before):
+            return result
+    except (OSError,ValueError,KeyError,RuntimeError,subprocess.SubprocessError):
+        return result
+    result.update(policy="standard_policy_observed",alias=alias,forward=forward,
+                  mailbox_kind=settings["mailbox_kind"])
+    try:
+        mail_gid=grp.getgrnam("mail").gr_gid
+    except KeyError:
+        mail_gid=None
+    # No subsequent root task; this is a single-purpose CLI invocation.
+    drop(account)
+    def expired(*_):
+        raise TimeoutError("storage observation deadline")
+    previous=signal.signal(signal.SIGALRM,expired)
+    signal.alarm(15)
+    try:
+        result["storage"]=presence({"account":account,"settings":settings},mail_gid)
+    except (OSError,ValueError):
+        result["storage"]="unverified"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM,previous)
+    if result["storage"] not in ("storage_observed","not_present","unverified"):
+        raise ValueError("invalid storage observation")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("preview", "submit", "trace", "audit", "local-preview", "local-submit", "local-trace", "local-mailbox"))
+    parser.add_argument("action", choices=("preview", "submit", "trace", "audit", "local-preview", "local-submit", "local-trace", "local-mailbox", "local-discover", "local-diagnose"))
     parser.add_argument("--expected-sha")
     args = parser.parse_args()
     try:
@@ -1140,6 +1322,11 @@ def main():
                 raise ValueError("unexpected approval")
             print(json.dumps(primary_audit(req)))
             return 0
+        if args.action=="local-discover":
+            if args.expected_sha is not None:
+                raise ValueError("unexpected approval")
+            print(json.dumps(local_discovery(req)))
+            return 0
         if args.action.startswith("local-"):
             local_request(req)
             if args.action == "local-submit":
@@ -1153,6 +1340,8 @@ def main():
                     report.pop("_mailbox")
                 elif args.action=="local-mailbox":
                     report=observe_local_mailbox(req)
+                elif args.action=="local-diagnose":
+                    report=diagnose_local_route(req)
                 else:
                     report=trace_local(req)
             print(json.dumps(report))

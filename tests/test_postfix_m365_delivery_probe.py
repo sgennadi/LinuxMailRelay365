@@ -447,3 +447,88 @@ class LocalMailboxObservationTests(unittest.TestCase):
         self.assertIn('report.pop("_mailbox")',shell)
         self.assertIn("os.setgroups([])",shell)
         self.assertIn("os.getresuid()",shell)
+
+
+class LocalAccountDiscoveryTests(unittest.TestCase):
+    def test_candidates_exclude_reserved_accounts_and_sensitive_fields(self):
+        rows=b"root:x:0:0:Root:/root:/bin/bash\n"
+        rows+=b"alice:x:1000:1000:Private Name:/home/private:/bin/bash\n"
+        rows+=b"bob:x:1001:1001:Other:/home/bob:/bin/bash\n"
+        rows+=b"svc:x:1002:1002:Service:/home/svc:/sbin/nologin\n"
+        rows+=b"owner-list:x:1003:1003:List:/home/list:/bin/bash\n"
+        self.assertEqual(M.discover_local_accounts(rows,"mail.example.org"),
+                         (["alice@mail.example.org","bob@mail.example.org"],False))
+        self.assertEqual(M.discover_local_accounts(rows,"mail.example.org",1),
+                         (["alice@mail.example.org"],True))
+        with self.assertRaises(ValueError):
+            M.discover_local_accounts(rows+rows,"mail.example.org")
+        with self.assertRaises(ValueError):
+            M.discover_local_accounts(rows,"localhost")
+
+    def test_discovery_is_read_only_and_refuses_drift(self):
+        adapter=Mock()
+        values={"config_directory":"/etc/postfix","multi_instance_directories":"",
+                "myhostname":"mail.example.org","mydestination":"localhost, mail.example.org"}
+        adapter.Postfix.return_value.run.side_effect=lambda *args:values[args[-1]]
+        raw=b"alice:x:1000:1000:Private:/home/alice:/bin/bash\n"
+        reader=Mock(return_value=raw)
+        result=M.local_discovery({"discover_local_accounts":True},adapter,reader)
+        self.assertEqual(result["recipients"],["alice@mail.example.org"])
+        self.assertNotIn("/home/alice",str(result))
+        for flag in ("mailboxes_verified","mail_sent","postfix_modified","content_exported"):
+            self.assertFalse(result[flag])
+        reader.side_effect=[raw,raw+b"# changed\n"]
+        with self.assertRaises(ValueError):
+            M.local_discovery({"discover_local_accounts":True},adapter,reader)
+        with self.assertRaises(ValueError):
+            M.local_discovery({"discover_local_accounts":1},adapter,reader)
+
+    def test_alias_diagnostic_reports_presence_without_destination(self):
+        adapter=Mock()
+        runner=Mock(return_value=Mock(returncode=0,stdout=b"private@example.net\n",stderr=b""))
+        reader=Mock(return_value=b"alias database")
+        result=M.alias_evidence("hash:/etc/aliases","alice",adapter,runner,reader,diagnostic=True)
+        self.assertEqual(result,{"status":"alias_entry_observed"})
+        with self.assertRaises(ValueError):
+            M.alias_evidence("hash:/etc/aliases","alice",adapter,runner,reader)
+
+    def test_selected_route_diagnostic_never_approves_or_exports_content(self):
+        req={"run_id":"a"*32,"recipient":"alice@mail.example.org"}
+        adapter=Mock()
+        values={"config_directory":"/etc/postfix","myhostname":"mail.example.org",
+                "mydestination":"localhost,mail.example.org","local_transport":"local",
+                "local_recipient_maps":"proxy:unix:passwd.byname","mail_spool_directory":"/var/mail",
+                "alias_maps":"hash:/etc/aliases"}
+        adapter.Postfix.return_value.run.side_effect=lambda *args:values.get(args[-1],"")
+        account=Mock(return_value={"uid":1000,"gid":1000,"home":"/home/alice"})
+        alias=Mock(return_value={"status":"alias_entry_observed"})
+        forward=Mock(return_value={"status":"not_configured"})
+        order=[]
+        drop=Mock(side_effect=lambda _:order.append("drop"))
+        presence=Mock(side_effect=lambda *_:(order.append("metadata") or "storage_observed"))
+        reader=Mock(return_value=b"config")
+        result=M.diagnose_local_route(req,adapter,account,alias,forward,drop,presence,reader)
+        self.assertEqual(result["alias"],"alias_entry_observed")
+        self.assertEqual(result["storage"],"storage_observed")
+        self.assertEqual(order,["drop","metadata"])
+        self.assertEqual(alias.call_count,2)
+        self.assertFalse(result["submission_approved"])
+        self.assertNotIn("/home/alice",str(result))
+        drop.reset_mock()
+        presence.reset_mock()
+        values["transport_maps"]="ldap:/private/config"
+        result=M.diagnose_local_route(req,adapter,account,alias,forward,drop,presence,reader)
+        self.assertEqual(result["policy"],"manual_review_required")
+        drop.assert_not_called()
+        presence.assert_not_called()
+
+    def test_diagnostic_ui_does_not_create_approval(self):
+        source=(ROOT/"src/LinuxMailRelay365/PostfixLocalDeliveryDialog.cs").read_text()
+        start=source.index("discover.Click +=")
+        end=source.index("preview.Click +=",start)
+        section=source[start:end]
+        self.assertIn('remote("local-discover"',section)
+        self.assertIn('remote("local-diagnose"',section)
+        self.assertIn("submission_approved",section)
+        self.assertNotIn("approvedSha = sha",section)
+        self.assertNotIn('remote("local-submit"',section)

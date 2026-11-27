@@ -32,6 +32,8 @@ internal sealed class PostfixLocalDeliveryDialog : Form
         var status = new Label { AutoSize = true, Text = "Enter a designated local mailbox." };
         var report = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both,
             WordWrap = false, MinimumSize = new Size(0, 120) };
+        var discover = new Button { Text = "Find local accounts", AutoSize = true };
+        var diagnose = new Button { Text = "Inspect mailbox / forwarding", AutoSize = true };
         var preview = new Button { Text = "Review local route", AutoSize = true };
         var submit = new Button { Text = "Send one local test", AutoSize = true };
         var trace = new Button { Text = "Refresh local trace", AutoSize = true };
@@ -39,7 +41,7 @@ internal sealed class PostfixLocalDeliveryDialog : Form
         var copy = new Button { Text = "Copy Run ID", AutoSize = true };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
-        actions.Controls.AddRange([preview, submit, trace, mailbox, copy, close]);
+        actions.Controls.AddRange([discover, diagnose, preview, submit, trace, mailbox, copy, close]);
         bool busy = false;
         string? approvedSha = null, approvedRequest = null;
         var attempted = new HashSet<string>(StringComparer.Ordinal);
@@ -52,7 +54,8 @@ internal sealed class PostfixLocalDeliveryDialog : Form
         void InvalidateReview() { approvedSha = approvedRequest = null; }
         void UpdateControls()
         {
-            recipient.Enabled = run.Enabled = close.Enabled = !busy;
+            recipient.Enabled = run.Enabled = close.Enabled = discover.Enabled = !busy;
+            diagnose.Enabled = !busy && Valid();
             preview.Enabled = !busy && Valid() && !attempted.Contains(run.Text.Trim());
             submit.Enabled = preview.Enabled && approvedSha is not null && approvedRequest == Request();
             trace.Enabled = mailbox.Enabled = !busy && Valid();
@@ -86,6 +89,109 @@ internal sealed class PostfixLocalDeliveryDialog : Form
                 throw new InvalidDataException("Local probe context mismatch.");
             FalseFlag(root,"mailbox_verified");
         }
+        discover.Click += async (_, _) =>
+        {
+            if (!discover.Enabled || MessageBox.Show(this,
+                "List up to 200 candidate local UNIX account names on this connected Linux server? " +
+                "Confirm you are authorized to view this account inventory. No mailbox contents, passwords, home paths or forwarding targets are returned.",
+                "Confirm local account discovery", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            InvalidateReview();
+            await RunAsync("Discovering local account candidates...", async () =>
+            {
+                using var doc = JsonDocument.Parse(await remote("local-discover", "{\"discover_local_accounts\":true}", null));
+                var root = doc.RootElement;
+                if (StringField(root,"status") != "local_account_candidates") throw new InvalidDataException();
+                foreach (string flag in new[] { "mailboxes_verified", "mail_sent", "postfix_modified", "content_exported" })
+                    FalseFlag(root,flag);
+                string host = StringField(root,"hostname");
+                if (host.Length > 253 || Uri.CheckHostName(host) != UriHostNameType.Dns ||
+                    !Regex.IsMatch(host, @"\A[a-z0-9.-]+\z") || !host.Contains('.'))
+                    throw new InvalidDataException("Invalid local hostname.");
+                var rows = root.GetProperty("recipients").EnumerateArray().Select(x => x.GetString() ?? "").ToArray();
+                bool truncated = root.GetProperty("truncated").GetBoolean();
+                if (rows.Length > 200 || (truncated && rows.Length != 200) ||
+                    rows.Distinct(StringComparer.Ordinal).Count() != rows.Length ||
+                    rows.Any(x => x.Length > 254 || !Regex.IsMatch(x, @"\A[a-z_][a-z0-9_-]{0,31}@" + Regex.Escape(host) + @"\z")))
+                    throw new InvalidDataException("Invalid candidate list.");
+                report.Text = "Local hostname: " + host + Environment.NewLine +
+                    "Account candidates: " + rows.Length + (truncated ? " (limited; manual entry available)" : "") +
+                    Environment.NewLine + "These are names only. Mailbox existence and routing are not verified.";
+                status.Text = rows.Length == 0 ? "No supported candidate accounts; manual entry remains available." :
+                    "Select a designated account, then inspect its mailbox and forwarding.";
+                if (rows.Length == 0) return;
+                using var picker = new Form { Text = "Choose designated test account", StartPosition = FormStartPosition.CenterParent,
+                    AutoScaleMode = AutoScaleMode.Dpi, ClientSize = new Size(500,420), MinimumSize = new Size(320,250) };
+                var panel = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(10), ColumnCount = 1, RowCount = 3 };
+                panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
+                panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                panel.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+                panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                var filter = new TextBox { Dock = DockStyle.Top, PlaceholderText = "Filter accounts" };
+                var list = new ListBox { Dock = DockStyle.Fill, HorizontalScrollbar = true };
+                var choose = new Button { Text = "Use selected account", AutoSize = true, Enabled = false };
+                var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+                var footer = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+                footer.Controls.AddRange([choose,cancel]);
+                void Filter()
+                {
+                    list.Items.Clear();
+                    list.Items.AddRange(rows.Where(x => x.Contains(filter.Text.Trim(),StringComparison.OrdinalIgnoreCase)).Cast<object>().ToArray());
+                    choose.Enabled = false;
+                }
+                filter.TextChanged += (_,_) => Filter();
+                list.SelectedIndexChanged += (_,_) => choose.Enabled = list.SelectedItem is string;
+                choose.Click += (_,_) => { if (list.SelectedItem is string) picker.DialogResult = DialogResult.OK; };
+                panel.Controls.Add(filter,0,0);
+                panel.Controls.Add(list,0,1);
+                panel.Controls.Add(footer,0,2);
+                picker.Controls.Add(panel);
+                picker.CancelButton = cancel;
+                Filter();
+                if (picker.ShowDialog(this) == DialogResult.OK && list.SelectedItem is string selected)
+                    recipient.Text = selected;
+            });
+        };
+        diagnose.Click += async (_, _) =>
+        {
+            if (!diagnose.Enabled || MessageBox.Show(this,
+                "Inspect the selected account's configured local route, presence of alias/forwarding entries and mailbox storage metadata? " +
+                "Confirm authorization for " + recipient.Text.Trim() + ". No forwarding targets or message contents will be shown.",
+                "Confirm local route inspection", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            InvalidateReview();
+            await RunAsync("Inspecting selected local route and storage...", async () =>
+            {
+                using var doc = JsonDocument.Parse(await remote("local-diagnose",Request(),null));
+                var root = doc.RootElement;
+                if (StringField(root,"status") != "local_route_observation" ||
+                    StringField(root,"run_id") != run.Text.Trim() || StringField(root,"recipient") != recipient.Text.Trim())
+                    throw new InvalidDataException("Diagnostic identity mismatch.");
+                foreach (string flag in new[] { "mail_sent","postfix_modified","content_exported","submission_approved" })
+                    FalseFlag(root,flag);
+                string policy = StringField(root,"policy"), alias = StringField(root,"alias"),
+                    forward = StringField(root,"forward"), storage = StringField(root,"storage");
+                string? kind = root.GetProperty("mailbox_kind").GetString();
+                bool standard = policy == "standard_policy_observed";
+                if (policy is not ("standard_policy_observed" or "manual_review_required" or "unverified") ||
+                    alias is not ("not_configured" or "recipient_not_found" or "alias_entry_observed" or "unverified") ||
+                    forward is not ("not_configured" or "no_forward_file_observed" or "forward_entry_observed" or "unverified") ||
+                    (standard ? kind is not ("maildir" or "system_spool") || storage is not ("storage_observed" or "not_present" or "unverified") :
+                        kind is not null || storage != "not_inspected" || alias != "unverified" || forward != "unverified"))
+                    throw new InvalidDataException("Inconsistent route observation.");
+                bool clear = standard && (alias is "not_configured" or "recipient_not_found") &&
+                    (forward is "not_configured" or "no_forward_file_observed");
+                report.Text = "Recipient: " + recipient.Text.Trim() + Environment.NewLine +
+                    "Policy: " + policy + Environment.NewLine + "Alias lookup: " + alias + Environment.NewLine +
+                    ".forward entry: " + forward + Environment.NewLine + "Mailbox kind: " + (kind ?? "unknown") +
+                    Environment.NewLine + "Storage metadata: " + storage + Environment.NewLine +
+                    "An absent mailbox may be created on first delivery. An alias or forwarding entry is not proof of where it delivers." +
+                    Environment.NewLine + "Diagnostic only; no approval. Use Review local route before any test submission.";
+                status.Text = clear ? "No supported forwarding entry observed. Separate route review required." :
+                    "Forwarding, unsupported policy or uncertain state requires review.";
+                status.ForeColor = clear ? SystemColors.ControlText : Color.DarkOrange;
+            });
+        };
         preview.Click += async (_, _) =>
         {
             if (!preview.Enabled) return;
