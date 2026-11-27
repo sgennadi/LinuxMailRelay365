@@ -59,6 +59,23 @@ internal static class EmbeddedAssets
         Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux.smtp-acme-plan.py"))) +
         "\"))' --inspect";
 
+    internal static string BuildSmtpAcmeDryRun(string? expectedSha)
+    {
+        if (expectedSha is not null && !Regex.IsMatch(expectedSha, @"\A[a-f0-9]{64}\z"))
+            throw new ArgumentException("Invalid renewal plan SHA.");
+        var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-renew-test.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
+        foreach (string file in new[] { "review-smtp-acme-dry-run.py", "smtp-tls-renewal-profile.py",
+                     "smtp-tls-postfix.py", "check-smtp-acme-credentials.py" })
+        {
+            script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_DRY_RUN_ASSET'\n")
+                .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux." + file))))
+                .Append("\nLMR365_DRY_RUN_ASSET\n");
+        }
+        script.Append("/usr/bin/python3 -I -B \"$work/review-smtp-acme-dry-run.py\" ")
+            .Append(expectedSha is null ? "preview" : "run --expected-sha=" + expectedSha).Append('\n');
+        return script.ToString();
+    }
+
     internal static string SmtpRenewalInventory =>
         "set -eu\n/usr/bin/python3 -I -B - <<'LMR365_RENEWAL_INVENTORY'\n" +
         Text("LinuxMailRelay365.linux.smtp-renewal-inventory.py") +

@@ -12,7 +12,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, string acceptedDomain, Func<Task<string>> inspectRenewal)
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun)
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
@@ -139,7 +139,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 MessageBox.Show(this, "Select TLS certificate authentication first.");
                 return;
             }
-            using var dialog = new SmtpRenewalInventoryDialog(inspectRenewal);
+            using var dialog = new SmtpRenewalInventoryDialog(inspectRenewal, dryRun);
             dialog.ShowDialog(this);
         };
         layout.Controls.Add(renewal, 0, 10);

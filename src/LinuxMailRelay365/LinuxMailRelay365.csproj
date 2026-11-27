@@ -37,6 +37,10 @@
     <EmbeddedResource Include="../../linux/discover-smtp-relay-certificates.py" LogicalName="LinuxMailRelay365.linux.smtp-cert-discovery.py" />
     <EmbeddedResource Include="../../linux/plan-smtp-certificate-acme.py" LogicalName="LinuxMailRelay365.linux.smtp-acme-plan.py" />
     <EmbeddedResource Include="../../linux/inspect-smtp-certificate-renewal.py" LogicalName="LinuxMailRelay365.linux.smtp-renewal-inventory.py" />
+    <EmbeddedResource Include="../../linux/review-smtp-acme-dry-run.py" LogicalName="LinuxMailRelay365.linux.review-smtp-acme-dry-run.py" />
+    <EmbeddedResource Include="../../linux/smtp-tls-renewal-profile.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-renewal-profile.py" />
+    <EmbeddedResource Include="../../linux/smtp-tls-postfix.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-postfix.py" />
+    <EmbeddedResource Include="../../linux/check-smtp-acme-credentials.py" LogicalName="LinuxMailRelay365.linux.check-smtp-acme-credentials.py" />
     <EmbeddedResource Include="../../linux/install-postfix-m365-xoauth2.sh" LogicalName="LinuxMailRelay365.linux.install.sh" />
     <EmbeddedResource Include="../../linux/m365_xoauth2_transport.py" LogicalName="LinuxMailRelay365.linux.transport.py" />
     <EmbeddedResource Include="../../linux/manage-multi-mailbox-postfix.py" LogicalName="LinuxMailRelay365.linux.multi-mailbox-postfix.py" />

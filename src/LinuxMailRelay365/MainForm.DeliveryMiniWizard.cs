@@ -165,6 +165,18 @@ internal sealed partial class MainForm
                     if (result.ExitCode != 0) throw new InvalidOperationException("Renewal inspection refused.");
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     return result.StdOut;
+                }, async expectedSha =>
+                {
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    var endpoint = Endpoint();
+                    string script = EmbeddedAssets.BuildSmtpAcmeDryRun(expectedSha);
+                    var timeout = TimeSpan.FromSeconds(expectedSha is null ? 60 : 660);
+                    var result = endpoint.Username == "root"
+                        ? await SshRemote.ExecuteAsync(endpoint, "bash -s", script, timeout)
+                        : await SshRemote.RunRootScriptAsync(endpoint, script, timeout);
+                    if (result.ExitCode != 0) throw new InvalidOperationException("Renewal review or test refused.");
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    return result.StdOut;
                 });
                 dialog.ShowDialog(this);
             };

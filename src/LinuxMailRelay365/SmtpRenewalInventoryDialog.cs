@@ -6,9 +6,9 @@ namespace LinuxMailRelay365;
 
 internal sealed class SmtpRenewalInventoryDialog : Form
 {
-    internal SmtpRenewalInventoryDialog(Func<Task<string>> inspect)
+    internal SmtpRenewalInventoryDialog(Func<Task<string>> inspect, Func<string?, Task<string>> dryRun)
     {
-        Text = "SMTP TLS | Renewal inventory (read-only)";
+        Text = "SMTP TLS | Renewal inventory and reviewed dry-run";
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(740, 540);
@@ -26,7 +26,8 @@ internal sealed class SmtpRenewalInventoryDialog : Form
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         var refresh = new Button { Text = "Refresh from Linux", AutoSize = true };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
-        buttons.Controls.AddRange([refresh, close]);
+        var test = new Button { Text = "Review and test renewal", AutoSize = true };
+        buttons.Controls.AddRange([refresh, test, close]);
         bool busy = false;
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
 
@@ -34,7 +35,7 @@ internal sealed class SmtpRenewalInventoryDialog : Form
         {
             if (busy) return;
             busy = true;
-            refresh.Enabled = close.Enabled = false;
+            refresh.Enabled = test.Enabled = close.Enabled = false;
             status.Text = "Inspecting renewal configuration and systemd...";
             report.Clear();
             try
@@ -91,10 +92,68 @@ internal sealed class SmtpRenewalInventoryDialog : Form
             finally
             {
                 busy = false;
-                if (!IsDisposed) refresh.Enabled = close.Enabled = true;
+                if (!IsDisposed) refresh.Enabled = test.Enabled = close.Enabled = true;
             }
         }
 
+        test.Click += async (_, _) =>
+        {
+            if (busy) return;
+            busy = true;
+            refresh.Enabled = test.Enabled = close.Enabled = false;
+            bool started = false;
+            try
+            {
+                status.Text = "Reviewing the managed renewal profile...";
+                using var preview = JsonDocument.Parse(await dryRun(null));
+                var plan = preview.RootElement;
+                if (plan.GetProperty("status").GetString() != "ready_for_review" ||
+                    !plan.GetProperty("dry_run").GetBoolean() ||
+                    plan.GetProperty("activation_requested").GetBoolean() ||
+                    !plan.GetProperty("dns_challenge_writes_possible").GetBoolean())
+                    throw new InvalidDataException("Unexpected renewal review.");
+                string sha = plan.GetProperty("plan_sha256").GetString() ?? "";
+                string details = "Managed lineage: " + plan.GetProperty("lineage").GetString() +
+                    Environment.NewLine + "DNS provider: " + plan.GetProperty("provider").GetString() +
+                    Environment.NewLine + "Staging CA: " + plan.GetProperty("staging_ca").GetString() +
+                    Environment.NewLine + "Plan SHA-256: " + sha;
+                report.Text = details + Environment.NewLine + Environment.NewLine +
+                    "This staging test can create and remove DNS TXT records and write local Certbot state/logs. No production renewal, Postfix activation or reload is requested.";
+                if (MessageBox.Show(this, report.Text + Environment.NewLine + Environment.NewLine + "Run the staging renewal test now?",
+                    "Confirm DNS challenge test", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                {
+                    status.Text = "Dry-run cancelled before execution.";
+                    return;
+                }
+                status.Text = "Running the reviewed staging test (no automatic retry)...";
+                started = true;
+                using var outcome = JsonDocument.Parse(await dryRun(sha));
+                var root = outcome.RootElement;
+                if (!root.GetProperty("dry_run").GetBoolean() ||
+                    root.GetProperty("activation_requested").GetBoolean() ||
+                    root.GetProperty("plan_sha256").GetString() != sha)
+                    throw new InvalidDataException("Unexpected renewal result.");
+                string? state = root.GetProperty("status").GetString();
+                status.Text = state switch
+                {
+                    "dry_run_passed" => "Staging dry-run passed. Live renewal and delivery remain unverified.",
+                    "dry_run_failed" => "Dry-run failed. Review DNS and private Certbot logs before retrying.",
+                    _ => "Outcome unverified. Inspect Linux and DNS before retrying."
+                };
+                report.AppendText(Environment.NewLine + Environment.NewLine + status.Text);
+            }
+            catch (Exception ex)
+            {
+                status.Text = started ? "Test outcome unverified; inspect Linux and DNS before retrying."
+                    : "Renewal review refused: " + ex.GetType().Name;
+            }
+            finally
+            {
+                busy = false;
+                if (!IsDisposed) refresh.Enabled = test.Enabled = close.Enabled = true;
+            }
+        };
         refresh.Click += async (_, _) => await RefreshAsync();
         Shown += async (_, _) => await RefreshAsync();
         layout.Controls.Add(status, 0, 0);
