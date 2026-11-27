@@ -41,3 +41,17 @@ class ConnectorBindingTests(unittest.TestCase):
         self.assertIn("$options['RequireTls'] = $true", script)
         inspect = script.split("if ($Action -eq 'Inspect')", 1)[1].split("    foreach ($item in $connectors) {", 2)
         self.assertNotIn("New-InboundConnector", inspect[0])
+
+    def test_workflow_navigation_does_not_authorize_changes(self):
+        source = ROOT / "src/LinuxMailRelay365"
+        plan = (source/"SmtpCertificateWizardPlan.cs").read_text()
+        self.assertIn("[SmtpWorkflowStage.Identity, SmtpWorkflowStage.Delivery]", plan)
+        self.assertIn("SmtpWorkflowStage.Binding, SmtpWorkflowStage.Delivery, SmtpWorkflowStage.Maintenance", plan)
+        ui = (source/"SmtpCertificateWizardDialog.cs").read_text()
+        self.assertIn("Navigation is not approval", ui)
+        self.assertIn("sessionMx = dialog.SessionMx", ui)
+        self.assertIn("deliveryProbe(this, sessionMx)", ui)
+        self.assertIn("if (working) e.Cancel = true", ui)
+        self.assertNotIn("connectorApproved.Checked = true", ui)
+        main = (source/"MainForm.DeliveryMiniWizard.cs").read_text()
+        self.assertIn("outboundFixedSender.Text.Trim(), sessionMx,", main)

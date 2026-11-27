@@ -7,6 +7,9 @@ namespace LinuxMailRelay365;
 
 internal sealed class SmtpTlsRotationDialog : Form
 {
+    // Session-only context. Never writes the main routing plan.
+    internal string SessionMx { get; private set; } = "";
+    internal string SessionCertificateName { get; private set; } = "";
     internal SmtpTlsRotationDialog(Func<string, string?, string?, string?, Task<string>> remote, string dnsName, string acceptedDomain = "", string configuredMx = "")
     {
         Text = "SMTP TLS | Reviewed deployment";
@@ -20,6 +23,8 @@ internal sealed class SmtpTlsRotationDialog : Form
         for (int i = 0; i < 8; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        SessionMx = configuredMx;
+        SessionCertificateName = dnsName;
         var domain = new TextBox { Text = dnsName, Dock = DockStyle.Top };
         var mx = new TextBox { Text = configuredMx, Dock = DockStyle.Fill, PlaceholderText = "tenant.mail.protection.outlook.com", MaxLength = 253 };
         string senderDomain = acceptedDomain.Trim().ToLowerInvariant();
@@ -64,7 +69,7 @@ internal sealed class SmtpTlsRotationDialog : Form
             activate.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
-        domain.TextChanged += (_, _) => Invalidate();
+        domain.TextChanged += (_, _) => { SessionCertificateName = domain.Text.Trim(); Invalidate(); };
         candidates.SelectedIndexChanged += (_, _) => Invalidate();
         async Task RefreshAsync()
         {
@@ -166,6 +171,7 @@ internal sealed class SmtpTlsRotationDialog : Form
         };
         mx.TextChanged += (_, _) =>
         {
+            SessionMx = mx.Text.Trim();
             mxStatus.ForeColor = SystemColors.ControlText;
             mxStatus.Text = "MX entered; confirm the intended tenant before testing.";
         };

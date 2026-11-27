@@ -7,36 +7,42 @@ internal sealed class SmtpCertificateWizardDialog : Form
 {
     private readonly ComboBox identity = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
     private readonly ComboBox source = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
-    private readonly Label summary = new() { Dock = DockStyle.Fill, AutoSize = false };
+    private readonly Label summary = new() { Dock = DockStyle.Top, AutoSize = true };
     internal System.Text.Json.JsonElement? SelectedCertificate { get; private set; }
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form> deliveryProbe, string configuredMx = "")
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form, string> deliveryProbe, string configuredMx = "")
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(580, 420);
-        MinimumSize = new Size(420, 300);
+        ClientSize = new Size(740, 520);
+        MinimumSize = new Size(460, 350);
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 16, Padding = new Padding(16), AutoScroll = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 4; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 16; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        bool working = false;
+        int page = 0;
+        string sessionMx = configuredMx;
+        FormClosing += (_, e) => { if (working) e.Cancel = true; };
         identity.Items.AddRange(new object[] { "Public IP authentication", "TLS certificate authentication" });
         source.Items.AddRange(new object[] { "Existing certificate", "Import certificate", "New ACME certificate" });
         identity.SelectedIndex = 0;
         source.SelectedIndex = 0;
-        layout.Controls.Add(new Label { Text = "Connector authentication", AutoSize = true }, 0, 0);
+        var identityLabel = new Label { Text = "Connector authentication", AutoSize = true };
+        layout.Controls.Add(identityLabel, 0, 0);
         layout.Controls.Add(identity, 0, 1);
-        layout.Controls.Add(new Label { Text = "Certificate source (TLS only)", AutoSize = true }, 0, 2);
+        var sourceLabel = new Label { Text = "Certificate source (TLS only)", AutoSize = true };
+        layout.Controls.Add(sourceLabel, 0, 2);
         layout.Controls.Add(source, 0, 3);
         layout.Controls.Add(summary, 0, 4);
         var scan = new Button { Text = "Discover existing certificates", AutoSize = true };
         scan.Click += async (_, _) =>
         {
+            if (working) return;
             SelectedCertificate = null;
+            SetWorking(true);
             scan.Enabled = false;
             try
             {
@@ -72,7 +78,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 if (picker.ShowDialog(this) == DialogResult.OK) RefreshPlan();
             }
             catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, "Discovery failed: " + ex.GetType().Name); }
-            finally { if (!IsDisposed) scan.Enabled = true; }
+            finally { if (!IsDisposed) { scan.Enabled = true; SetWorking(false); } }
         };
         layout.Controls.Add(scan, 0, 5);
         var domain = new TextBox { Dock = DockStyle.Top, PlaceholderText = "Certificate DNS name (not Linux hostname)" };
@@ -85,6 +91,8 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 MessageBox.Show(this, "Select an existing TLS certificate and enter its DNS name.");
                 return;
             }
+            if (working) return;
+            SetWorking(true);
             check.Enabled = scan.Enabled = identity.Enabled = source.Enabled = domain.Enabled = false;
             try
             {
@@ -101,7 +109,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
                     "Certificate validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, "Validation failed: " + ex.GetType().Name, "Certificate validation", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
-            finally { if (!IsDisposed) { check.Enabled = scan.Enabled = identity.Enabled = domain.Enabled = true; RefreshPlan(); } }
+            finally { if (!IsDisposed) { check.Enabled = scan.Enabled = identity.Enabled = domain.Enabled = true; SetWorking(false); } }
         };
         layout.Controls.Add(domain, 0, 6);
         layout.Controls.Add(check, 0, 7);
@@ -151,8 +159,11 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 MessageBox.Show(this, "Select TLS certificate authentication first.");
                 return;
             }
-            using var dialog = new SmtpTlsRotationDialog(rotateTls, domain.Text.Trim(), acceptedDomain, configuredMx);
+            using var dialog = new SmtpTlsRotationDialog(rotateTls, domain.Text.Trim(), acceptedDomain, sessionMx);
             dialog.ShowDialog(this);
+            sessionMx = dialog.SessionMx;
+            domain.Text = dialog.SessionCertificateName;
+            RefreshPlan();
         };
         layout.Controls.Add(rotate, 0, 11);
         var scheduler = new Button { Text = "Manage renewal schedule and recovery services", AutoSize = true };
@@ -176,30 +187,104 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 MessageBox.Show(this, "Select TLS certificate authentication and enter its exact DNS name.");
                 return;
             }
+            if (working) return;
+            SetWorking(true);
             binding.Enabled = false;
             try { await bindExchange(this, domain.Text.Trim().ToLowerInvariant()); }
             catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, "Binding review refused: " + ex.GetType().Name); }
-            finally { if (!IsDisposed) binding.Enabled = true; }
+            finally { if (!IsDisposed) { binding.Enabled = true; SetWorking(false); } }
         };
         layout.Controls.Add(binding, 0, 13);
         var delivery = new Button { Text = "Test delivery through primary Postfix", AutoSize = true };
-        delivery.Click += (_, _) => deliveryProbe(this);
+        delivery.Click += (_, _) => deliveryProbe(this, sessionMx);
         layout.Controls.Add(delivery, 0, 14);
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
-        layout.Controls.Add(close, 0, 15);
+        var back = new Button { Text = "Back", AutoSize = true };
+        var next = new Button { Text = "Next", AutoSize = true };
+        var navigation = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
+        navigation.Controls.AddRange([back, next, close]);
+        layout.Controls.Add(navigation, 0, 15);
         Controls.Add(layout);
         CancelButton = close;
-        identity.SelectedIndexChanged += (_, _) => RefreshPlan();
-        source.SelectedIndexChanged += (_, _) => RefreshPlan();
-        RefreshPlan();
-    }
 
-    private void RefreshPlan()
-    {
-        source.Enabled = Identity == SmtpConnectorIdentity.Certificate;
-        summary.Text = "Planned steps (preview only)" + Environment.NewLine + Environment.NewLine +
-            string.Join(Environment.NewLine, SmtpCertificateWizardPlan.Steps(Identity, Source)
-                .Select((step, index) => (index + 1) + ". " + step)) +
-            Environment.NewLine + Environment.NewLine + (SelectedCertificate is { } cert ? "Selected: " + cert.GetProperty("lineage").GetString() + " (unverified)" + Environment.NewLine : "") + "Import creates protected candidate files on Linux only. Active Postfix and Microsoft 365 configuration remain unchanged.";
+        void SetWorking(bool value)
+        {
+            working = value;
+            RefreshPlan();
+        }
+        void RefreshPlan()
+        {
+            var stages = SmtpCertificateWizardPlan.Workflow(Identity);
+            page = Math.Clamp(page, 0, stages.Length - 1);
+            var stage = stages[page];
+            bool certificate = Identity == SmtpConnectorIdentity.Certificate;
+            bool first = stage == SmtpWorkflowStage.Identity;
+            bool material = stage == SmtpWorkflowStage.Certificate;
+            bool deployment = stage == SmtpWorkflowStage.Deployment;
+            bool exchange = stage == SmtpWorkflowStage.Binding;
+            bool maintenance = stage == SmtpWorkflowStage.Maintenance;
+            layout.SuspendLayout();
+            try
+            {
+                identityLabel.Visible = identity.Visible = first;
+                sourceLabel.Visible = source.Visible = (first || material) && certificate;
+                source.Enabled = !working && certificate;
+                domain.Visible = material || deployment || exchange || maintenance;
+                scan.Visible = check.Visible = material && Source == SmtpCertificateSource.Existing;
+                import.Visible = material && Source == SmtpCertificateSource.Import;
+                acme.Visible = material && Source == SmtpCertificateSource.Acme;
+                rotate.Visible = deployment;
+                binding.Visible = exchange;
+                delivery.Visible = stage == SmtpWorkflowStage.Delivery;
+                renewal.Visible = scheduler.Visible = maintenance;
+                foreach (Control control in new Control[] { identity, source, domain, scan, check, import,
+                    acme, rotate, binding, delivery, renewal, scheduler, close })
+                    control.Enabled = !working && (control != source || certificate);
+                back.Enabled = !working && page > 0;
+                next.Enabled = !working && page < stages.Length - 1;
+                string heading = stage switch
+                {
+                    SmtpWorkflowStage.Identity => "Connector identity",
+                    SmtpWorkflowStage.Certificate => "Prepare certificate",
+                    SmtpWorkflowStage.Deployment => "MX, STARTTLS and Postfix deployment",
+                    SmtpWorkflowStage.Binding => "Verify active Exchange certificate binding",
+                    SmtpWorkflowStage.Delivery => "Test delivery and message trace",
+                    _ => "Certificate maintenance and recovery"
+                };
+                string guidance = stage switch
+                {
+                    SmtpWorkflowStage.Identity => certificate
+                        ? "Choose the certificate source. The certificate DNS identity is independent of the Linux hostname."
+                        : "Public IP authentication does not require a client certificate. Review or create the tenant IP connector and the Postfix route in the main delivery configuration before sending test messages.",
+                    SmtpWorkflowStage.Certificate => Source switch
+                    {
+                        SmtpCertificateSource.Existing => "Discover and validate an existing certificate. Validation alone does not create a staged candidate; use Import or the ACME staging workflow if a candidate is needed.",
+                        SmtpCertificateSource.Import => "Import a certificate and private key into a protected staged generation. No activation occurs here.",
+                        _ => "Review DNS, test staging, evaluate production material and stage an eligible certificate. No activation occurs here."
+                    },
+                    SmtpWorkflowStage.Deployment => "Select a staged generation. Discover MX and test STARTTLS before a separate deployment review and explicit activation. Confirm the intended tenant connector independently; the active binding check is on the next page.",
+                    SmtpWorkflowStage.Binding => "Read-only review of the active managed Linux certificate and exact tenant Connector. Create or change connectors using the separate main configuration workflow.",
+                    SmtpWorkflowStage.Delivery => "Review the actual primary route, explicitly approve test messages, then refresh the Linux trace and Exchange Message Trace. Local submission or TLS success is not inbox delivery.",
+                    _ => "Inspect renewal state, timers and recovery services. Each live action requires its own review."
+                };
+                string selected = material && Source == SmtpCertificateSource.Existing && SelectedCertificate is { } cert
+                    ? Environment.NewLine + "Selected: " + cert.GetProperty("lineage").GetString() + " (selection only)" : "";
+                summary.MaximumSize = new Size(Math.Max(200, layout.ClientSize.Width - 48), 0);
+                summary.Text = "Step " + (page + 1) + " / " + stages.Length + "  |  " + heading +
+                    Environment.NewLine + "Accepted domain: " + (string.IsNullOrWhiteSpace(acceptedDomain) ? "not selected" : acceptedDomain) +
+                    Environment.NewLine + "Session MX: " + (string.IsNullOrWhiteSpace(sessionMx) ? "not selected" : sessionMx) +
+                    Environment.NewLine + Environment.NewLine + guidance + selected +
+                    Environment.NewLine + Environment.NewLine + "Navigation is not approval or evidence that a previous step succeeded.";
+                next.Text = page == stages.Length - 1 ? "Next" : "Next >";
+            }
+            finally { layout.ResumeLayout(true); }
+        }
+        back.Click += (_, _) => { if (!working && page > 0) { page--; RefreshPlan(); } };
+        next.Click += (_, _) => { if (!working && page < SmtpCertificateWizardPlan.Workflow(Identity).Length - 1) { page++; RefreshPlan(); } };
+        identity.SelectedIndexChanged += (_, _) => { page = 0; RefreshPlan(); };
+        source.SelectedIndexChanged += (_, _) => RefreshPlan();
+        layout.SizeChanged += (_, _) =>
+            summary.MaximumSize = new Size(Math.Max(200, layout.ClientSize.Width - 48), 0);
+        RefreshPlan();
     }
 }

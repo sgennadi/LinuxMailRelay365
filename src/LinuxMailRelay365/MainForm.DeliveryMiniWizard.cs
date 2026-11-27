@@ -251,7 +251,7 @@ internal sealed partial class MainForm
                     if (result.ExitCode != 0) throw new InvalidOperationException("Systemd action refused.");
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     return result.StdOut;
-                }, (owner, dns) => ReviewManagedConnectorBindingAsync(owner, context, dns), owner =>
+                }, (owner, dns) => ReviewManagedConnectorBindingAsync(owner, context, dns), (owner, sessionMx) =>
                 {
                     using var probe = new PostfixM365DeliveryDialog(async (action, request, sha) =>
                     {
@@ -265,7 +265,7 @@ internal sealed partial class MainForm
                         if (result.ExitCode != 0) throw new InvalidOperationException("Postfix probe refused or uncertain.");
                         if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                         return result.StdOut;
-                    }, acceptedDomain.Text.Trim(), outboundFixedSender.Text.Trim(), outboundMxHost.Text.Trim(),
+                    }, acceptedDomain.Text.Trim(), outboundFixedSender.Text.Trim(), sessionMx,
                         (request, local) => ReadPostfixExchangeTraceAsync(context, request, local),
                         async (mx, managed) =>
                         {

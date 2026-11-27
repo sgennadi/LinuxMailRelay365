@@ -4,6 +4,8 @@ internal enum SmtpConnectorIdentity { PublicIp, Certificate }
 internal enum SmtpCertificateSource { Existing, Import, Acme }
 internal enum SmtpCertificateStep { Identity, Source, Domain, Dns, Certificate, Renewal, Connector, Review }
 
+internal enum SmtpWorkflowStage { Identity, Certificate, Deployment, Binding, Delivery, Maintenance }
+
 internal static class SmtpCertificateWizardPlan
 {
     internal static SmtpCertificateStep[] Steps(SmtpConnectorIdentity identity, SmtpCertificateSource source)
@@ -18,6 +20,13 @@ internal static class SmtpCertificateWizardPlan
             SmtpCertificateStep.Certificate, SmtpCertificateStep.Renewal, SmtpCertificateStep.Connector,
             SmtpCertificateStep.Review];
     }
+
+    // Navigation is guidance only. Existing transactional approval gates remain authoritative.
+    internal static SmtpWorkflowStage[] Workflow(SmtpConnectorIdentity identity)
+        => identity == SmtpConnectorIdentity.PublicIp
+            ? [SmtpWorkflowStage.Identity, SmtpWorkflowStage.Delivery]
+            : [SmtpWorkflowStage.Identity, SmtpWorkflowStage.Certificate, SmtpWorkflowStage.Deployment,
+                SmtpWorkflowStage.Binding, SmtpWorkflowStage.Delivery, SmtpWorkflowStage.Maintenance];
 
     internal static bool CanApply(bool certificateRequired, bool certificateVerified,
         bool connectorVerified, bool routePreviewVerified, bool explicitApproval)
