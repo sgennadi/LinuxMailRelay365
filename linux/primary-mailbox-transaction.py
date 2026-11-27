@@ -60,7 +60,8 @@ def review(config, uid, mailbox, guard, runtime_guard, sampler=R.sample,
            identity_reader=R.identity_snapshot, native_compare=R.native_candidate_snapshots):
     """runtime_guard(mailbox) returns a stable trusted runtime/SMTP AUTH SHA.
 
-    This required callback contract is not implemented by an operational CLI.
+    The experimental manage-primary-mailbox-offline.py review-only CLI
+    supplies the software-PEM implementation of this callback.
     """
     R.parse(R.encode({"mailbox": mailbox, "nonce": "0"*64}))
     guard()
