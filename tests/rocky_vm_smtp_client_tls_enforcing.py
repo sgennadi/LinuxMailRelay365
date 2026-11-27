@@ -228,9 +228,24 @@ def main():
     def stage_one(name):
         candidate = stage.stage(str(WORK / (name + ".pem")), str(WORK / "ca.pem"),
                                 str(WORK / (name + ".key")), IDENTITY, str(WORK / "ca.pem"))
-        run("restorecon", str(ROOT))
-        if labels.prepare(ROOT, candidate, gen, adapter.trusted_invocation) != "contexts_verified":
-            raise RuntimeError("candidate SELinux labels not verified")
+        # This root was created by this disposable fixture, not inherited from a user.
+        run("restorecon", "-F", str(ROOT))
+        try:
+            if labels.prepare(ROOT, candidate, gen, adapter.trusted_invocation) != "contexts_verified":
+                raise RuntimeError("candidate SELinux labels not verified")
+        except Exception:
+            # Report only label metadata of the synthetic fixture, never keys.
+            for path in (ROOT, ROOT / candidate, *(ROOT / candidate / x for x in
+                         ("client-chain.pem", "fullchain.pem", "key.pem"))):
+                try:
+                    actual = os.getxattr(str(path), "security.selinux", follow_symlinks=False).rstrip(b"\x00")
+                    expected = run("matchpathcon", "-n", str(path)).strip()
+                    print("LMR365_VM_CLIENT_TLS_CONTEXT", path.name,
+                          "actual=" + actual.decode("ascii"), "expected=" + expected.decode("ascii"), flush=True)
+                except Exception:
+                    print("LMR365_VM_CLIENT_TLS_CONTEXT=unavailable", flush=True)
+            raise
+        print("LMR365_VM_CLIENT_TLS_CANDIDATE_CONTEXTS=verified", flush=True)
         return candidate
     first, second = stage_one("first"), stage_one("second")
     def validate(candidate):
