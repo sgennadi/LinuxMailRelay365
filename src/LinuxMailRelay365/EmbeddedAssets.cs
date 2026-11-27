@@ -116,6 +116,62 @@ internal static class EmbeddedAssets
         return script.Append('\n').ToString();
     }
 
+    internal static string BuildSmtpTlsSystemd(string action, string? expectedSha)
+    {
+        if (action is not ("inspect" or "install" or "enable-recovery" or "enable-timer" or "start-timer"
+                           or "stop-timer" or "disable-timer" or "renew-now") ||
+            (expectedSha is not null && (!Regex.IsMatch(expectedSha, @"\A[a-f0-9]{64}\z") || action == "inspect")))
+            throw new ArgumentException("Invalid systemd review action.");
+        var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-tls-systemd.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\nmkdir -m 700 \"$work/systemd\"\n");
+        (string File, string Resource)[] files =
+        [
+            ("review-smtp-tls-systemd.py", "LinuxMailRelay365.linux.review-smtp-tls-systemd.py"),
+            ("review-smtp-tls-rotation.py", "LinuxMailRelay365.linux.review-smtp-tls-rotation.py"),
+            ("review-smtp-acme-dry-run.py", "LinuxMailRelay365.linux.review-smtp-acme-dry-run.py"),
+            ("manage-smtp-tls-systemd.py", "LinuxMailRelay365.linux.manage-smtp-tls-systemd.py"),
+            ("plan-smtp-tls-systemd.py", "LinuxMailRelay365.linux.plan-smtp-tls-systemd.py"),
+            ("install-smtp-tls-systemd.py", "LinuxMailRelay365.linux.install-smtp-tls-systemd.py"),
+            ("test-smtp-acme-renewal.py", "LinuxMailRelay365.linux.test-smtp-acme-renewal.py"),
+            ("manage-smtp-tls-process-renewal.py", "LinuxMailRelay365.linux.manage-smtp-tls-process-renewal.py"),
+            ("manage-smtp-tls-renewal.py", "LinuxMailRelay365.linux.manage-smtp-tls-renewal.py"),
+            ("manage-smtp-tls-initial.py", "LinuxMailRelay365.linux.manage-smtp-tls-initial.py"),
+            ("smtp-tls-renewal-profile.py", "LinuxMailRelay365.linux.smtp-tls-renewal-profile.py"),
+            ("check-smtp-acme-credentials.py", "LinuxMailRelay365.linux.check-smtp-acme-credentials.py"),
+            ("smtp-tls-postfix.py", "LinuxMailRelay365.linux.smtp-tls-postfix.py"),
+            ("smtp-tls-generation.py", "LinuxMailRelay365.linux.smtp-tls-generation.py"),
+            ("smtp-tls-transaction.py", "LinuxMailRelay365.linux.smtp-tls-transaction.py"),
+            ("smtp-tls-activate.py", "LinuxMailRelay365.linux.smtp-tls-activate.py"),
+            ("smtp-tls-validate-generation.py", "LinuxMailRelay365.linux.smtp-tls-validate-generation.py"),
+            ("smtp-tls-selinux-prepare.py", "LinuxMailRelay365.linux.smtp-tls-selinux-prepare.py"),
+            ("smtp-tls-process-renewal.py", "LinuxMailRelay365.linux.smtp-tls-process-renewal.py"),
+            ("stage-smtp-relay-certificate.py", "LinuxMailRelay365.linux.smtp-cert-stage.py"),
+            ("check-smtp-relay-certificate.py", "LinuxMailRelay365.linux.smtp-cert-check.py"),
+            ("smtp-tls-initial-backup.py", "LinuxMailRelay365.linux.smtp-tls-initial-backup.py"),
+            ("smtp-tls-initial-candidate.py", "LinuxMailRelay365.linux.smtp-tls-initial-candidate.py"),
+            ("smtp-tls-initial-journal.py", "LinuxMailRelay365.linux.smtp-tls-initial-journal.py"),
+            ("smtp-tls-initial-deploy.py", "LinuxMailRelay365.linux.smtp-tls-initial-deploy.py"),
+            ("plan-smtp-tls-initial.py", "LinuxMailRelay365.linux.plan-smtp-tls-initial.py"),
+            ("check-smtp-tls-health.py", "LinuxMailRelay365.linux.check-smtp-tls-health.py"),
+            ("smtp-tls-health-alerts.py", "LinuxMailRelay365.linux.smtp-tls-health-alerts.py"),
+            ("systemd/linuxmailrelay365-smtp-acme-renew.service", "LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-acme-renew.service"),
+            ("systemd/linuxmailrelay365-smtp-acme-renew.timer", "LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-acme-renew.timer"),
+            ("systemd/linuxmailrelay365-smtp-tls-initial-recovery.service", "LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-tls-initial-recovery.service"),
+            ("systemd/linuxmailrelay365-smtp-tls-prestart.service", "LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-tls-prestart.service"),
+            ("systemd/linuxmailrelay365-smtp-tls-recovery.service", "LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-tls-recovery.service"),
+            ("systemd/linuxmailrelay365-smtp-tls-health.service", "LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-tls-health.service"),
+            ("systemd/linuxmailrelay365-smtp-tls-health.timer", "LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-tls-health.timer")
+        ];
+        foreach (var file in files)
+        {
+            script.Append("base64 -d > \"$work/").Append(file.File).Append("\" <<'LMR365_SYSTEMD_ASSET'\n")
+                .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text(file.Resource))))
+                .Append("\nLMR365_SYSTEMD_ASSET\n");
+        }
+        script.Append("/usr/bin/python3 -I -B \"$work/review-smtp-tls-systemd.py\" ").Append(action);
+        if (expectedSha is not null) script.Append(" --expected-sha=").Append(expectedSha);
+        return script.Append('\n').ToString();
+    }
+
     internal static string SmtpRenewalInventory =>
         "set -eu\n/usr/bin/python3 -I -B - <<'LMR365_RENEWAL_INVENTORY'\n" +
         Text("LinuxMailRelay365.linux.smtp-renewal-inventory.py") +

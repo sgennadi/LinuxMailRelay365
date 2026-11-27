@@ -189,6 +189,18 @@ internal sealed partial class MainForm
                     if (result.ExitCode != 0) throw new InvalidOperationException("TLS review or activation refused.");
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     return result.StdOut;
+                }, async (action, sha) =>
+                {
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    var endpoint = Endpoint();
+                    string script = EmbeddedAssets.BuildSmtpTlsSystemd(action, sha);
+                    var timeout = TimeSpan.FromSeconds(sha is null ? 240 : 420);
+                    var result = endpoint.Username == "root"
+                        ? await SshRemote.ExecuteAsync(endpoint, "bash -s", script, timeout)
+                        : await SshRemote.RunRootScriptAsync(endpoint, script, timeout);
+                    if (result.ExitCode != 0) throw new InvalidOperationException("Systemd action refused.");
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    return result.StdOut;
                 });
                 dialog.ShowDialog(this);
             };

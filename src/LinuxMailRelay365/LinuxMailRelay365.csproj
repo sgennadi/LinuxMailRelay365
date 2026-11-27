@@ -39,6 +39,25 @@
     <EmbeddedResource Include="../../linux/inspect-smtp-certificate-renewal.py" LogicalName="LinuxMailRelay365.linux.smtp-renewal-inventory.py" />
     <EmbeddedResource Include="../../linux/review-smtp-acme-dry-run.py" LogicalName="LinuxMailRelay365.linux.review-smtp-acme-dry-run.py" />
     <EmbeddedResource Include="../../linux/review-smtp-tls-rotation.py" LogicalName="LinuxMailRelay365.linux.review-smtp-tls-rotation.py" />
+    <EmbeddedResource Include="../../linux/review-smtp-tls-systemd.py" LogicalName="LinuxMailRelay365.linux.review-smtp-tls-systemd.py" />
+    <EmbeddedResource Include="../../linux/manage-smtp-tls-systemd.py" LogicalName="LinuxMailRelay365.linux.manage-smtp-tls-systemd.py" />
+    <EmbeddedResource Include="../../linux/plan-smtp-tls-systemd.py" LogicalName="LinuxMailRelay365.linux.plan-smtp-tls-systemd.py" />
+    <EmbeddedResource Include="../../linux/install-smtp-tls-systemd.py" LogicalName="LinuxMailRelay365.linux.install-smtp-tls-systemd.py" />
+    <EmbeddedResource Include="../../linux/test-smtp-acme-renewal.py" LogicalName="LinuxMailRelay365.linux.test-smtp-acme-renewal.py" />
+    <EmbeddedResource Include="../../linux/manage-smtp-tls-process-renewal.py" LogicalName="LinuxMailRelay365.linux.manage-smtp-tls-process-renewal.py" />
+    <EmbeddedResource Include="../../linux/manage-smtp-tls-renewal.py" LogicalName="LinuxMailRelay365.linux.manage-smtp-tls-renewal.py" />
+    <EmbeddedResource Include="../../linux/manage-smtp-tls-initial.py" LogicalName="LinuxMailRelay365.linux.manage-smtp-tls-initial.py" />
+    <EmbeddedResource Include="../../linux/smtp-tls-selinux-prepare.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-selinux-prepare.py" />
+    <EmbeddedResource Include="../../linux/smtp-tls-process-renewal.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-process-renewal.py" />
+    <EmbeddedResource Include="../../linux/check-smtp-tls-health.py" LogicalName="LinuxMailRelay365.linux.check-smtp-tls-health.py" />
+    <EmbeddedResource Include="../../linux/smtp-tls-health-alerts.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-health-alerts.py" />
+    <EmbeddedResource Include="../../linux/systemd/linuxmailrelay365-smtp-acme-renew.service" LogicalName="LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-acme-renew.service" />
+    <EmbeddedResource Include="../../linux/systemd/linuxmailrelay365-smtp-acme-renew.timer" LogicalName="LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-acme-renew.timer" />
+    <EmbeddedResource Include="../../linux/systemd/linuxmailrelay365-smtp-tls-initial-recovery.service" LogicalName="LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-tls-initial-recovery.service" />
+    <EmbeddedResource Include="../../linux/systemd/linuxmailrelay365-smtp-tls-prestart.service" LogicalName="LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-tls-prestart.service" />
+    <EmbeddedResource Include="../../linux/systemd/linuxmailrelay365-smtp-tls-recovery.service" LogicalName="LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-tls-recovery.service" />
+    <EmbeddedResource Include="../../linux/systemd/linuxmailrelay365-smtp-tls-health.service" LogicalName="LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-tls-health.service" />
+    <EmbeddedResource Include="../../linux/systemd/linuxmailrelay365-smtp-tls-health.timer" LogicalName="LinuxMailRelay365.linux.systemd/linuxmailrelay365-smtp-tls-health.timer" />
     <EmbeddedResource Include="../../linux/smtp-tls-generation.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-generation.py" />
     <EmbeddedResource Include="../../linux/smtp-tls-transaction.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-transaction.py" />
     <EmbeddedResource Include="../../linux/smtp-tls-activate.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-activate.py" />
