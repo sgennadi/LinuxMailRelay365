@@ -19,6 +19,13 @@ internal sealed partial class MainForm
         AddAction(page,T("Preview общего маршрута (только чтение)",
             "Preview primary single-mailbox route (read-only)","בדיקת נתיב תיבה יחידה"),
             PreviewPrimaryMailboxRouteAsync,false,"check","primary-mailbox-route-preview");
+        AddAction(page,T("Экспериментальный Offline Apply / Restore",
+            "Experimental offline Apply / Restore","החלה ושחזור במצב לא מקוון (ניסיוני)"),
+            OpenPrimaryMailboxOfflineAsync,false,"check","primary-mailbox-offline");
+        AddLine(page,MailFlowText(T(
+            "Требуется остановленный Postfix, пустая очередь, установленная PEM-идентичность и отдельное подтверждение. Служба не запускается автоматически.",
+            "Requires stopped Postfix, empty queues, an installed PEM identity and separate approval. No automatic service start.",
+            "נדרש Postfix כבוי, תורים ריקים וזהות PEM מותקנת. אין הפעלה אוטומטית."),width,warning:true));
     }
 
     private async Task PreviewPrimaryMailboxRouteAsync()

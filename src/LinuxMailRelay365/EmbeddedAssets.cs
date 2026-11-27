@@ -481,6 +481,37 @@ internal static class EmbeddedAssets
 
     private static string Encode(string text) => Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
 
+    internal static string BuildPrimaryMailboxOffline(string action, string maintenance,
+        string? mailbox = null, Guid? tenant = null, Guid? client = null, string? sha = null,
+        string? confirmation = null, string? authConfirmation = null)
+    {
+        string args = PrimaryMailboxOfflineClient.Arguments(action,maintenance,mailbox,tenant,client,sha,
+            confirmation,authConfirmation);
+        var script = new StringBuilder("set +x\nset -Eeuo pipefail\numask 077\n" +
+            "PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH\n" +
+            "work=$(mktemp -d /run/lmr365-primary-mailbox.XXXXXXXX)\n" +
+            "trap 'rm -rf -- \"$work\"' EXIT\n");
+        foreach (var (file,resource) in new[] {
+            ("manage-primary-mailbox-offline.py","manage-primary-mailbox-offline.py"),
+            ("primary-mailbox-transaction.py","primary-mailbox-transaction.py"),
+            ("primary-mailbox-runtime.py","primary-mailbox-runtime.py"),
+            ("preview-primary-mailbox-route.py","primary-mailbox-route-preview.py"),
+            ("export-hardware-oauth-cert.py","entra-public-cert-export.py"),
+            ("manage-primary-oauth-rotation.py","primary-oauth-rotation.py"),
+            ("m365_xoauth2_transport.py","transport.py"),
+            ("m365_hardware_signer.py","hardware-signer.py"),
+            ("manage-conditional-postfix-offline.py","manage-conditional-postfix-offline.py"),
+            ("inspect-conditional-postfix-activation.py","inspect-conditional-postfix-activation.py"),
+            ("conditional-postfix-transaction.py","conditional-postfix-transaction.py"),
+            ("stage-conditional-postfix-maps.py","stage-conditional-postfix-maps.py")
+        })
+            script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_PRIMARY_OFFLINE_ASSET'\n")
+                .Append(Encode(Text("LinuxMailRelay365.linux." + resource)))
+                .Append("\nLMR365_PRIMARY_OFFLINE_ASSET\n");
+        return script.Append("/usr/bin/python3 -I -B \"$work/manage-primary-mailbox-offline.py\" ")
+            .Append(args).Append('\n').ToString();
+    }
+
     internal static string BuildPrimaryMailboxRoutePreviewBundle(string request)
     {
         if (Encoding.UTF8.GetByteCount(request)>2048) throw new ArgumentException("Primary route request too large.");

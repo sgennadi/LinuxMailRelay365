@@ -256,5 +256,40 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
         self.assertNotIn("systemctl start",source)
 
 
+class OfflineGuiContracts(unittest.TestCase):
+    def test_bundle_has_all_required_resources_and_no_service_control(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        assets=(src/"EmbeddedAssets.cs").read_text()
+        bundle=assets.split("internal static string BuildPrimaryMailboxOffline(",1)[1].split(
+            "internal static string BuildPrimaryMailboxRoutePreviewBundle",1)[0]
+        project=(src/"LinuxMailRelay365.csproj").read_text()
+        for file in ("manage-primary-mailbox-offline.py","primary-mailbox-transaction.py",
+                     "primary-mailbox-runtime.py","preview-primary-mailbox-route.py",
+                     "manage-primary-oauth-rotation.py","m365_xoauth2_transport.py",
+                     "m365_hardware_signer.py","export-hardware-oauth-cert.py",
+                     "manage-conditional-postfix-offline.py","inspect-conditional-postfix-activation.py",
+                     "conditional-postfix-transaction.py","stage-conditional-postfix-maps.py"):
+            self.assertIn('"'+file+'"',bundle)
+            self.assertIn("../../linux/"+file,project)
+        self.assertIn("PrimaryMailboxOfflineClient.Arguments",bundle)
+        self.assertIn("/run/lmr365-primary-mailbox.",bundle)
+        self.assertNotIn("systemctl start",bundle)
+
+    def test_gui_uses_separate_approvals_and_recovery_inspection(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        ui=(src/"MainForm.PrimaryMailboxOffline.cs").read_text()
+        self.assertIn("RequireSameArchiveConnection(endpoint)",ui)
+        self.assertIn("ConfirmDestructive",ui)
+        self.assertIn('LinuxAsync("review",identity,null,PrimaryMailboxOfflineClient.Auth)',ui)
+        self.assertIn('LinuxAsync("apply",identity,plan.Sha,PrimaryMailboxOfflineClient.Apply,PrimaryMailboxOfflineClient.Auth)',ui)
+        self.assertIn('LinuxAsync("inspect-backup",null,sha,null)',ui)
+        self.assertIn('LinuxAsync("restore",null,sha,PrimaryMailboxOfflineClient.Restore)',ui)
+        self.assertIn('inspectedPhase is "after" or "pipe_only"',ui)
+        self.assertIn("mutationAttempted=true",ui)
+        self.assertIn("discoveredMailIdentity=null",ui)
+        self.assertIn("OpenPrimaryMailboxOfflineAsync",(src/"MainForm.PrimaryMailboxRoute.cs").read_text())
+        self.assertIn("PrimaryMailboxOfflineClient.SelfTest",(src/"Program.cs").read_text())
+
+
 if __name__=="__main__":
     unittest.main()
