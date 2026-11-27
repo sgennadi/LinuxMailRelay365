@@ -358,6 +358,7 @@ def parse_request(args):
 REVIEW_GUIDANCE={
     "unsupported_service_account_or_groups":"service_account_review",
     "tpm_service_device_access_requires_review":"tpm_device_access_review",
+    "tpm_pipe_private_devices_blocked":"tpm_pipe_sandbox_blocked",
     "tpm_resource_manager_changed":"tpm_device_changed",
     "invalid_tpm_resource_manager_fingerprint":"tpm_device_metadata_review",
     "selinux_metadata_restore_not_implemented":"selinux_offline_blocked",

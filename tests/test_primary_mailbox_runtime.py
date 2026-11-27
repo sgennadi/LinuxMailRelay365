@@ -193,7 +193,8 @@ class ManagedTpmRuntimeTests(unittest.TestCase):
              patch.object(A.R.E,"trusted_directory"), \
              patch.object(A,"read_active",return_value=(raw,self.identity)), \
              patch.object(A.R.E,"active_inventory",return_value=inventory), \
-             patch.object(A,"managed_tpm_snapshot",return_value=credentials), \
+             patch.object(A,"managed_tpm_snapshot",return_value=credentials) as managed, \
+             patch.object(A,"refuse_known_tpm_sandbox") as sandbox, \
              patch.object(A,"check_service_tpm_access") as access, \
              patch.object(A.C,"current",side_effect=AssertionError("no PEM fallback")), \
              patch.object(A.R.E,"secure_read",return_value=b"same installed code"), \
@@ -201,6 +202,7 @@ class ManagedTpmRuntimeTests(unittest.TestCase):
              patch.object(A,"system_executable",return_value=["trusted"]):
             state=A.installed_snapshot(MAIL,TENANT,CLIENT)
             self.assertEqual(state["version"],2)
+            self.assertEqual(sandbox.call_count,2)
             access.assert_called_once_with(998,998,[998],self.public["device"])
             self.assertEqual(state["hardware"]["provider"],"tpm2")
             self.assertNotIn("key_sha256",state)
@@ -212,9 +214,38 @@ class ManagedTpmRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(A.Refused,"tpm_service_device_access_requires_review"):
                 A.installed_snapshot(MAIL,TENANT,CLIENT)
             access.side_effect=None
+            managed.reset_mock()
+            access.reset_mock()
+            sandbox.side_effect=A.Refused("tpm_pipe_private_devices_blocked")
+            with self.assertRaisesRegex(A.Refused,"tpm_pipe_private_devices_blocked"):
+                A.installed_snapshot(MAIL,TENANT,CLIENT)
+            managed.assert_not_called()
+            access.assert_not_called()
+            sandbox.side_effect=[None,A.Refused("tpm_pipe_private_devices_blocked")]
+            with self.assertRaisesRegex(A.Refused,"tpm_pipe_private_devices_blocked"):
+                A.installed_snapshot(MAIL,TENANT,CLIENT)
+            sandbox.side_effect=None
             credentials["certificate_sha256"]="f"*64
             with self.assertRaises(A.Refused):
                 A.installed_snapshot(MAIL,TENANT,CLIENT)
+
+    def test_known_private_devices_refuses_but_other_states_are_not_pipe_proof(self):
+        observer=Mock(return_value="private_devices_without_bind")
+        with self.assertRaisesRegex(A.Refused,"tpm_pipe_private_devices_blocked"):
+            A.refuse_known_tpm_sandbox(observer)
+        observer.assert_called_once_with()
+        for state in ("manual_pipe_review_required","unverified"):
+            A.refuse_known_tpm_sandbox(Mock(return_value=state))
+        with self.assertRaisesRegex(A.Refused,"tpm_pipe_sandbox_observation_invalid"):
+            A.refuse_known_tpm_sandbox(Mock(return_value="ready"))
+        auth=Mock(side_effect=AssertionError("must refuse before AUTH"))
+        snapshot=Mock(side_effect=A.Refused("tpm_pipe_private_devices_blocked"))
+        guard=A.RuntimeGuard(TENANT,CLIENT,A.CONFIRM,snapshot=snapshot,auth=auth)
+        with self.assertRaisesRegex(A.Refused,"tpm_pipe_private_devices_blocked"):
+            guard(MAIL)
+        auth.assert_not_called()
+        with self.assertRaisesRegex(A.Refused,"runtime_guard_requires_fresh_review"):
+            guard(MAIL)
 
     def test_tpm_access_checks_exact_credentials_without_tpm_command(self):
         import stat
@@ -876,6 +907,7 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
             for kind,reason,code in (
                     (A.Refused,"unsupported_service_account_or_groups","service_account_review"),
                     (A.Refused,"tpm_service_device_access_requires_review","tpm_device_access_review"),
+                    (A.Refused,"tpm_pipe_private_devices_blocked","tpm_pipe_sandbox_blocked"),
                     (A.Refused,"tpm_resource_manager_changed","tpm_device_changed"),
                     (A.Refused,"invalid_tpm_resource_manager_fingerprint","tpm_device_metadata_review"),
                     (CLI.O.Refused,"selinux_metadata_restore_not_implemented","selinux_offline_blocked"),

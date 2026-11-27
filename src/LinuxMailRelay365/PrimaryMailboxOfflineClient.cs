@@ -141,6 +141,7 @@ internal static class PrimaryMailboxOfflineClient
         return Read("REVIEW_GUIDANCE") switch {
             "service_account_review"=>"Review the dedicated m365mailer account and its groups. The current route requires its own primary group without supplementary groups.",
             "tpm_device_access_review"=>"The restricted m365mailer credentials could not open the TPM2 resource manager. Ask the Linux security administrator to review the device access and SELinux context. Do not make the device world-writable or disable SELinux.",
+            "tpm_pipe_sandbox_blocked"=>"Postfix is configured with PrivateDevices=yes without an observed device bind or alternate root. The managed TPM2 key cannot be assumed accessible from the delivery pipe. Review TPM2 / Postfix Systemd diagnostics with the Linux security administrator; do not disable SELinux or PrivateDevices. The route has not been changed.",
             "tpm_device_changed"=>"TPM2 resource-manager evidence changed during the review. Rediscover the Linux host and obtain a fresh review.",
             "tpm_device_metadata_review"=>"TPM2 resource-manager metadata is outside the supported security profile. Ask the Linux security administrator to review the device.",
             "selinux_offline_blocked"=>"Offline Apply on active SELinux is not enabled in this build. Use the read-only SELinux readiness check. Do not disable SELinux.",
@@ -182,7 +183,7 @@ internal static class PrimaryMailboxOfflineClient
         string refused=Row("STATUS","refused_or_unverified")+Row("SMTP_AUTH","unverified")+
             Row("POSTFIX_CHANGED","no")+common;
         foreach (string reason in new[] {"service_account_review","tpm_device_access_review",
-            "tpm_device_changed","tpm_device_metadata_review","selinux_offline_blocked","extended_metadata_review"})
+            "tpm_device_changed","tpm_device_metadata_review","tpm_pipe_sandbox_blocked","selinux_offline_blocked","extended_metadata_review"})
         {
             string failure=refused+Row("REVIEW_GUIDANCE",reason);
             if (ReviewFailureGuidance(failure) is null ||

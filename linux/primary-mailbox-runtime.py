@@ -225,6 +225,23 @@ def managed_tpm_snapshot(identity,group):
                         **public}}
 
 
+def refuse_known_tpm_sandbox(observer=None):
+    """Refuse an observed private /dev without a visible-device provision.
+
+    The unit configuration is not proof of actual pipe access. Keep the
+    existing runtime fingerprint and credential checks intact. An unknown
+    or different unit configuration still requires the separate manual
+    pipe review; it does not authorize changing the unit or SELinux.
+    """
+    if observer is None:
+        native=load("runtime_primary_native_sandbox","inspect-conditional-postfix-activation.py")
+        observer=native.tpm_pipe_sandbox
+    state=observer()
+    need(state in ("private_devices_without_bind","manual_pipe_review_required","unverified"),
+         "tpm_pipe_sandbox_observation_invalid")
+    need(state!="private_devices_without_bind","tpm_pipe_private_devices_blocked")
+
+
 def installed_snapshot(mailbox, tenant, client):
     try:
         need(os.geteuid() == 0, "root_required")
@@ -249,6 +266,7 @@ def installed_snapshot(mailbox, tenant, client):
              inventory["identity_sha"] == C.sha(raw),
              "active_identity_inventory_mismatch")
         if "signer" in identity:
+            refuse_known_tpm_sandbox()
             credentials=managed_tpm_snapshot(identity,group.gr_gid)
             need(credentials["certificate_sha256"]==inventory["certificate_sha"],
                  "active_tpm_certificate_inventory_mismatch")
@@ -276,6 +294,8 @@ def installed_snapshot(mailbox, tenant, client):
         reject_import_artifacts(LIBEXEC)
         need(read_active(group.gr_gid)==(raw,identity),"active_identity_changed")
         need(R.E.active_inventory("primary")==inventory,"active_certificate_changed")
+        if version==2:
+            refuse_known_tpm_sandbox()
         return {"version":version,"mailbox":mailbox,"tenant":tenant,"client":client,
                 "uid":account.pw_uid,"gid":group.gr_gid,"groups":groups,
                 "identity_sha256":inventory["identity_sha"],**credentials,"sources":sources,
