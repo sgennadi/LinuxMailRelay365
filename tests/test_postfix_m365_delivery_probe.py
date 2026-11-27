@@ -179,3 +179,13 @@ class PrimaryAuditTests(unittest.TestCase):
     def test_duplicate_queue_ids_are_unverified(self):
         self.queue.return_value=[dict(queue_id="ABC123",queue_name="active")]*2
         self.assertEqual(self.audit()["queue"]["status"],"unavailable")
+
+    def test_wizard_primary_audit_is_read_only(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        main=(src/"MainForm.SmtpPrimaryAudit.cs").read_text()
+        self.assertIn('BuildPostfixM365DeliveryProbe("audit", request, null)',main)
+        self.assertIn('"apply_supported"',main)
+        self.assertIn("Inconsistent queue totals",main)
+        self.assertIn("No Apply operation",main)
+        self.assertIn("OpenPrimaryPostfixAuditAsync(owner, context, mx)",(src/"MainForm.DeliveryMiniWizard.cs").read_text())
+        self.assertIn("Inspect primary Postfix configuration / queue",(src/"SmtpCertificateWizardDialog.cs").read_text())
