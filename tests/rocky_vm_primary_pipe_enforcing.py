@@ -10,7 +10,10 @@ import os
 from pathlib import Path
 import pwd
 import re
+import socket
 import stat
+import threading
+from contextlib import contextmanager
 import subprocess
 import time
 import uuid
@@ -103,7 +106,7 @@ def trusted_messages(rows,kind,daemon):
                 "\n" not in row["MESSAGE"] and "\r" not in row["MESSAGE"]):
             yield row["MESSAGE"]
 
-def journal_receipt(rows,daemon,nonce):
+def journal_receipt(rows,daemon,nonce,network=False):
     expected=W.message_id(nonce)
     ids=set()
     for line in trusted_messages(rows,"cleanup",daemon):
@@ -114,7 +117,7 @@ def journal_receipt(rows,daemon,nonce):
         return None
     qid=next(iter(ids))
     prefix=qid+": to=<"+W.RECIPIENT+">,"
-    suffix=" (delivered via m365xoauth2 service ("+W.marker(nonce)+"))"
+    suffix=" (delivered via m365xoauth2 service ("+W.marker(nonce,network)+"))"
     matches=[]
     for line in trusted_messages(rows,"pipe",daemon):
         if not line.startswith(prefix) or not line.endswith(suffix):
@@ -133,23 +136,87 @@ def journal(started):
     need(len(raw)<=8*1024*1024,"fixture_journal_too_large")
     return [json.loads(line) for line in raw.splitlines()]
 
-def wait_receipt(nonce,daemon,started):
+def wait_receipt(nonce,daemon,started,network=False):
     rows=[]
     until=time.monotonic()+75
     while time.monotonic()<until:
         rows=journal(started)
-        qid=journal_receipt(rows,daemon,nonce)
+        qid=journal_receipt(rows,daemon,nonce,network)
         if qid is not None and not command("/usr/sbin/postqueue","-j").strip():
             return qid
         time.sleep(1)
     failures=set()
     for line in trusted_messages(rows,"pipe",daemon):
-        failures.update(re.findall(r"LMR365_PRIMARY_PIPE_FAIL=(identity|domain_after|domain|message|sign)\b",line))
+        failures.update(re.findall(r"LMR365_PRIMARY_PIPE_FAIL=(identity|domain_after|domain|message|sign|network_443|network_587)\b",line))
     print("LMR365_PRIMARY_VM_PIPE_DIAGNOSTIC=cleanup_rows_"+
           str(len(list(trusted_messages(rows,"cleanup",daemon))))+
           "_pipe_rows_"+str(len(list(trusted_messages(rows,"pipe",daemon))))+
           "_failure_"+("-".join(sorted(failures)) or "unobserved"),flush=True)
-    raise RuntimeError("native_pipe_signing_receipt_unverified")
+    raise RuntimeError("native_pipe_network_receipt_unverified" if network else
+                       "native_pipe_signing_receipt_unverified")
+
+def port_policy():
+    """Read native installed port types, not a claim of domain permission."""
+    spec=importlib.util.spec_from_file_location("primary_pipe_port_policy",
+        str(HERE/"inspect-primary-mailbox-selinux.py"))
+    probe=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    raw=command("/usr/sbin/semanage","port","-l",timeout=30)
+    need(len(raw)<=131072,"fixture_port_policy_too_large")
+    states=probe.port_states(raw.decode("utf-8","strict"))
+    need(states=={"443":"expected_type","587":"expected_type"},
+         "fixture_port_policy_types_unverified")
+    return raw
+
+def serve_challenge(listener,nonce,port):
+    with listener.accept()[0] as peer:
+        peer.settimeout(5)
+        need(peer.getpeername()[0]=="127.0.0.1","fixture_socket_not_loopback")
+        request=W.challenge(nonce,port)
+        need(W.recv_exact(peer,len(request))==request,"fixture_socket_challenge")
+        peer.sendall(b"ACK:"+request)
+
+@contextmanager
+def loopback_challenges(nonce):
+    """Two pre-bound listeners, one nonce-bound exchange each; no remote IO."""
+    sockets={}
+    threads=[]
+    verified=set()
+    failures=set()
+    def serve(port,listener):
+        try:
+            serve_challenge(listener,nonce,port)
+            verified.add(port)
+        except Exception:
+            failures.add(port)
+    try:
+        for port in W.PORTS:
+            listener=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+            sockets[port]=listener
+            listener.settimeout(90)
+            # No SO_REUSEPORT or wildcard bind. Existing listeners fail closed.
+            listener.bind(("127.0.0.1",port))
+            listener.listen(1)
+        for port,listener in sockets.items():
+            thread=threading.Thread(target=serve,args=(port,listener),daemon=True)
+            thread.start()
+            threads.append(thread)
+        yield verified
+        for thread in threads:
+            thread.join(7)
+        need(not failures and verified==set(W.PORTS) and
+             all(not thread.is_alive() for thread in threads),
+             "fixture_tcp_server_receipt_unverified")
+    finally:
+        for listener in sockets.values():
+            listener.close()
+
+def submit_fixture(nonce,daemon,network=False):
+    started=int(time.time())-2
+    message=("From: "+W.MAILBOX+"\nTo: "+W.RECIPIENT+"\nMessage-ID: "+W.message_id(nonce)+
+             "\nSubject: Disposable local pipe fixture\n\nNo external delivery.\n").encode("ascii")
+    command("/usr/sbin/sendmail","-i","-f","<>","--",W.RECIPIENT,data=message)
+    return wait_receipt(nonce,daemon,started,network)
 
 def run(C,config,queue,policy,guard,baseline,native,files):
     disposable()
@@ -159,8 +226,11 @@ def run(C,config,queue,policy,guard,baseline,native,files):
          "pipe_requires_exact_restored_baseline")
     uid,gid=install_fixture()
     nonce=uuid.uuid4().hex
+    network_nonce=uuid.uuid4().hex
+    need(network_nonce!=nonce,"duplicate_fixture_nonce")
     original=X.R.PIPE
-    target=(str(WORKER)+" --nonce "+nonce+" --uid "+str(uid)+" --gid "+str(gid)).encode("ascii")
+    target=(str(WORKER)+" --nonce "+nonce+" --network-nonce "+network_nonce+
+            " --uid "+str(uid)+" --gid "+str(gid)).encode("ascii")
     fixture=original.replace(str(PRODUCT).encode("ascii"),target)
     need(fixture!=original and files["master.after"].count(original)==1,"fixture_pipe_not_exact")
     candidate=(files["main.after"],files["master.after"].replace(original,fixture))
@@ -180,20 +250,28 @@ def run(C,config,queue,policy,guard,baseline,native,files):
     command("/usr/sbin/postfix","check")
     guard()
     need(X.snapshot(config,0,policy)==expected,"fixture_native_check_changed_config")
-    started=int(time.time())-2
     command("/usr/bin/systemctl","start","postfix.service")
     need(command("/usr/bin/systemctl","is-active","postfix.service").strip()==b"active",
          "fixture_postfix_not_running")
     disposable()
-    message=("From: "+W.MAILBOX+"\nTo: "+W.RECIPIENT+"\nMessage-ID: "+W.message_id(nonce)+
-             "\nSubject: Disposable local signing fixture\n\nNo external delivery.\n").encode("ascii")
-    command("/usr/sbin/sendmail","-i","-f","<>","--",W.RECIPIENT,data=message)
-    qid=wait_receipt(nonce,daemon,started)
+    qid=submit_fixture(nonce,daemon)
     disposable()
     print("LMR365_PRIMARY_VM_PIPE_DOMAIN=postfix_pipe_t",flush=True)
     print("LMR365_PRIMARY_VM_PIPE_PS256=verified_fixture_certificate",flush=True)
     print("LMR365_PRIMARY_VM_PIPE_QUEUE=correlated_and_empty",flush=True)
     print("LMR365_PRIMARY_VM_PIPE_QUEUE_ID="+qid,flush=True)
+    # Separate message and receipt: the first result proves signing only.
+    # TCP permission is measured against the installed policy's actual port
+    # types, with no policy edit, boolean change, TLS or remote connection.
+    native_ports=port_policy()
+    with loopback_challenges(network_nonce):
+        network_qid=submit_fixture(network_nonce,daemon,network=True)
+    need(network_qid!=qid and port_policy()==native_ports,
+         "fixture_tcp_evidence_changed")
+    disposable()
+    print("LMR365_PRIMARY_VM_PIPE_TCP443=loopback_verified",flush=True)
+    print("LMR365_PRIMARY_VM_PIPE_TCP587=loopback_verified",flush=True)
+    print("LMR365_PRIMARY_VM_PIPE_NETWORK_QUEUE_ID="+network_qid,flush=True)
     # No blind recovery after a failed test; the outer runner discards the VM.
     command("/usr/bin/systemctl","stop","postfix.service")
     guard()

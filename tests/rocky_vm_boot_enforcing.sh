@@ -194,10 +194,11 @@ if test "${LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE:-false}" = "true"; then
         linux/inspect-conditional-postfix-activation.py linux/conditional-postfix-transaction.py \
         linux/stage-conditional-postfix-maps.py tests/rocky_vm_primary_mailbox_enforcing.py \
         linux/m365_xoauth2_transport.py linux/m365_hardware_signer.py \
+        linux/inspect-primary-mailbox-selinux.py \
         tests/rocky_vm_primary_pipe_worker.py tests/rocky_vm_primary_pipe_enforcing.py \
         ci@127.0.0.1:/home/ci/
     ssh "${ssh_opts[@]}" ci@127.0.0.1 \
-        'sudo dnf -y -q install policycoreutils && sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-primary-mailbox && sudo install -o root -g root -m 0644 /home/ci/manage-primary-mailbox-offline.py /home/ci/primary-mailbox-transaction.py /home/ci/primary-mailbox-runtime.py /home/ci/manage-tpm-oauth-key.py /home/ci/preview-primary-mailbox-route.py /home/ci/export-hardware-oauth-cert.py /home/ci/manage-primary-oauth-rotation.py /home/ci/manage-conditional-postfix-offline.py /home/ci/inspect-conditional-postfix-activation.py /home/ci/conditional-postfix-transaction.py /home/ci/stage-conditional-postfix-maps.py /home/ci/rocky_vm_primary_mailbox_enforcing.py /home/ci/m365_xoauth2_transport.py /home/ci/m365_hardware_signer.py /home/ci/rocky_vm_primary_pipe_worker.py /home/ci/rocky_vm_primary_pipe_enforcing.py /usr/local/libexec/lmr365-kvm-primary-mailbox/ && sudo restorecon -R /usr/local/libexec/lmr365-kvm-primary-mailbox && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-primary-mailbox-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-primary-mailbox-vm"'
+        'sudo dnf -y -q install policycoreutils policycoreutils-python-utils && sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-primary-mailbox && sudo install -o root -g root -m 0644 /home/ci/manage-primary-mailbox-offline.py /home/ci/primary-mailbox-transaction.py /home/ci/primary-mailbox-runtime.py /home/ci/manage-tpm-oauth-key.py /home/ci/preview-primary-mailbox-route.py /home/ci/export-hardware-oauth-cert.py /home/ci/manage-primary-oauth-rotation.py /home/ci/manage-conditional-postfix-offline.py /home/ci/inspect-conditional-postfix-activation.py /home/ci/conditional-postfix-transaction.py /home/ci/stage-conditional-postfix-maps.py /home/ci/rocky_vm_primary_mailbox_enforcing.py /home/ci/m365_xoauth2_transport.py /home/ci/m365_hardware_signer.py /home/ci/rocky_vm_primary_pipe_worker.py /home/ci/rocky_vm_primary_pipe_enforcing.py /home/ci/inspect-primary-mailbox-selinux.py /usr/local/libexec/lmr365-kvm-primary-mailbox/ && sudo restorecon -R /usr/local/libexec/lmr365-kvm-primary-mailbox && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-primary-mailbox-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-primary-mailbox-vm"'
     ssh "${ssh_opts[@]}" ci@127.0.0.1 \
         'sudo env GITHUB_ACTIONS=true timeout 900 python3 -I -B /usr/local/libexec/lmr365-kvm-primary-mailbox/rocky_vm_primary_mailbox_enforcing.py' | tee "$work/primary-mailbox"
     # BEGIN PRIMARY_VM_RECEIPT_CHECK
@@ -211,6 +212,8 @@ if test "${LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE:-false}" = "true"; then
         'LMR365_PRIMARY_VM_PIPE_DOMAIN=postfix_pipe_t' \
         'LMR365_PRIMARY_VM_PIPE_PS256=verified_fixture_certificate' \
         'LMR365_PRIMARY_VM_PIPE_QUEUE=correlated_and_empty' \
+        'LMR365_PRIMARY_VM_PIPE_TCP443=loopback_verified' \
+        'LMR365_PRIMARY_VM_PIPE_TCP587=loopback_verified' \
         'LMR365_PRIMARY_VM_PIPE_BASELINE=restored_exact_bytes' \
         'LMR365_PRIMARY_VM_BASELINE=running_restored' \
         'LMR365_PRIMARY_VM_REAL_OAUTH_AUTH=no' \

@@ -9,6 +9,7 @@ import io
 import os
 from pathlib import Path
 import re
+import socket
 import sys
 
 PRODUCT=Path("/usr/local/libexec/m365_xoauth2_transport.py")
@@ -17,6 +18,7 @@ MAILBOX="lmr365-fixture@example.invalid"
 SUCCESS="Local PS256 signing and certificate match verified; no token requested"
 NONCE=re.compile(r"\A[a-f0-9]{32}\Z")
 LIMIT=32768
+PORTS=(443,587)
 
 def need(condition,reason):
     if not condition:
@@ -26,9 +28,32 @@ def message_id(nonce):
     need(type(nonce) is str and NONCE.fullmatch(nonce),"nonce")
     return "<lmr365-pipe-"+nonce+"@lmr365-pipe.invalid>"
 
-def marker(nonce):
+def marker(nonce,network=False):
     message_id(nonce)
-    return "LMR365_PRIMARY_PIPE="+nonce+":postfix_pipe_t:ps256_verified"
+    result="tcp443_587_verified" if network else "ps256_verified"
+    return "LMR365_PRIMARY_PIPE="+nonce+":postfix_pipe_t:"+result
+
+def challenge(nonce,port):
+    message_id(nonce)
+    need(port in PORTS,"fixture_port")
+    return ("LMR365_TCP:"+nonce+":"+str(port)+"\n").encode("ascii")
+
+def recv_exact(sock,size):
+    data=b""
+    while len(data)<size:
+        chunk=sock.recv(size-len(data))
+        need(bool(chunk),"fixture_socket_eof")
+        data+=chunk
+    return data
+
+def network_probe(nonce,port,connect=socket.create_connection):
+    request=challenge(nonce,port)
+    # Fixed loopback only; never use an address from configuration or mail.
+    with connect(("127.0.0.1",port),timeout=5) as conn:
+        conn.settimeout(5)
+        conn.sendall(request)
+        response=b"ACK:"+request
+        need(recv_exact(conn,len(response))==response,"fixture_socket_response")
 
 def validate_message(raw,recipient,nonce):
     need(recipient==RECIPIENT and 0<len(raw)<=LIMIT,"fixture_envelope")
@@ -70,6 +95,7 @@ def run(argv=None):
     ap=argparse.ArgumentParser(allow_abbrev=False)
     ap.add_argument("--recipient",required=True)
     ap.add_argument("--nonce",required=True)
+    ap.add_argument("--network-nonce",required=True)
     ap.add_argument("--uid",required=True,type=int)
     ap.add_argument("--gid",required=True,type=int)
     args=ap.parse_args(argv)
@@ -80,13 +106,27 @@ def run(argv=None):
         stage="domain"
         need(context_type()=="postfix_pipe_t","not_postfix_pipe_domain")
         stage="message"
-        validate_message(sys.stdin.buffer.read(LIMIT+1),args.recipient,args.nonce)
-        stage="sign"
-        real_sign()
+        message_id(args.nonce)
+        message_id(args.network_nonce)
+        need(args.nonce!=args.network_nonce,"duplicate_fixture_nonce")
+        raw=sys.stdin.buffer.read(LIMIT+1)
+        try:
+            validate_message(raw,args.recipient,args.nonce)
+            nonce,network=args.nonce,False
+        except ValueError:
+            validate_message(raw,args.recipient,args.network_nonce)
+            nonce,network=args.network_nonce,True
+        if network:
+            for port in PORTS:
+                stage="network_"+str(port)
+                network_probe(nonce,port)
+        else:
+            stage="sign"
+            real_sign()
         stage="domain_after"
         need(context_type()=="postfix_pipe_t" and
              os.geteuid()==args.uid and os.getegid()==args.gid,"execution_context_changed")
-        print(marker(args.nonce),flush=True)
+        print(marker(nonce,network),flush=True)
         return 0
     except Exception:
         print("LMR365_PRIMARY_PIPE_FAIL="+stage,flush=True)

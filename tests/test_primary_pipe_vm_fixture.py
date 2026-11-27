@@ -2,6 +2,9 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import Mock
+import socket
+import threading
 
 HERE=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location("pipe_vm_fixture",str(HERE/"rocky_vm_primary_pipe_enforcing.py"))
@@ -36,6 +39,60 @@ class PipeFixtureTests(unittest.TestCase):
             (b"x"*(W.LIMIT+1),W.RECIPIENT,self.nonce)):
             with self.subTest(recipient=recipient,nonce=nonce),self.assertRaises(ValueError):
                 W.validate_message(raw,recipient,nonce)
+
+    def test_network_receipt_distinct_from_signing_receipt(self):
+        nonce="b"*32
+        cleanup=self.row("cleanup",self.qid+": message-id="+W.message_id(nonce))
+        pipe=self.pipe()
+        pipe["MESSAGE"]=pipe["MESSAGE"].replace(W.marker(self.nonce),W.marker(nonce,True))
+        self.assertEqual(P.journal_receipt([cleanup,pipe],self.daemon,nonce,True),self.qid)
+        self.assertIsNone(P.journal_receipt([cleanup,pipe],self.daemon,nonce))
+        self.assertIsNone(P.journal_receipt([cleanup,pipe],self.daemon,self.nonce,True))
+
+    def test_network_client_uses_only_fixed_loopback_ports_and_exact_reply(self):
+        for port in W.PORTS:
+            conn=Mock()
+            conn.__enter__=Mock(return_value=conn)
+            conn.__exit__=Mock(return_value=False)
+            response=b"ACK:"+W.challenge(self.nonce,port)
+            conn.recv.side_effect=[response[:3],response[3:]]
+            connect=Mock(return_value=conn)
+            W.network_probe(self.nonce,port,connect)
+            connect.assert_called_once_with(("127.0.0.1",port),timeout=5)
+            conn.sendall.assert_called_once_with(W.challenge(self.nonce,port))
+            conn.recv.side_effect=[b"x"*len(response)]
+            with self.assertRaises(ValueError):
+                W.network_probe(self.nonce,port,connect)
+        connect=Mock()
+        with self.assertRaises(ValueError):
+            W.network_probe(self.nonce,25,connect)
+        connect.assert_not_called()
+
+    def test_loopback_server_checks_nonce_without_privileged_bind(self):
+        # Exercise actual socket IO on a test-assigned unprivileged port.
+        # The VM-only client still uses exact privileged ports 443/587.
+        with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1",0))
+            listener.listen(1)
+            listener.settimeout(3)
+            address=listener.getsockname()
+            outcome=[]
+            def serve():
+                try:
+                    P.serve_challenge(listener,self.nonce,443)
+                    outcome.append(True)
+                except Exception:
+                    outcome.append(False)
+            thread=threading.Thread(target=serve)
+            thread.start()
+            try:
+                def local_connect(target,timeout):
+                    self.assertEqual(target,("127.0.0.1",443))
+                    return socket.create_connection(address,timeout=timeout)
+                W.network_probe(self.nonce,443,local_connect)
+            finally:
+                thread.join(8)
+            self.assertEqual(outcome,[True])
 
     def test_trusted_pipe_marker_and_exact_queue_id_required(self):
         cleanup,pipe=self.cleanup(),self.pipe()

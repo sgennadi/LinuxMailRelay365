@@ -10,6 +10,7 @@ on:
       - feature/private-smtp-auth-tls
       - feature/post-rc19-primary-mailbox-candidate
       - feature/primary-xoauth2-pipe-enforcing
+      - feature/primary-xoauth2-pipe-network-enforcing
     paths:
       - .github/workflows/rocky-enforcing-vm.yml
       - tests/rocky_vm_*.sh
@@ -17,6 +18,7 @@ on:
       - linux/primary-mailbox-*.py
       - linux/m365_xoauth2_transport.py
       - linux/m365_hardware_signer.py
+      - linux/inspect-primary-mailbox-selinux.py
       - linux/manage-primary-mailbox-offline.py
       - linux/preview-primary-mailbox-route.py
       - linux/conditional-postfix-transaction.py
@@ -81,6 +83,6 @@ jobs:
         shell: bash
         env:
           LMR365_KVM_QUEUE_ACCEPTANCE: ${{ inputs.queue-acceptance || false }}
-          LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE: ${{ github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' || github.ref_name == 'feature/primary-xoauth2-pipe-enforcing' }}
+          LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE: ${{ github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' || github.ref_name == 'feature/primary-xoauth2-pipe-enforcing' || github.ref_name == 'feature/primary-xoauth2-pipe-network-enforcing' }}
           LMR365_KVM_CLIENT_TLS_ACCEPTANCE: ${{ inputs.client-tls-acceptance || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' }}
         run: bash tests/rocky_vm_boot_enforcing.sh
