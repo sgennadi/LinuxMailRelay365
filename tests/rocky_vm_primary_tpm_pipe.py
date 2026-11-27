@@ -5,6 +5,7 @@ Requires the earlier successful virtual TPM test, never attaches hardware.
 No external SMTP or token exchange, no policy or SELinux label change to the
 TPM device. On failure the runner discards the whole guest.
 """
+from contextlib import contextmanager
 import importlib.util
 import json
 import os
@@ -48,6 +49,94 @@ def snapshot(config):
 def policy_matches():
     for name in NAMES:
         command("/usr/sbin/matchpathcon","-V",P.CONFIG+"/"+name)
+
+# Only for this disposable, swtpm-backed VM. A bind of the one resource
+# manager plus its cgroup permission is narrower than PrivateDevices=no,
+# but affects the whole Postfix service, not just the pipe. No production
+# policy or product code may infer authorization from this experiment.
+UNIT_PROPERTIES=("PrivateDevices","DevicePolicy","DeviceAllow","BindPaths",
+    "BindReadOnlyPaths","ProtectSystem","NoNewPrivileges","SystemCallFilter",
+    "RootDirectory","RootImage","InaccessiblePaths","PrivateMounts","DropInPaths")
+RUNTIME_DIR=Path("/run/systemd/system/postfix.service.d")
+DROPIN=RUNTIME_DIR/"99-lmr365-disposable-tpm.conf"
+DROPIN_BYTES=b"[Service]\nBindPaths=/dev/tpmrm0:/dev/tpmrm0\nDeviceAllow=/dev/tpmrm0 rw\n"
+
+def unit_snapshot():
+    F.disposable()
+    raw=command("/usr/bin/systemctl","show","--all","postfix.service",
+                *("-p"+name for name in UNIT_PROPERTIES)).decode("utf-8","strict")
+    rows={}
+    for line in raw.splitlines():
+        key,sep,value=line.partition("=")
+        need(sep and key in UNIT_PROPERTIES and key not in rows and len(value)<=8192,
+             "unit_property_unverified")
+        rows[key]=value
+    need(set(rows)==set(UNIT_PROPERTIES),"unit_property_missing")
+    return rows
+
+def validate_unit_scope(before,after):
+    for key in UNIT_PROPERTIES:
+        if key not in ("BindPaths","DeviceAllow","DropInPaths"):
+            need(after[key]==before[key],"unexpected_unit_hardening_change")
+    need(after["PrivateDevices"]=="yes" and after["DevicePolicy"]=="closed",
+         "private_device_policy_changed")
+    # Native systemd renders the one bind with an optional destination and
+    # rbind/norbind option. No extra devices or unrelated binds are accepted.
+    need(after["BindPaths"] in ("/dev/tpmrm0","/dev/tpmrm0:/dev/tpmrm0",
+        "/dev/tpmrm0:/dev/tpmrm0:rbind","/dev/tpmrm0:/dev/tpmrm0:norbind"),
+        "device_bind_scope_unverified")
+    need(after["DeviceAllow"].split()==["/dev/tpmrm0","rw"],"device_allow_scope_unverified")
+    need(set(after["DropInPaths"].split())==set(before["DropInPaths"].split())|{str(DROPIN)},
+         "unexpected_dropin_change")
+
+@contextmanager
+def scoped_fixture_device(queue):
+    stopped(queue)
+    before=unit_snapshot()
+    need(before["PrivateDevices"]=="yes" and before["DevicePolicy"]=="closed" and
+         not any(before[key] for key in ("BindPaths","BindReadOnlyPaths","DeviceAllow",
+             "RootDirectory","RootImage","InaccessiblePaths")),"unexpected_unit_baseline")
+    for parent in (Path("/run"),Path("/run/systemd"),Path("/run/systemd/system")):
+        st=parent.lstat()
+        need(stat.S_ISDIR(st.st_mode) and st.st_uid==0 and not st.st_mode&0o022,
+             "unsafe_runtime_parent")
+    created_dir=False
+    if not os.path.lexists(RUNTIME_DIR):
+        RUNTIME_DIR.mkdir(mode=0o755)
+        created_dir=True
+    st=RUNTIME_DIR.lstat()
+    need(stat.S_ISDIR(st.st_mode) and st.st_uid==0 and not st.st_mode&0o022,
+         "unsafe_runtime_dropin_directory")
+    fd=os.open(DROPIN,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o644)
+    owned=os.fstat(fd)
+    try:
+        with os.fdopen(fd,"wb") as out:
+            out.write(DROPIN_BYTES)
+            out.flush()
+            os.fsync(out.fileno())
+        command("/usr/bin/systemctl","daemon-reload")
+        validate_unit_scope(before,unit_snapshot())
+        print("LMR365_TPM_PIPE_UNIT_SCOPE=one_device_private_devices_preserved",flush=True)
+        yield
+    finally:
+        # Stop the fixture even if its test mail is deferred. Never restart
+        # or clear a failed queue automatically. The guest will be discarded.
+        F.disposable()
+        try:
+            command("/usr/bin/systemctl","stop","postfix.service")
+            P.stopped_units()
+            P.no_postfix_processes()
+        finally:
+            current=DROPIN.lstat()
+            need(stat.S_ISREG(current.st_mode) and current.st_uid==0 and current.st_nlink==1 and
+                 (current.st_dev,current.st_ino)==(owned.st_dev,owned.st_ino),
+                 "fixture_dropin_identity_changed")
+            DROPIN.unlink()
+            if created_dir:
+                RUNTIME_DIR.rmdir()
+            command("/usr/bin/systemctl","daemon-reload")
+            need(unit_snapshot()==before,"unit_hardening_baseline_not_restored")
+            print("LMR365_TPM_PIPE_UNIT_BASELINE=restored",flush=True)
 
 def service_device_diagnostics():
     """Read-only evidence from the actual master process, not a namespace entry."""
@@ -253,20 +342,21 @@ def main():
             command("/usr/sbin/postfix","check")
             stopped(queue)
             need(snapshot(config)==edited,"fixture_config_changed")
-            command("/usr/bin/systemctl","start","postfix.service")
-            need(command("/usr/bin/systemctl","is-active","postfix.service").strip()==b"active",
-                 "fixture_postfix_start")
-            try:
-                qid=F.submit_fixture(nonce,daemon,tpm=True)
-            except Exception:
-                failure_diagnostics()
-                raise
+            with scoped_fixture_device(queue):
+                command("/usr/bin/systemctl","start","postfix.service")
+                need(command("/usr/bin/systemctl","is-active","postfix.service").strip()==b"active",
+                     "fixture_postfix_start")
+                service_device_diagnostics()
+                try:
+                    qid=F.submit_fixture(nonce,daemon,tpm=True)
+                except Exception:
+                    failure_diagnostics()
+                    raise
             F.disposable()
             print("LMR365_TPM_PIPE_DOMAIN=postfix_pipe_t",flush=True)
             print("LMR365_TPM_PIPE_PS256=verified_native_provider",flush=True)
             print("LMR365_TPM_PIPE_QUEUE=correlated_and_empty",flush=True)
             print("LMR365_TPM_PIPE_QUEUE_ID="+qid,flush=True)
-            command("/usr/bin/systemctl","stop","postfix.service")
             stopped(queue)
             need(snapshot(config)==edited,"fixture_changed_before_restore")
             for i,name in enumerate(NAMES):

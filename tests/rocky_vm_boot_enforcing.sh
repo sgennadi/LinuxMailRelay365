@@ -372,6 +372,8 @@ ROCKY10_DATA_CONTEXT
             'LMR365_TPM_PIPE_QUEUE=correlated_and_empty' \
             'LMR365_TPM_PIPE_BASELINE=restored' \
             'LMR365_TPM_PIPE_DEVICE=original_metadata_restored' \
+            'LMR365_TPM_PIPE_UNIT_SCOPE=one_device_private_devices_preserved' \
+            'LMR365_TPM_PIPE_UNIT_BASELINE=restored' \
             'LMR365_TPM_PIPE_CLOUD_TESTED=no'; do
             grep -Fxq "$expected" "$work/tpm-pipe"
         done
