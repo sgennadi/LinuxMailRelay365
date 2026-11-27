@@ -12,14 +12,14 @@ internal sealed class SmtpCertificateWizardDialog : Form
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, string acceptedDomain)
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, string acceptedDomain, Func<Task<string>> inspectRenewal)
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(580, 420);
         MinimumSize = new Size(420, 300);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 11, Padding = new Padding(16), AutoScroll = true };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 12, Padding = new Padding(16), AutoScroll = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 4; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -131,8 +131,20 @@ internal sealed class SmtpCertificateWizardDialog : Form
             dialog.ShowDialog(this);
         };
         layout.Controls.Add(acme, 0, 9);
+        var renewal = new Button { Text = "Inspect certificate renewal", AutoSize = true };
+        renewal.Click += (_, _) =>
+        {
+            if (Identity != SmtpConnectorIdentity.Certificate)
+            {
+                MessageBox.Show(this, "Select TLS certificate authentication first.");
+                return;
+            }
+            using var dialog = new SmtpRenewalInventoryDialog(inspectRenewal);
+            dialog.ShowDialog(this);
+        };
+        layout.Controls.Add(renewal, 0, 10);
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
-        layout.Controls.Add(close, 0, 10);
+        layout.Controls.Add(close, 0, 11);
         Controls.Add(layout);
         CancelButton = close;
         identity.SelectedIndexChanged += (_, _) => RefreshPlan();

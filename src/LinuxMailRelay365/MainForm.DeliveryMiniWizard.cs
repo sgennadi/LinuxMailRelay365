@@ -157,7 +157,15 @@ internal sealed partial class MainForm
                     if (result.ExitCode != 0) throw new InvalidOperationException("ACME inspection refused.");
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     return result.StdOut;
-                }, acceptedDomain.Text.Trim());
+                }, acceptedDomain.Text.Trim(), async () =>
+                {
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+                        EmbeddedAssets.SmtpRenewalInventory, TimeSpan.FromSeconds(60));
+                    if (result.ExitCode != 0) throw new InvalidOperationException("Renewal inspection refused.");
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    return result.StdOut;
+                });
                 dialog.ShowDialog(this);
             };
             AddLine(page, smtp);
