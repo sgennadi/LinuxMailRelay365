@@ -126,23 +126,7 @@ def service_privilege_drop(uid,gid,groups):
 # TPM command. Open the resource manager in the same access mode as a TCTI,
 # then immediately close it without reading, writing or issuing an ioctl.
 # This is a service-credential access observation, NOT a postfix_pipe_t test.
-TPM_OPEN_PROBE = r"""
-import json,os,stat,sys
-uid,gid=int(sys.argv[1]),int(sys.argv[2])
-expected=json.loads(sys.argv[3])
-if (os.getresuid()!=(uid,uid,uid) or os.getresgid()!=(gid,gid,gid)
-        or os.getgroups()):
-    raise SystemExit(1)
-fd=os.open("/dev/tpmrm0",os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
-try:
-    st=os.fstat(fd)
-    actual=[st.st_dev,st.st_ino,st.st_rdev,st.st_uid,st.st_gid,st.st_mode]
-    if not stat.S_ISCHR(st.st_mode) or actual!=expected:
-        raise SystemExit(1)
-finally:
-    os.close(fd)
-print("TPM_RESOURCE_MANAGER_OPEN_CLOSE_OK")
-"""
+TPM_OPEN_PROBE = T.TPM_OPEN_PROBE
 
 
 def check_service_tpm_access(uid,gid,groups,expected,runner=subprocess.run):

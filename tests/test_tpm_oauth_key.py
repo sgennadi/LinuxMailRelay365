@@ -70,6 +70,84 @@ class TpmOAuthKeyTests(unittest.TestCase):
             with self.subTest(handle=bad), self.assertRaises(TPM.Refused):
                 self.plan(bad)
 
+    def test_primary_preflight_is_bound_and_sidecar_plan_unchanged(self):
+        original=self.plan()["sha"]
+        access={"uid":999,"gid":999,"groups":[999],"device":[1,2,3,0,999,0o20660]}
+        with mock.patch.object(TPM,"primary_service_device_evidence",return_value=access) as probe:
+            primary=TPM.prepare("primary",self.handle)
+            self.assertEqual(primary["evidence"]["primary_service_access"],access)
+            self.assertEqual(probe.call_count,2)
+            probe.return_value=dict(access,device=[1,2,4,0,999,0o20660])
+            self.assertNotEqual(TPM.prepare("primary",self.handle)["sha"],primary["sha"])
+            with self.assertRaisesRegex(TPM.Refused,"service_access_changed"):
+                TPM.verify_primary_creation_access(primary)
+            probe.side_effect=TPM.Refused("primary_tpm_service_device_access_requires_review")
+            with self.assertRaisesRegex(TPM.Refused,"device_access_requires_review"):
+                TPM.prepare("primary",self.handle)
+            probe.reset_mock()
+            self.assertEqual(self.plan()["sha"],original)
+            probe.assert_not_called()
+            TPM.verify_primary_creation_access(self.plan())
+            probe.assert_not_called()
+
+    def test_primary_access_denied_before_any_tpm_creation(self):
+        access={"uid":999,"gid":999,"groups":[999]}
+        with mock.patch.object(TPM,"primary_service_device_evidence",return_value=access) as probe:
+            primary=TPM.prepare("primary",self.handle)
+            with mock.patch.object(TPM,"lock",return_value=77), \
+                 mock.patch.object(TPM.os,"close"), \
+                 mock.patch.object(TPM,"run_command") as command, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                # Two fresh plans (four access observations) pass. The
+                # final access check before CreatePrimary refuses.
+                probe.side_effect=[access]*4+[TPM.Refused("primary_tpm_service_device_access_requires_review")]
+                with self.assertRaisesRegex(TPM.Refused,"device_access_requires_review"):
+                    TPM.apply("primary",self.handle,primary["sha"],TPM.CONFIRM)
+                command.assert_not_called()
+
+    def test_primary_device_probe_uses_exact_credentials_and_rejects_drift(self):
+        account=SimpleNamespace(pw_name="m365mailer",pw_uid=999,pw_gid=999)
+        device=SimpleNamespace(st_dev=1,st_ino=2,st_rdev=3,st_uid=0,st_gid=999,
+                               st_mode=stat.S_IFCHR|0o660,st_ctime_ns=10)
+        runner=mock.Mock(return_value=SimpleNamespace(
+            returncode=0,stdout=b"TPM_RESOURCE_MANAGER_OPEN_CLOSE_OK\n",stderr=b""))
+        with mock.patch.object(TPM.pwd,"getpwnam",return_value=account), \
+             mock.patch.object(TPM.os,"getgrouplist",return_value=[999]) as groups, \
+             mock.patch.object(TPM,"DEVICE",mock.Mock(lstat=mock.Mock(return_value=device))) as node, \
+             mock.patch.object(TPM,"primary_python_fingerprint",return_value=["trusted"]):
+            evidence=TPM.primary_service_device_evidence(999,runner)
+            self.assertEqual(evidence["device"],TPM.primary_device_fingerprint(device))
+            argv=runner.call_args[0][0]
+            self.assertEqual(argv[:5],["/usr/bin/python3","-I","-B","-c",TPM.TPM_OPEN_PROBE])
+            self.assertEqual(argv[5:7],["999","999"])
+            compile(TPM.TPM_OPEN_PROBE,"fixed-device-probe","exec")
+            drop=runner.call_args[1]["preexec_fn"]
+            with mock.patch.object(TPM.os,"setgroups") as sg, \
+                 mock.patch.object(TPM.os,"setgid") as gid, \
+                 mock.patch.object(TPM.os,"setuid") as uid, \
+                 mock.patch.object(TPM.os,"getresuid",return_value=(999,999,999)), \
+                 mock.patch.object(TPM.os,"getresgid",return_value=(999,999,999)), \
+                 mock.patch.object(TPM.os,"getgroups",return_value=[]):
+                drop()
+                sg.assert_called_once_with([])
+                gid.assert_called_once_with(999)
+                uid.assert_called_once_with(999)
+            groups.return_value=[999,1000]
+            runner.reset_mock()
+            with self.assertRaisesRegex(TPM.Refused,"service_account_or_groups"):
+                TPM.primary_service_device_evidence(999,runner)
+            runner.assert_not_called()
+            groups.return_value=[999]
+            runner.return_value=SimpleNamespace(returncode=1,stdout=b"",stderr=b"denied")
+            with self.assertRaisesRegex(TPM.Refused,"device_access_requires_review"):
+                TPM.primary_service_device_evidence(999,runner)
+            runner.return_value=SimpleNamespace(
+                returncode=0,stdout=b"TPM_RESOURCE_MANAGER_OPEN_CLOSE_OK\n",stderr=b"")
+            changed=SimpleNamespace(**dict(vars(device),st_ctime_ns=11))
+            node.lstat.side_effect=[device,changed]
+            with self.assertRaisesRegex(TPM.Refused,"service_access_changed"):
+                TPM.primary_service_device_evidence(999,runner)
+
     def test_plan_changes_when_tpm_inventory_changes(self):
         first = self.plan()
         self.handles.return_value = {"0x81000001"}

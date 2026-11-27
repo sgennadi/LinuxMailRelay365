@@ -207,6 +207,95 @@ def check_hardware():
     return major
 
 
+TPM_OPEN_PROBE = r"""
+import json,os,stat,sys
+uid,gid=int(sys.argv[1]),int(sys.argv[2])
+expected=json.loads(sys.argv[3])
+if (os.getresuid()!=(uid,uid,uid) or os.getresgid()!=(gid,gid,gid)
+        or os.getgroups()):
+    raise SystemExit(1)
+fd=os.open("/dev/tpmrm0",os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
+try:
+    st=os.fstat(fd)
+    actual=[st.st_dev,st.st_ino,st.st_rdev,st.st_uid,st.st_gid,st.st_mode]
+    if not stat.S_ISCHR(st.st_mode) or actual!=expected:
+        raise SystemExit(1)
+finally:
+    os.close(fd)
+print("TPM_RESOURCE_MANAGER_OPEN_CLOSE_OK")
+"""
+
+
+def primary_device_fingerprint(meta):
+    return [meta.st_dev,meta.st_ino,meta.st_rdev,meta.st_uid,meta.st_gid,meta.st_mode]
+
+
+def primary_python_fingerprint():
+    # Fixed OS interpreter, not PATH or user-supplied code.
+    python=Path("/usr/bin/python3").resolve(strict=True)
+    if python.parent!=Path("/usr/bin"):
+        raise Refused("untrusted_primary_tpm_python")
+    check_dir(python.parent)
+    meta=python.lstat()
+    if (not stat.S_ISREG(meta.st_mode) or meta.st_uid!=0 or meta.st_mode&0o022 or
+            not meta.st_mode&0o111):
+        raise Refused("untrusted_primary_tpm_python")
+    return [str(python),meta.st_dev,meta.st_ino,meta.st_size,meta.st_mode,
+            meta.st_mtime_ns,meta.st_ctime_ns]
+
+
+def primary_service_device_evidence(gid,runner=subprocess.run):
+    """Prove the primary pipe's restricted service UID/GID can open TPM.
+
+    This performs no TPM command, not even ReadPublic. No group, permission,
+    ACL or SELinux change. The child's actual SELinux domain is not the pipe.
+    """
+    require_root()
+    try:
+        account=pwd.getpwnam("m365mailer")
+        uid=account.pw_uid
+        groups=sorted(set(os.getgrouplist("m365mailer",account.pw_gid)))
+        if (account.pw_name!="m365mailer" or uid<=0 or gid<=0 or
+                account.pw_gid!=gid or groups!=[gid] or
+                grp.getgrnam("m365mailer").gr_gid!=gid):
+            raise Refused("unsupported_primary_tpm_service_account_or_groups")
+        before=DEVICE.lstat()
+        if (not stat.S_ISCHR(before.st_mode) or before.st_uid!=0 or
+                before.st_mode&0o002):
+            raise Refused("untrusted_primary_tpm_resource_manager")
+        expected=primary_device_fingerprint(before)
+        python=primary_python_fingerprint()
+        def drop():
+            os.setgroups([])
+            os.setgid(gid)
+            os.setuid(uid)
+            if (os.getresuid()!=(uid,uid,uid) or os.getresgid()!=(gid,gid,gid)
+                    or os.getgroups()):
+                raise RuntimeError("incomplete_privilege_drop")
+        result=runner(["/usr/bin/python3","-I","-B","-c",TPM_OPEN_PROBE,
+                       str(uid),str(gid),json.dumps(expected,separators=(",",":"))],
+                      input=b"",stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                      timeout=10,check=False,
+                      env={"LC_ALL":"C","PATH":"/usr/bin:/bin","HOME":"/nonexistent"},
+                      cwd="/",preexec_fn=drop)
+        if (result.returncode!=0 or result.stdout!=b"TPM_RESOURCE_MANAGER_OPEN_CLOSE_OK\n"
+                or result.stderr):
+            raise Refused("primary_tpm_service_device_access_requires_review")
+        after=DEVICE.lstat()
+        current=pwd.getpwnam("m365mailer")
+        if (primary_device_fingerprint(after)!=expected or
+                before.st_ctime_ns!=after.st_ctime_ns or
+                primary_python_fingerprint()!=python or
+                (current.pw_name,current.pw_uid,current.pw_gid)!=("m365mailer",uid,gid) or
+                grp.getgrnam("m365mailer").gr_gid!=gid or
+                sorted(set(os.getgrouplist("m365mailer",gid)))!=groups):
+            raise Refused("primary_tpm_service_access_changed")
+        return {"uid":uid,"gid":gid,"groups":groups,"device":expected,
+                "device_ctime_ns":before.st_ctime_ns,"python":python}
+    except (KeyError,OSError,subprocess.SubprocessError):
+        raise Refused("primary_tpm_service_device_access_requires_review") from None
+
+
 def check_empty_destination(path):
     if path.exists() or path.is_symlink():
         raise Refused("hardware_certificate_or_provider_config_already_exists")
@@ -226,6 +315,9 @@ def prepare(target, handle):
         pwd.getpwnam("m365mailer")
     except KeyError:
         raise Refused("m365mailer_service_account_missing")
+    # Only the primary Postfix route currently requires a single group.
+    # Preserve the existing sidecar plan/privilege contract.
+    access = primary_service_device_evidence(gid) if target == "primary" else None
     existing = directory / "app.json"
     # Never read private key material, and never follow a substituted
     # app.json symlink between lstat() and opening the reviewed identity.
@@ -255,6 +347,10 @@ def prepare(target, handle):
                 "persistent_handles": sorted(handles),
                 "openssl_version": version, "group": gid,
                 "provider_config_sha256": sha(PROVIDER_TEMPLATE.encode("ascii"))}
+    if access is not None:
+        if primary_service_device_evidence(gid) != access:
+            raise Refused("primary_tpm_service_access_changed")
+        evidence["primary_service_access"] = access
     digest = sha(json.dumps(evidence, sort_keys=True,
                             separators=(",", ":")).encode("utf-8"))
     return {"sha": digest, "target": target, "handle": handle,
@@ -389,6 +485,11 @@ def verify_service_signature(plan, cert, scratch):
         raise Refused("tpm_certificate_public_key_mismatch")
 
 
+def verify_primary_creation_access(plan):
+    if plan["target"]=="primary" and primary_service_device_evidence(plan["gid"])!=plan["evidence"].get("primary_service_access"):
+        raise Refused("primary_tpm_service_access_changed")
+
+
 def apply(target, handle, approved_sha, confirmation):
     """Changes real TPM state. Never evicts an existing persistent object."""
     require_root()
@@ -418,6 +519,7 @@ def apply(target, handle, approved_sha, confirmation):
             pub1 = scratch / "new-public.pem"
             pub2 = scratch / "persistent-public.pem"
             env = command_env()
+            verify_primary_creation_access(plan)
             run_command([str(COMMANDS["createprimary"]), "-C", "o",
                          "-G", "rsa2048:null:null", "-g", "sha256",
                          "-a", KEY_ATTRS, "-u", str(unique),
@@ -431,6 +533,7 @@ def apply(target, handle, approved_sha, confirmation):
                         operation="new_tpm_key_public_unavailable")
             if handle in read_capabilities():
                 raise Refused("tpm_handle_occupied_before_persistence")
+            verify_primary_creation_access(plan)
             # IMPORTANT: with -c a transient context we only persist; never
             # pass a persistent -c handle (which would EVICT an existing key).
             run_command([str(COMMANDS["evictcontrol"]), "-C", "o",
