@@ -45,12 +45,13 @@ class MultiAcceptanceTests(unittest.TestCase):
         self.state = {
             "sha": "a" * 64, "marker": (None, b"root-owned-active-marker"),
             "review": {"version": 1, "config": {"sha": "a" * 64},
-                       "proof": {"inode": 9001, "expires_at": 1000}},
+                       "proof": {"inode": 9001, "expires_at": 1000},
+                       "acceptance_proof": {"mode": "manual"}},
             "record": {"runtime_map_sha256": M.digest(MAP), "source": {
                 "m365-multi-mailbox-transport.py": "b" * 64}}
         }
         self.restorer = SimpleNamespace(
-            install=installer, preview=mock.Mock(side_effect=lambda: self.state),
+            install=installer, acceptance_preview=mock.Mock(side_effect=lambda: self.state),
             locked=mock.Mock(side_effect=lambda: os.open(os.devnull, os.O_RDONLY)))
         def refresh_proof(_):
             # Simulate replacing a short-lived root receipt between the two
@@ -171,7 +172,7 @@ class MultiAcceptanceTests(unittest.TestCase):
         self.assertEqual([x[2]["sender"] for x in recorded], [sender, sender])
         self.assertEqual(self.refresh.inspect.call_count, 2)
         self.assertEqual(self.refresh.publish.call_count, 2)
-        self.assertGreaterEqual(self.restorer.preview.call_count, 4)
+        self.assertGreaterEqual(self.restorer.acceptance_preview.call_count, 4)
         ledger = next((Path(self.temp.name) / "ledger").glob("*.jsonl"))
         rows = [json.loads(x) for x in ledger.read_text().splitlines()]
         self.assertEqual([(x["stage"], x["status"]) for x in rows],
@@ -294,6 +295,36 @@ class MultiAcceptanceTests(unittest.TestCase):
         self.assertNotIn("postqueue -f", source)
         self.assertIn("RECIPIENT_INBOX_VERIFIED=no", source)
         self.assertIn("SEND_MULTI_MAILBOX_TWO_TESTS", source)
+
+    def test_managed_timer_never_publishes_its_receipt(self):
+        self.state["review"]["acceptance_proof"] = {
+            "mode": "managed_timer", "plan": "a"*64, "map": M.digest(MAP),
+            "service": "b"*64, "timer": "d"*64}
+        self.plan = M.prepare(self.request)
+        runner = mock.Mock(return_value=SimpleNamespace(returncode=0))
+        self._apply(runner)
+        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(self.refresh.inspect.call_count, 2)
+        self.refresh.publish.assert_not_called()
+
+    def test_proof_mode_change_refuses_before_send(self):
+        self.state["review"]["acceptance_proof"] = {"mode": "managed_timer"}
+        runner = mock.Mock()
+        with self.assertRaises(M.Refused):
+            self._apply(runner)
+        runner.assert_not_called()
+        self.refresh.publish.assert_not_called()
+
+    def test_after_publish_policy_drift_refuses_first_message(self):
+        def changed(_):
+            self.state["review"]["selinux_policy_sha256"] = "d"*64
+        self.refresh.publish.side_effect = changed
+        runner = mock.Mock()
+        with self.assertRaisesRegex(M.Refused, "proof_not_verified_before_internal"):
+            self._apply(runner)
+        runner.assert_not_called()
+        ledger = next((Path(self.temp.name) / "ledger").glob("*.jsonl"))
+        self.assertEqual(len(ledger.read_text().splitlines()), 1)
 
 
 if __name__ == "__main__":
