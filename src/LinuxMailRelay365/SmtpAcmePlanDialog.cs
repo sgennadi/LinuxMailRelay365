@@ -6,7 +6,7 @@ namespace LinuxMailRelay365;
 
 internal sealed class SmtpAcmePlanDialog : Form
 {
-    internal SmtpAcmePlanDialog(Func<string, Task<string>> inspect, Func<string, string, Task<string>> discoverProvider, string acceptedDomain, string certificateName)
+    internal SmtpAcmePlanDialog(Func<string, Task<string>> inspect, Func<string, string, Task<string>> discoverProvider, Func<string, Task<string>> reviewIssuance, string acceptedDomain, string certificateName)
     {
         Text = "ACME | DNS-01 readiness (read-only)";
         StartPosition = FormStartPosition.CenterParent;
@@ -208,7 +208,22 @@ internal sealed class SmtpAcmePlanDialog : Form
         layout.Controls.Add(provider, 0, 5);
         layout.Controls.Add(new Label { Text = "No DNS secrets are requested. Manual mode is not automatic renewal.", AutoSize = true }, 0, 6);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
-        actions.Controls.AddRange([discover, choose, run]);
+        var review = new Button { Text = "Review certificate issuance", AutoSize = true };
+        review.Click += (_, _) =>
+        {
+            if (busy) return;
+            string selected = provider.SelectedItem?.ToString() ?? "";
+            if (selected == "manual" || Uri.CheckHostName(accepted.Text.Trim()) != UriHostNameType.Dns ||
+                Uri.CheckHostName(name.Text.Trim()) != UriHostNameType.Dns)
+            {
+                result.Text = "Select an automatic DNS plugin and enter valid DNS names first. Manual planning remains available.";
+                return;
+            }
+            using var dialog = new SmtpAcmeIssuanceReviewDialog(reviewIssuance, accepted.Text.Trim().ToLowerInvariant(),
+                name.Text.Trim().ToLowerInvariant(), selected);
+            dialog.ShowDialog(this);
+        };
+        actions.Controls.AddRange([discover, choose, run, review]);
         layout.Controls.Add(actions, 0, 7);
         layout.Controls.Add(result, 0, 8);
         layout.Controls.Add(close, 0, 9);

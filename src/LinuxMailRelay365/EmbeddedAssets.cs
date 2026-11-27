@@ -79,6 +79,23 @@ internal static class EmbeddedAssets
             .Append(acceptedDomain).Append(" --name=").Append(name).Append('\n').ToString();
     }
 
+    internal static string BuildSmtpAcmeIssuanceReview(string request)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(request);
+        if (bytes.Length > 8192) throw new ArgumentException("ACME review request too large.");
+        var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-acme-review.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
+        foreach (string file in new[] { "review-smtp-acme-issuance.py", "plan-smtp-certificate-acme.py",
+                     "check-smtp-acme-credentials.py", "probe-smtp-acme-plugins.py" })
+        {
+            string resource = file == "plan-smtp-certificate-acme.py" ? "smtp-acme-plan.py" : file;
+            script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_ISSUANCE_ASSET'\n")
+                .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux." + resource))))
+                .Append("\nLMR365_ISSUANCE_ASSET\n");
+        }
+        return script.Append("base64 -d <<'LMR365_ISSUANCE_REQUEST' | /usr/bin/python3 -I -B \"$work/review-smtp-acme-issuance.py\"\n")
+            .Append(Convert.ToBase64String(bytes)).Append("\nLMR365_ISSUANCE_REQUEST\n").ToString();
+    }
+
     internal static string BuildSmtpAcmeDryRun(string? expectedSha)
     {
         if (expectedSha is not null && !Regex.IsMatch(expectedSha, @"\A[a-f0-9]{64}\z"))

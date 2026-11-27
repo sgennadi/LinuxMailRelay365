@@ -43,6 +43,7 @@
     <EmbeddedResource Include="../../linux/recommend-smtp-acme-provider.py" LogicalName="LinuxMailRelay365.linux.recommend-smtp-acme-provider.py" />
     <EmbeddedResource Include="../../linux/inspect-smtp-certificate-renewal.py" LogicalName="LinuxMailRelay365.linux.smtp-renewal-inventory.py" />
     <EmbeddedResource Include="../../linux/review-smtp-acme-dry-run.py" LogicalName="LinuxMailRelay365.linux.review-smtp-acme-dry-run.py" />
+    <EmbeddedResource Include="../../linux/review-smtp-acme-issuance.py" LogicalName="LinuxMailRelay365.linux.review-smtp-acme-issuance.py" />
     <EmbeddedResource Include="../../linux/review-smtp-tls-rotation.py" LogicalName="LinuxMailRelay365.linux.review-smtp-tls-rotation.py" />
     <EmbeddedResource Include="../../linux/review-smtp-tls-selinux.py" LogicalName="LinuxMailRelay365.linux.review-smtp-tls-selinux.py" />
     <EmbeddedResource Include="../../linux/review-postfix-m365-delivery.py" LogicalName="LinuxMailRelay365.linux.review-postfix-m365-delivery.py" />
