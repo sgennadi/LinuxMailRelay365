@@ -202,10 +202,10 @@ class LocalDeliveryProbeTests(unittest.TestCase):
 
     def test_simple_local_route_and_refuse_redirection(self):
         self.assertEqual(M.local_policy(lambda k:self.policy.get(k,""),"",self.req)["mailbox_kind"],"system_spool")
-        for key,value in (("alias_maps","hash:/etc/aliases"),("forward_path","$home/.forward"),
+        for key,value in (("alias_maps","ldap:/etc/postfix/aliases"),("forward_path","/var/forward/$user"),
                           ("transport_maps","hash:/etc/postfix/transport"),("mailbox_command","procmail"),
                           ("local_transport","lmtp:unix:private/dovecot"),("always_bcc","other@example.net"),
-                          ("mydestination","localhost"),("recipient_delimiter","+")):
+                          ("mydestination","localhost"),("recipient_delimiter","+-")):
             with self.subTest(key=key):
                 changed=dict(self.policy,**{key:value})
                 with self.assertRaises(ValueError):
@@ -257,3 +257,94 @@ class LocalDeliveryProbeTests(unittest.TestCase):
         self.assertIn("attempted.Add",ui)
         self.assertNotIn("Exchange Message Trace",ui)
         self.assertIn("new PostfixLocalDeliveryDialog(remote)",(src/"PostfixM365DeliveryDialog.cs").read_text())
+
+
+class StandardLocalRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.req={"run_id":"c"*32,"recipient":"testuser@mail.example.org"}
+        self.policy=dict(config_directory="/etc/postfix",myhostname="mail.example.org",
+                         mydestination="localhost, mail.example.org",
+                         local_transport="local:mail.example.org",
+                         alias_maps="hash:/etc/aliases",
+                         forward_path=M.FORWARD_PATHS[1],
+                         recipient_delimiter="+",
+                         local_recipient_maps="proxy:unix:passwd.byname, hash:/etc/aliases",
+                         mail_spool_directory="/var/mail")
+
+    def test_standard_policy_only_accepts_supported_map_and_forward_path(self):
+        settings=M.local_policy(lambda key:self.policy.get(key,""),"",self.req)
+        self.assertEqual(settings["alias_map"],"hash:/etc/aliases")
+        self.assertEqual(settings["forward_path"],M.FORWARD_PATHS[1])
+        for key,value in (("alias_maps","regexp:/etc/aliases"),
+                          ("forward_path","/var/forward/$user"),
+                          ("local_recipient_maps","proxy:unix:passwd.byname lmdb:/etc/aliases"),
+                          ("recipient_delimiter","+-"),
+                          ("local_transport","local:other.example.org")):
+            changed=dict(self.policy,**{key:value})
+            with self.assertRaises(ValueError):
+                M.local_policy(lambda k:changed.get(k,""),"",self.req)
+        for user in ("root","postmaster","mailer-daemon","double-bounce","owner-test","test-request"):
+            with self.assertRaises(ValueError):
+                M.local_request(dict(self.req,recipient=user+"@mail.example.org"))
+
+    def test_native_alias_query_absent_only_and_no_raw_values(self):
+        adapter=Mock()
+        adapter.trusted_invocation.return_value="/usr/sbin/postalias"
+        reader=Mock(return_value=b"private alias content")
+        runner=Mock(return_value=Mock(returncode=1,stdout=b"",stderr=b""))
+        for alias in ("hash:/etc/aliases","lmdb:/etc/postfix/aliases"):
+            result=M.alias_evidence(alias,"testuser",adapter,runner,reader)
+            self.assertEqual(result["status"],"recipient_not_found")
+            self.assertNotIn("private alias content",str(result))
+            self.assertEqual(runner.call_args[0][0],["/usr/sbin/postalias","-c","/etc/postfix","-q","testuser",alias])
+        for code,out,err in ((0,b"forward@example.net",b""),(1,b"",b"warning"),(2,b"",b""),(1,b"unexpected",b"")):
+            runner.return_value=Mock(returncode=code,stdout=out,stderr=err)
+            with self.assertRaises(ValueError):
+                M.alias_evidence("hash:/etc/aliases","testuser",adapter,runner,reader)
+        runner.return_value=Mock(returncode=1,stdout=b"",stderr=b"")
+        reader.side_effect=[b"a",b"b",b"a",b"changed"]
+        with self.assertRaises(ValueError):
+            M.alias_evidence("hash:/etc/aliases","testuser",adapter,runner,reader)
+
+    def test_forward_not_configured_without_filesystem_lookup(self):
+        self.assertEqual(M.forward_evidence({},{"forward_path":""},Mock(),Mock()),{"status":"not_configured"})
+
+    def test_forward_entries_and_unsafe_paths_refused(self):
+        from types import SimpleNamespace
+        import stat
+        home="/home/testuser"
+        account={"uid":1000,"home":home}
+        settings={"forward_path":M.FORWARD_PATHS[1]}
+        def stats(uid,mode,ino):
+            return SimpleNamespace(st_uid=uid,st_mode=stat.S_IFDIR|mode,st_dev=1,st_ino=ino)
+        parent=stats(0,0o755,1)
+        owned=stats(1000,0o700,2)
+        def lstat(path):
+            return owned if str(path)==home else parent
+        default=lambda:"filter"
+        with patch.object(M.Path,"lstat",lstat),patch.object(M.os,"open",return_value=7), \
+             patch.object(M.os,"close"),patch.object(M.os,"fstat",return_value=owned), \
+             patch.object(M.os,"stat",side_effect=FileNotFoundError) as lookup:
+            result=M.forward_evidence(account,settings,default,default)
+            self.assertEqual(result["status"],"no_forward_file_observed")
+            self.assertEqual([call.args[0] for call in lookup.call_args_list],[".forward",".forward+"])
+            self.assertTrue(all(not call.kwargs["follow_symlinks"] for call in lookup.call_args_list))
+            lookup.side_effect=[FileNotFoundError(),SimpleNamespace()]
+            with self.assertRaises(ValueError):
+                M.forward_evidence(account,settings,default,default)
+            with self.assertRaises(ValueError):
+                M.forward_evidence(account,settings,default,lambda:"changed")
+            with self.assertRaises(ValueError):
+                M.forward_evidence(dict(account,home="/home/../root"),settings,default,default)
+        with patch.object(M.Path,"lstat",return_value=stats(1000,0o777,1)):
+            with self.assertRaises(ValueError):
+                M.forward_evidence(account,settings,default,default)
+
+    def test_preflight_sha_includes_alias_and_forward_observations(self):
+        source=(ROOT/"linux/review-postfix-m365-delivery.py").read_text()
+        self.assertIn('"redirection_evidence":routing',source)
+        self.assertIn("redirects()!=routing",source)
+        ui=(ROOT/"src/LinuxMailRelay365/PostfixLocalDeliveryDialog.cs").read_text()
+        self.assertIn('StringField(root,"alias_status")',ui)
+        self.assertIn('StringField(root,"forward_status")',ui)
+        self.assertIn("including any queued retries",ui)

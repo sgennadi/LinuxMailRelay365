@@ -557,16 +557,27 @@ def primary_audit(req, adapter=None, queue_reader=queue_rows, config_reader=read
                 apply_supported=False, exchange_acceptance_verified=False)
 
 
-# This first local probe intentionally refuses maps/forwarding that might
-# redirect a test outside the selected local UNIX mailbox. It does not
-# require or change the global relayhost, or inspect mailbox contents.
+# The local probe accepts only a narrowly reviewed alias lookup and standard
+# .forward search with no existing forwarding file for the selected account.
+# Other maps or forwarding syntax still require manual review.
 LOCAL_EMPTY = tuple(sorted(set(EMPTY + (
-    "alias_maps", "forward_path", "mailbox_command", "mailbox_command_maps",
+    "mailbox_command", "mailbox_command_maps",
     "mailbox_transport", "mailbox_transport_maps", "fallback_transport",
     "fallback_transport_maps", "luser_relay", "always_bcc", "sender_bcc_maps",
     "recipient_bcc_maps", "relocated_maps", "masquerade_domains", "smtpd_milters",
-    "virtual_mailbox_maps", "recipient_delimiter",
+    "virtual_mailbox_maps", "smtp_generic_maps",
 ))))
+ALIAS_MAPS = {
+    "hash:/etc/aliases": ("/etc/aliases", "/etc/aliases.db"),
+    "lmdb:/etc/aliases": ("/etc/aliases", "/etc/aliases.lmdb"),
+    "hash:/etc/postfix/aliases": ("/etc/postfix/aliases", "/etc/postfix/aliases.db"),
+    "lmdb:/etc/postfix/aliases": ("/etc/postfix/aliases", "/etc/postfix/aliases.lmdb"),
+}
+FORWARD_PATHS = (
+    "$home/.forward",
+    "$home/.forward${recipient_delimiter}${extension},$home/.forward",
+    "$home/.forward$recipient_delimiter$extension,$home/.forward",
+)
 LOCAL_USER = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 
 
@@ -577,7 +588,9 @@ def local_request(req):
             req["recipient"].count("@")!=1):
         raise ValueError("invalid local probe request")
     user,host=req["recipient"].split("@")
-    if not LOCAL_USER.fullmatch(user) or len(host)>253 or not DNS.fullmatch(host):
+    if (not LOCAL_USER.fullmatch(user) or len(host)>253 or not DNS.fullmatch(host) or
+            user in ("root","postmaster","mailer-daemon","double-bounce") or
+            user.startswith("owner-") or user.endswith("-request")):
         raise ValueError("exact local UNIX user and hostname required")
     return req
 
@@ -599,13 +612,14 @@ def local_account(user):
             not row[5].startswith("/") or row[5] in ("/","/root","/nonexistent") or
             row[6].endswith(("/nologin","/false"))):
         raise ValueError("unsupported local account")
-    return {"uid":uid,"gid":gid,"account_sha256":digest(canonical([user,uid,gid,row[5],row[6]]))}
+    return {"uid":uid,"gid":gid,"home":row[5],
+            "account_sha256":digest(canonical([user,uid,gid,row[5],row[6]]))}
 
 
 def local_policy(read,overrides,req):
     user,host=req["recipient"].split("@")
     if (read("config_directory")!=str(CONFIG) or read("multi_instance_directories") or
-            read("myhostname")!=host or read("local_transport")!="local" or overrides):
+            read("myhostname")!=host or read("local_transport") not in ("local","local:"+host) or overrides):
         raise ValueError("nonstandard local route")
     destinations=[v.lower() for v in re.split(r"[\s,]+",read("mydestination")) if v]
     if host not in destinations or any(not DNS.fullmatch(v) and v!="localhost" for v in destinations):
@@ -613,26 +627,111 @@ def local_policy(read,overrides,req):
     for key in LOCAL_EMPTY:
         if read(key):
             raise ValueError("local redirection or forwarding requires manual review")
-    # Only native UNIX recipient lookup, and standard local spool or
-    # Maildir. No arbitrary file/command/LMTP delivery.
-    if read("local_recipient_maps") not in ("proxy:unix:passwd.byname","unix:passwd.byname"):
+    alias=read("alias_maps")
+    forward=re.sub(r"[\s]+","",read("forward_path"))
+    delimiter=read("recipient_delimiter")
+    if alias and alias not in ALIAS_MAPS:
+        raise ValueError("unsupported alias map")
+    if forward and forward not in FORWARD_PATHS:
+        raise ValueError("unsupported forward_path")
+    if delimiter not in ("","+"):
+        raise ValueError("unsupported recipient delimiter")
+    # Standard passwd lookup, optionally followed by the exact same alias
+    # map. No LDAP/regexp or alternative recipient lookup is accepted.
+    lookup=[v for v in re.split(r"[\s,]+",read("local_recipient_maps")) if v]
+    if (not lookup or lookup[0] not in ("proxy:unix:passwd.byname","unix:passwd.byname") or
+            lookup[1:] not in ([],[alias]) or (len(lookup)>1 and not alias)):
         raise ValueError("unsupported local recipient lookup")
     mailbox=read("home_mailbox")
     if mailbox not in ("","Maildir/") or (not mailbox and read("mail_spool_directory") not in ("/var/mail","/var/spool/mail")):
         raise ValueError("nonstandard mailbox destination")
-    return {"hostname":host,"user":user,"mailbox_kind":"maildir" if mailbox else "system_spool"}
+    return {"hostname":host,"user":user,"mailbox_kind":"maildir" if mailbox else "system_spool",
+            "alias_map":alias,"forward_path":forward,"recipient_delimiter":delimiter}
 
 
-def prepare_local(req,adapter=None,account_reader=local_account):
+def alias_evidence(alias,user,adapter,runner=subprocess.run,reader=read_file):
+    if not alias:
+        return {"status":"not_configured"}
+    if alias not in ALIAS_MAPS or not LOCAL_USER.fullmatch(user):
+        raise ValueError("unsupported alias lookup")
+    source,db=ALIAS_MAPS[alias]
+    def files():
+        return {name:digest(reader(Path(path),32*1024*1024)) for name,path in
+                (("source",source),("database",db))}
+    before=files()
+    tool=adapter.trusted_invocation("/usr/sbin/postalias")
+    # -q only; no rebuild, delete, or output of aliases. An error is not
+    # equivalent to a missing key. The tool must exit 1 with no diagnostics
+    # or output, and both protected source/database must remain unchanged.
+    result=runner([tool,"-c",str(CONFIG),"-q",user,alias],input=b"",
+                  stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20,env=ENV)
+    if result.returncode!=1 or result.stdout or result.stderr:
+        raise ValueError("alias found or lookup unavailable")
+    if files()!=before:
+        raise ValueError("alias map changed")
+    return {"status":"recipient_not_found","files":before}
+
+
+def forward_evidence(account,settings,read_default_filter,read_filter):
+    if not settings["forward_path"]:
+        return {"status":"not_configured"}
+    # Only an unambiguous ASCII home and the distribution's default
+    # expansion filter are supported. No reading user-controlled .forward
+    # content; a symlink, regular file or any other entry is a refusal.
+    home=account["home"]
+    if (not re.fullmatch(r"/[A-Za-z0-9_./-]+",home) or home=="/" or
+            any(part in ("",".","..") for part in home.split("/")[1:]) or
+            read_filter()!=read_default_filter()):
+        raise ValueError("unsupported forward expansion")
+    path=Path(home)
+    for parent in reversed(path.parents):
+        st=parent.lstat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o022:
+            raise ValueError("unsafe home parent")
+    flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
+    fd=os.open(str(path),flags)
+    try:
+        st=os.fstat(fd)
+        if (st.st_uid!=account["uid"] or st.st_mode & 0o022):
+            raise ValueError("unsafe home directory")
+        # For unextended addresses check both the current and older
+        # Postfix delimiter expansion possibilities conservatively.
+        for name in (".forward",".forward+"):
+            try:
+                os.stat(name,dir_fd=fd,follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            raise ValueError("forwarding file present")
+        current=path.lstat()
+        if (current.st_dev,current.st_ino,current.st_uid,current.st_mode)!=(st.st_dev,st.st_ino,st.st_uid,st.st_mode):
+            raise ValueError("home directory changed")
+        return {"status":"no_forward_file_observed","home_identity":[st.st_dev,st.st_ino,st.st_uid,st.st_mode]}
+    finally:
+        os.close(fd)
+
+
+def prepare_local(req,adapter=None,account_reader=local_account,alias_reader=alias_evidence,
+                  forward_reader=forward_evidence):
     local_request(req)
     adapter=adapter or load_adapter()
     pf=adapter.Postfix()
     def hashes():
         return {name:digest(read_file(CONFIG/name,8*1024*1024)) for name in ("main.cf","master.cf")}
     before=hashes()
-    read=lambda key:pf.run(pf.postconf,"-h","-x",key)
+    # forward_path has delivery-time variables, not postconf -x variables.
+    def read(key):
+        args=("-h",key) if key=="forward_path" else ("-h","-x",key)
+        return pf.run(pf.postconf,*args)
     settings=local_policy(read,pf.run(pf.postconf,"-P"),req)
     account=account_reader(settings["user"])
+    def redirects():
+        return {
+            "alias":alias_reader(settings["alias_map"],settings["user"],adapter),
+            "forward":forward_reader(account,settings,
+                lambda:pf.run(pf.postconf,"-d","-h","forward_expansion_filter"),
+                lambda:read("forward_expansion_filter"))
+        }
+    routing=redirects()
     binary=adapter.trusted_invocation("/usr/sbin/sendmail")
     resolved=adapter.trusted_binary(binary)
     if resolved!=adapter.trusted_binary(read("sendmail_path")):
@@ -643,13 +742,15 @@ def prepare_local(req,adapter=None,account_reader=local_account):
         raise ValueError("nonstandard local delivery service")
     pf.run(pf.postfix,"status")
     if (hashes()!=before or local_policy(read,pf.run(pf.postconf,"-P"),req)!=settings or
-            account_reader(settings["user"])!=account):
+            account_reader(settings["user"])!=account or redirects()!=routing or hashes()!=before):
         raise ValueError("local configuration changed")
     st=os.stat(resolved)
     evidence={"request_sha256":digest(canonical(req)),"configuration":before,"settings":settings,
-              "account":account,"sendmail_identity":[binary,resolved,st.st_dev,st.st_ino,st.st_mtime_ns,st.st_size]}
+              "account":account,"redirection_evidence":routing,
+              "sendmail_identity":[binary,resolved,st.st_dev,st.st_ino,st.st_mtime_ns,st.st_size]}
     return {"status":"local_review_ready","plan_sha256":digest(canonical(evidence)),
             "run_id":req["run_id"],"recipient":req["recipient"],"mailbox_kind":settings["mailbox_kind"],
+            "alias_status":routing["alias"]["status"],"forward_status":routing["forward"]["status"],
             "mail_sent":False,"mailbox_verified":False,"_binary":binary}
 
 

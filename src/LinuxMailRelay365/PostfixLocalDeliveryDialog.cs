@@ -25,7 +25,7 @@ internal sealed class PostfixLocalDeliveryDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var intro = new Label { AutoSize = true, MaximumSize = new Size(650, 0),
             Text = "Send one explicitly approved local test to a non-privileged UNIX user at the exact Postfix hostname. " +
-                "Aliases, forwarding, custom transports and rewriting are refused. Do not change existing mail settings just to pass this test. " +
+                "Standard aliases and .forward paths are checked for this recipient. Existing forwarding or custom maps, transports and rewriting are refused. Do not change mail settings just to pass this test. " +
                 "Only local delivery-agent evidence is observed; mailbox contents are never read." };
         var recipient = new TextBox { Dock = DockStyle.Top, MaxLength = 254, PlaceholderText = "testuser@mail.example.org" };
         var run = new TextBox { Dock = DockStyle.Top, MaxLength = 32, Text = Guid.NewGuid().ToString("N") };
@@ -98,12 +98,18 @@ internal sealed class PostfixLocalDeliveryDialog : Form
                 FalseFlag(root,"mail_sent");
                 string sha = StringField(root,"plan_sha256");
                 string kind = StringField(root,"mailbox_kind");
+                string alias = StringField(root,"alias_status");
+                string forward = StringField(root,"forward_status");
                 if (!Regex.IsMatch(sha, @"\A[a-f0-9]{64}\z") || StringField(root,"recipient") != recipient.Text.Trim() ||
-                    kind is not ("maildir" or "system_spool")) throw new InvalidDataException();
+                    kind is not ("maildir" or "system_spool") ||
+                    alias is not ("not_configured" or "recipient_not_found") ||
+                    forward is not ("not_configured" or "no_forward_file_observed")) throw new InvalidDataException();
                 approvedSha = sha; approvedRequest = request;
                 report.Text = "Recipient: " + recipient.Text.Trim() + Environment.NewLine +
-                    "Mailbox kind: " + kind + Environment.NewLine + "Review SHA-256: " + sha +
-                    Environment.NewLine + "Simple local route observed. No mail sent. Confirm permission before submission.";
+                    "Mailbox kind: " + kind + Environment.NewLine +
+                    "Alias lookup: " + alias + Environment.NewLine + ".forward: " + forward +
+                    Environment.NewLine + "Review SHA-256: " + sha +
+                    Environment.NewLine + "No mail sent. This is a point-in-time check, not a guarantee of queued delivery routing.";
                 status.Text = "Local route reviewed.";
             });
         };
@@ -112,7 +118,9 @@ internal sealed class PostfixLocalDeliveryDialog : Form
             if (!submit.Enabled || approvedSha is not { } sha || approvedRequest is not { } request || request != Request()) return;
             if (MessageBox.Show(this, "Submit one real local test to " + recipient.Text.Trim() +
                 "? Confirm this designated mailbox is yours or you have permission to use it. " +
-                "Keep route configuration and account unchanged. This uses a null envelope sender and is not an Exchange delivery test. " +
+                "Keep configuration, alias databases, local account and its forwarding files unchanged until delivery completes, including any queued retries. " +
+                "Use a dedicated test account and prevent concurrent edits. Postfix processes may retain prior configuration; this review is not an atomic delivery guarantee. " +
+                "This uses a null envelope sender and is not an Exchange delivery test. " +
                 "Retain Run ID " + run.Text.Trim() + "; do not resubmit an uncertain test.",
                 "Confirm local delivery test", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                 MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
