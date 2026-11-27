@@ -557,6 +557,7 @@ jobs:
         run: |
           ./windows/Test-LinuxMailRelay365OutboundMode.ps1 -SelfTest
           ./windows/Manage-LinuxMailRelay365Connector.ps1 -SelfTest
+          ./windows/Inspect-LinuxMailRelay365MessageTrace.ps1 -SelfTest
           ./windows/Inspect-LinuxMailRelay365Objects.ps1 -SelfTest
           ./windows/Manage-LinuxMailRelay365MailboxScope.ps1 -SelfTest
           ./windows/Manage-LinuxMailRelay365Object.ps1 -SelfTest

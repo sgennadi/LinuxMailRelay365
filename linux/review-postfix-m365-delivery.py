@@ -367,6 +367,7 @@ def trace(req):
     lines, source = log_lines(started, adapter)
     queue = queue_rows(adapter)
     return {"status": "trace_observed", "run_id": req["run_id"], "source": source,
+            "started_unix": started, "request_sha256": digest(canonical(req)),
             "outcomes": {role: correlate(req, role, lines, queue, events[role]) for role in ROLES},
             "inbox_verified": False, "tls_handshake_verified": False, "automatic_retry": False}
 

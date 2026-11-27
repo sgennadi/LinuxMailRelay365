@@ -8,7 +8,7 @@ namespace LinuxMailRelay365;
 internal sealed class PostfixM365DeliveryDialog : Form
 {
     internal PostfixM365DeliveryDialog(Func<string, string, string?, Task<string>> remote,
-        string acceptedDomain, string sender, string mx)
+        string acceptedDomain, string sender, string mx, Func<string, string, Task<string>> exchangeTrace)
     {
         Text = "Primary Postfix | Microsoft 365 delivery probe";
         StartPosition = FormStartPosition.CenterParent;
@@ -35,7 +35,8 @@ internal sealed class PostfixM365DeliveryDialog : Form
         var trace = new Button { Text = "Refresh trace (no send)", AutoSize = true };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
-        buttons.Controls.AddRange([preview, submit, trace, close]);
+        var cloudTrace = new Button { Text = "Exchange Message Trace", AutoSize = true };
+        buttons.Controls.AddRange([preview, submit, trace, cloudTrace, close]);
         TextBox[] inputs = [domain, from, host, internalRecipient, externalRecipient, run];
         string? approvedSha = null, approvedRequest = null;
         bool busy = false;
@@ -58,7 +59,7 @@ internal sealed class PostfixM365DeliveryDialog : Form
         {
             busy = value;
             foreach (var input in inputs) input.Enabled = !value;
-            preview.Enabled = trace.Enabled = close.Enabled = !value;
+            preview.Enabled = trace.Enabled = cloudTrace.Enabled = close.Enabled = !value;
             submit.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
@@ -136,6 +137,32 @@ internal sealed class PostfixM365DeliveryDialog : Form
                 status.Text = "Trace observed. No new message sent; inbox arrival and TLS handshake remain unverified.";
             }
             catch { status.Text = "Trace unavailable. Check the original request/run ID and Linux logs; do not resend automatically."; }
+            finally { SetBusy(false); }
+        };
+        cloudTrace.Click += async (_, _) =>
+        {
+            if (busy) return;
+            Invalidate();
+            string request = Request();
+            SetBusy(true);
+            status.Text = "Validating local run before querying Exchange Online...";
+            try
+            {
+                string local = await remote("trace", request, null);
+                using var proof = JsonDocument.Parse(local);
+                report.Text = "Local Postfix trace" + Environment.NewLine +
+                    JsonSerializer.Serialize(proof.RootElement, new JsonSerializerOptions { WriteIndented = true });
+                status.Text = "Sign in to the selected Exchange tenant if prompted...";
+                string cloud = await exchangeTrace(request, local);
+                report.AppendText(Environment.NewLine + Environment.NewLine + "Exchange Online trace" +
+                    Environment.NewLine + cloud);
+                status.Text = "Read-only trace complete. Delivered is service-reported delivery, not verified inbox arrival. Not observed may mean trace latency.";
+            }
+            catch (Exception ex)
+            {
+                status.Text = "Exchange trace unavailable: " + ex.GetType().Name +
+                    ". Check permissions, tenant, original run and trace latency. No resend.";
+            }
             finally { SetBusy(false); }
         };
         string[] labels = ["Accepted sender domain", "Envelope sender", "Microsoft 365 MX",

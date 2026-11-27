@@ -290,6 +290,7 @@ internal static class EmbeddedAssets
     internal static string Provisioner => Text("LinuxMailRelay365.windows.provision.ps1");
     internal static string SecurityProbe => Text("LinuxMailRelay365.linux.security-probe.sh");
     internal static string CloudSecurityProbe => Text("LinuxMailRelay365.windows.cloud-security-probe.ps1");
+    internal static string ExchangeMessageTrace => Text("LinuxMailRelay365.windows.exchange-message-trace.ps1");
     internal static string TenantConnectorManager => Text("LinuxMailRelay365.windows.tenant-connector-manager.ps1");
     internal static string CloudObjectsInspector => Text("LinuxMailRelay365.windows.cloud-objects-inspector.ps1");
     internal static string MultiMailboxSmtpScopeManager => Text("LinuxMailRelay365.windows.multi-mailbox-smtp-scope.ps1");

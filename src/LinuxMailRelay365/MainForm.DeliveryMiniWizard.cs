@@ -215,7 +215,8 @@ internal sealed partial class MainForm
                         if (result.ExitCode != 0) throw new InvalidOperationException("Postfix probe refused or uncertain.");
                         if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                         return result.StdOut;
-                    }, acceptedDomain.Text.Trim(), outboundFixedSender.Text.Trim(), outboundMxHost.Text.Trim());
+                    }, acceptedDomain.Text.Trim(), outboundFixedSender.Text.Trim(), outboundMxHost.Text.Trim(),
+                        (request, local) => ReadPostfixExchangeTraceAsync(context, request, local));
                     probe.ShowDialog(owner);
                 });
                 dialog.ShowDialog(this);

@@ -164,6 +164,7 @@
     <EmbeddedResource Include="../../windows/Test-LinuxMailRelay365Security.ps1" LogicalName="LinuxMailRelay365.windows.cloud-security-probe.ps1" />
     <EmbeddedResource Include="../../windows/Initialize-LinuxMailRelay365.ps1" LogicalName="LinuxMailRelay365.windows.provision.ps1" />
     <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365Connector.ps1" LogicalName="LinuxMailRelay365.windows.tenant-connector-manager.ps1" />
+    <EmbeddedResource Include="../../windows/Inspect-LinuxMailRelay365MessageTrace.ps1" LogicalName="LinuxMailRelay365.windows.exchange-message-trace.ps1" />
     <EmbeddedResource Include="../../windows/Inspect-LinuxMailRelay365Objects.ps1" LogicalName="LinuxMailRelay365.windows.cloud-objects-inspector.ps1" />
     <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365MailboxScope.ps1" LogicalName="LinuxMailRelay365.windows.multi-mailbox-smtp-scope.ps1" />
     <EmbeddedResource Include="../../windows/Manage-LinuxMailRelay365Object.ps1" LogicalName="LinuxMailRelay365.windows.cloud-connector-manager.ps1" />
