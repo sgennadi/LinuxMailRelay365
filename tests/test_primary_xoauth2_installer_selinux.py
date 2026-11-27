@@ -64,6 +64,40 @@ SELINUX_SETUP_MODE="$SETUP_MODE"
         self.assertNotEqual(r.returncode,0)
         self.assertNotIn("RELABEL",r.stdout)
 
+    def test_stock_data_context_is_only_verified_never_relabeled(self):
+        mocks=r'''
+postconf() {
+    case "$*" in
+        "-c /etc/postfix -xh data_directory") printf '%s\n' "${DATA:-/var/lib/postfix}" ;;
+        "-c /etc/postfix -xh queue_directory") printf '%s\n' "${QUEUE:-/var/spool/postfix}" ;;
+        "-c /etc/postfix -xh mail_owner") printf '%s\n' "${OWNER:-postfix}" ;;
+        *) return 2 ;;
+    esac
+}
+check_installer_selinux_paths() {
+    printf 'CHECK:%s:%s\n' "$1" "$2"
+    return "${VERIFY_RC:-0}"
+}
+'''
+        r=self.shell(mocks+'verify_installer_postfix_data_context\n')
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertEqual(r.stdout.strip(),"CHECK:verify:/var/lib/postfix")
+        r=self.shell(mocks+'VERIFY_RC=1\nverify_installer_postfix_data_context\n')
+        self.assertNotEqual(r.returncode,0)
+        self.assertIn("restorecon -n -v /var/lib/postfix",r.stderr)
+        self.assertIn("No Postfix data directory relabel",r.stderr)
+        self.assertNotIn("RELABEL",r.stdout)
+        for assignment in ("DATA=/custom/data","QUEUE=/custom/queue","OWNER=other"):
+            r=self.shell(mocks+assignment+'\nverify_installer_postfix_data_context\n')
+            self.assertNotEqual(r.returncode,0)
+            self.assertNotIn("CHECK:",r.stdout)
+        r=self.shell(mocks+'verify_installer_postfix_data_context\n',mode="Disabled")
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertEqual(r.stdout,"")
+        r=self.shell(mocks+'MODE=Permissive\nverify_installer_postfix_data_context\n')
+        self.assertNotEqual(r.returncode,0)
+        self.assertNotIn("CHECK:",r.stdout)
+
     def test_check_order_and_scope(self):
         start=SCRIPT.index("check_installer_selinux_paths label \"$CONF_DIR\"")
         prepare=SCRIPT.index("Certificate preparation complete")
@@ -72,6 +106,11 @@ SELINUX_SETUP_MODE="$SETUP_MODE"
         self.assertLess(runtime,SCRIPT.index("postconf -e 'smtpd_client_restrictions"))
         verify=SCRIPT.index('check_installer_selinux_paths verify "$CONF_DIR"')
         self.assertLess(verify,SCRIPT.index("systemctl enable --now postfix"))
+        preflight=SCRIPT.index("  verify_installer_postfix_data_context || exit 1")
+        self.assertLess(preflight,SCRIPT.index("if ! id m365mailer"))
+        self.assertLess(preflight,SCRIPT.index("postconf -e 'smtpd_client_restrictions"))
+        final=SCRIPT.index("\nverify_installer_postfix_data_context || exit 1")
+        self.assertLess(final,verify)
         self.assertIn("/usr/local/libexec/m365_hardware_signer.py",SCRIPT[runtime:runtime+220])
         self.assertIn("SELINUX_PIPE_DOMAIN=not_verified",SCRIPT)
         self.assertNotIn("restorecon -R",SCRIPT)

@@ -218,6 +218,38 @@ check_installer_selinux_paths() {
     echo 'SELinux mode changed during verification.' >&2; return 1;
   }
 }
+# Verify, but never relabel, a native Postfix-owned data directory.
+# Only the stock scope has been reviewed for this installer.
+verify_installer_postfix_data_context() {
+  local observed data owner queue
+  observed="$(read_installer_selinux_mode)" || return 1
+  if [ "$observed" != "$SELINUX_SETUP_MODE" ]; then
+    echo 'SELinux mode changed during installation.' >&2; return 1
+  fi
+  case "$observed" in
+    Disabled|inactive_or_unavailable) return 0 ;;
+    Enforcing|Permissive) ;;
+    *) return 1 ;;
+  esac
+  data="$(postconf -c /etc/postfix -xh data_directory)" || return 1
+  owner="$(postconf -c /etc/postfix -xh mail_owner)" || return 1
+  queue="$(postconf -c /etc/postfix -xh queue_directory)" || return 1
+  if [ "$data" != /var/lib/postfix ] || [ "$owner" != postfix ] ||
+     [ "$queue" != /var/spool/postfix ]; then
+    echo 'Non-default Postfix data, owner or queue scope requires manual SELinux review.' >&2
+    return 1
+  fi
+  if [ -L /var ] || [ -L /var/lib ]; then
+    echo 'Unexpected Postfix data directory parent; manual review required.' >&2
+    return 1
+  fi
+  if ! check_installer_selinux_paths verify /var/lib/postfix; then
+    echo 'Postfix data directory readiness failed. Review: matchpathcon -V /var/lib/postfix' >&2
+    echo 'Preview the native policy correction: restorecon -n -v /var/lib/postfix' >&2
+    echo 'No Postfix data directory relabel was performed. Do not disable SELinux.' >&2
+    return 1
+  fi
+}
 # END PRIMARY_INSTALLER_SELINUX_HELPERS
 
 SELINUX_SETUP_MODE="$(read_installer_selinux_mode)" || exit 1
@@ -365,6 +397,11 @@ fi
   echo 'Bundled transport or hardware-signing helper missing; no changes.' >&2; exit 1;
 }
 
+# Certificate-only operations do not install or activate a Postfix route.
+if [ "$PREPARE_ONLY" -ne 1 ] && [ "$ROTATE_ONLY" -ne 1 ]; then
+  verify_installer_postfix_data_context || exit 1
+fi
+
 if ! id m365mailer >/dev/null 2>&1; then
   NOLOGIN="$(command -v nologin || echo /sbin/nologin)"
   useradd --system --home-dir /nonexistent --shell "$NOLOGIN" m365mailer
@@ -486,6 +523,7 @@ path.write_text(s)
 PY
 
 postfix check
+verify_installer_postfix_data_context || exit 1
 check_installer_selinux_paths verify "$CONF_DIR" "$CONF_DIR/app.key" \
   "$CONF_DIR/app.crt" "$CONF_DIR/app.json" \
   /usr/local/libexec/m365_xoauth2_transport.py \
