@@ -7,7 +7,7 @@ namespace LinuxMailRelay365;
 
 internal sealed class SmtpAcmeIssuanceReviewDialog : Form
 {
-    internal SmtpAcmeIssuanceReviewDialog(Func<string, Task<string>> review, string acceptedDomain,
+    internal SmtpAcmeIssuanceReviewDialog(Func<string, bool, Task<string>> review, string acceptedDomain,
         string certificateName, string provider)
     {
         Text = "ACME | Local issuance review";
@@ -30,9 +30,17 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
         var result = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
             ScrollBars = ScrollBars.Vertical, WordWrap = true, MinimumSize = new Size(0, 130) };
         var run = new Button { Text = "Check local readiness", AutoSize = true };
+        var challenge = new Button { Text = "Test staging DNS-01", AutoSize = true, Enabled = false };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         bool busy = false;
-        void InvalidateReport() { result.Clear(); result.ForeColor = SystemColors.WindowText; }
+        string? reviewedRequest = null, reviewedSha = null;
+        void InvalidateReport()
+        {
+            reviewedRequest = reviewedSha = null;
+            challenge.Enabled = false;
+            result.Clear();
+            result.ForeColor = SystemColors.WindowText;
+        }
         email.TextChanged += (_, _) => InvalidateReport();
         credential.TextChanged += (_, _) => InvalidateReport();
         environment.SelectedIndexChanged += (_, _) => InvalidateReport();
@@ -54,11 +62,12 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
             result.Text = "Checking the existing credential file and installed plugin on Linux...";
             try
             {
-                using var response = JsonDocument.Parse(await review(JsonSerializer.Serialize(new
+                string request = JsonSerializer.Serialize(new
                 {
                     accepted_domain = acceptedDomain, certificate_name = certificateName,
                     provider, environment = target, email = contact, credentials_path = path
-                })));
+                });
+                using var response = JsonDocument.Parse(await review(request, false));
                 var root = response.RootElement;
                 string ca = target == "staging" ? "https://acme-staging-v02.api.letsencrypt.org/directory" :
                     "https://acme-v02.api.letsencrypt.org/directory";
@@ -82,6 +91,12 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
                     plugin is not ("unverified" or "not_registered" or "registered") ||
                     ready != (file == "local_structure_passed" && plugin == "registered"))
                     throw new InvalidDataException("Inconsistent preflight result.");
+                if (ready && target == "staging")
+                {
+                    reviewedRequest = request;
+                    reviewedSha = root.GetProperty("review_sha256").GetString();
+                    challenge.Enabled = true;
+                }
                 result.ForeColor = ready ? Color.SeaGreen : Color.DarkOrange;
                 result.Text = string.Join(Environment.NewLine, new[] {
                     ready ? "Local preflight passed (not issuance approval)." : "Local preflight incomplete.",
@@ -104,6 +119,85 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
                 if (!IsDisposed) run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
             }
         };
+        challenge.Click += async (_, _) =>
+        {
+            if (busy || reviewedRequest is null || reviewedSha is null) return;
+            if (MessageBox.Show(this,
+                "Run a real Let's Encrypt STAGING DNS-01 test for _acme-challenge." + certificateName +
+                " using " + provider + "?" + Environment.NewLine + Environment.NewLine +
+                "The DNS plugin may create and remove public TXT records. Confirm that you are authorized to modify this zone and no other challenge or renewal is running." +
+                Environment.NewLine + "The test agrees to the staging CA terms, uses isolated temporary state and does not activate or issue a production certificate." +
+                Environment.NewLine + "If interrupted, temporary DNS records may remain. Review the provider before retrying.",
+                "Confirm public DNS changes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            string sha = reviewedSha;
+            using var request = JsonDocument.Parse(reviewedRequest);
+            string payload = JsonSerializer.Serialize(new {
+                request = request.RootElement, confirm = "TEST_PUBLIC_DNS_CHALLENGE", review_sha256 = sha
+            });
+            InvalidateReport();
+            busy = true;
+            run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
+            result.Text = "Running approved staging DNS-01 test. Checking the public TXT snapshot before and after...";
+            try
+            {
+                using var response = JsonDocument.Parse(await review(payload, true));
+                var root = response.RootElement;
+                if (root.GetProperty("version").GetInt32() != 1 ||
+                    root.GetProperty("review_sha256").GetString() != sha ||
+                    root.GetProperty("accepted_domain").GetString() != acceptedDomain ||
+                    root.GetProperty("certificate_name").GetString() != certificateName ||
+                    root.GetProperty("provider").GetString() != provider ||
+                    root.GetProperty("ca_directory").GetString() != "https://acme-staging-v02.api.letsencrypt.org/directory" ||
+                    root.GetProperty("challenge").GetString() != "_acme-challenge." + certificateName)
+                    throw new InvalidDataException("Unexpected challenge evidence.");
+                foreach (string flag in new[] { "txt_cleanup_verified", "production_certificate_modified",
+                         "postfix_modified", "exchange_acceptance_verified" })
+                    if (root.GetProperty(flag).GetBoolean()) throw new InvalidDataException("Unexpected challenge claim.");
+                string? state = root.GetProperty("status").GetString();
+                bool attempted = root.GetProperty("attempted").GetBoolean();
+                bool passed = root.GetProperty("dns_challenge_verified").GetBoolean();
+                if (state is not ("passed" or "failed" or "outcome_unverified" or "refused" or
+                    "baseline_unverified" or "existing_txt_requires_review") ||
+                    passed != (state == "passed") ||
+                    attempted != (state is "passed" or "failed" or "outcome_unverified"))
+                    throw new InvalidDataException("Inconsistent challenge status.");
+                var snapshot = root.GetProperty("txt_snapshot");
+                string? observation = snapshot.GetProperty("status").GetString();
+                if (snapshot.GetProperty("txt_cleanup_verified").GetBoolean() ||
+                    observation is not ("unchanged" or "changed" or "unverified"))
+                    throw new InvalidDataException("Unexpected TXT observation.");
+                string counts = "";
+                if (observation != "unverified")
+                {
+                    int added = snapshot.GetProperty("added_count").GetInt32();
+                    int missing = snapshot.GetProperty("missing_count").GetInt32();
+                    if (added < 0 || missing < 0 || added > 64 || missing > 64 ||
+                        snapshot.GetProperty("observed_snapshot_restored").GetBoolean() != (observation == "unchanged") ||
+                        (observation == "unchanged") != (added == 0 && missing == 0))
+                        throw new InvalidDataException("Inconsistent TXT snapshot.");
+                    counts = Environment.NewLine + $"Observed TXT added: {added}; missing: {missing}";
+                }
+                result.ForeColor = passed && observation == "unchanged" ? Color.SeaGreen : Color.DarkOrange;
+                result.Text = "Staging DNS-01: " + state + Environment.NewLine +
+                    "Attempted: " + (attempted ? "Yes" : "No") + Environment.NewLine +
+                    "TXT snapshot via 1.1.1.1: " + observation + counts + Environment.NewLine + Environment.NewLine +
+                    "Matching observations do not prove authoritative cleanup; caches and concurrent updates may hide changes." +
+                    Environment.NewLine + "Review public DNS and the provider before retrying if cleanup is uncertain." +
+                    Environment.NewLine + "No production certificate activation or Postfix configuration change requested.";
+            }
+            catch (Exception ex)
+            {
+                result.ForeColor = Color.DarkOrange;
+                result.Text = "Challenge outcome unavailable: " + ex.GetType().Name +
+                    ". DNS changes may have occurred. Review the provider and TXT records before retrying.";
+            }
+            finally
+            {
+                busy = false;
+                if (!IsDisposed) run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
+            }
+        };
         layout.Controls.Add(new Label { Text = "DNS identity: " + certificateName + " | " + provider, AutoSize = true }, 0, 0);
         layout.Controls.Add(new Label { Text = "CA environment (preview only)", AutoSize = true }, 0, 1);
         layout.Controls.Add(environment, 0, 2);
@@ -111,7 +205,9 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
         layout.Controls.Add(email, 0, 4);
         layout.Controls.Add(new Label { Text = "Existing private credential file on Linux (path only)", AutoSize = true }, 0, 5);
         layout.Controls.Add(credential, 0, 6);
-        layout.Controls.Add(run, 0, 7);
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
+        actions.Controls.AddRange([run, challenge]);
+        layout.Controls.Add(actions, 0, 7);
         layout.Controls.Add(result, 0, 8);
         layout.Controls.Add(close, 0, 9);
         Controls.Add(layout);

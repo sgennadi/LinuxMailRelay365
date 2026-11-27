@@ -74,8 +74,9 @@ def review(req,check=None,probe=plugins):
     except Exception:
         pass
     report["local_preflight_passed"]=(report["credential_file"]=="local_structure_passed" and report["plugin"]=="registered")
-    # Review identifier, not an authorization or a credential-content hash.
-    report["review_sha256"]=hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    # Bind the reviewed inputs as well as public status, without hashing
+    # credential contents or returning the contact/path to Windows.
+    report["review_sha256"]=hashlib.sha256(json.dumps({"request":req,"report":report},sort_keys=True,separators=(",",":")).encode()).hexdigest()
     return report
 
 
