@@ -20,6 +20,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import types
 
 INSTALL = Path(__file__).with_name("manage-multi-mailbox-postfix.py")
 _spec = importlib.util.spec_from_file_location("multi_mailbox_install_guard", str(INSTALL))
@@ -134,8 +135,56 @@ def require_proof_timer_absent():
 
 
 def preview():
+    # The public Restore preview and all mutation paths retain this guard.
     require_proof_timer_absent()
+    return _preview(False)
+
+
+def acceptance_preview():
+    """Read-only installed route review; never a Restore authorization."""
+    return _preview(True)
+
+
+def acceptance_timer(timer_code, map_sha, marker_sha):
+    """Read an owned, already enabled timer without publishing a receipt."""
+    try:
+        timer = types.ModuleType("multi_acceptance_installed_timer")
+        timer.__file__ = str(install.TARGET / "manage-multi-mailbox-proof-timer.py")
+        # Execute only bytes verified by the active route manifest below.
+        exec(compile(timer_code, timer.__file__, "exec"), timer.__dict__)
+        state = timer.installed()
+        expected = {"map": map_sha, "route": marker_sha,
+                    "service": state["service"], "timer": state["timer"]}
+        plan = install.digest(json.dumps(expected, sort_keys=True,
+                                         separators=(",", ":")).encode("ascii"))
+        if state["map"] != map_sha or state["plan"] != plan:
+            raise Refused("timer_not_bound_to_active_route")
+        if (not timer.systemctl("is-active", "--quiet", timer.TIMER.name) or
+                not timer.systemctl("is-enabled", "--quiet", timer.TIMER.name)):
+            raise Refused("timer_not_active_and_enabled")
+        # Reject overrides of the exact verified on-disk unit files.
+        for path in (timer.SERVICE, timer.TIMER):
+            for prop, expected_value in (("LoadState", "loaded"),
+                    ("FragmentPath", str(path)), ("NeedDaemonReload", "no"),
+                    ("DropInPaths", "")):
+                value = install.run(["systemctl", "show", "--property="+prop,
+                                     "--value", path.name])
+                if value != expected_value:
+                    raise Refused("effective_timer_unit_not_verified")
+        if timer.receipt_age_status(map_sha) != "fresh_ttl_only" or timer.installed() != state:
+            raise Refused("managed_timer_state_or_receipt_unverified")
+        # No volatile expiry, inode or worker state in immutable plan.
+        return {"mode":"managed_timer","plan":plan,"map":map_sha,
+                "service":state["service"],"timer":state["timer"]}
+    except Exception:
+        raise Refused("managed_proof_timer_not_verified_for_acceptance") from None
+
+
+def _preview(for_acceptance):
     marker_stat, marker_bytes, record, backup_dir, original = checked_record()
+    timer_present = any(path.exists() or path.is_symlink() for path in TIMER_ARTIFACTS)
+    if not for_acceptance:
+        require_proof_timer_absent()
     current = {}
     for filename in ("main.cf", "master.cf"):
         st, data = install.read(install.CONF / filename, 1048576)
@@ -154,6 +203,7 @@ def preview():
         raise Refused("runtime_sender_map_changed")
     install.secure_dir(install.TARGET)
     source = {}
+    timer_code = None
     if {part.name for part in install.TARGET.iterdir()} != set(install.FILES):
         raise Refused("installed_runtime_file_set_changed")
     for name in install.FILES:
@@ -161,6 +211,8 @@ def preview():
         if install.digest(data) != record["source"][name]:
             raise Refused("installed_runtime_source_changed")
         source[name] = file_evidence(st, data)
+        if name == "manage-multi-mailbox-proof-timer.py":
+            timer_code = data
     proof = None
     if PROOF.exists() or PROOF.is_symlink():
         st, data = install.read(PROOF, 2048, (0o640,))
@@ -179,6 +231,10 @@ def preview():
         "proof": file_evidence(*proof) if proof is not None else None,
         "primary": primary,
     }
+    if for_acceptance:
+        review["acceptance_proof"] = (acceptance_timer(timer_code,
+            record["runtime_map_sha256"], install.digest(marker_bytes))
+            if timer_present else {"mode":"manual"})
     # Always bind the installed policy for the proof's destination, even
     # before its first publication. Acceptance excludes volatile receipt
     # metadata, but must retain a stable policy digest across that publication.
@@ -188,6 +244,10 @@ def preview():
          (backup_dir/"manifest.json",False),(PROOF,False)])
     review.update(install.policy_evidence(policy))
     install.require_policy(policy)
+    if timer_present != any(path.exists() or path.is_symlink() for path in TIMER_ARTIFACTS):
+        raise Refused("proof_timer_presence_changed_during_review")
+    if not for_acceptance:
+        require_proof_timer_absent()
     reviewed_sha = install.digest(json.dumps(
         review, sort_keys=True, separators=(",", ":")).encode("ascii"))
     return {"sha": reviewed_sha, "backup_id": record["backup_id"],
