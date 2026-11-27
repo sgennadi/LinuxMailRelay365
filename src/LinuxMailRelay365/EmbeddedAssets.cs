@@ -78,12 +78,19 @@ internal static class EmbeddedAssets
 
     internal static string BuildSmtpTlsRotation(string action, string? candidate, string? domain, string? expectedSha)
     {
-        if (action is not ("inventory" or "preview" or "activate" or "recovery-preview" or "recover"))
+        if (action is not ("inventory" or "preview" or "activate" or "recovery-preview" or "recover" or "binding-preview"))
             throw new ArgumentException("Invalid TLS action.");
         if (action is "inventory" or "recovery-preview")
         {
             if (candidate is not null || domain is not null || expectedSha is not null)
                 throw new ArgumentException("Unexpected read-only arguments.");
+        }
+        else if (action == "binding-preview")
+        {
+            if (candidate is not null || expectedSha is not null || domain is null ||
+                Uri.CheckHostName(domain) != UriHostNameType.Dns ||
+                !Regex.IsMatch(domain, @"\A[a-z0-9.-]{1,253}\z"))
+                throw new ArgumentException("Invalid certificate binding review.");
         }
         else if (action == "recover")
         {

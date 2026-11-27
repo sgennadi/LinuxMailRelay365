@@ -484,9 +484,54 @@ def execute_recovery(expected, plan_fn=recovery_plan):
             "exchange_acceptance": "unverified", "mail_sent": False}
 
 
+def exact_dns_san(extensions, domain):
+    in_san = False
+    for line in extensions.splitlines():
+        value = line.strip()
+        if value.startswith("X509v3 "):
+            in_san = value.startswith("X509v3 Subject Alternative Name:")
+            continue
+        if in_san:
+            for item in value.split(","):
+                if item.strip().lower() == "dns:" + domain.lower():
+                    return True
+    return False
+
+
+def connector_binding(domain, pf=None):
+    if not isinstance(domain, str) or len(domain) > 253 or "." not in domain or not all(
+            re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part) for part in domain.split(".")):
+        raise ValueError("invalid connector DNS identity")
+    directory(ROOT, True)
+    pf = pf or load("smtp-tls-postfix").Postfix()
+    active = active_generation()
+    if active is None:
+        raise ValueError("no active managed certificate")
+    state = config_state(pf)
+    journals = terminal_journals(active, state["main_sha256"])
+    pf.verify_managed()
+    pf.run(pf.postfix, "status")
+    checker = load("check-smtp-relay-certificate")
+    ca = checker.resolve_ca_bundle("auto")
+    ca_sha = digest(read_file(Path(ca), 8 * 1024 * 1024))
+    checked = load("smtp-tls-validate-generation").validate(ROOT, active, domain, ca,
+                load("smtp-tls-generation"), checker)
+    if checked.get("status") != "local_checks_passed" or not exact_dns_san(checked.get("extensions", ""), domain):
+        raise ValueError("exact certificate DNS SAN required")
+    security = pf.run(pf.postconf, "-h", "smtp_tls_security_level")
+    material = {"domain": domain, "generation": active, "state": state, "journals": journals,
+                "ca_sha256": ca_sha, "smtp_tls_security_level": security}
+    if config_state(pf) != state or active_generation() != active or terminal_journals(active, state["main_sha256"]) != journals:
+        raise ValueError("local binding changed")
+    return {"status": "local_binding_reviewed", "domain": domain, "generation": active,
+            "binding_sha256": digest(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()),
+            "smtp_tls_security_level": security, "certificate_details": checked.get("details", ""),
+            "exchange_acceptance": "unverified", "mail_sent": False}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("inventory", "preview", "activate", "recovery-preview", "recover"))
+    parser.add_argument("action", choices=("inventory", "preview", "activate", "recovery-preview", "recover", "binding-preview"))
     parser.add_argument("--candidate")
     parser.add_argument("--domain")
     parser.add_argument("--expected-sha")
@@ -499,6 +544,10 @@ def main():
             if any((args.candidate, args.domain, args.expected_sha)):
                 raise ValueError("unexpected arguments")
             report = inventory()
+        elif args.action == "binding-preview":
+            if args.candidate or args.expected_sha or not args.domain:
+                raise ValueError("invalid binding preview arguments")
+            report = connector_binding(args.domain)
         elif args.action == "recovery-preview":
             if any((args.candidate, args.domain, args.expected_sha)):
                 raise ValueError("unexpected recovery preview arguments")

@@ -3,7 +3,7 @@
 # in Preview; Apply requires exact tenant, state SHA and explicit confirmation.
 [CmdletBinding()]
 param(
-    [ValidateSet('Preview','Apply')][string]$Action = 'Preview',
+    [ValidateSet('Inspect','Preview','Apply')][string]$Action = 'Preview',
     [guid]$TenantId = [guid]::Empty,
     [string]$AcceptedDomain = '',
     [string]$ConnectorName = '',
@@ -41,15 +41,30 @@ function Test-PublicIPv4([string]$value) {
         ($b[0] -eq 203 -and $b[1] -eq 0 -and $b[2] -eq 113)) { return $false }
     return $true
 }
+function Get-CertificateOverlap([string]$existing, [string]$requested) {
+    if (-not $existing) { return 'none' }
+    if ($existing -ieq $requested) { return 'exact' }
+    if ($existing.StartsWith('*.')) {
+        $suffix = $existing.Substring(2)
+        if (-not (Test-Dns $suffix)) { return 'unknown' }
+        if ($requested -ieq $suffix -or $requested.EndsWith('.' + $suffix, [StringComparison]::OrdinalIgnoreCase)) {
+            return 'wildcard'
+        }
+        return 'none'
+    }
+    if (Test-Dns $existing) { return 'none' }
+    return 'unknown'
+}
 function Fingerprint([guid]$tenant,[string]$domain,[string]$name,
                      [string]$ident,[object[]]$connectors) {
     $lines = @($connectors | ForEach-Object {
         $ips = @($_.SenderIPAddresses | ForEach-Object { [string]$_ } | Sort-Object) -join ','
-        "$([string]$_.Identity)|$([string]$_.ConnectorType)|$([string]$_.Enabled)|$ips|$([string]$_.TlsSenderCertificateName)"
+        $senderDomains = @($_.SenderDomains | ForEach-Object { [string]$_ } | Sort-Object) -join ','
+        "$([string]$_.Identity)|$([string]$_.Name)|$([string]$_.ConnectorType)|$([string]$_.Enabled)|$ips|$([string]$_.TlsSenderCertificateName)|$([string]$_.RequireTls)|$senderDomains|$([string]$_.CloudServicesMailEnabled)"
     } | Sort-Object)
     $nl = [Environment]::NewLine
     $parts = [System.Collections.Generic.List[string]]::new()
-    $parts.Add('lmr365-connector/v1')
+    $parts.Add('lmr365-connector/v2')
     $parts.Add($tenant.ToString('D'))
     $parts.Add($domain.ToLowerInvariant())
     $parts.Add($name.ToLowerInvariant())
@@ -64,6 +79,12 @@ if ($SelfTest) {
         (Test-Dns '127.0.0.1') -or -not (Test-PublicIPv4 '8.8.8.8') -or
         (Test-PublicIPv4 '192.168.1.1') -or (Test-PublicIPv4 '203.0.113.10')) {
         throw 'Local connector selftest failed'
+    }
+    if ((Get-CertificateOverlap '*.example.org' 'relay.example.org') -ne 'wildcard' -or
+        (Get-CertificateOverlap 'relay.example.org' 'relay.example.org') -ne 'exact' -or
+        (Get-CertificateOverlap '*.example.org' 'evil-example.org') -ne 'none' -or
+        (Get-CertificateOverlap '<I>CN=Issuer<S>CN=example.org' 'relay.example.org') -ne 'unknown') {
+        throw 'Certificate overlap selftest failed'
     }
     Write-Output 'EXO_CONNECTOR_MANAGER_SELF_TEST=pass'
     Write-Output 'CHANGES_APPLIED=no'
@@ -82,8 +103,8 @@ if ($Action -eq 'Apply' -and
      $TypedConfirmation -cne 'CREATE_REVIEWED_M365_CONNECTOR')) {
     throw 'Reviewed connector SHA-256 and typed consent are required.'
 }
-if ($Action -eq 'Preview' -and ($ExpectedSha256 -or $TypedConfirmation)) {
-    throw 'Preview does not accept write options.'
+if ($Action -ne 'Apply' -and ($ExpectedSha256 -or $TypedConfirmation)) {
+    throw 'Read-only actions do not accept write options.'
 }
 if (-not [System.IO.Path]::IsPathFullyQualified($ResultPath)) {
     throw 'An absolute result path is required.'
@@ -118,8 +139,55 @@ try {
     if ($valid.Count -ne 1) {
         throw 'The accepted domain is not verified in this tenant.'
     }
+    if ($CertificateName) {
+        $certificateDomains = @($domains | Where-Object {
+            [string]$_.DomainName -eq $CertificateName -and
+            [string]$_.DomainType -in @('Authoritative','InternalRelay')
+        })
+        if ($certificateDomains.Count -ne 1) {
+            throw 'Certificate DNS identity must itself be an exact accepted domain. Review wildcard or subdomain policy manually.'
+        }
+    }
     $connectors = @(Get-InboundConnector -ErrorAction Stop)
     if ($connectors.Count -gt 500) { throw 'Connector count requires manual inspection.' }
+    if ($Action -eq 'Inspect') {
+        if (-not $CertificateName) { throw 'Inspect requires a certificate DNS identity.' }
+        $exact = 0
+        $compatible = 0
+        $conflicts = 0
+        $nameTaken = 0
+        foreach ($item in $connectors) {
+            if ([string]$item.Name -ieq $ConnectorName) { $nameTaken++ }
+            $overlap = Get-CertificateOverlap ([string]$item.TlsSenderCertificateName) $CertificateName
+            if ($overlap -eq 'exact') {
+                $exact++
+                $senderDomains = @($item.SenderDomains | ForEach-Object { [string]$_ })
+                $ips = @($item.SenderIPAddresses | Where-Object { [string]$_ })
+                if ([string]$item.ConnectorType -eq 'OnPremises' -and $item.Enabled -eq $true -and
+                    $item.RequireTls -eq $true -and $item.CloudServicesMailEnabled -eq $false -and
+                    $ips.Count -eq 0 -and $AcceptedDomain -in $senderDomains) {
+                    $compatible++
+                }
+            } elseif ($overlap -in @('wildcard','unknown')) { $conflicts++ }
+        }
+        $binding = if ($exact -eq 1 -and $compatible -eq 1 -and $conflicts -eq 0) {
+            'exact_enabled_connector_observed'
+        } elseif ($exact -eq 0 -and $conflicts -eq 0) {
+            'no_matching_connector'
+        } else { 'manual_review_required' }
+        $lines = @('EXO_CONNECTOR_TENANT=exact_match',
+                   'EXO_CONNECTOR_ACCEPTED_DOMAIN=verified',
+                   'EXO_CONNECTOR_CERTIFICATE_DOMAIN=verified',
+                   "EXO_CONNECTOR_BINDING=$binding",
+                   "EXO_CONNECTOR_EXACT_COUNT=$exact",
+                   "EXO_CONNECTOR_CONFLICT_COUNT=$conflicts",
+                   "EXO_CONNECTOR_NAME_TAKEN=$nameTaken",
+                   'EXO_CONNECTOR_DELIVERY_VERIFIED=no','CHANGES_APPLIED=no')
+        [System.IO.File]::WriteAllText($ResultPath,
+            ($lines -join [Environment]::NewLine) + [Environment]::NewLine,
+            [System.Text.UTF8Encoding]::new($false))
+        return
+    }
     foreach ($item in $connectors) {
         if ([string]$item.Name -eq $ConnectorName) {
             throw 'Connector name already exists.'
@@ -136,8 +204,8 @@ try {
             }
         }
         if ($CertificateName -and
-            [string]$item.TlsSenderCertificateName -eq $CertificateName) {
-            throw 'Existing Connector has matching certificate identity.'
+            (Get-CertificateOverlap ([string]$item.TlsSenderCertificateName) $CertificateName) -ne 'none') {
+            throw 'Existing Connector has matching, wildcard or unrecognized certificate identity; review manually.'
         }
     }
     $identity = if ($PublicIpv4) { "ip:$PublicIpv4" } else {
@@ -170,7 +238,10 @@ try {
             ErrorAction = 'Stop'
         }
         if ($PublicIpv4) { $options['SenderIPAddresses'] = @($PublicIpv4) }
-        else { $options['TlsSenderCertificateName'] = $CertificateName }
+        else {
+            $options['TlsSenderCertificateName'] = $CertificateName
+            $options['RequireTls'] = $true
+        }
         New-InboundConnector @options | Out-Null
         $created = @(Get-InboundConnector -Identity $ConnectorName -ErrorAction Stop)
         if ($created.Count -ne 1 -or
@@ -191,8 +262,10 @@ try {
             }
         }
         elseif (-not [string]::Equals([string]$created[0].TlsSenderCertificateName,
-                $CertificateName, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'New Connector TLS identity differs from reviewed certificate DNS.'
+                $CertificateName, [StringComparison]::OrdinalIgnoreCase) -or
+                $created[0].RequireTls -ne $true -or
+                @($created[0].SenderIPAddresses | Where-Object { [string]$_ }).Count -ne 0) {
+            throw 'New Connector TLS identity or security settings differ from reviewed values.'
         }
         $safe.Add('EXO_CONNECTOR_CREATED=yes')
         $safe.Add('CHANGES_APPLIED=tenant_new_connector_only')

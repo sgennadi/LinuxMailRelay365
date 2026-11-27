@@ -97,6 +97,7 @@ internal sealed partial class MainForm : Form
     private readonly TextBox outboundMxHost = Field("");
     private readonly TextBox outboundPublicIp = Field("");
     private readonly TextBox outboundConnectorName = Field("LinuxMailRelay365 SMTP Relay");
+    private readonly TextBox outboundConnectorCertificateName = Field("");
     private string? previewedTenantConnectorSha;
     private string? previewedTenantConnectorContext;
     private readonly TextBox outboundCertPath = Field("");
@@ -3281,6 +3282,9 @@ internal sealed partial class MainForm : Form
                             AddField(page, T("Имя нового Exchange Online Connector",
                                              "New Exchange Online Connector display name",
                                              "שם מחבר Exchange Online חדש"), outboundConnectorName);
+                            AddField(page, T("Точное DNS-имя сертификата Connector (для TLS)",
+                                             "Exact Connector certificate DNS name (TLS only)",
+                                             "שם DNS מדויק של אישור TLS"), outboundConnectorCertificateName);
                             AddAction(page, T("Проверить создание нового Connector (без изменений)",
                                               "Preview NEW tenant Connector (read-only)",
                                               "בדיקת יצירת Connector ללא שינוי"),
@@ -5196,14 +5200,18 @@ internal sealed partial class MainForm : Form
         string cert = outboundCertPath.Text.Trim();
         if (string.IsNullOrEmpty(ip) == string.IsNullOrEmpty(cert))
             throw new InvalidOperationException("For Connector creation choose EXACTLY ONE identity: static public IPv4 OR client certificate. Clear the unused value.");
-        return (id, domain, name, ip, ip.Length > 0 ? "" : domain);
+        string certificateName = ip.Length > 0 ? "" : outboundConnectorCertificateName.Text.Trim().ToLowerInvariant();
+        if (ip.Length == 0 && (Uri.CheckHostName(certificateName) != UriHostNameType.Dns ||
+            !System.Text.RegularExpressions.Regex.IsMatch(certificateName, @"\A[a-z0-9.-]{1,253}\z")))
+            throw new InvalidOperationException("Enter the exact certificate DNS identity; do not assume it is the sender domain.");
+        return (id, domain, name, ip, certificateName);
     }
 
     private async Task<string> RunTenantConnectorManagerAsync(
         (Guid Tenant, string Domain, string Name, string Ip, string Certificate) options,
         string action, string? sha = null)
     {
-        if (action is not ("Preview" or "Apply"))
+        if (action is not ("Inspect" or "Preview" or "Apply"))
             throw new ArgumentException("Unsupported tenant Connector action.");
         var scriptPath = Path.Combine(dataDirectory, "Manage-LinuxMailRelay365Connector.ps1");
         var reportPath = Path.Combine(dataDirectory, "connector-result-" +

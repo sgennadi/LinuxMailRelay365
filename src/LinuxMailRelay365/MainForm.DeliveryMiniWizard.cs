@@ -201,7 +201,7 @@ internal sealed partial class MainForm
                     if (result.ExitCode != 0) throw new InvalidOperationException("Systemd action refused.");
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     return result.StdOut;
-                });
+                }, (owner, dns) => ReviewManagedConnectorBindingAsync(owner, context, dns));
                 dialog.ShowDialog(this);
             };
             AddLine(page, smtp);
