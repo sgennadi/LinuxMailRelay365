@@ -371,6 +371,37 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
         self.assertFalse(inactive["write_allowed"])
         self.assertIsNone(inactive["config_metadata_sha256"])
 
+    def test_enforcing_evidence_pins_runtime_paths_and_ports(self):
+        S=self.S
+        identity=dict(tenant_id=TENANT,client_id=CLIENT,mailbox=MAIL,
+                      certificate=S.ROOT+"/app.crt",private_key=S.ROOT+"/app.key")
+        raw="SELinux Port Type Proto Port Number\nhttp_port_t tcp 443\nsmtp_port_t tcp 587\n"
+        sample=Mock(return_value=("policy_match",{"label":"test","metadata":[1,2]}))
+        cmd=Mock(return_value=raw)
+        read=Mock(return_value=(b"private config",identity))
+        with patch.object(S.A.grp,"getgrnam",return_value=Mock(gr_gid=998)), \
+             patch.object(S.A.pwd,"getpwnam",return_value=Mock(pw_uid=999)), \
+             patch.object(S.os,"lstat",return_value=Mock(st_uid=999)):
+            def observe():
+                return S.enforcing_review_evidence(lambda:"enforcing",cmd,sample,read)
+            evidence=observe()
+            self.assertEqual(set(evidence["paths"]),set(S.FIXED)|set(S.DYNAMIC))
+            self.assertEqual(evidence["identity_sha256"],S.A.C.sha(b"private config"))
+            self.assertNotIn("private config",str(evidence))
+            sample.return_value=("policy_mismatch",None)
+            with self.assertRaises(ValueError):
+                observe()
+            sample.return_value=("policy_match",{"label":"test","metadata":[1,2]})
+            cmd.return_value=raw+"other_t tcp 587\n"
+            with self.assertRaises(ValueError):
+                observe()
+            cmd.return_value=raw
+            count=len(evidence["paths"])
+            sample.side_effect=[("policy_match",{"label":"first"})]*count+[
+                ("policy_match",{"label":"second"})]*count
+            with self.assertRaisesRegex(ValueError,"policy_changed"):
+                observe()
+
     def test_gui_bundle_does_not_unlock_enforcing_apply(self):
         src=ROOT/"src/LinuxMailRelay365"
         self.assertIn("BuildPrimaryMailboxSelinuxReadiness",(src/"EmbeddedAssets.cs").read_text())
@@ -445,21 +476,44 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
         runtime=Mock(return_value="a"*64)
         policy=Mock(initial={"mode":"enforcing"})
         guard=Mock()
-        info={"version":2,"selinux":policy.initial,"runtime_sha256":"a"*64}
-        with patch.object(CLI,"native_selinux_offline",return_value=(policy,guard)) as native, \
+        labels={"identity_sha256":"c"*64,"paths":{"transport":"fixture"}}
+        info={"version":2,"selinux":policy.initial,"runtime_sha256":"a"*64,
+              "identity_sha256":"c"*64}
+        def native_review(config,uid,mailbox,maintenance,checked_runtime,selinux=None):
+            self.assertEqual((config,uid,mailbox),(7,0,MAIL))
+            self.assertIs(maintenance,guard)
+            self.assertIs(selinux,policy)
+            self.assertEqual(checked_runtime(mailbox),"a"*64)
+            self.assertEqual(checked_runtime(mailbox),"a"*64)
+            return "b"*64,info,{}
+        with patch.object(CLI,"enforcing_runtime_evidence",return_value=labels) as evidence, \
+             patch.object(CLI,"native_selinux_offline",return_value=(policy,guard)) as native, \
              patch.object(A,"RuntimeGuard",return_value=runtime) as factory, \
-             patch.object(CLI.X,"review",return_value=("b"*64,info,{})) as review, \
+             patch.object(CLI.X,"review",side_effect=native_review) as review, \
              patch.object(CLI.X,"apply") as apply,patch.object(CLI.X,"restore") as restore, \
              patch.object(policy,"save") as save,patch.object(CLI,"native_start") as start:
             self.assertIsNone(CLI.review_enforcing_host(7,8,9,MAIL,TENANT,CLIENT,CLI.ENFORCING_REVIEW))
             native.assert_called_once_with(7,8,9)
             factory.assert_called_once_with(TENANT,CLIENT,A.CONFIRM)
-            review.assert_called_once_with(7,0,MAIL,guard,runtime,selinux=policy)
+            self.assertEqual(review.call_count,1)
+            self.assertEqual(runtime.call_count,3)
+            self.assertEqual(evidence.call_count,5)
             self.assertEqual(policy.private_paths.call_count,2)
             policy.private_paths.assert_called_with("b"*64)
             self.assertGreaterEqual(guard.call_count,3)
             for item in (apply,restore,save,start):
                 item.assert_not_called()
+            runtime.reset_mock()
+            evidence.side_effect=[labels,dict(labels,paths={"transport":"changed"})]
+            with self.assertRaisesRegex(CLI.X.Refused,"policy_changed"):
+                CLI.review_enforcing_host(7,8,9,MAIL,TENANT,CLIENT,CLI.ENFORCING_REVIEW)
+            runtime.assert_not_called()
+            evidence.side_effect=CLI.X.Refused("enforcing_review_policy_unverified")
+            factory.reset_mock()
+            with self.assertRaises(CLI.X.Refused):
+                CLI.review_enforcing_host(7,8,9,MAIL,TENANT,CLIENT,CLI.ENFORCING_REVIEW)
+            factory.assert_not_called()
+            evidence.side_effect=None
             policy.private_paths.side_effect=CLI.X.Refused("policy changed")
             with self.assertRaises(CLI.X.Refused):
                 CLI.review_enforcing_host(7,8,9,MAIL,TENANT,CLIENT,CLI.ENFORCING_REVIEW)

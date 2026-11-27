@@ -203,6 +203,9 @@ internal static class PrimaryMailboxOfflineClient
         string enforcing=Row("STATUS","enforcing_review_observed")+Row("SELINUX","exact_contexts_observed")+
             Row("NATIVE_CANDIDATE","verified")+Row("SMTP_AUTH","observed")+Row("POSTFIX_CHANGED","no")+common;
         ValidateEnforcingReview(enforcing);
+        string enforcingBundle=EmbeddedAssets.BuildPrimaryMailboxOffline("review-enforcing",Maintenance,mail,tenant,app,confirmation:EnforcingReview);
+        if(!enforcingBundle.Contains("inspect-primary-mailbox-selinux.py",StringComparison.Ordinal) ||
+            !enforcingBundle.Contains("\"$work/manage-primary-mailbox-offline.py\" --review-enforcing",StringComparison.Ordinal)) return false;
         foreach(string bad in new[] {enforcing+Row("SHA256",a),
             enforcing+Row("RUNTIME_SHA256",b),enforcing+Row("STATUS","enforcing_review_observed"),
             enforcing.Replace("SELINUX=exact_contexts_observed","SELINUX=unverified"),

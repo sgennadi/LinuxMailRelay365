@@ -222,7 +222,7 @@ internal sealed partial class MainForm
             ClearReview();ClearInspection();Update();
             if(!ConfirmDestructive("Enforcing review (no Apply)",
                 TargetDescription(identity)+Environment.NewLine+
-                "Inspect exact native SELinux contexts, future backup policy and candidate configuration. "+
+                "Inspect exact native SELinux file contexts, TCP 443/587 policy labels, future backup policy and candidate configuration. "+
                 "Authenticate to Microsoft 365 using the installed identity without submitting mail. "+
                 "No Apply SHA, backup, service start or SELinux policy change. Confirm exclusive maintenance.",
                 PrimaryMailboxOfflineClient.EnforcingReview,dialog)) return;
@@ -233,7 +233,7 @@ internal sealed partial class MainForm
                 if(!TryTarget(out var current) || current!=identity)
                     throw new InvalidOperationException("Mailbox identity changed.");
                 report.Text=TargetDescription(identity)+Environment.NewLine+
-                    "Exact SELinux contexts and proposed native route verified."+Environment.NewLine+
+                    "Exact SELinux file contexts, TCP 443/587 policy labels and proposed native route verified."+Environment.NewLine+
                     "Future backup-path policy and no-mail SMTP AUTH observed."+Environment.NewLine+
                     "No live Postfix configuration or queue changes. Service remains stopped."+Environment.NewLine+
                     "No actual pipe-domain authentication or delivery tested."+Environment.NewLine+

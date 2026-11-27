@@ -487,7 +487,15 @@ internal static class EmbeddedAssets
     {
         string args = PrimaryMailboxOfflineClient.Arguments(action,maintenance,mailbox,tenant,client,sha,
             confirmation,authConfirmation);
-        return PrimaryMailboxBundle(false).Append("/usr/bin/python3 -I -B \"$work/manage-primary-mailbox-offline.py\" ")
+        var script=PrimaryMailboxBundle(false);
+        if(action=="review-enforcing")
+        {
+            const string file="inspect-primary-mailbox-selinux.py";
+            script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_PRIMARY_SELINUX_ASSET'\n")
+                .Append(Encode(Text("LinuxMailRelay365.linux."+file)))
+                .Append("\nLMR365_PRIMARY_SELINUX_ASSET\n");
+        }
+        return script.Append("/usr/bin/python3 -I -B \"$work/manage-primary-mailbox-offline.py\" ")
             .Append(args).Append('\n').ToString();
     }
 

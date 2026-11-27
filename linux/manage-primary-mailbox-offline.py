@@ -137,6 +137,15 @@ def review_host(config,queue,mailbox,tenant,client,confirmation):
     return revision,info["runtime_sha256"]
 
 
+def enforcing_runtime_evidence():
+    probe=load("primary_enforcing_review_labels","inspect-primary-mailbox-selinux.py")
+    try:
+        return probe.enforcing_review_evidence()
+    except (OSError,ValueError,RuntimeError,TypeError,KeyError,
+            probe.P.Refused,probe.T.Refused,subprocess.SubprocessError):
+        raise X.Refused("enforcing_review_policy_unverified") from None
+
+
 def review_enforcing_host(config,queue,parent,mailbox,tenant,client,confirmation):
     """Inspect the v2 candidate without exporting its Apply/recovery revision.
 
@@ -147,17 +156,26 @@ def review_enforcing_host(config,queue,parent,mailbox,tenant,client,confirmation
     A.need(confirmation==ENFORCING_REVIEW,"explicit_enforcing_review_required")
     policy,maintenance=native_selinux_offline(config,queue,parent)
     maintenance()
+    labels=enforcing_runtime_evidence()
+    maintenance()
     runtime=A.RuntimeGuard(tenant,client,A.CONFIRM)
-    revision,info,_=X.review(config,0,mailbox,maintenance,runtime,selinux=policy)
+    def checked_runtime(mailbox):
+        maintenance()
+        X.need(enforcing_runtime_evidence()==labels,"enforcing_review_policy_changed")
+        maintenance()
+        return runtime(mailbox)
+    revision,info,_=X.review(config,0,mailbox,maintenance,checked_runtime,selinux=policy)
     X.need(X.sha(revision) and info["version"]==2 and
-           info["selinux"]==policy.initial and X.sha(info["runtime_sha256"]),
+           info["selinux"]==policy.initial and X.sha(info["runtime_sha256"]) and
+           info["identity_sha256"]==labels["identity_sha256"],
            "enforcing_review_evidence_unverified")
     # Verify policy for the derived future backup paths, without creating
     # them or reading/modifying an existing backup tree.
     policy.private_paths(revision)
     maintenance()
-    X.need(runtime(mailbox)==info["runtime_sha256"],"runtime_review_changed")
+    X.need(checked_runtime(mailbox)==info["runtime_sha256"],"runtime_review_changed")
     policy.private_paths(revision)
+    X.need(enforcing_runtime_evidence()==labels,"enforcing_review_policy_changed")
     maintenance()
     # Deliberately return no revision or reusable authorization.
 
@@ -350,6 +368,8 @@ REVIEW_GUIDANCE={
     "unsafe_transaction_policy_context":"selinux_context_review",
     "selinux_policy_anchor_changed":"selinux_context_review",
     "native_selinux_context_changed":"selinux_context_review",
+    "enforcing_review_policy_unverified":"selinux_context_review",
+    "enforcing_review_policy_changed":"selinux_context_review",
     "selinux_recovery_policy_changed":"selinux_context_review",
 }
 

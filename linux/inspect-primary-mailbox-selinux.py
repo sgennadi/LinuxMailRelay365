@@ -106,7 +106,7 @@ def sample_path(path,kind,command=P.system_command,uid=0):
             os.close(handle)
     except FileNotFoundError:
         return "missing",None
-    except (OSError,ValueError,UnicodeError,P.Refused):
+    except (OSError,ValueError,UnicodeError,P.Refused,T.Refused):
         return "unverified",None
     finally:
         if fd is not None:
@@ -173,6 +173,59 @@ def port_states(raw):
             "no_specific_type" if not labels else "different_or_ambiguous_type"
             for port,labels in port_matches(raw).items()}
 
+def runtime_path_sample(command=P.system_command,sampler=sample_path,active_reader=A.read_active):
+    paths=dict(FIXED)
+    try:
+        group=A.grp.getgrnam("m365mailer").gr_gid
+        raw,data=active_reader(group)
+        kind,credentials=credential_paths(data)
+        paths.update(credentials)
+        active_sha=A.C.sha(raw)
+    except (OSError,ValueError,KeyError,TypeError,A.Refused,A.R.E.Refused):
+        kind,active_sha="unverified",None
+    # Postfix's normal spool directory may be postfix-owned.
+    try:
+        queue_uid=A.pwd.getpwnam("postfix").pw_uid
+    except KeyError:
+        queue_uid=None
+    results={}
+    for name,(path,file_kind) in paths.items():
+        if name=="queue_directory":
+            # Accept root or the exact postfix account; no other owner.
+            try:
+                owner=os.lstat(path).st_uid
+                need(owner in (0,queue_uid),"unexpected_queue_owner")
+            except (OSError,ValueError):
+                results[name]=("unverified",None)
+                continue
+        else:
+            owner=0
+        results[name]=sampler(path,file_kind,command,owner)
+    return kind,active_sha,results
+
+def enforcing_review_evidence(mode_reader=mode,command=P.system_command,
+                              sampler=sample_path,active_reader=A.read_active):
+    """Private policy evidence, not proof of pipe-domain permission."""
+    need(mode_reader()=="enforcing","enforcing_review_policy_unverified")
+    first=runtime_path_sample(command,sampler,active_reader)
+    identity,active_sha,results=first
+    need(identity in ("pem","managed_tpm2_reference") and
+         type(active_sha) is str and A.R.SHA.fullmatch(active_sha) and
+         set(results)==set(FIXED)|set(DYNAMIC),"enforcing_review_policy_unverified")
+    need(all(state in ("policy_match","policy_match_generic") and evidence is not None
+             for state,evidence in results.values()) and
+         all(results[name][0]=="policy_match" for name in CONFIG),
+         "enforcing_review_policy_unverified")
+    raw=command("semanage",["port","-l"])
+    need(all(state=="expected_type" for state in port_states(raw).values()),
+         "enforcing_review_policy_unverified")
+    need(runtime_path_sample(command,sampler,active_reader)==first and
+         command("semanage",["port","-l"])==raw and mode_reader()=="enforcing",
+         "enforcing_review_policy_changed")
+    return {"identity_sha256":active_sha,"identity_mode":identity,
+            "paths":results,"port_inventory_sha256":A.C.sha(raw.encode("utf-8"))}
+
+
 def collect(nonce,mode_reader=mode,command=P.system_command,sampler=sample_path,
             active_reader=A.read_active):
     observed=mode_reader()
@@ -183,34 +236,7 @@ def collect(nonce,mode_reader=mode,command=P.system_command,sampler=sample_path,
     status="inactive_or_unverified"
     if observed in ("enforcing","permissive"):
         def sample():
-            paths=dict(FIXED)
-            try:
-                group=A.grp.getgrnam("m365mailer").gr_gid
-                raw,data=active_reader(group)
-                kind,credentials=credential_paths(data)
-                paths.update(credentials)
-                active_sha=A.C.sha(raw)
-            except (OSError,ValueError,KeyError,TypeError,A.Refused,A.R.E.Refused):
-                kind,active_sha="unverified",None
-            # Postfix's normal spool directory may be postfix-owned.
-            try:
-                queue_uid=A.pwd.getpwnam("postfix").pw_uid
-            except KeyError:
-                queue_uid=None
-            results={}
-            for name,(path,file_kind) in paths.items():
-                if name=="queue_directory":
-                    # Accept root or the exact postfix account; no other owner.
-                    try:
-                        owner=os.lstat(path).st_uid
-                        need(owner in (0,queue_uid),"unexpected_queue_owner")
-                    except (OSError,ValueError):
-                        results[name]=("unverified",None)
-                        continue
-                else:
-                    owner=0
-                results[name]=sampler(path,file_kind,command,owner)
-            return kind,active_sha,results
+            return runtime_path_sample(command,sampler,active_reader)
         first=sample()
         second=sample()
         need(first==second and mode_reader()==observed,"selinux_observation_changed")
