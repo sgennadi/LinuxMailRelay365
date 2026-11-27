@@ -59,6 +59,26 @@ internal static class EmbeddedAssets
         Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux.smtp-acme-plan.py"))) +
         "\"))' --inspect";
 
+    internal static string BuildSmtpAcmeProviderDiscovery(string acceptedDomain, string name)
+    {
+        foreach (string value in new[] { acceptedDomain, name })
+            if (Uri.CheckHostName(value) != UriHostNameType.Dns ||
+                !Regex.IsMatch(value, @"\A[a-z0-9.-]{1,253}\z"))
+                throw new ArgumentException("Invalid ACME discovery DNS name.");
+        var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-acme-discovery.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
+        foreach (string file in new[] { "discover-smtp-acme-wizard.py", "discover-smtp-public-dns.py",
+                     "inspect-smtp-acme-delegation.py", "probe-smtp-acme-plugins.py",
+                     "recommend-smtp-acme-provider.py", "smtp-tls-postfix.py", "plan-smtp-certificate-acme.py" })
+        {
+            string resource = file == "plan-smtp-certificate-acme.py" ? "smtp-acme-plan.py" : file;
+            script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_ACME_DISCOVERY_ASSET'\n")
+                .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux." + resource))))
+                .Append("\nLMR365_ACME_DISCOVERY_ASSET\n");
+        }
+        return script.Append("/usr/bin/python3 -I -B \"$work/discover-smtp-acme-wizard.py\" --domain=")
+            .Append(acceptedDomain).Append(" --name=").Append(name).Append('\n').ToString();
+    }
+
     internal static string BuildSmtpAcmeDryRun(string? expectedSha)
     {
         if (expectedSha is not null && !Regex.IsMatch(expectedSha, @"\A[a-f0-9]{64}\z"))

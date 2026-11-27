@@ -6,7 +6,7 @@ namespace LinuxMailRelay365;
 
 internal sealed class SmtpAcmePlanDialog : Form
 {
-    internal SmtpAcmePlanDialog(Func<string, Task<string>> inspect, string acceptedDomain, string certificateName)
+    internal SmtpAcmePlanDialog(Func<string, Task<string>> inspect, Func<string, string, Task<string>> discoverProvider, string acceptedDomain, string certificateName)
     {
         Text = "ACME | DNS-01 readiness (read-only)";
         StartPosition = FormStartPosition.CenterParent;
@@ -27,13 +27,122 @@ internal sealed class SmtpAcmePlanDialog : Form
         var result = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
             ScrollBars = ScrollBars.Vertical, WordWrap = true, MinimumSize = new Size(0, 120) };
         var run = new Button { Text = "Inspect from Linux", AutoSize = true };
+        var discover = new Button { Text = "Detect DNS provider and plugins", AutoSize = true };
+        var choose = new Button { Text = "Select recommended provider", AutoSize = true, Enabled = false };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         bool busy = false;
-        void InvalidateReport() => result.Clear();
+        string? recommended = null;
+        void InvalidateReport()
+        {
+            recommended = null;
+            choose.Enabled = false;
+            result.Clear();
+        }
+        choose.Click += (_, _) =>
+        {
+            if (busy || recommended is null) return;
+            string selected = recommended;
+            provider.SelectedItem = selected;
+            recommended = null;
+            choose.Enabled = false;
+            result.Text = "Selected candidate provider: " + selected +
+                ". Inspect the plan and verify credentials separately; no issuance approved.";
+        };
         accepted.TextChanged += (_, _) => InvalidateReport();
         name.TextChanged += (_, _) => InvalidateReport();
         provider.SelectedIndexChanged += (_, _) => InvalidateReport();
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
+        discover.Click += async (_, _) =>
+        {
+            if (busy) return;
+            InvalidateReport();
+            string acceptedValue = accepted.Text.Trim().ToLowerInvariant();
+            string certificateValue = name.Text.Trim().ToLowerInvariant();
+            if (Uri.CheckHostName(acceptedValue) != UriHostNameType.Dns ||
+                Uri.CheckHostName(certificateValue) != UriHostNameType.Dns)
+            {
+                result.Text = "Enter the accepted domain and certificate DNS name first.";
+                return;
+            }
+            busy = true;
+            run.Enabled = discover.Enabled = close.Enabled = accepted.Enabled = name.Enabled = provider.Enabled = false;
+            result.Text = "Discovering public DNS delegation and registered Certbot authenticators from Linux...";
+            try
+            {
+                using var report = JsonDocument.Parse(await discoverProvider(acceptedValue, certificateValue));
+                if (IsDisposed) return;
+                var root = report.RootElement;
+                var req = root.GetProperty("request");
+                var dns = root.GetProperty("dns");
+                var delegation = root.GetProperty("delegation");
+                var rec = root.GetProperty("recommendation");
+                if (root.GetProperty("version").GetInt32() != 1 ||
+                    root.GetProperty("status").GetString() != "completed" ||
+                    root.GetProperty("public_resolver").GetString() != "1.1.1.1" ||
+                    root.GetProperty("automatic_issuance_allowed").GetBoolean() ||
+                    root.GetProperty("postfix_modified").GetBoolean() ||
+                    req.GetProperty("accepted_domain").GetString() != acceptedValue ||
+                    req.GetProperty("certificate_name").GetString() != certificateValue ||
+                    rec.GetProperty("automatic_issuance_allowed").GetBoolean() ||
+                    rec.GetProperty("delegated").GetBoolean() != delegation.GetProperty("delegated").GetBoolean())
+                    throw new InvalidDataException("Unexpected DNS discovery report.");
+                bool delegated = delegation.GetProperty("delegated").GetBoolean();
+                string? candidate = rec.GetProperty("recommended_provider").GetString();
+                var lines = new List<string> {
+                    "Public resolver: 1.1.1.1 (one observation, not propagation proof)",
+                    "Observed DNS zone: " + (dns.GetProperty("zone").GetString() ?? "unknown"),
+                    "DNS provider hint: " + dns.GetProperty("provider_hint").GetString(),
+                    "Nameservers: " + string.Join(", ", dns.GetProperty("nameservers").EnumerateArray().Select(x => x.GetString())),
+                    "Challenge target: " + delegation.GetProperty("target").GetString(),
+                    "Challenge delegated: " + (delegated ? "Yes - manual review required" : "No direct delegation observed"),
+                    "Certbot plugin inventory: " + root.GetProperty("plugins").GetProperty("status").GetString(),
+                    "", "Provider candidates:"
+                };
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                int recommendations = 0;
+                foreach (var option in rec.GetProperty("options").EnumerateArray())
+                {
+                    string value = option.GetProperty("provider").GetString() ?? "";
+                    if (value == "manual" || !provider.Items.Contains(value) || !seen.Add(value) ||
+                        option.GetProperty("credentials_verified").GetBoolean() ||
+                        option.GetProperty("issuance_verified").GetBoolean())
+                        throw new InvalidDataException("Unexpected provider result.");
+                    bool registered = option.GetProperty("registered").GetBoolean();
+                    bool matches = option.GetProperty("dns_hint_matches").GetBoolean();
+                    if (option.GetProperty("recommended").GetBoolean())
+                    {
+                        if (delegated || !registered || !matches || value != candidate)
+                            throw new InvalidDataException("Inconsistent provider recommendation.");
+                        recommendations++;
+                    }
+                    lines.Add(value + ": " + (registered ? "plugin registered" : "registration not verified") +
+                        (matches ? "; matches DNS hint" : ""));
+                }
+                if (seen.Count != provider.Items.Count - 1 || recommendations != (candidate is null ? 0 : 1))
+                    throw new InvalidDataException("Incomplete provider report.");
+                recommended = candidate;
+                choose.Enabled = recommended is not null;
+                lines.Add("");
+                lines.Add("Suggested provider: " + (recommended ?? "manual review"));
+                lines.Add("DNS ownership, credentials, CA client TLS eligibility and issuance remain unverified.");
+                lines.Add("No DNS writes, certificate issuance or Postfix configuration changes.");
+                result.Text = string.Join(Environment.NewLine, lines);
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed)
+                {
+                    InvalidateReport();
+                    result.Text = "Discovery unavailable: " + ex.GetType().Name +
+                        ". Check public DNS access, dig and Certbot. Manual planning is still available.";
+                }
+            }
+            finally
+            {
+                busy = false;
+                if (!IsDisposed) run.Enabled = discover.Enabled = close.Enabled = accepted.Enabled = name.Enabled = provider.Enabled = true;
+            }
+        };
         run.Click += async (_, _) =>
         {
             if (busy) return;
@@ -46,8 +155,9 @@ internal sealed class SmtpAcmePlanDialog : Form
                 result.Text = "Enter both DNS names. The accepted domain must contain the certificate name.";
                 return;
             }
+            InvalidateReport();
             busy = true;
-            run.Enabled = close.Enabled = accepted.Enabled = name.Enabled = provider.Enabled = false;
+            run.Enabled = discover.Enabled = close.Enabled = accepted.Enabled = name.Enabled = provider.Enabled = false;
             result.Text = "Inspecting Linux resolver and local tools...";
             try
             {
@@ -87,7 +197,7 @@ internal sealed class SmtpAcmePlanDialog : Form
             finally
             {
                 busy = false;
-                if (!IsDisposed) run.Enabled = close.Enabled = accepted.Enabled = name.Enabled = provider.Enabled = true;
+                if (!IsDisposed) run.Enabled = discover.Enabled = close.Enabled = accepted.Enabled = name.Enabled = provider.Enabled = true;
             }
         };
         layout.Controls.Add(new Label { Text = "Exchange accepted domain (candidate, not verified)", AutoSize = true }, 0, 0);
@@ -97,7 +207,9 @@ internal sealed class SmtpAcmePlanDialog : Form
         layout.Controls.Add(new Label { Text = "DNS-01 provider", AutoSize = true }, 0, 4);
         layout.Controls.Add(provider, 0, 5);
         layout.Controls.Add(new Label { Text = "No DNS secrets are requested. Manual mode is not automatic renewal.", AutoSize = true }, 0, 6);
-        layout.Controls.Add(run, 0, 7);
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
+        actions.Controls.AddRange([discover, choose, run]);
+        layout.Controls.Add(actions, 0, 7);
         layout.Controls.Add(result, 0, 8);
         layout.Controls.Add(close, 0, 9);
         Controls.Add(layout);

@@ -36,6 +36,11 @@
     <EmbeddedResource Include="../../linux/run-smtp-certificate-import.py" LogicalName="LinuxMailRelay365.linux.smtp-cert-import-launcher.py" />
     <EmbeddedResource Include="../../linux/discover-smtp-relay-certificates.py" LogicalName="LinuxMailRelay365.linux.smtp-cert-discovery.py" />
     <EmbeddedResource Include="../../linux/plan-smtp-certificate-acme.py" LogicalName="LinuxMailRelay365.linux.smtp-acme-plan.py" />
+    <EmbeddedResource Include="../../linux/discover-smtp-acme-wizard.py" LogicalName="LinuxMailRelay365.linux.discover-smtp-acme-wizard.py" />
+    <EmbeddedResource Include="../../linux/discover-smtp-public-dns.py" LogicalName="LinuxMailRelay365.linux.discover-smtp-public-dns.py" />
+    <EmbeddedResource Include="../../linux/inspect-smtp-acme-delegation.py" LogicalName="LinuxMailRelay365.linux.inspect-smtp-acme-delegation.py" />
+    <EmbeddedResource Include="../../linux/probe-smtp-acme-plugins.py" LogicalName="LinuxMailRelay365.linux.probe-smtp-acme-plugins.py" />
+    <EmbeddedResource Include="../../linux/recommend-smtp-acme-provider.py" LogicalName="LinuxMailRelay365.linux.recommend-smtp-acme-provider.py" />
     <EmbeddedResource Include="../../linux/inspect-smtp-certificate-renewal.py" LogicalName="LinuxMailRelay365.linux.smtp-renewal-inventory.py" />
     <EmbeddedResource Include="../../linux/review-smtp-acme-dry-run.py" LogicalName="LinuxMailRelay365.linux.review-smtp-acme-dry-run.py" />
     <EmbeddedResource Include="../../linux/review-smtp-tls-rotation.py" LogicalName="LinuxMailRelay365.linux.review-smtp-tls-rotation.py" />
