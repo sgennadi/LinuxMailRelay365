@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import signal
 import smtplib
 import socket
@@ -66,6 +67,7 @@ def need(condition, reason):
 
 def trusted_tool(name):
     paths = {"systemctl": ("/usr/bin/systemctl", "/bin/systemctl"),
+             "busctl": ("/usr/bin/busctl", "/bin/busctl"),
              "ip": ("/usr/sbin/ip", "/usr/bin/ip", "/sbin/ip", "/bin/ip"),
              "matchpathcon": ("/usr/sbin/matchpathcon", "/usr/bin/matchpathcon"),
              "semanage": ("/usr/sbin/semanage", "/usr/bin/semanage"),
@@ -103,6 +105,64 @@ def system_command(name, args):
     need(result.returncode == 0 and len(result.stdout) <= 131072,
          "system_inspection_unverified")
     return result.stdout.decode("utf-8", "strict")
+
+
+# Fixed, read-only systemd inspection for the primary managed TPM2 route.
+# Empty arrays may be omitted by systemctl show. Missing properties are
+# never treated as empty. The native D-Bus signature must match exactly.
+TPM_UNIT_SCALARS=("LoadState","PrivateDevices","DevicePolicy","RootDirectory","RootImage")
+TPM_UNIT_ARRAYS={
+    "BindPaths":("a(ssbt)",4),
+    "BindReadOnlyPaths":("a(ssbt)",4),
+    "TemporaryFileSystem":("a(ss)",2),
+    "DeviceAllow":("a(ss)",2),
+}
+
+
+def tpm_unit_array(name,command=system_command):
+    signature,width=TPM_UNIT_ARRAYS[name]
+    raw=command("busctl",["--system","--no-pager","get-property",
+                          "org.freedesktop.systemd1",
+                          "/org/freedesktop/systemd1/unit/postfix_2eservice",
+                          "org.freedesktop.systemd1.Service",name])
+    need(len(raw)<=16384 and len(raw.splitlines())==1 and "\\" not in raw,
+         "tpm_unit_array_unverified")
+    tokens=shlex.split(raw)
+    need(len(tokens)>=2 and tokens[0]==signature and
+         re.fullmatch(r"(?:0|[1-9][0-9]{0,3})",tokens[1]) is not None,
+         "tpm_unit_array_type_unverified")
+    count=int(tokens[1])
+    need(count<=128 and len(tokens)==2+count*width and
+         all(not any(ord(c)<32 for c in token) for token in tokens[2:]),
+         "tpm_unit_array_count_unverified")
+    rows=tuple(tuple(tokens[i:i+width]) for i in range(2,len(tokens),width))
+    if signature=="a(ssbt)":
+        need(all(row[2] in ("true","false") and
+                 re.fullmatch(r"(?:0|[1-9][0-9]{0,19})",row[3]) is not None and
+                 int(row[3])<=18446744073709551615 for row in rows),
+             "tpm_unit_bind_type_unverified")
+    return rows
+
+
+def tpm_pipe_sandbox(command=system_command):
+    """Conservative effective-unit observation, never pipe authorization."""
+    def snapshot():
+        args=["show","--all","postfix.service"]+[
+            "--property="+key for key in TPM_UNIT_SCALARS]
+        values=key_values(command("systemctl",args),TPM_UNIT_SCALARS)
+        need(values["LoadState"]=="loaded" and values["PrivateDevices"] in ("yes","no") and
+             values["DevicePolicy"] in ("auto","closed","strict"),"tpm_unit_scope_unverified")
+        values.update((name,tpm_unit_array(name,command)) for name in TPM_UNIT_ARRAYS)
+        return values
+    try:
+        first=snapshot()
+        need(snapshot()==first,"tpm_unit_scope_changed")
+        if first["PrivateDevices"]=="yes" and not any(first[key] for key in (
+                "BindPaths","BindReadOnlyPaths","TemporaryFileSystem","RootDirectory","RootImage")):
+            return "private_devices_without_bind"
+        return "manual_pipe_review_required"
+    except (OSError,ValueError,UnicodeError,Refused):
+        return "unverified"
 
 
 def open_directory(path, uid=0, strict=True):

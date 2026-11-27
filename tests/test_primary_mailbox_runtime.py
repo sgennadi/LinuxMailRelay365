@@ -359,24 +359,50 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
 
     def test_tpm_pipe_sandbox_reports_only_bounded_unit_observation(self):
         S=self.S
-        values=dict.fromkeys(S.TPM_UNIT_PROPERTIES,"")
+        values=dict.fromkeys(S.P.TPM_UNIT_SCALARS,"")
         values.update(LoadState="loaded",PrivateDevices="yes",DevicePolicy="closed")
-        def raw(overrides=None):
-            return "".join(k+"="+v+"\n" for k,v in dict(values,**(overrides or {})).items())
-        command=Mock(return_value=raw())
+        def run(overrides=None,arrays=None):
+            effective=dict(values,**(overrides or {}))
+            replies={name:signature+" 0\n" for name,(signature,width) in S.P.TPM_UNIT_ARRAYS.items()}
+            replies.update(arrays or {})
+            def command(tool,args):
+                if tool=="systemctl":
+                    self.assertEqual(args,["show","--all","postfix.service"]+
+                                     ["--property="+k for k in S.P.TPM_UNIT_SCALARS])
+                    return "".join(k+"="+v+"\n" for k,v in effective.items())
+                self.assertEqual(tool,"busctl")
+                self.assertEqual(args[:-1],["--system","--no-pager","get-property",
+                                 "org.freedesktop.systemd1",
+                                 "/org/freedesktop/systemd1/unit/postfix_2eservice",
+                                 "org.freedesktop.systemd1.Service"])
+                return replies[args[-1]]
+            return Mock(side_effect=command)
+        command=run()
         self.assertEqual(S.tpm_pipe_sandbox(command),"private_devices_without_bind")
-        self.assertEqual(command.call_count,2)
-        self.assertEqual(command.call_args[0],("systemctl",["show","--all","postfix.service"]+
-                         ["--property="+k for k in S.TPM_UNIT_PROPERTIES]))
-        for overrides in ({"PrivateDevices":"no"},{"BindPaths":"/dev/tpmrm0:/dev/tpmrm0"},
-                          {"RootImage":"/private/image"},{"TemporaryFileSystem":"/dev"}):
-            command=Mock(return_value=raw(overrides))
-            self.assertEqual(S.tpm_pipe_sandbox(command),"manual_pipe_review_required")
-        for output in ("",raw({"LoadState":"not-found"}),raw({"DevicePolicy":"unexpected"}),
-                       raw()+"PrivateDevices=no\n"):
-            self.assertEqual(S.tpm_pipe_sandbox(Mock(return_value=output)),"unverified")
-        self.assertEqual(S.tpm_pipe_sandbox(Mock(side_effect=[raw(),raw({"PrivateDevices":"no"})])),
-                         "unverified")
+        self.assertEqual(command.call_count,10)
+        for overrides in ({"PrivateDevices":"no"},{"RootImage":"/private/image"}):
+            self.assertEqual(S.tpm_pipe_sandbox(run(overrides)),"manual_pipe_review_required")
+        for arrays in (
+                {"BindPaths":'a(ssbt) 1 "/dev/tpmrm0" "/dev/tpmrm0" false 16384\n'},
+                {"TemporaryFileSystem":'a(ss) 1 "/dev" "mode=755"\n'}):
+            self.assertEqual(S.tpm_pipe_sandbox(run(arrays=arrays)),"manual_pipe_review_required")
+        # DeviceAllow alone cannot make a device visible in a private /dev.
+        self.assertEqual(S.tpm_pipe_sandbox(run(arrays={"DeviceAllow":
+                         'a(ss) 1 "/dev/tpmrm0" "rw"\n'})),"private_devices_without_bind")
+        for overrides in ({"LoadState":"not-found"},{"DevicePolicy":"unexpected"}):
+            self.assertEqual(S.tpm_pipe_sandbox(run(overrides)),"unverified")
+        for raw in ("","as 0\n","a(ssbt) 1\n",'a(ssbt) 1 "a" "b" maybe 0\n',
+                    'a(ssbt) 1 "a" "b" false 18446744073709551616\n',
+                    'a(ssbt) 0\nextra\n','a(ssbt) 1 "a\\n" "b" false 0\n'):
+            self.assertEqual(S.tpm_pipe_sandbox(run(arrays={"BindPaths":raw})),"unverified")
+        good=run()
+        changed=run({"PrivateDevices":"no"})
+        calls=0
+        def drift(tool,args):
+            nonlocal calls
+            calls+=1
+            return (good if calls<=5 else changed)(tool,args)
+        self.assertEqual(S.tpm_pipe_sandbox(drift),"unverified")
         self.assertEqual(S.tpm_pipe_sandbox(Mock(side_effect=S.P.Refused("private detail"))),"unverified")
 
     def test_report_is_read_only_and_fails_on_observed_drift(self):

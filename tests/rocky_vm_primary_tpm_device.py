@@ -101,6 +101,9 @@ def check_postfix_scope():
         os.close(fd)
     P.stopped_units()
     P.no_postfix_processes()
+    need(P.tpm_pipe_sandbox()=="private_devices_without_bind",
+         "stock_rocky10_tpm_sandbox_not_verified")
+    print("LMR365_VM_VTPM_NATIVE_SANDBOX=private_devices_without_bind",flush=True)
     return "stopped_empty_native_queue"
 
 

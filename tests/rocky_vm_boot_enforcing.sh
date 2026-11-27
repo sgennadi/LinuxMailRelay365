@@ -305,6 +305,7 @@ VTPM_SETUP
 fi
 if test "$expected_version" = 10.3; then
     grep -Fxq 'LMR365_VM_VTPM_POSTFIX_SCOPE=stopped_empty_native_queue' "$work/vtpm-receipt"
+    grep -Fxq 'LMR365_VM_VTPM_NATIVE_SANDBOX=private_devices_without_bind' "$work/vtpm-receipt"
     echo "LMR365_GUEST_VTPM_NATIVE_PROVIDER_ONLY=passed"
     # Normalize only the mislabeled, empty package data directory in this
     # newly created Rocky 10.3 VM. This is NOT a production installer action.

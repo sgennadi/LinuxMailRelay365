@@ -273,29 +273,10 @@ def enforcing_review_evidence(mode_reader=mode,command=P.system_command,
             "paths":results,"port_inventory_sha256":A.C.sha(raw.encode("utf-8"))}
 
 
-TPM_UNIT_PROPERTIES=("LoadState","PrivateDevices","DevicePolicy","BindPaths",
-    "BindReadOnlyPaths","TemporaryFileSystem","RootDirectory","RootImage","DeviceAllow")
-
 def tpm_pipe_sandbox(command=P.system_command):
-    """Inspect effective unit settings, never enter namespaces or change policy.
+    # The same read-only native classifier is exercised in the Rocky 10 VM.
+    return P.tpm_pipe_sandbox(command)
 
-    A configured bind/allow or PrivateDevices=no is NOT proof that the real
-    pipe can open a TPM device. Report only a conservative classification.
-    """
-    try:
-        args=["show","--all","postfix.service"]+[
-            "--property="+key for key in TPM_UNIT_PROPERTIES]
-        raw=command("systemctl",args)
-        values=P.key_values(raw,TPM_UNIT_PROPERTIES)
-        need(values["LoadState"]=="loaded" and values["PrivateDevices"] in ("yes","no") and
-             values["DevicePolicy"] in ("auto","closed","strict"),"unit_scope_unverified")
-        need(command("systemctl",args)==raw,"unit_scope_changed")
-        if values["PrivateDevices"]=="yes" and not any(values[key] for key in (
-                "BindPaths","BindReadOnlyPaths","TemporaryFileSystem","RootDirectory","RootImage")):
-            return "private_devices_without_bind"
-        return "manual_pipe_review_required"
-    except (OSError,ValueError,UnicodeError,P.Refused):
-        return "unverified"
 
 def collect(nonce,mode_reader=mode,command=P.system_command,sampler=sample_path,
             active_reader=A.read_active,data_reader=native_data_directory):
