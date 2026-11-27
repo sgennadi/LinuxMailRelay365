@@ -76,6 +76,38 @@ internal static class EmbeddedAssets
         return script.ToString();
     }
 
+    internal static string BuildSmtpTlsRotation(string action, string? candidate, string? domain, string? expectedSha)
+    {
+        if (action is not ("inventory" or "preview" or "activate"))
+            throw new ArgumentException("Invalid TLS action.");
+        if (action == "inventory")
+        {
+            if (candidate is not null || domain is not null || expectedSha is not null)
+                throw new ArgumentException("Unexpected inventory arguments.");
+        }
+        else if (candidate is null || !Regex.IsMatch(candidate, @"\Acandidate-[a-f0-9]{64}\z") ||
+                 domain is null || Uri.CheckHostName(domain) != UriHostNameType.Dns ||
+                 !Regex.IsMatch(domain, @"\A[a-z0-9.-]{1,253}\z") ||
+                 (action == "activate" ? expectedSha is null || !Regex.IsMatch(expectedSha, @"\A[a-f0-9]{64}\z") : expectedSha is not null))
+            throw new ArgumentException("Invalid reviewed TLS action.");
+        var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-tls-review.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
+        foreach (string file in new[] { "review-smtp-tls-rotation.py", "smtp-tls-generation.py",
+                     "smtp-tls-transaction.py", "smtp-tls-activate.py", "smtp-tls-validate-generation.py",
+                     "plan-smtp-tls-initial.py", "smtp-tls-postfix.py", "check-smtp-relay-certificate.py" })
+        {
+            string resource = file == "check-smtp-relay-certificate.py" ? "LinuxMailRelay365.linux.smtp-cert-check.py" :
+                "LinuxMailRelay365.linux." + file;
+            script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_TLS_REVIEW_ASSET'\n")
+                .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text(resource))))
+                .Append("\nLMR365_TLS_REVIEW_ASSET\n");
+        }
+        script.Append("/usr/bin/python3 -I -B \"$work/review-smtp-tls-rotation.py\" ").Append(action);
+        if (candidate is not null) script.Append(" --candidate=").Append(candidate);
+        if (domain is not null) script.Append(" --domain=").Append(domain);
+        if (expectedSha is not null) script.Append(" --expected-sha=").Append(expectedSha);
+        return script.Append('\n').ToString();
+    }
+
     internal static string SmtpRenewalInventory =>
         "set -eu\n/usr/bin/python3 -I -B - <<'LMR365_RENEWAL_INVENTORY'\n" +
         Text("LinuxMailRelay365.linux.smtp-renewal-inventory.py") +
