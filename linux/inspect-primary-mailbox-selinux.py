@@ -273,12 +273,37 @@ def enforcing_review_evidence(mode_reader=mode,command=P.system_command,
             "paths":results,"port_inventory_sha256":A.C.sha(raw.encode("utf-8"))}
 
 
+TPM_UNIT_PROPERTIES=("LoadState","PrivateDevices","DevicePolicy","BindPaths",
+    "BindReadOnlyPaths","TemporaryFileSystem","RootDirectory","RootImage","DeviceAllow")
+
+def tpm_pipe_sandbox(command=P.system_command):
+    """Inspect effective unit settings, never enter namespaces or change policy.
+
+    A configured bind/allow or PrivateDevices=no is NOT proof that the real
+    pipe can open a TPM device. Report only a conservative classification.
+    """
+    try:
+        args=["show","--all","postfix.service"]+[
+            "--property="+key for key in TPM_UNIT_PROPERTIES]
+        raw=command("systemctl",args)
+        values=P.key_values(raw,TPM_UNIT_PROPERTIES)
+        need(values["LoadState"]=="loaded" and values["PrivateDevices"] in ("yes","no") and
+             values["DevicePolicy"] in ("auto","closed","strict"),"unit_scope_unverified")
+        need(command("systemctl",args)==raw,"unit_scope_changed")
+        if values["PrivateDevices"]=="yes" and not any(values[key] for key in (
+                "BindPaths","BindReadOnlyPaths","TemporaryFileSystem","RootDirectory","RootImage")):
+            return "private_devices_without_bind"
+        return "manual_pipe_review_required"
+    except (OSError,ValueError,UnicodeError,P.Refused):
+        return "unverified"
+
 def collect(nonce,mode_reader=mode,command=P.system_command,sampler=sample_path,
             active_reader=A.read_active,data_reader=native_data_directory):
     observed=mode_reader()
     labels=dict.fromkeys(tuple(FIXED)+DYNAMIC,"not_checked")
     ports=dict.fromkeys(map(str,PORTS),"not_checked")
     identity="not_checked"
+    sandbox="not_checked"
     config_sha=None
     status="inactive_or_unverified"
     if observed in ("enforcing","permissive"):
@@ -288,6 +313,8 @@ def collect(nonce,mode_reader=mode,command=P.system_command,sampler=sample_path,
         second=sample()
         need(first==second and mode_reader()==observed,"selinux_observation_changed")
         identity,_,results=first
+        if identity=="managed_tpm2_reference":
+            sandbox=tpm_pipe_sandbox(command)
         for name,(state,_) in results.items():
             labels[name]=state
         try:
@@ -307,8 +334,8 @@ def collect(nonce,mode_reader=mode,command=P.system_command,sampler=sample_path,
             all(state in ("policy_match","policy_match_generic") for state in labels.values()) and
             all(state=="expected_type" for state in ports.values())
         ) else "policy_or_mode_review_required"
-    return {"version":2,"nonce":nonce,"status":status,"mode":observed,
-            "identity":identity,"labels":labels,"ports":ports,"config_metadata_sha256":config_sha,
+    return {"version":3,"nonce":nonce,"status":status,"mode":observed,
+            "identity":identity,"tpm_pipe_sandbox":sandbox,"labels":labels,"ports":ports,"config_metadata_sha256":config_sha,
             "write_allowed":False,"runtime_verified":False,"changes_applied":False,
             "mail_sent":False,"network_attempted":False}
 

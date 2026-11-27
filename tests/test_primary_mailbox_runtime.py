@@ -357,6 +357,28 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
         hardware["signer"]["provider"]="pkcs11"
         self.assertEqual(S.credential_paths(hardware)[0],"custom_hardware")
 
+    def test_tpm_pipe_sandbox_reports_only_bounded_unit_observation(self):
+        S=self.S
+        values=dict.fromkeys(S.TPM_UNIT_PROPERTIES,"")
+        values.update(LoadState="loaded",PrivateDevices="yes",DevicePolicy="closed")
+        def raw(overrides=None):
+            return "".join(k+"="+v+"\n" for k,v in dict(values,**(overrides or {})).items())
+        command=Mock(return_value=raw())
+        self.assertEqual(S.tpm_pipe_sandbox(command),"private_devices_without_bind")
+        self.assertEqual(command.call_count,2)
+        self.assertEqual(command.call_args[0],("systemctl",["show","--all","postfix.service"]+
+                         ["--property="+k for k in S.TPM_UNIT_PROPERTIES]))
+        for overrides in ({"PrivateDevices":"no"},{"BindPaths":"/dev/tpmrm0:/dev/tpmrm0"},
+                          {"RootImage":"/private/image"},{"TemporaryFileSystem":"/dev"}):
+            command=Mock(return_value=raw(overrides))
+            self.assertEqual(S.tpm_pipe_sandbox(command),"manual_pipe_review_required")
+        for output in ("",raw({"LoadState":"not-found"}),raw({"DevicePolicy":"unexpected"}),
+                       raw()+"PrivateDevices=no\n"):
+            self.assertEqual(S.tpm_pipe_sandbox(Mock(return_value=output)),"unverified")
+        self.assertEqual(S.tpm_pipe_sandbox(Mock(side_effect=[raw(),raw({"PrivateDevices":"no"})])),
+                         "unverified")
+        self.assertEqual(S.tpm_pipe_sandbox(Mock(side_effect=S.P.Refused("private detail"))),"unverified")
+
     def test_report_is_read_only_and_fails_on_observed_drift(self):
         S=self.S
         identity=dict(tenant_id=TENANT,client_id=CLIENT,mailbox=MAIL,
@@ -369,11 +391,25 @@ class PrimarySelinuxReadinessTests(unittest.TestCase):
             result=S.collect("a"*64,lambda:"enforcing",Mock(return_value=raw),sample,
                              Mock(return_value=(b"private config",identity)),lambda:S.DATA)
             self.assertEqual(result["status"],"manual_runtime_review_required")
+            self.assertEqual(result["version"],3)
+            self.assertEqual(result["tpm_pipe_sandbox"],"not_checked")
             self.assertRegex(result["config_metadata_sha256"],r"^[a-f0-9]{64}$")
             for flag in ("write_allowed","runtime_verified","changes_applied","mail_sent","network_attempted"):
                 self.assertFalse(result[flag])
             self.assertNotIn("private config",str(result))
             self.assertNotIn(S.ROOT,str(result))
+            hardware=dict(identity)
+            del hardware["private_key"]
+            hardware["certificate"]=S.ROOT+"/hardware-app.crt"
+            hardware["signer"]={"type":"openssl-provider","provider":"tpm2",
+                "key_ref":"handle:0x81010001","provider_config":S.ROOT+"/tpm2.cnf"}
+            with patch.object(S,"tpm_pipe_sandbox",return_value="private_devices_without_bind") as sandbox:
+                observed=S.collect("a"*64,lambda:"enforcing",Mock(return_value=raw),sample,
+                                   Mock(return_value=(b"private hardware config",hardware)),lambda:S.DATA)
+                self.assertEqual(observed["tpm_pipe_sandbox"],"private_devices_without_bind")
+                self.assertFalse(observed["write_allowed"])
+                self.assertFalse(observed["runtime_verified"])
+                sandbox.assert_called_once()
             sample.side_effect=[("policy_match",{"label":"one"})]*len(result["labels"])+[("policy_mismatch",None)]*len(result["labels"])
             with self.assertRaises(ValueError):
                 S.collect("a"*64,lambda:"enforcing",Mock(return_value=raw),sample,
