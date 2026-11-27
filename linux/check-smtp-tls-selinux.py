@@ -14,7 +14,7 @@ def load(name):
 
 def probe(binary,*args):
     try:
-        binary=load("smtp-tls-postfix").trusted_binary(binary)
+        binary=load("smtp-tls-postfix").trusted_invocation(binary)
         r=subprocess.run([binary]+list(args),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=15,env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","LC_ALL":"C"})
         return r.returncode,r.stdout.decode("utf-8","replace").strip()
     except Exception:

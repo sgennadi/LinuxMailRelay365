@@ -24,12 +24,12 @@ def main():
             gen.validate(root,name)
             pf=load("smtp-tls-postfix")
             env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","LC_ALL":"C"}
-            mode=subprocess.check_output([pf.trusted_binary("/usr/sbin/getenforce")],env=env,timeout=10).strip()
+            mode=subprocess.check_output([pf.trusted_invocation("/usr/sbin/getenforce")],env=env,timeout=10).strip()
             if mode==b"Disabled":
                 report["status"]="not_applicable"
             elif mode in (b"Enforcing",b"Permissive"):
                 paths=[root,root/name]+[root/name/x for x in ("client-chain.pem","fullchain.pem","key.pem")]
-                r=subprocess.run([pf.trusted_binary("/usr/sbin/restorecon"),"-n","-v"]+[str(x) for x in paths],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30,env=env)
+                r=subprocess.run([pf.trusted_invocation("/usr/sbin/restorecon"),"-n","-v"]+[str(x) for x in paths],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30,env=env)
                 report["status"]="preview" if r.returncode==0 else "failed"
                 report["changes"]=r.stdout.decode("utf-8","replace").splitlines()[:100]
     except Exception:

@@ -31,15 +31,15 @@ def main():
             gen.validate(root,name)
             pf=load("smtp-tls-postfix")
             env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin","LC_ALL":"C"}
-            mode=subprocess.check_output([pf.trusted_binary("/usr/sbin/getenforce")],env=env,timeout=10).strip()
+            mode=subprocess.check_output([pf.trusted_invocation("/usr/sbin/getenforce")],env=env,timeout=10).strip()
             if mode not in (b"Enforcing",b"Permissive"):
                 raise ValueError("SELinux not active")
             paths=[root,root/name]+[root/name/x for x in ("client-chain.pem","fullchain.pem","key.pem")]
-            binary=pf.trusted_binary("/usr/sbin/restorecon")
+            binary=pf.trusted_invocation("/usr/sbin/restorecon")
             r=subprocess.run([binary,"-v"]+[str(x) for x in paths],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30,env=env)
             if r.returncode:
                 raise RuntimeError("restorecon failed")
-            match=pf.trusted_binary("/usr/sbin/matchpathcon")
+            match=pf.trusted_invocation("/usr/sbin/matchpathcon")
             for path in paths:
                 expected=subprocess.check_output([match,"-n",str(path)],env=env,timeout=10).strip()
                 actual=os.getxattr(str(path),"security.selinux").rstrip(b"\x00")

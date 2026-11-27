@@ -16,6 +16,27 @@ def trusted_binary(path):
         raise ValueError("invalid executable")
     return str(p)
 
+def trusted_invocation(path):
+    """Validate the executable but preserve its invocation name.
+
+    SELinux tools can be symlinked multi-call binaries (restorecon/setfiles).
+    Resolving argv[0] changes their behavior. Keep the caller's absolute
+    path after checking both the lexical path and resolved executable.
+    """
+    requested=Path(path)
+    if not requested.is_absolute() or ".." in requested.parts:
+        raise ValueError("absolute trusted invocation required")
+    for item in [requested]+list(requested.parents):
+        st=item.lstat()
+        if st.st_uid!=0 or (not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o022):
+            raise ValueError("untrusted invocation path")
+        if item!=requested:
+            target=item.stat()
+            if not stat.S_ISDIR(target.st_mode) or target.st_uid!=0 or target.st_mode & 0o022:
+                raise ValueError("untrusted invocation directory")
+    trusted_binary(str(requested))
+    return str(requested)
+
 class Postfix:
     def __init__(self):
         if os.geteuid()!=0:

@@ -122,7 +122,7 @@ def sink(listener, expected, token, outcome):
             conn.settimeout(15)
             conn.sendall(b"220 sink.lab.invalid ESMTP\r\n")
             with conn.makefile("rb") as reader:
-                if not reader.readline(2049).startswith(b"EHLO "):
+                if not reader.readline(2049).upper().startswith(b"EHLO "):
                     raise ValueError("EHLO required")
                 conn.sendall(b"250-sink.lab.invalid\r\n250 STARTTLS\r\n")
                 if reader.readline(2049).strip().upper() != b"STARTTLS":
@@ -136,7 +136,7 @@ def sink(listener, expected, token, outcome):
                 if not any("postfix_smtp_t" in line for line in run("ps", "-eZ").decode().splitlines()):
                     raise ValueError("confined Postfix SMTP process not observed")
                 with tls.makefile("rb") as reader:
-                    if not reader.readline(2049).startswith(b"EHLO "):
+                    if not reader.readline(2049).upper().startswith(b"EHLO "):
                         raise ValueError("post-TLS EHLO required")
                     tls.sendall(b"250 sink.lab.invalid\r\n")
                     if reader.readline(2049).strip().upper() != ("MAIL FROM:<" + SENDER + ">").encode().upper():
@@ -184,6 +184,15 @@ def probe(name, label):
         run("/usr/sbin/sendmail", "-i", "-f", SENDER, "--", RECIPIENT, data=message)
         thread.join(80)
     if outcome != ["verified"]:
+        # Bounded logs in the disposable synthetic guest only.
+        try:
+            logs = run("journalctl", "--no-pager", "-o", "cat", "-n", "30",
+                       "-t", "postfix/smtp", "-t", "postfix/qmgr", timeout=10)
+            print("LMR365_VM_CLIENT_TLS_FAILURE_LOG_BEGIN", flush=True)
+            print(logs[-12000:].decode("utf-8", "replace"), flush=True)
+            print("LMR365_VM_CLIENT_TLS_FAILURE_LOG_END", flush=True)
+        except Exception:
+            print("LMR365_VM_CLIENT_TLS_FAILURE_LOG=unavailable", flush=True)
         raise RuntimeError("loopback TLS fixture failed: " + ",".join(outcome))
     wait_empty()
     if run("getenforce").strip() != b"Enforcing":
@@ -220,7 +229,7 @@ def main():
         candidate = stage.stage(str(WORK / (name + ".pem")), str(WORK / "ca.pem"),
                                 str(WORK / (name + ".key")), IDENTITY, str(WORK / "ca.pem"))
         run("restorecon", str(ROOT))
-        if labels.prepare(ROOT, candidate, gen, adapter.trusted_binary) != "contexts_verified":
+        if labels.prepare(ROOT, candidate, gen, adapter.trusted_invocation) != "contexts_verified":
             raise RuntimeError("candidate SELinux labels not verified")
         return candidate
     first, second = stage_one("first"), stage_one("second")

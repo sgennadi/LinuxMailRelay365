@@ -23,7 +23,7 @@ def load(name):
 
 
 def command(adapter, binary, *args):
-    result = subprocess.run([adapter.trusted_binary(binary), *args], stdout=subprocess.PIPE,
+    result = subprocess.run([adapter.trusted_invocation(binary), *args], stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, timeout=15, env=ENV)
     if result.returncode or len(result.stdout) > 4096:
         raise ValueError("SELinux tool failed")
