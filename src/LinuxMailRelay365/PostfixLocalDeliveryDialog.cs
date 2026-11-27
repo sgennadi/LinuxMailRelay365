@@ -26,7 +26,7 @@ internal sealed class PostfixLocalDeliveryDialog : Form
         var intro = new Label { AutoSize = true, MaximumSize = new Size(650, 0),
             Text = "Send one explicitly approved local test to a non-privileged UNIX user at the exact Postfix hostname. " +
                 "Standard aliases and .forward paths are checked for this recipient. Existing forwarding or custom maps, transports and rewriting are refused. Do not change mail settings just to pass this test. " +
-                "Only local delivery-agent evidence is observed; mailbox contents are never read." };
+                "Trace observes only the delivery agent. A separate approved mailbox check searches bounded local headers for this test only." };
         var recipient = new TextBox { Dock = DockStyle.Top, MaxLength = 254, PlaceholderText = "testuser@mail.example.org" };
         var run = new TextBox { Dock = DockStyle.Top, MaxLength = 32, Text = Guid.NewGuid().ToString("N") };
         var status = new Label { AutoSize = true, Text = "Enter a designated local mailbox." };
@@ -35,10 +35,11 @@ internal sealed class PostfixLocalDeliveryDialog : Form
         var preview = new Button { Text = "Review local route", AutoSize = true };
         var submit = new Button { Text = "Send one local test", AutoSize = true };
         var trace = new Button { Text = "Refresh local trace", AutoSize = true };
+        var mailbox = new Button { Text = "Verify test in mailbox", AutoSize = true };
         var copy = new Button { Text = "Copy Run ID", AutoSize = true };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
-        actions.Controls.AddRange([preview, submit, trace, copy, close]);
+        actions.Controls.AddRange([preview, submit, trace, mailbox, copy, close]);
         bool busy = false;
         string? approvedSha = null, approvedRequest = null;
         var attempted = new HashSet<string>(StringComparer.Ordinal);
@@ -54,7 +55,7 @@ internal sealed class PostfixLocalDeliveryDialog : Form
             recipient.Enabled = run.Enabled = close.Enabled = !busy;
             preview.Enabled = !busy && Valid() && !attempted.Contains(run.Text.Trim());
             submit.Enabled = preview.Enabled && approvedSha is not null && approvedRequest == Request();
-            trace.Enabled = !busy && Valid();
+            trace.Enabled = mailbox.Enabled = !busy && Valid();
             copy.Enabled = !busy && Regex.IsMatch(run.Text.Trim(), @"\A[a-f0-9]{32}\z");
         }
         async Task RunAsync(string message, Func<Task> action)
@@ -183,6 +184,51 @@ internal sealed class PostfixLocalDeliveryDialog : Form
                     Environment.NewLine + "Mailbox contents and arrival are not verified. No mail sent by trace.";
                 status.Text = transport == "local_agent_accepted" ? "Local delivery agent accepted the message." : "Local delivery not confirmed.";
                 status.ForeColor = transport == "local_agent_accepted" ? Color.SeaGreen : Color.DarkOrange;
+            });
+        };
+        mailbox.Click += async (_, _) =>
+        {
+            if (!mailbox.Enabled) return;
+            if (MessageBox.Show(this, "Search the designated mailbox for only the recorded test Message-ID and fixed test headers? " +
+                "Confirm you are authorized to inspect this mailbox. The Linux helper drops root privileges and reads at most a bounded portion of the mailbox. " +
+                "No message headers or bodies are returned. A missing result does not prove non-delivery.",
+                "Confirm test mailbox observation", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            InvalidateReview();
+            await RunAsync("Checking reviewed mailbox for this test message...", async () =>
+            {
+                string request = Request();
+                using var doc = JsonDocument.Parse(await remote("local-mailbox", request, null));
+                var root = doc.RootElement;
+                string hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(request))).ToLowerInvariant();
+                string[] expectedFields = ["status", "run_id", "request_sha256", "mailbox_kind", "observation",
+                    "mailbox_verified", "mail_sent", "mailbox_modified", "content_exported", "automatic_retry"];
+                var names = root.EnumerateObject().Select(p => p.Name).ToArray();
+                if (names.Length != expectedFields.Length || names.Distinct(StringComparer.Ordinal).Count() != names.Length ||
+                    names.Except(expectedFields, StringComparer.Ordinal).Any() ||
+                    StringField(root,"status") != "local_mailbox_observation" ||
+                    StringField(root,"run_id") != run.Text.Trim() || StringField(root,"request_sha256") != hash)
+                    throw new InvalidDataException("Mailbox observation context mismatch.");
+                foreach (string flag in new[] { "mail_sent", "mailbox_modified", "content_exported", "automatic_retry" })
+                    FalseFlag(root,flag);
+                string observation = StringField(root,"observation");
+                string? kind = root.GetProperty("mailbox_kind").GetString();
+                bool found = root.GetProperty("mailbox_verified").GetBoolean();
+                if (observation is not ("message_observed" or "not_observed" or "scan_incomplete" or
+                    "mailbox_not_present" or "review_context_changed" or "not_attempted") ||
+                    found != (observation == "message_observed") ||
+                    (observation is "review_context_changed" or "not_attempted" ? kind is not null :
+                        kind is not ("maildir" or "system_spool")))
+                    throw new InvalidDataException("Inconsistent mailbox observation.");
+                attempted.Add(run.Text.Trim());
+                report.Text = "Run ID: " + run.Text.Trim() + Environment.NewLine +
+                    "Mailbox: " + (kind ?? "not inspected") + Environment.NewLine +
+                    "Observation: " + observation + Environment.NewLine +
+                    "Only exact test headers are matched. No message contents exported, no messages submitted or modified." +
+                    Environment.NewLine + "Absence or an incomplete scan is not a delivery failure; check local trace separately.";
+                status.Text = found ? "Matching test message observed in the designated mailbox." :
+                    "Test message presence not confirmed.";
+                status.ForeColor = found ? Color.SeaGreen : Color.DarkOrange;
             });
         };
         foreach (var field in new[] { recipient, run })

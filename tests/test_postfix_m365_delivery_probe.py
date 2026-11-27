@@ -352,3 +352,98 @@ class StandardLocalRouteTests(unittest.TestCase):
         self.assertIn('StringField(root,"alias_status")',ui)
         self.assertIn('StringField(root,"forward_status")',ui)
         self.assertIn("including any queued retries",ui)
+
+
+class LocalMailboxObservationTests(unittest.TestCase):
+    def setUp(self):
+        import io
+        self.io=io
+        self.req={"run_id":"e"*32,"recipient":"testuser@mail.example.org"}
+        self.headers=M.local_message(self.req).split(b"\r\n\r\n",1)[0]+b"\r\n\r\n"
+        self.sep=b"From MAILER-DAEMON Fri Nov 27 12:34:56 2026\n"
+        self.plan={"plan_sha256":"f"*64,"_mailbox":{
+            "account":{"uid":1000,"gid":1000,"home":"/home/testuser"},
+            "settings":{"mailbox_kind":"maildir"}}}
+
+    def test_match_requires_exact_top_level_test_headers(self):
+        self.assertTrue(M.scan_headers(self.io.BytesIO(self.headers),self.req,[100000]))
+        for other in (self.headers.replace(b"testuser@",b"other@"),
+                      self.headers.replace(b"Auto-Submitted:",b"X-Auto-Submitted:"),
+                      b"Message-ID: "+M.local_message_id(self.req).encode()+b"\n"+self.headers,
+                      b"Subject: other\n\n"+self.headers):
+            self.assertFalse(M.scan_headers(self.io.BytesIO(other),self.req,[100000]))
+        with self.assertRaises(M.MailboxIncomplete):
+            M.scan_headers(self.io.BytesIO(self.headers),self.req,[12])
+
+    def test_mbox_checks_message_headers_not_body(self):
+        other=b"Subject: other\n\n"
+        body=other+self.headers+b"\n"
+        self.assertFalse(M.scan_mbox_stream(self.io.BytesIO(self.sep+body),self.req,[100000]))
+        data=self.sep+body+self.sep+self.headers+b"test body\n"
+        self.assertTrue(M.scan_mbox_stream(self.io.BytesIO(data),self.req,[100000]))
+        with self.assertRaises(M.MailboxIncomplete):
+            M.scan_mbox_stream(self.io.BytesIO(b"unknown format\n"),self.req,[100000])
+
+    def test_mailbox_file_refuses_symlink_and_preserves_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=pathlib.Path(tmp)
+            message=path/"message"
+            message.write_bytes(self.headers+b"private body\n")
+            message.chmod(0o600)
+            (path/"link").symlink_to(message)
+            fd=os.open(str(path),os.O_RDONLY|os.O_DIRECTORY)
+            try:
+                before=message.stat()
+                self.assertTrue(M.inspect_mail_file(fd,"message",os.getuid(),self.req,[100000]))
+                after=message.stat()
+                self.assertEqual((before.st_size,before.st_mtime_ns,before.st_atime_ns),
+                                 (after.st_size,after.st_mtime_ns,after.st_atime_ns))
+                with self.assertRaises(OSError):
+                    M.inspect_mail_file(fd,"link",os.getuid(),self.req,[100000])
+                os.link(str(message),str(path/"hardlink"))
+                with self.assertRaises(M.MailboxIncomplete):
+                    M.inspect_mail_file(fd,"message",os.getuid(),self.req,[100000])
+            finally:
+                os.close(fd)
+
+    def test_ledger_binding_before_drop_and_scan(self):
+        ledger=Mock(return_value=(1,{"local":"local_submission_accepted"},"f"*64))
+        prepare=Mock(return_value=self.plan)
+        calls=[]
+        drop=Mock(side_effect=lambda _:calls.append("drop"))
+        scanner=Mock(side_effect=lambda *_:(calls.append("scan") or "message_observed"))
+        result=M.observe_local_mailbox(self.req,ledger,prepare,drop,scanner)
+        self.assertEqual(calls,["drop","scan"])
+        self.assertTrue(result["mailbox_verified"])
+        for flag in ("mail_sent","mailbox_modified","content_exported","automatic_retry"):
+            self.assertFalse(result[flag])
+        self.assertNotIn("private body",str(result))
+        ledger.assert_called_once_with(self.req,("local",),include_plan=True)
+        drop.reset_mock()
+        scanner.reset_mock()
+        ledger.return_value=(1,{"local":"attempted"},"0"*64)
+        self.assertEqual(M.observe_local_mailbox(self.req,ledger,prepare,drop,scanner)["observation"],
+                         "review_context_changed")
+        ledger.return_value=(1,{"local":"not_attempted"},"f"*64)
+        self.assertEqual(M.observe_local_mailbox(self.req,ledger,prepare,drop,scanner)["observation"],
+                         "not_attempted")
+        drop.assert_not_called()
+        scanner.assert_not_called()
+
+    def test_scan_failure_does_not_claim_absence(self):
+        ledger=Mock(return_value=(1,{"local":"attempted"},"f"*64))
+        result=M.observe_local_mailbox(self.req,ledger,Mock(return_value=self.plan),Mock(),
+                                       Mock(side_effect=TimeoutError()))
+        self.assertEqual(result["observation"],"scan_incomplete")
+        self.assertFalse(result["mailbox_verified"])
+
+    def test_ui_explicit_authorization_and_no_internal_mailbox_export(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        ui=(src/"PostfixLocalDeliveryDialog.cs").read_text()
+        self.assertIn("Confirm test mailbox observation",ui)
+        self.assertIn('remote("local-mailbox", request, null)',ui)
+        self.assertIn('"content_exported"',ui)
+        shell=(ROOT/"linux/review-postfix-m365-delivery.py").read_text()
+        self.assertIn('report.pop("_mailbox")',shell)
+        self.assertIn("os.setgroups([])",shell)
+        self.assertIn("os.getresuid()",shell)

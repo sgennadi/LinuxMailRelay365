@@ -4,6 +4,9 @@ except submission of two approved messages. Trace never sends or retries mail.
 """
 import argparse
 import email.utils
+import email.parser
+import grp
+import signal
 import hashlib
 import importlib.util
 import ipaddress
@@ -267,7 +270,7 @@ def submit(req, expected, prepare_fn=prepare, runner=subprocess.run):
         os.close(fd)
 
 
-def ledger(req, roles=ROLES):
+def ledger(req, roles=ROLES, include_plan=False):
     raw = read_file(ledger_file(req), 16384, True)
     rows = [json.loads(line, object_pairs_hook=strict_object) for line in raw.splitlines()]
     first = rows[0] if rows else {}
@@ -284,6 +287,8 @@ def ledger(req, roles=ROLES):
                 event != "attempted" and result[role] != "attempted"):
             raise ValueError("invalid ledger sequence")
         result[role] = event
+    if include_plan:
+        return first["started"], result, first["plan_sha256"]
     return first["started"], result
 
 
@@ -643,10 +648,12 @@ def local_policy(read,overrides,req):
             lookup[1:] not in ([],[alias]) or (len(lookup)>1 and not alias)):
         raise ValueError("unsupported local recipient lookup")
     mailbox=read("home_mailbox")
-    if mailbox not in ("","Maildir/") or (not mailbox and read("mail_spool_directory") not in ("/var/mail","/var/spool/mail")):
+    spool=read("mail_spool_directory") if not mailbox else ""
+    if mailbox not in ("","Maildir/") or (not mailbox and spool not in ("/var/mail","/var/spool/mail")):
         raise ValueError("nonstandard mailbox destination")
     return {"hostname":host,"user":user,"mailbox_kind":"maildir" if mailbox else "system_spool",
-            "alias_map":alias,"forward_path":forward,"recipient_delimiter":delimiter}
+            "alias_map":alias,"forward_path":forward,"recipient_delimiter":delimiter,
+            "spool_directory":spool}
 
 
 def alias_evidence(alias,user,adapter,runner=subprocess.run,reader=read_file):
@@ -751,7 +758,8 @@ def prepare_local(req,adapter=None,account_reader=local_account,alias_reader=ali
     return {"status":"local_review_ready","plan_sha256":digest(canonical(evidence)),
             "run_id":req["run_id"],"recipient":req["recipient"],"mailbox_kind":settings["mailbox_kind"],
             "alias_status":routing["alias"]["status"],"forward_status":routing["forward"]["status"],
-            "mail_sent":False,"mailbox_verified":False,"_binary":binary}
+            "mail_sent":False,"mailbox_verified":False,"_binary":binary,
+            "_mailbox":{"account":account,"settings":settings}}
 
 
 def local_message_id(req):
@@ -863,9 +871,260 @@ def trace_local(req):
             "mailbox_verified":False,"automatic_retry":False}
 
 
+# Separate read-only observation, never called automatically by submit/trace.
+# Operates only on the exact ledger-bound reviewed local account and storage.
+MAILBOX_BYTE_LIMIT=32*1024*1024
+MAILBOX_HEADER_LIMIT=64*1024
+MAILBOX_FILE_LIMIT=2048
+MBOX_SEPARATOR=re.compile(rb"From [^\s]+ (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) +[0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2}(?: [A-Za-z0-9+-]{1,8})? [0-9]{4}\r?\n")
+
+
+class MailboxIncomplete(ValueError):
+    pass
+
+
+def exact_test_headers(raw,req):
+    # No header values leave this helper. Duplicate markers and malformed
+    # headers do not qualify, and body lines are never parsed as headers.
+    try:
+        message=email.parser.BytesHeaderParser().parsebytes(raw)
+        if message.defects:
+            return False
+        expected={"Message-ID":local_message_id(req),
+                  "Subject":"LinuxMailRelay365 local delivery probe",
+                  "To":req["recipient"],
+                  "From":"postmaster@"+req["recipient"].split("@")[1],
+                  "Auto-Submitted":"auto-generated"}
+        return all(message.get_all(name)==[value] for name,value in expected.items())
+    except (ValueError,UnicodeError):
+        return False
+
+
+def bounded_line(stream,budget):
+    if budget[0]<=0:
+        raise MailboxIncomplete("scan limit")
+    limit=min(budget[0],MAILBOX_HEADER_LIMIT)
+    line=stream.readline(limit+1)
+    if len(line)>limit or (line and not line.endswith(b"\n")):
+        raise MailboxIncomplete("line or scan limit")
+    budget[0]-=len(line)
+    return line
+
+
+def scan_headers(stream,req,budget):
+    raw=bytearray()
+    while True:
+        line=bounded_line(stream,budget)
+        if not line or len(raw)+len(line)>MAILBOX_HEADER_LIMIT:
+            raise MailboxIncomplete("incomplete headers")
+        raw.extend(line)
+        if line in (b"\n",b"\r\n"):
+            return exact_test_headers(bytes(raw),req)
+
+
+def scan_mbox_stream(stream,req,budget):
+    first=True
+    while True:
+        line=bounded_line(stream,budget)
+        if not line:
+            return False
+        if MBOX_SEPARATOR.fullmatch(line):
+            if scan_headers(stream,req,budget):
+                return True
+            first=False
+        elif first:
+            raise MailboxIncomplete("unsupported mbox format")
+
+
+def identity(st):
+    return (st.st_dev,st.st_ino,st.st_uid,st.st_gid,st.st_mode,st.st_nlink,
+            st.st_size,st.st_mtime_ns,st.st_ctime_ns)
+
+
+def safe_directory(fd,owner,mail_gid=None):
+    st=os.fstat(fd)
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid!=owner or st.st_mode&0o002 or
+            (st.st_mode&0o020 and (mail_gid is None or st.st_gid!=mail_gid))):
+        raise MailboxIncomplete("unsafe mailbox directory")
+    return st
+
+
+def open_mail_directory(path,owner,mail_gid=None):
+    # Walk from / by descriptors. The only user-owned path component is
+    # the selected home itself. Never follow an arbitrary symlink.
+    if (not isinstance(path,str) or not re.fullmatch(r"/[A-Za-z0-9_./-]+",path) or
+            any(p in ("",".","..") for p in path.split("/")[1:])):
+        raise MailboxIncomplete("unsupported mailbox path")
+    flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
+    fd=os.open("/",flags)
+    try:
+        safe_directory(fd,0)
+        parts=path.split("/")[1:]
+        for i,part in enumerate(parts):
+            child=os.open(part,flags,dir_fd=fd)
+            try:
+                safe_directory(child,owner if i==len(parts)-1 else 0,
+                               mail_gid if i==len(parts)-1 else None)
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(fd)
+            fd=child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def inspect_mail_file(fd,name,uid,req,budget,mbox=False,mail_gid=None):
+    # Open nonblocking before examining type; reject links and special
+    # files. O_NOATIME preserves message-file access time for its owner.
+    flags=os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_NOATIME
+    file=os.open(name,flags,dir_fd=fd)
+    with os.fdopen(file,"rb") as stream:
+        before=os.fstat(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid!=uid or before.st_nlink!=1 or
+                before.st_mode&0o002 or (before.st_mode&0o020 and
+                (not mbox or mail_gid is None or before.st_gid!=mail_gid))):
+            raise MailboxIncomplete("unsafe mailbox file")
+        found=scan_mbox_stream(stream,req,budget) if mbox else scan_headers(stream,req,budget)
+        if (identity(os.fstat(stream.fileno()))!=identity(before) or
+                identity(os.stat(name,dir_fd=fd,follow_symlinks=False))!=identity(before)):
+            raise MailboxIncomplete("mailbox changed during read")
+        return found
+
+
+def scan_maildir(home,uid,req,budget):
+    flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_NOATIME
+    homefd=open_mail_directory(home,uid)
+    try:
+        try:
+            mailfd=os.open("Maildir",flags,dir_fd=homefd)
+        except FileNotFoundError:
+            return "mailbox_not_present"
+        try:
+            safe_directory(mailfd,uid)
+            before=identity(os.fstat(mailfd))
+            found=False
+            count=0
+            for folder in ("new","cur"):
+                child=os.open(folder,flags,dir_fd=mailfd)
+                try:
+                    old=identity(safe_directory(child,uid))
+                    # /proc/self/fd supports descriptor-anchored streaming
+                    # directory iteration on Python 3.6 as well.
+                    with os.scandir("/proc/self/fd/"+str(child)) as entries:
+                        for entry in entries:
+                            count+=1
+                            if count>MAILBOX_FILE_LIMIT:
+                                raise MailboxIncomplete("maildir file limit")
+                            if inspect_mail_file(child,entry.name,uid,req,budget):
+                                found=True
+                                break
+                    if (identity(os.fstat(child))!=old or
+                            identity(os.stat(folder,dir_fd=mailfd,follow_symlinks=False))!=old):
+                        raise MailboxIncomplete("maildir changed")
+                finally:
+                    os.close(child)
+                if found:
+                    break
+            if (identity(os.fstat(mailfd))!=before or
+                    identity(os.stat("Maildir",dir_fd=homefd,follow_symlinks=False))!=before):
+                raise MailboxIncomplete("maildir replaced")
+            # Verify the selected home is still the same anchored directory.
+            if identity(os.stat(home,follow_symlinks=False))!=identity(os.fstat(homefd)):
+                raise MailboxIncomplete("home changed")
+            return "message_observed" if found else "not_observed"
+        finally:
+            os.close(mailfd)
+    finally:
+        os.close(homefd)
+
+
+def scan_mailbox(context,req,mail_gid):
+    account,settings=context["account"],context["settings"]
+    uid=account["uid"]
+    budget=[MAILBOX_BYTE_LIMIT]
+    try:
+        if settings["mailbox_kind"]=="maildir":
+            return scan_maildir(account["home"],uid,req,budget)
+        if settings["mailbox_kind"]!="system_spool":
+            raise MailboxIncomplete("unsupported mailbox kind")
+        # Permit the conventional /var/mail <-> /var/spool/mail alias,
+        # but no symlink to any other location.
+        spool=os.path.realpath(settings["spool_directory"])
+        if spool not in ("/var/mail","/var/spool/mail"):
+            raise MailboxIncomplete("unsupported spool path")
+        fd=open_mail_directory(spool,0,mail_gid)
+        try:
+            try:
+                found=inspect_mail_file(fd,settings["user"],uid,req,budget,True,mail_gid)
+            except FileNotFoundError:
+                return "mailbox_not_present"
+            if identity(os.stat(spool,follow_symlinks=False))!=identity(os.fstat(fd)):
+                raise MailboxIncomplete("spool changed")
+            return "message_observed" if found else "not_observed"
+        finally:
+            os.close(fd)
+    except (OSError,ValueError):
+        return "scan_incomplete"
+
+
+def drop_mailbox_privileges(account):
+    uid,gid=account["uid"],account["gid"]
+    if os.geteuid()!=0 or not 1000<=uid<65534 or gid<=0:
+        raise ValueError("invalid mailbox identity")
+    os.setgroups([])
+    os.setgid(gid)
+    os.setuid(uid)
+    if os.getresuid()!=(uid,uid,uid) or os.getresgid()!=(gid,gid,gid) or os.getgroups():
+        raise ValueError("privilege drop incomplete")
+
+
+def observe_local_mailbox(req,ledger_fn=ledger,prepare_fn=prepare_local,
+                          drop=drop_mailbox_privileges,scanner=scan_mailbox):
+    local_request(req)
+    _,events,expected=ledger_fn(req,("local",),include_plan=True)
+    result={"status":"local_mailbox_observation","run_id":req["run_id"],
+            "request_sha256":digest(canonical(req)),"mailbox_kind":None,
+            "observation":"not_attempted","mailbox_verified":False,
+            "mail_sent":False,"mailbox_modified":False,"content_exported":False,
+            "automatic_retry":False}
+    if events["local"]=="not_attempted":
+        return result
+    plan=prepare_fn(req)
+    if plan["plan_sha256"]!=expected:
+        result["observation"]="review_context_changed"
+        return result
+    context=plan["_mailbox"]
+    result["mailbox_kind"]=context["settings"]["mailbox_kind"]
+    try:
+        mail_gid=grp.getgrnam("mail").gr_gid
+    except KeyError:
+        mail_gid=None
+    # This CLI process has no further privileged tasks. Do not restore
+    # root or supplemental groups, even if the mailbox is unavailable.
+    drop(context["account"])
+    def expired(*_):
+        raise TimeoutError("mailbox scan deadline")
+    previous=signal.signal(signal.SIGALRM,expired)
+    signal.alarm(25)
+    try:
+        result["observation"]=scanner(context,req,mail_gid)
+    except (OSError,ValueError):
+        result["observation"]="scan_incomplete"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM,previous)
+    if result["observation"] not in ("message_observed","not_observed","scan_incomplete","mailbox_not_present"):
+        raise ValueError("invalid observation")
+    result["mailbox_verified"]=result["observation"]=="message_observed"
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("preview", "submit", "trace", "audit", "local-preview", "local-submit", "local-trace"))
+    parser.add_argument("action", choices=("preview", "submit", "trace", "audit", "local-preview", "local-submit", "local-trace", "local-mailbox"))
     parser.add_argument("--expected-sha")
     args = parser.parse_args()
     try:
@@ -891,6 +1150,9 @@ def main():
                 if args.action=="local-preview":
                     report=prepare_local(req)
                     report.pop("_binary")
+                    report.pop("_mailbox")
+                elif args.action=="local-mailbox":
+                    report=observe_local_mailbox(req)
                 else:
                     report=trace_local(req)
             print(json.dumps(report))
