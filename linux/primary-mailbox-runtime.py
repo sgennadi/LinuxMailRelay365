@@ -164,14 +164,16 @@ class RuntimeGuard:
     Any dependency drift poisons this instance; require a fresh review.
     """
     def __init__(self, tenant, client, confirmation, snapshot=installed_snapshot,
-                 auth=run_auth, clock=time.monotonic):
+                 auth=run_auth, clock=time.monotonic, expected_sha=None):
         need(confirmation == CONFIRM, "explicit_smtp_auth_confirmation_required")
         self.tenant = exact_guid(tenant)
         self.client = exact_guid(client)
         self.snapshot = snapshot
         self.auth = auth
         self.clock = clock
-        self.bound = None
+        need(expected_sha is None or (type(expected_sha) is str and R.SHA.fullmatch(expected_sha) is not None),
+             "invalid_expected_runtime_sha")
+        self.bound = expected_sha
         self.checked_at = None
         self.failed = False
 

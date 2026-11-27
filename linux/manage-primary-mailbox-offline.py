@@ -110,6 +110,24 @@ def inspect_backup_host(config,queue,parent,revision):
     return phase
 
 
+def verify_applied_host(config,queue,parent,revision,mailbox,tenant,client,confirmation):
+    """Reverify the applied pair and original runtime without starting Postfix."""
+    X.need(X.sha(revision) and confirmation==A.CONFIRM,"explicit_applied_auth_review_required")
+    maintenance=host_guard(config,queue,parent)
+    maintenance()
+    info,files=X.load_backup(parent,revision,0)
+    X.need(info["mailbox"]==mailbox,"backup_mailbox_mismatch")
+    # Refuse before/pipe_only/foreign states before any authentication.
+    X.verify(config,0,info,files,"after",maintenance,read_native)
+    runtime=A.RuntimeGuard(tenant,client,confirmation,expected_sha=info["runtime_sha256"])
+    X.need(runtime(mailbox)==info["runtime_sha256"],"applied_runtime_changed")
+    X.verify(config,0,info,files,"after",maintenance,read_native)
+    X.need(runtime(mailbox)==info["runtime_sha256"],"applied_runtime_changed")
+    maintenance()
+    X.need(X.phase(config,0,info,files)=="after","applied_configuration_changed")
+    return info["runtime_sha256"]
+
+
 def parse_request(args):
     A.need(args.maintenance_confirmation==O.MAINTENANCE,
            "explicit_exclusive_maintenance_required")
@@ -124,7 +142,11 @@ def parse_request(args):
     A.exact_guid(args.tenant_id)
     A.exact_guid(args.client_id)
     X.R.parse(X.R.encode({"mailbox":args.mailbox,"nonce":"0"*64}))
-    if args.apply:
+    if args.verify_applied is not None:
+        A.need(X.sha(args.verify_applied) and args.confirm==A.CONFIRM and
+               args.expected_sha256 is None and args.auth_confirmation is None,
+               "invalid_applied_verification_approval")
+    elif args.apply:
         A.need(X.sha(args.expected_sha256) and args.confirm==X.APPLY and
                args.auth_confirmation==A.CONFIRM,"invalid_apply_approval")
     else:
@@ -139,6 +161,7 @@ def main(argv=None):
     modes.add_argument("--apply",action="store_true")
     modes.add_argument("--restore",metavar="BACKUP_SHA256")
     modes.add_argument("--inspect-backup",metavar="BACKUP_SHA256")
+    modes.add_argument("--verify-applied",metavar="BACKUP_SHA256")
     parser.add_argument("--mailbox")
     parser.add_argument("--tenant-id")
     parser.add_argument("--client-id")
@@ -186,6 +209,15 @@ def main(argv=None):
             print("PRIMARY_MAILBOX_OFFLINE_BACKUP_SHA256="+revision)
             print("PRIMARY_MAILBOX_OFFLINE_SMTP_AUTH=not_attempted")
             print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED=restored")
+        elif args.verify_applied is not None:
+            runtime=verify_applied_host(config,queue,parent,args.verify_applied,args.mailbox,
+                                        args.tenant_id,args.client_id,args.confirm)
+            print("PRIMARY_MAILBOX_OFFLINE_STATUS=applied_runtime_reverified_not_started")
+            print("PRIMARY_MAILBOX_OFFLINE_BACKUP_SHA256="+args.verify_applied)
+            print("PRIMARY_MAILBOX_OFFLINE_RUNTIME_SHA256="+runtime)
+            print("PRIMARY_MAILBOX_OFFLINE_PHASE=after")
+            print("PRIMARY_MAILBOX_OFFLINE_SMTP_AUTH=observed")
+            print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED=no")
         else:
             phase=inspect_backup_host(config,queue,parent,args.inspect_backup)
             print("PRIMARY_MAILBOX_OFFLINE_STATUS=backup_phase_observed")

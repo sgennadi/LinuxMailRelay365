@@ -58,6 +58,24 @@ class RuntimeGuardTests(unittest.TestCase):
         with self.assertRaises(A.Refused):
             guard(MAIL)
 
+    def test_expected_runtime_sha_refuses_drift_before_auth(self):
+        expected=A.digest(self.state)
+        guard=A.RuntimeGuard(TENANT,CLIENT,A.CONFIRM,self.snapshot,self.auth,
+                             lambda:self.time,expected_sha=expected)
+        self.state["identity_sha256"]="b"*64
+        with self.assertRaisesRegex(A.Refused,"installed_runtime_changed"):
+            guard(MAIL)
+        self.auth.assert_not_called()
+        self.state["identity_sha256"]="a"*64
+        with self.assertRaises(A.Refused):
+            guard(MAIL)
+        fresh=A.RuntimeGuard(TENANT,CLIENT,A.CONFIRM,self.snapshot,self.auth,
+                             lambda:self.time,expected_sha=expected)
+        self.assertEqual(fresh(MAIL),expected)
+        self.auth.assert_called_once()
+        with self.assertRaises(A.Refused):
+            A.RuntimeGuard(TENANT,CLIENT,A.CONFIRM,expected_sha="invalid")
+
     def test_confirmation_and_selected_guids_required(self):
         for tenant,confirm in ((TENANT,"wrong"),("invalid",A.CONFIRM),
                                ("00000000-0000-0000-0000-000000000000",A.CONFIRM)):
@@ -199,6 +217,44 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
             verify.assert_not_called()
             restore.assert_not_called()
 
+    def test_verify_applied_rechecks_native_pair_and_runtime_without_writes(self):
+        revision="b"*64
+        info={"mailbox":MAIL,"runtime_sha256":"a"*64}
+        runtime=Mock(return_value="a"*64)
+        guard=Mock()
+        with patch.object(CLI,"host_guard",return_value=guard), \
+             patch.object(CLI.X,"load_backup",return_value=(info,{})), \
+             patch.object(CLI.X,"verify") as verify, \
+             patch.object(CLI.X,"phase",return_value="after") as phase, \
+             patch.object(A,"RuntimeGuard",return_value=runtime) as factory, \
+             patch.object(CLI.X,"apply") as apply, \
+             patch.object(CLI.X,"restore") as restore:
+            self.assertEqual(CLI.verify_applied_host(7,8,9,revision,MAIL,TENANT,CLIENT,A.CONFIRM),"a"*64)
+            factory.assert_called_once_with(TENANT,CLIENT,A.CONFIRM,expected_sha="a"*64)
+            self.assertEqual(verify.call_count,2)
+            self.assertEqual(runtime.call_count,2)
+            self.assertTrue(all(call[0][4]=="after" for call in verify.call_args_list))
+            runtime.reset_mock()
+            factory.reset_mock()
+            verify.side_effect=CLI.X.Refused("not applied")
+            with self.assertRaises(CLI.X.Refused):
+                CLI.verify_applied_host(7,8,9,revision,MAIL,TENANT,CLIENT,A.CONFIRM)
+            factory.assert_not_called()
+            runtime.assert_not_called()
+            verify.side_effect=None
+            with self.assertRaises(CLI.X.Refused):
+                CLI.verify_applied_host(7,8,9,revision,"other@example.org",TENANT,CLIENT,A.CONFIRM)
+            factory.assert_not_called()
+            runtime.return_value="c"*64
+            with self.assertRaisesRegex(CLI.X.Refused,"applied_runtime_changed"):
+                CLI.verify_applied_host(7,8,9,revision,MAIL,TENANT,CLIENT,A.CONFIRM)
+            runtime.return_value="a"*64
+            phase.return_value="pipe_only"
+            with self.assertRaisesRegex(CLI.X.Refused,"applied_configuration_changed"):
+                CLI.verify_applied_host(7,8,9,revision,MAIL,TENANT,CLIENT,A.CONFIRM)
+            apply.assert_not_called()
+            restore.assert_not_called()
+
     def test_cli_modes_confirmations_and_failure_report(self):
         from contextlib import redirect_stdout
         from io import StringIO
@@ -213,7 +269,8 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
              patch.object(CLI.O.P,"open_directory",side_effect=lambda *a,**k:5), \
              patch.object(CLI,"apply_host",return_value="b"*64) as apply, \
              patch.object(CLI,"restore_host",return_value="b"*64) as restore, \
-             patch.object(CLI,"inspect_backup_host",return_value="pipe_only") as inspect:
+             patch.object(CLI,"inspect_backup_host",return_value="pipe_only") as inspect, \
+             patch.object(CLI,"verify_applied_host",return_value="a"*64) as verify_applied:
             def call(args):
                 stream=StringIO()
                 with redirect_stdout(stream):
@@ -247,6 +304,17 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
             self.assertIn("PHASE=pipe_only",report)
             self.assertIn("POSTFIX_CHANGED=no",report)
             inspect.assert_called_once()
+            rc,report=call(["--verify-applied","b"*64]+identity)
+            self.assertEqual(rc,2)
+            verify_applied.assert_not_called()
+            rc,report=call(["--verify-applied","b"*64,"--confirm",A.CONFIRM]+identity)
+            self.assertEqual(rc,0)
+            self.assertIn("STATUS=applied_runtime_reverified_not_started",report)
+            self.assertIn("RUNTIME_SHA256="+"a"*64,report)
+            self.assertIn("PHASE=after",report)
+            self.assertIn("POSTFIX_CHANGED=no",report)
+            self.assertIn("SERVICE_STARTED=no",report)
+            verify_applied.assert_called_once_with(5,5,5,"b"*64,MAIL,TENANT,CLIENT,A.CONFIRM)
 
     def test_cli_keeps_both_locks_and_never_starts_service(self):
         source=(ROOT/"linux/manage-primary-mailbox-offline.py").read_text()
