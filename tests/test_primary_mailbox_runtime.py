@@ -351,6 +351,8 @@ class OfflineGuiContracts(unittest.TestCase):
         self.assertIn('LinuxAsync("review",identity,null,PrimaryMailboxOfflineClient.Auth)',ui)
         self.assertIn('LinuxAsync("apply",identity,plan.Sha,PrimaryMailboxOfflineClient.Apply,PrimaryMailboxOfflineClient.Auth)',ui)
         self.assertIn('LinuxAsync("inspect-backup",null,sha,null)',ui)
+        self.assertIn('LinuxAsync("verify-applied",identity,sha,PrimaryMailboxOfflineClient.Auth)',ui)
+        self.assertIn('inspectedPhase=="after" && target',ui)
         self.assertIn('LinuxAsync("restore",null,sha,PrimaryMailboxOfflineClient.Restore)',ui)
         self.assertIn('inspectedPhase is "after" or "pipe_only"',ui)
         self.assertIn("mutationAttempted=true",ui)

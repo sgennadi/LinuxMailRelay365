@@ -68,11 +68,12 @@ internal sealed partial class MainForm
         var review=new Button { Text="Review + SMTP AUTH",AutoSize=true };
         var apply=new Button { Text="Backup / Apply",AutoSize=true };
         var inspect=new Button { Text="Inspect backup",AutoSize=true };
+        var verifyApplied=new Button { Text="Reverify applied + AUTH",AutoSize=true };
         var restore=new Button { Text="Restore",AutoSize=true };
         var copy=new Button { Text="Copy SHA",AutoSize=true };
         var close=new Button { Text="Close",AutoSize=true,DialogResult=DialogResult.Cancel };
         var actions=new FlowLayoutPanel { Dock=DockStyle.Fill,AutoSize=true,WrapContents=true };
-        actions.Controls.AddRange([review,apply,inspect,restore,copy,close]);
+        actions.Controls.AddRange([review,apply,inspect,verifyApplied,restore,copy,close]);
         bool busy=false, mutationAttempted=false;
         PrimaryMailboxOfflineReceipt? approved=null;
         string? inspectedSha=null, inspectedPhase=null;
@@ -101,6 +102,8 @@ internal sealed partial class MainForm
             inspect.Enabled=ready && PrimaryMailboxOfflineClient.IsSha(recovery.Text.Trim());
             restore.Enabled=inspect.Enabled && inspectedSha==recovery.Text.Trim() &&
                 inspectedPhase is "after" or "pipe_only";
+            verifyApplied.Enabled=inspect.Enabled && inspectedSha==recovery.Text.Trim() &&
+                inspectedPhase=="after" && target;
             sender.Enabled=tenantInput.Enabled=appInput.Enabled=!busy && !mutationAttempted;
             recovery.Enabled=maintenance.Enabled=close.Enabled=!busy;
             copy.Enabled=!busy && PrimaryMailboxOfflineClient.IsSha(recovery.Text.Trim());
@@ -209,6 +212,29 @@ internal sealed partial class MainForm
                     });
                 status.Text="Recovery phase observed; no configuration change.";
                 status.ForeColor=result.Phase=="pipe_only"?Color.DarkOrange:Color.SeaGreen;
+            });
+        };
+        verifyApplied.Click+=async (_,_) =>
+        {
+            if(!verifyApplied.Enabled || inspectedSha is not { } sha || inspectedPhase!="after" ||
+                recovery.Text.Trim()!=sha || !TryTarget(out var identity)) return;
+            if(!ConfirmDestructive("Reverify applied primary mailbox",
+                TargetDescription(identity)+Environment.NewLine+"Recovery SHA-256: "+sha+Environment.NewLine+
+                "Recheck the exact applied configuration and original installed runtime, with fresh SMTP AUTH. "+
+                "No service start, configuration change or message submission.",
+                PrimaryMailboxOfflineClient.Auth,dialog)) return;
+            await RunAsync("Rechecking applied configuration and SMTP AUTH...",async () =>
+            {
+                if(inspectedSha!=sha || inspectedPhase!="after" || recovery.Text.Trim()!=sha ||
+                    !TryTarget(out var current) || current!=identity)
+                    throw new InvalidOperationException("Verification context changed.");
+                var result=await LinuxAsync("verify-applied",identity,sha,PrimaryMailboxOfflineClient.Auth);
+                report.Text=TargetDescription(identity)+Environment.NewLine+"Recovery SHA-256: "+sha+
+                    Environment.NewLine+"Runtime SHA-256: "+result.RuntimeSha+
+                    Environment.NewLine+"Applied pair, native snapshot and original runtime reverified. Fresh no-mail SMTP AUTH observed."+
+                    Environment.NewLine+"Postfix remains stopped. This is not service-start approval or delivery acceptance.";
+                status.Text="Applied route reverified offline; service start and delivery not tested.";
+                status.ForeColor=Color.SeaGreen;
             });
         };
         restore.Click+=async (_,_) =>

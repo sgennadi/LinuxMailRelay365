@@ -20,7 +20,7 @@ internal static class PrimaryMailboxOfflineClient
     {
         if (maintenance != Maintenance) throw new ArgumentException("Exclusive maintenance approval required.");
         string args;
-        if (action is "review" or "apply")
+        if (action is "review" or "apply" or "verify-applied")
         {
             if (mailbox is null || !PrimaryMailboxRoutePreview.ValidMailbox(mailbox) ||
                 tenant is null || tenant == Guid.Empty || client is null || client == Guid.Empty)
@@ -34,6 +34,8 @@ internal static class PrimaryMailboxOfflineClient
             else if (action == "apply" && IsSha(sha) && confirmation == Apply && authConfirmation == Auth)
                 args = "--apply" + target + " --expected-sha256=" + sha +
                     " --confirm=" + Apply + " --auth-confirmation=" + Auth;
+            else if (action == "verify-applied" && IsSha(sha) && confirmation == Auth && authConfirmation is null)
+                args = "--verify-applied=" + sha + target + " --confirm=" + Auth;
             else throw new ArgumentException("Invalid reviewed route approval.");
         }
         else
@@ -64,23 +66,24 @@ internal static class PrimaryMailboxOfflineClient
                 throw new InvalidDataException("Invalid or duplicate offline receipt field.");
         }
         string? Read(string key) => fields.GetValueOrDefault(key);
-        bool review=action=="review", inspect=action=="inspect-backup";
-        if (action is not ("review" or "apply" or "restore" or "inspect-backup") ||
-            fields.Count != (review || inspect ? 8 : 7) ||
+        bool review=action=="review", inspect=action=="inspect-backup", verify=action=="verify-applied";
+        if (action is not ("review" or "apply" or "restore" or "inspect-backup" or "verify-applied") ||
+            fields.Count != (verify ? 9 : review || inspect ? 8 : 7) ||
             Read("SERVICE_STARTED")!="no" || Read("MAIL_SUBMITTED")!="no" || Read("QUEUE_MODIFIED")!="no")
             throw new InvalidDataException("Unexpected offline operation flags.");
         string status=action switch {
             "review"=>"reviewed_experimental","apply"=>"applied_offline_not_started",
-            "restore"=>"restored_offline_not_started",_=>"backup_phase_observed" };
+            "restore"=>"restored_offline_not_started","verify-applied"=>"applied_runtime_reverified_not_started",_=>"backup_phase_observed" };
         string change=action switch { "apply"=>"yes","restore"=>"restored",_=>"no" };
         string? sha=Read(review?"SHA256":"BACKUP_SHA256");
         if (Read("STATUS")!=status || Read("POSTFIX_CHANGED")!=change ||
-            Read("SMTP_AUTH")!=(action is "review" or "apply" ? "observed":"not_attempted") ||
+            Read("SMTP_AUTH")!=(action is "review" or "apply" or "verify-applied" ? "observed":"not_attempted") ||
             !IsSha(sha) || (review ? expectedSha is not null : !IsSha(expectedSha) || sha!=expectedSha))
             throw new InvalidDataException("Unverified offline operation receipt.");
-        string? runtime=review?Read("RUNTIME_SHA256"):null;
-        string? phase=inspect?Read("PHASE"):null;
-        if ((review && !IsSha(runtime)) || (inspect && phase is not ("before" or "after" or "pipe_only")))
+        string? runtime=(review||verify)?Read("RUNTIME_SHA256"):null;
+        string? phase=(inspect||verify)?Read("PHASE"):null;
+        if (((review||verify) && !IsSha(runtime)) ||
+            (inspect && phase is not ("before" or "after" or "pipe_only")) || (verify && phase!="after"))
             throw new InvalidDataException("Unverified runtime or recovery evidence.");
         return new(sha!,runtime,phase);
     }
@@ -101,7 +104,11 @@ internal static class PrimaryMailboxOfflineClient
             Row("SMTP_AUTH","not_attempted")+Row("POSTFIX_CHANGED","restored")+common;
         string inspect=Row("STATUS","backup_phase_observed")+Row("BACKUP_SHA256",a)+Row("PHASE","pipe_only")+
             Row("SMTP_AUTH","not_attempted")+Row("POSTFIX_CHANGED","no")+common;
-        if (Parse(review,"review",null)!=new PrimaryMailboxOfflineReceipt(a,b,null) ||
+        string verify=Row("STATUS","applied_runtime_reverified_not_started")+Row("BACKUP_SHA256",a)+
+            Row("RUNTIME_SHA256",b)+Row("PHASE","after")+Row("SMTP_AUTH","observed")+Row("POSTFIX_CHANGED","no")+common;
+        if (Parse(verify,"verify-applied",a)!=new PrimaryMailboxOfflineReceipt(a,b,"after") ||
+            !Arguments("verify-applied",Maintenance,mail,tenant,app,a,Auth,null).Contains("--verify-applied="+a,StringComparison.Ordinal) ||
+            Parse(review,"review",null)!=new PrimaryMailboxOfflineReceipt(a,b,null) ||
             Parse(apply,"apply",a).Sha!=a || Parse(restore,"restore",a).Sha!=a ||
             Parse(inspect,"inspect-backup",a).Phase!="pipe_only") return false;
         string args=Arguments("apply",Maintenance,mail,tenant,app,a,Apply,Auth);
@@ -121,6 +128,10 @@ internal static class PrimaryMailboxOfflineClient
             try { Parse(bad,"review",null);return false; } catch (InvalidDataException) {}
         }
         try { Parse(apply,"apply",b);return false; } catch (InvalidDataException) {}
+        try { Parse(verify.Replace("PHASE=after","PHASE=pipe_only"),"verify-applied",a);return false; } catch (InvalidDataException) {}
+        try { Parse(verify.Replace("SMTP_AUTH=observed","SMTP_AUTH=not_attempted"),"verify-applied",a);return false; } catch (InvalidDataException) {}
+        try { Parse(verify,"verify-applied",b);return false; } catch (InvalidDataException) {}
+        try { Arguments("verify-applied",Maintenance,mail,tenant,app,a,null,null);return false; } catch (ArgumentException) {}
         try { Parse(inspect.Replace("pipe_only","ready"),"inspect-backup",a);return false; } catch (InvalidDataException) {}
         try { Arguments("apply",Maintenance,mail,tenant,app,a,Apply,null);return false; } catch (ArgumentException) {}
         try { Arguments("review",Maintenance,"x'@example.org",tenant,app,null,Auth,null);return false; } catch (ArgumentException) {}
