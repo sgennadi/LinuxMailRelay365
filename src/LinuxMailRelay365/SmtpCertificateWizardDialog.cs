@@ -12,14 +12,14 @@ internal sealed class SmtpCertificateWizardDialog : Form
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover)
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate)
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(580, 420);
         MinimumSize = new Size(420, 300);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, Padding = new Padding(16), AutoScroll = true };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 9, Padding = new Padding(16), AutoScroll = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 4; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -55,6 +55,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 foreach (var row in rows) list.Items.Add(row.GetProperty("lineage").GetString() ?? "(unknown)");
                 list.SelectedIndexChanged += (_, _) =>
                 {
+                    if (list.SelectedIndex < 0) { choose.Enabled = false; return; }
                     var row = rows[list.SelectedIndex];
                     choose.Enabled = row.TryGetProperty("certificate", out _) && row.TryGetProperty("key_path", out _) && row.TryGetProperty("chain", out _);
                     details.Text = row.TryGetProperty("metadata", out var metadata) ? metadata.GetString() ?? "" : "Inspection refused";
@@ -74,8 +75,38 @@ internal sealed class SmtpCertificateWizardDialog : Form
             finally { if (!IsDisposed) scan.Enabled = true; }
         };
         layout.Controls.Add(scan, 0, 5);
+        var domain = new TextBox { Dock = DockStyle.Top, PlaceholderText = "Certificate DNS name (not Linux hostname)" };
+        var check = new Button { Text = "Validate Certificate", AutoSize = true };
+        check.Click += async (_, _) =>
+        {
+            if (Identity != SmtpConnectorIdentity.Certificate || Source != SmtpCertificateSource.Existing ||
+                SelectedCertificate is not { } cert || Uri.CheckHostName(domain.Text.Trim()) != UriHostNameType.Dns)
+            {
+                MessageBox.Show(this, "Select an existing TLS certificate and enter its DNS name.");
+                return;
+            }
+            check.Enabled = scan.Enabled = identity.Enabled = source.Enabled = domain.Enabled = false;
+            try
+            {
+                using var report = System.Text.Json.JsonDocument.Parse(await validate(
+                    cert.GetProperty("certificate").GetString()!, cert.GetProperty("chain").GetString()!,
+                    cert.GetProperty("key_path").GetString()!, domain.Text.Trim()));
+                if (IsDisposed) return;
+                var root = report.RootElement;
+                if (root.GetProperty("status").GetString() != "local_checks_passed")
+                    throw new InvalidDataException("Certificate validation refused.");
+                MessageBox.Show(this, root.GetProperty("details").GetString() + Environment.NewLine +
+                    root.GetProperty("extensions").GetString() + Environment.NewLine +
+                    "Local checks passed. Exchange Online acceptance remains unverified.",
+                    "Certificate validation", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, "Validation failed: " + ex.GetType().Name, "Certificate validation", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            finally { if (!IsDisposed) { check.Enabled = scan.Enabled = identity.Enabled = domain.Enabled = true; RefreshPlan(); } }
+        };
+        layout.Controls.Add(domain, 0, 6);
+        layout.Controls.Add(check, 0, 7);
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
-        layout.Controls.Add(close, 0, 6);
+        layout.Controls.Add(close, 0, 8);
         Controls.Add(layout);
         CancelButton = close;
         identity.SelectedIndexChanged += (_, _) => RefreshPlan();

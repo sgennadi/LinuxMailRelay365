@@ -124,11 +124,24 @@ internal sealed partial class MainForm
             smtp.Enabled = !busy;
             smtp.Click += (_, _) =>
             {
+                var context = TryCurrentIdentity();
+                if (context is null) return;
                 using var dialog = new SmtpCertificateWizardDialog(async () =>
                 {
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     var result = await SshRemote.RunRootScriptAsync(Endpoint(),
                         EmbeddedAssets.SmtpCertificateDiscovery, TimeSpan.FromSeconds(90));
                     result.EnsureSuccess();
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    return result.StdOut;
+                }, async (cert, chain, key, domain) =>
+                {
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                    var result = await SshRemote.RunRootScriptAsync(Endpoint(),
+                        EmbeddedAssets.BuildSmtpCertificateCheck(cert, chain, key, domain, "auto"),
+                        TimeSpan.FromSeconds(90));
+                    result.EnsureSuccess();
+                    if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     return result.StdOut;
                 });
                 dialog.ShowDialog(this);
