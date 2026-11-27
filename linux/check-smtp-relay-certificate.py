@@ -5,12 +5,43 @@ import json
 import subprocess
 import re
 import hmac
+import os
+import stat
 
 def openssl(*args):
     return subprocess.check_output(["/usr/bin/openssl"]+list(args),
         stderr=subprocess.DEVNULL, timeout=15)
 
+def resolve_ca_bundle(value):
+    candidates = (
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/pki/trust/anchors/ca-bundle.crt",
+    ) if value == "auto" else (value,)
+    for candidate in candidates:
+        try:
+            if not os.path.isabs(candidate):
+                continue
+            path = os.path.realpath(candidate)
+            st = os.stat(path)
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
+                continue
+            parent = os.path.dirname(path)
+            while True:
+                st = os.stat(parent)
+                if st.st_uid != 0 or st.st_mode & 0o022:
+                    raise ValueError("untrusted CA directory")
+                if parent == "/":
+                    break
+                parent = os.path.dirname(parent)
+            return path
+        except (OSError, ValueError):
+            continue
+    raise ValueError("trusted CA bundle not found")
+
 def inspect(cert, chain, domain, ca_file, key):
+    ca_file=resolve_ca_bundle(ca_file)
     if not re.fullmatch(r"[a-zA-Z0-9.-]{1,253}", domain):
         raise ValueError("invalid DNS name")
     openssl("x509","-in",cert,"-noout","-checkend","0")
@@ -35,7 +66,7 @@ def inspect(cert, chain, domain, ca_file, key):
             for x in eku.group(1).split(",")) else "not_explicit")
     # Local trust and purpose checks are not proof of Exchange Online acceptance.
     return {"status":"local_checks_passed","requested_domain":domain,
-            "details":details,"extensions":extensions,"client_auth_eku":client_auth,
+            "details":details,"ca_bundle":ca_file,"extensions":extensions,"client_auth_eku":client_auth,
             "exchange_acceptance":"unverified",
             "name_match":"verified","private_key_match":"verified",
             "apply_supported":False}
