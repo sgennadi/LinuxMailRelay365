@@ -14,11 +14,13 @@ def receive(stream, root, validate, stage=None):
     if os.geteuid() != 0:
         raise ValueError("root required")
     root = Path(root)
-    for parent in [root] + list(root.parents):
+    for parent in reversed(list(root.parents)):
         st = parent.lstat()
         if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
             raise ValueError("unsafe import directory")
-    if root.stat().st_mode & 0o077:
+    root.mkdir(mode=0o700, exist_ok=True)
+    st = root.lstat()
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
         raise ValueError("private directory required")
     raw = stream.read(6 * 1024 * 1024 + 1)
     if len(raw) > 6 * 1024 * 1024:
