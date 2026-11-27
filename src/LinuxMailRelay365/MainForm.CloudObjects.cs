@@ -67,8 +67,10 @@ internal sealed partial class MainForm
     }
 
     private async Task<CloudObjectsInventory> QueryCloudObjectsAsync(
-        Guid tenantId, Guid? clientId)
+        Guid tenantId, Guid? clientId, bool connectorOnly = false)
     {
+        if (connectorOnly && clientId.HasValue)
+            throw new ArgumentException("Connector-only inspection does not accept an application ID.");
         // Freeze the exact UI selection before asynchronous admin sign-in.
         // A valid GUID in the field AFTER sign-in is insufficient: it must
         // match the original requested app, not just parse successfully.
@@ -86,7 +88,7 @@ internal sealed partial class MainForm
                 throw new InvalidOperationException("Microsoft 365 mailbox or transport selection changed during inspection.");
         }
         ValidateCloudInventorySelection(
-            tenantId, clientId, requestedClientField, requestedConnectorName);
+            tenantId, clientId, requestedClientField, requestedConnectorName, connectorOnly);
         // App Registration / Enterprise Application / public credentials are
         // read directly via C# Graph. Exchange cmdlets below remain EXO-only.
         EntraApplicationInventory? nativeGraph = null;
@@ -102,7 +104,7 @@ internal sealed partial class MainForm
             WriteLine("Microsoft Graph App/SP/certificates: native C# MSAL read-only inspection (Application.Read.All).");
             nativeGraph = await WithNativeMicrosoftSignInAsync((show, ct) =>
                 EntraGraphInventoryClient.InspectAsync(tenantId, exactApp, bootstrap, show, ct));
-            ValidateCloudInventorySelection(tenantId, clientId, requestedClientField, requestedConnectorName);
+            ValidateCloudInventorySelection(tenantId, clientId, requestedClientField, requestedConnectorName, connectorOnly);
             if (!string.Equals(requestedBootstrap, entraSignInClientId.Text.Trim(), StringComparison.Ordinal))
                 throw new InvalidOperationException("Microsoft sign-in client changed during read-only inspection.");
         }
@@ -175,7 +177,7 @@ internal sealed partial class MainForm
                 };
             }
             ValidateCloudInventorySelection(
-                tenantId, clientId, requestedClientField, requestedConnectorName);
+                tenantId, clientId, requestedClientField, requestedConnectorName, connectorOnly);
             ValidateMailboxSelection();
             if (!string.Equals(requestedBootstrap, entraSignInClientId.Text.Trim(), StringComparison.Ordinal))
                 throw new InvalidOperationException("Microsoft sign-in client changed during inspection.");
@@ -196,7 +198,7 @@ internal sealed partial class MainForm
 
     private void ValidateCloudInventorySelection(
         Guid expectedTenant, Guid? expectedClient,
-        string requestedClientField, string requestedConnectorName)
+        string requestedClientField, string requestedConnectorName, bool connectorOnly = false)
     {
         if (!Guid.TryParse(tenant.Text.Trim(), out Guid selectedTenant) ||
             selectedTenant != expectedTenant ||
@@ -211,7 +213,7 @@ internal sealed partial class MainForm
             throw new InvalidOperationException(
                 "Microsoft 365 tenant, app or Connector selection changed. Inspect again.");
 
-        if (requestedClientField.Length > 0 &&
+        if (!connectorOnly && requestedClientField.Length > 0 &&
             (!Guid.TryParse(requestedClientField, out Guid chosenClient) ||
              !expectedClient.HasValue || chosenClient != expectedClient.Value))
             throw new InvalidOperationException(

@@ -101,3 +101,13 @@ class ConnectorBindingTests(unittest.TestCase):
         self.assertIn("StagedConnectorAsync(false)",ui)
         self.assertIn("StagedConnectorAsync(true)",ui)
         self.assertIn("Invalidate();",ui)
+
+    def test_wizard_connector_inventory_reuses_reviewed_owner_guard(self):
+        src = ROOT / "src/LinuxMailRelay365"
+        ui = (src/"MainForm.SmtpConnectorInventory.cs").read_text()
+        self.assertIn("QueryCloudObjectsAsync(id, null, connectorOnly: true)", ui)
+        self.assertIn('c?.Ownership == "verified"', ui)
+        self.assertIn("ExecuteCloudConnectorOperationAsync(dialog, inventory, selected", ui)
+        self.assertIn("if (busy) e.Cancel = true", ui)
+        self.assertIn("stale = true", ui)
+        self.assertIn("InspectWizardConnectorsAsync(owner, context)", (src/"MainForm.DeliveryMiniWizard.cs").read_text())

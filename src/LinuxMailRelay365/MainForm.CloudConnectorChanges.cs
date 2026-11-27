@@ -9,8 +9,9 @@ internal sealed partial class MainForm
 {
     private async Task<bool> ExecuteCloudConnectorOperationAsync(
         Form owner, CloudObjectsInventory inventory,
-        CloudConnectorObject connector, string operation, string newName)
+        CloudConnectorObject connector, string operation, string newName, Action? contextGuard = null)
     {
+        contextGuard?.Invoke();
         if (connector.Ownership != "verified" ||
             operation is not ("Enable" or "Disable" or "Rename" or "Delete"))
             throw new InvalidOperationException("Only tenant-stamped connectors can be changed.");
@@ -28,11 +29,14 @@ internal sealed partial class MainForm
         var preview = await RunCloudConnectorOperationAsync(
             inventory.Tenant, connector, operation, newName, "Review");
         string reviewedSha = ValidateCloudConnectorReport(preview, operation, false);
+        contextGuard?.Invoke();
         if (!ConfirmCloudConnectorChange(owner, connector, operation, newName))
             return false;
+        contextGuard?.Invoke();
         CheckCloudTenant(inventory.Tenant);
         var result = await RunCloudConnectorOperationAsync(
             inventory.Tenant, connector, operation, newName, "Apply", reviewedSha);
+        contextGuard?.Invoke();
         if (ValidateCloudConnectorReport(result, operation, true) != reviewedSha)
             throw new InvalidDataException("Connector fingerprint changed after Apply.");
         WriteLine("Microsoft 365 Connector " + operation +

@@ -283,7 +283,8 @@ internal sealed partial class MainForm
                         });
                     probe.ShowDialog(owner);
                 }, outboundMxHost.Text.Trim(),
-                    (owner, candidate, dns, create) => ReviewStagedConnectorAsync(owner, context, candidate, dns, create));
+                    (owner, candidate, dns, create) => ReviewStagedConnectorAsync(owner, context, candidate, dns, create),
+                    owner => InspectWizardConnectorsAsync(owner, context));
                 dialog.ShowDialog(this);
             };
             AddLine(page, smtp);

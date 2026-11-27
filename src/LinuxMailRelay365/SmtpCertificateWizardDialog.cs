@@ -12,16 +12,16 @@ internal sealed class SmtpCertificateWizardDialog : Form
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form, string> deliveryProbe, string configuredMx = "", Func<Form, string, string, bool, Task>? stagedConnector = null)
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form, string> deliveryProbe, string configuredMx = "", Func<Form, string, string, bool, Task>? stagedConnector = null, Func<Form, Task>? manageConnectors = null)
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(740, 520);
         MinimumSize = new Size(460, 350);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 16, Padding = new Padding(16), AutoScroll = true };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 17, Padding = new Padding(16), AutoScroll = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 16; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 17; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         bool working = false;
         int page = 0;
         string sessionMx = configuredMx;
@@ -198,12 +198,22 @@ internal sealed class SmtpCertificateWizardDialog : Form
         var delivery = new Button { Text = "Test delivery through primary Postfix", AutoSize = true };
         delivery.Click += (_, _) => deliveryProbe(this, sessionMx);
         layout.Controls.Add(delivery, 0, 14);
+        var manage = new Button { Text = "Inspect / manage Exchange Connectors", AutoSize = true };
+        manage.Click += async (_, _) =>
+        {
+            if (working || manageConnectors is null) return;
+            SetWorking(true);
+            try { await manageConnectors(this); }
+            catch (Exception ex) { if (!IsDisposed) MessageBox.Show(this, "Connector inventory refused: " + ex.GetType().Name); }
+            finally { if (!IsDisposed) SetWorking(false); }
+        };
+        layout.Controls.Add(manage, 0, 15);
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var back = new Button { Text = "Back", AutoSize = true };
         var next = new Button { Text = "Next", AutoSize = true };
         var navigation = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         navigation.Controls.AddRange([back, next, close]);
-        layout.Controls.Add(navigation, 0, 15);
+        layout.Controls.Add(navigation, 0, 16);
         Controls.Add(layout);
         CancelButton = close;
 
@@ -237,8 +247,9 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 binding.Visible = exchange;
                 delivery.Visible = stage == SmtpWorkflowStage.Delivery;
                 renewal.Visible = scheduler.Visible = maintenance;
+                manage.Visible = manageConnectors is not null && (first || deployment || exchange);
                 foreach (Control control in new Control[] { identity, source, domain, scan, check, import,
-                    acme, rotate, binding, delivery, renewal, scheduler, close })
+                    acme, rotate, binding, delivery, renewal, scheduler, manage, close })
                     control.Enabled = !working && (control != source || certificate);
                 back.Enabled = !working && page > 0;
                 next.Enabled = !working && page < stages.Length - 1;
@@ -263,7 +274,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
                         _ => "Review DNS, test staging, evaluate production material and stage an eligible certificate. No activation occurs here."
                     },
                     SmtpWorkflowStage.Deployment => "Select a staged generation. Discover MX and test STARTTLS before a separate deployment review and explicit activation. Review or create the tenant Connector for the staged certificate in the deployment dialog before activation; verify the active binding on the next page.",
-                    SmtpWorkflowStage.Binding => "Read-only review of the active managed Linux certificate and exact tenant Connector. Create or change connectors using the separate main configuration workflow.",
+                    SmtpWorkflowStage.Binding => "Read-only review of the active managed Linux certificate and exact tenant Connector. Use Inspect / manage Exchange Connectors for tenant-owned objects; new certificate connectors are created on the deployment page.",
                     SmtpWorkflowStage.Delivery => "Review the actual primary route, explicitly approve test messages, then refresh the Linux trace and Exchange Message Trace. Local submission or TLS success is not inbox delivery.",
                     _ => "Inspect renewal state, timers and recovery services. Each live action requires its own review."
                 };
