@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Experimental two-file transaction; no operational CLI.
+"""Experimental two-file transaction core; CLI in manage-primary-mailbox-offline.py.
 
 Mandatory caller guards must establish exclusive maintenance, stopped
 single primary Postfix, empty queues, trusted installed OAuth runtime and
@@ -60,7 +60,7 @@ def review(config, uid, mailbox, guard, runtime_guard, sampler=R.sample,
            identity_reader=R.identity_snapshot, native_compare=R.native_candidate_snapshots):
     """runtime_guard(mailbox) returns a stable trusted runtime/SMTP AUTH SHA.
 
-    The experimental manage-primary-mailbox-offline.py review-only CLI
+    The experimental manage-primary-mailbox-offline.py CLI
     supplies the software-PEM implementation of this callback.
     """
     R.parse(R.encode({"mailbox": mailbox, "nonce": "0"*64}))
@@ -247,4 +247,4 @@ def apply(config, parent, reviewed, uid, confirmation, guard, fresh, read_native
 
 
 if __name__ == "__main__":
-    raise SystemExit("Transaction core only; no production Apply or Restore CLI.")
+    raise SystemExit("Transaction core only; use the explicitly approved offline manager.")
