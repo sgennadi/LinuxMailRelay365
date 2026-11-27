@@ -15,12 +15,13 @@ internal sealed class SmtpTlsRotationDialog : Form
         ClientSize = new Size(820, 600);
         MinimumSize = new Size(500, 350);
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1,
-            RowCount = 7, Padding = new Padding(12) };
+            RowCount = 9, Padding = new Padding(12) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 5; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 7; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var domain = new TextBox { Text = dnsName, Dock = DockStyle.Top };
+        var mx = new TextBox { Dock = DockStyle.Top, PlaceholderText = "tenant.mail.protection.outlook.com", MaxLength = 253 };
         var candidates = new ComboBox { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList };
         var status = new Label { Text = "Select a staged generation.", AutoSize = true, Dock = DockStyle.Top };
         var report = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, Multiline = true,
@@ -28,12 +29,13 @@ internal sealed class SmtpTlsRotationDialog : Form
         var refresh = new Button { Text = "Refresh staged certificates", AutoSize = true };
         var preview = new Button { Text = "Review", AutoSize = true };
         var activate = new Button { Text = "Activate reviewed deployment", AutoSize = true, Enabled = false };
+        var candidateTls = new Button { Text = "Test staged certificate STARTTLS", AutoSize = true };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         var recovery = new Button { Text = "Review interrupted transaction", AutoSize = true };
         var selinux = new Button { Text = "Review SELinux contexts", AutoSize = true };
         var avc = new Button { Text = "Recent SELinux AVC denials", AutoSize = true };
-        buttons.Controls.AddRange([refresh, preview, activate, recovery, selinux, avc, close]);
+        buttons.Controls.AddRange([refresh, preview, candidateTls, activate, recovery, selinux, avc, close]);
         bool busy = false;
         string? approvedSha = null;
         string? approvedName = null;
@@ -44,11 +46,12 @@ internal sealed class SmtpTlsRotationDialog : Form
             approvedSha = approvedName = approvedDomain = approvedMode = null;
             activate.Enabled = false;
             report.Clear();
+            status.ForeColor = SystemColors.ControlText;
         }
         void SetBusy(bool value)
         {
             busy = value;
-            domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = recovery.Enabled = selinux.Enabled = avc.Enabled = close.Enabled = !value;
+            mx.Enabled = candidateTls.Enabled = domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = recovery.Enabled = selinux.Enabled = avc.Enabled = close.Enabled = !value;
             activate.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
@@ -127,6 +130,82 @@ internal sealed class SmtpTlsRotationDialog : Form
                 else status.Text = "Preview only: unchanged certificate, unsupported Postfix or SELinux requires separate review.";
             }
             catch (Exception ex) { status.Text = "Review refused: " + ex.GetType().Name; }
+            finally { SetBusy(false); }
+        };
+        candidateTls.Click += async (_, _) =>
+        {
+            if (busy) return;
+            string? name = candidates.SelectedItem as string;
+            string dns = domain.Text.Trim().ToLowerInvariant();
+            string target = mx.Text.Trim().ToLowerInvariant();
+            if (name is null || Uri.CheckHostName(dns) != UriHostNameType.Dns ||
+                !Regex.IsMatch(target, @"\A[a-z0-9.-]{1,253}\z") ||
+                Uri.CheckHostName(target) != UriHostNameType.Dns ||
+                !target.EndsWith(".mail.protection.outlook.com", StringComparison.Ordinal))
+            {
+                status.Text = "Select a staged certificate and enter the certificate name and exact Microsoft 365 MX.";
+                return;
+            }
+            if (MessageBox.Show(this, "Test the inactive candidate " + name + " against " + target + ":25?" +
+                Environment.NewLine + "The remote peer may request the public client certificate. No mail, AUTH, activation or reload. Confirm the target is your intended tenant MX.",
+                "Confirm candidate STARTTLS test", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            Invalidate();
+            SetBusy(true);
+            status.Text = "Validating candidate and probing STARTTLS from Linux...";
+            try
+            {
+                using var json = JsonDocument.Parse(await remote("candidate-starttls", name, dns, target));
+                var root = json.RootElement;
+                if (root.GetProperty("version").GetInt32() != 1 ||
+                    root.GetProperty("host").GetString() != target || root.GetProperty("port").GetInt32() != 25 ||
+                    root.GetProperty("client_generation").GetString() != name ||
+                    root.GetProperty("certificate_domain").GetString() != dns ||
+                    root.GetProperty("client_identity_mode").GetString() != "inactive_candidate" ||
+                    !root.GetProperty("active_generation_unchanged").GetBoolean() ||
+                    !root.GetProperty("client_certificate_loaded").GetBoolean() ||
+                    !Regex.IsMatch(root.GetProperty("client_certificate_sha256").GetString() ?? "", @"\A[a-f0-9]{64}\z"))
+                    throw new InvalidDataException("Unexpected candidate TLS evidence.");
+                foreach (string flag in new[] { "mail_sent", "auth_attempted", "postfix_process_tested",
+                    "exchange_connector_verified", "client_certificate_presentation_verified", "postfix_modified", "activation_attempted" })
+                    if (root.GetProperty(flag).GetBoolean()) throw new InvalidDataException("Unexpected TLS claim.");
+                var lines = new List<string> { "MX: " + target + ":25", "Candidate: " + name,
+                    "Certificate SHA-256: " + root.GetProperty("client_certificate_sha256").GetString(),
+                    "DNS: " + root.GetProperty("dns").GetString(), "" };
+                var observations = root.GetProperty("observations");
+                if (observations.GetArrayLength() > 2) throw new InvalidDataException("Unexpected sample size.");
+                bool verified = false;
+                foreach (var row in observations.EnumerateArray())
+                {
+                    string? state = row.GetProperty("status").GetString();
+                    string? family = row.GetProperty("family").GetString();
+                    if (family is not ("ipv4" or "ipv6") || !System.Net.IPAddress.TryParse(row.GetProperty("address").GetString(), out var address))
+                        throw new InvalidDataException("Unexpected address.");
+                    if (state == "tls_verified")
+                    {
+                        if (!row.GetProperty("certificate_chain_and_hostname_verified").GetBoolean() ||
+                            row.GetProperty("post_tls_ehlo_code").GetInt32() != 250 ||
+                            row.GetProperty("protocol").GetString() is not ("TLSv1.2" or "TLSv1.3"))
+                            throw new InvalidDataException("Inconsistent TLS result.");
+                        verified = true;
+                    }
+                    lines.Add(family + " " + address + ": " + state);
+                    if (row.TryGetProperty("protocol", out var protocol)) lines.Add("    Protocol: " + protocol.GetString());
+                    if (row.TryGetProperty("cipher", out var cipher)) lines.Add("    Cipher: " + cipher.GetString());
+                }
+                lines.Add("");
+                lines.Add("Client certificate loaded locally. Presentation, connector acceptance and delivery remain unverified.");
+                lines.Add("No activation, Postfix reload, AUTH or mail submission requested. Run a fresh deployment review before activation.");
+                report.Text = string.Join(Environment.NewLine, lines);
+                status.Text = verified ? "Verified server TLS on at least one sampled address; client acceptance unverified." :
+                    "No verified TLS handshake established by this sample.";
+                status.ForeColor = verified ? Color.SeaGreen : Color.DarkOrange;
+            }
+            catch (Exception ex)
+            {
+                status.Text = "Candidate STARTTLS refused or uncertain: " + ex.GetType().Name;
+                status.ForeColor = Color.DarkOrange;
+            }
             finally { SetBusy(false); }
         };
         activate.Click += async (_, _) =>
@@ -361,9 +440,11 @@ internal sealed class SmtpTlsRotationDialog : Form
         layout.Controls.Add(candidates, 0, 1);
         layout.Controls.Add(new Label { Text = "Certificate DNS name", AutoSize = true }, 0, 2);
         layout.Controls.Add(domain, 0, 3);
-        layout.Controls.Add(status, 0, 4);
-        layout.Controls.Add(report, 0, 5);
-        layout.Controls.Add(buttons, 0, 6);
+        layout.Controls.Add(new Label { Text = "Microsoft 365 MX (for staged STARTTLS test)", AutoSize = true }, 0, 4);
+        layout.Controls.Add(mx, 0, 5);
+        layout.Controls.Add(status, 0, 6);
+        layout.Controls.Add(report, 0, 7);
+        layout.Controls.Add(buttons, 0, 8);
         Controls.Add(layout);
         CancelButton = close;
     }

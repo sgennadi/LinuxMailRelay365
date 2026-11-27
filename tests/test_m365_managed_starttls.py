@@ -127,3 +127,9 @@ class CandidateStartTlsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.candidate_probe()
         self.tls.inspect.assert_not_called()
+
+    def test_candidate_gui_wiring(self):
+        src = ROOT / "src/LinuxMailRelay365"
+        self.assertIn('TEST_STAGED_CLIENT_CERTIFICATE', (src/"EmbeddedAssets.cs").read_text())
+        self.assertIn('candidate-starttls', (src/"MainForm.DeliveryMiniWizard.cs").read_text())
+        self.assertIn('Test staged certificate STARTTLS', (src/"SmtpTlsRotationDialog.cs").read_text())

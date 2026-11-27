@@ -108,7 +108,7 @@ def inspect_candidate(mx, candidate, domain, tls=None, review=None, validator=No
             raise ValueError("candidate TLS validation refused")
         path = review.ROOT / candidate
         full = review.read_file(path / "fullchain.pem", 3 * 1024 * 1024, True)
-        leaf = re.search(rb"-----BEGIN CERTIFICATE-----[\\s\\S]*?-----END CERTIFICATE-----", full)
+        leaf = re.search(rb"-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----", full)
         if leaf is None:
             raise ValueError("certificate unavailable")
         fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(leaf.group().decode("ascii"))).hexdigest()

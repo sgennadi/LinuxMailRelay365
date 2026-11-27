@@ -265,19 +265,28 @@ internal static class EmbeddedAssets
         return script.Append('\n').ToString();
     }
 
-    internal static string BuildM365ManagedStartTlsDiagnosis(string mx)
+    internal static string BuildM365ManagedStartTlsDiagnosis(string mx, string? candidate = null, string? domain = null)
     {
         if (!Regex.IsMatch(mx, @"\A[a-z0-9.-]{1,253}\z") ||
             Uri.CheckHostName(mx) != UriHostNameType.Dns ||
             !mx.EndsWith(".mail.protection.outlook.com", StringComparison.Ordinal))
             throw new ArgumentException("Invalid Microsoft 365 MX name.");
+        bool staged = candidate is not null || domain is not null;
+        if (staged && (!Regex.IsMatch(candidate ?? "", @"\Acandidate-[a-f0-9]{64}\z") ||
+            !Regex.IsMatch(domain ?? "", @"\A[a-z0-9.-]{1,253}\z") ||
+            Uri.CheckHostName(domain ?? "") != UriHostNameType.Dns))
+            throw new ArgumentException("Invalid staged certificate identity.");
         var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-managed-tls.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
         (string File, string Resource)[] files =
         [
             ("inspect-m365-managed-starttls.py", "LinuxMailRelay365.linux.m365-managed-starttls.py"),
             ("inspect-m365-starttls.py", "LinuxMailRelay365.linux.m365-starttls-diagnosis.py"),
             ("review-smtp-tls-rotation.py", "LinuxMailRelay365.linux.review-smtp-tls-rotation.py"),
-            ("smtp-tls-postfix.py", "LinuxMailRelay365.linux.smtp-tls-postfix.py")
+            ("smtp-tls-postfix.py", "LinuxMailRelay365.linux.smtp-tls-postfix.py"),
+            ("smtp-tls-transaction.py", "LinuxMailRelay365.linux.smtp-tls-transaction.py"),
+            ("smtp-tls-generation.py", "LinuxMailRelay365.linux.smtp-tls-generation.py"),
+            ("smtp-tls-validate-generation.py", "LinuxMailRelay365.linux.smtp-tls-validate-generation.py"),
+            ("check-smtp-relay-certificate.py", "LinuxMailRelay365.linux.smtp-cert-check.py")
         ];
         foreach (var file in files)
         {
@@ -286,7 +295,8 @@ internal static class EmbeddedAssets
                 .Append("\nLMR365_MANAGED_TLS_ASSET\n");
         }
         return script.Append("/usr/bin/python3 -I -B \"$work/inspect-m365-managed-starttls.py\" <<'LMR365_MANAGED_TLS_REQUEST'\n")
-            .Append(System.Text.Json.JsonSerializer.Serialize(new { mx }))
+            .Append(staged ? System.Text.Json.JsonSerializer.Serialize(new { mx, candidate, domain, confirm = "TEST_STAGED_CLIENT_CERTIFICATE" }) :
+                System.Text.Json.JsonSerializer.Serialize(new { mx }))
             .Append("\nLMR365_MANAGED_TLS_REQUEST\n").ToString();
     }
 
