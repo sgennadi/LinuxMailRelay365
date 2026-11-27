@@ -76,6 +76,18 @@ internal static class EmbeddedAssets
         return script.ToString();
     }
 
+    internal static string BuildSmtpTlsAvcDiagnosis()
+    {
+        var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-tls-avc.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
+        foreach (string file in new[] { "check-smtp-tls-avc.py", "smtp-tls-postfix.py" })
+        {
+            script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_AVC_ASSET'\n")
+                .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux." + file))))
+                .Append("\nLMR365_AVC_ASSET\n");
+        }
+        return script.Append("/usr/bin/python3 -I -B \"$work/check-smtp-tls-avc.py\" --recent\n").ToString();
+    }
+
     internal static string BuildSmtpTlsRotation(string action, string? candidate, string? domain, string? expectedSha)
     {
         if (action is not ("inventory" or "preview" or "activate" or "recovery-preview" or "recover" or "binding-preview" or "selinux-preview" or "selinux-restore"))

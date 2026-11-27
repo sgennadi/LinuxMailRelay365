@@ -73,6 +73,7 @@
     <EmbeddedResource Include="../../linux/smtp-tls-initial-journal.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-initial-journal.py" />
     <EmbeddedResource Include="../../linux/smtp-tls-renewal-profile.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-renewal-profile.py" />
     <EmbeddedResource Include="../../linux/smtp-tls-postfix.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-postfix.py" />
+    <EmbeddedResource Include="../../linux/check-smtp-tls-avc.py" LogicalName="LinuxMailRelay365.linux.check-smtp-tls-avc.py" />
     <EmbeddedResource Include="../../linux/check-smtp-acme-credentials.py" LogicalName="LinuxMailRelay365.linux.check-smtp-acme-credentials.py" />
     <EmbeddedResource Include="../../linux/install-postfix-m365-xoauth2.sh" LogicalName="LinuxMailRelay365.linux.install.sh" />
     <EmbeddedResource Include="../../linux/m365_xoauth2_transport.py" LogicalName="LinuxMailRelay365.linux.transport.py" />

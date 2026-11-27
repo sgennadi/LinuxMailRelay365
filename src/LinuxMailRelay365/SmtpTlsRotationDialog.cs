@@ -32,7 +32,8 @@ internal sealed class SmtpTlsRotationDialog : Form
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         var recovery = new Button { Text = "Review interrupted transaction", AutoSize = true };
         var selinux = new Button { Text = "Review SELinux contexts", AutoSize = true };
-        buttons.Controls.AddRange([refresh, preview, activate, recovery, selinux, close]);
+        var avc = new Button { Text = "Recent SELinux AVC denials", AutoSize = true };
+        buttons.Controls.AddRange([refresh, preview, activate, recovery, selinux, avc, close]);
         bool busy = false;
         string? approvedSha = null;
         string? approvedName = null;
@@ -47,7 +48,7 @@ internal sealed class SmtpTlsRotationDialog : Form
         void SetBusy(bool value)
         {
             busy = value;
-            domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = recovery.Enabled = selinux.Enabled = close.Enabled = !value;
+            domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = recovery.Enabled = selinux.Enabled = avc.Enabled = close.Enabled = !value;
             activate.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
@@ -154,6 +155,50 @@ internal sealed class SmtpTlsRotationDialog : Form
             {
                 status.Text = "Activation refused or outcome uncertain. Inspect the Linux transaction journal before retry.";
             }
+            finally { SetBusy(false); }
+        };
+        avc.Click += async (_, _) =>
+        {
+            if (busy) return;
+            Invalidate();
+            SetBusy(true);
+            status.Text = "Reading bounded recent SELinux audit records...";
+            try
+            {
+                using var json = JsonDocument.Parse(await remote("avc-preview", null, null, null));
+                var root = json.RootElement;
+                if (root.GetProperty("version").GetInt32() != 1 ||
+                    root.GetProperty("window").GetString() != "recent" ||
+                    root.GetProperty("access_verified").GetBoolean() ||
+                    root.GetProperty("policy_changed").GetBoolean() ||
+                    root.GetProperty("raw_records_exported").GetBoolean())
+                    throw new InvalidDataException("Unexpected audit evidence.");
+                string? state = root.GetProperty("status").GetString();
+                if (state is not ("observed" or "partial" or "unverified" or "no_matches_or_audit_unavailable"))
+                    throw new InvalidDataException();
+                int count = root.GetProperty("matching_denials").GetInt32();
+                int enforcing = root.GetProperty("enforcing_denials").GetInt32();
+                int permissive = root.GetProperty("permissive_denials").GetInt32();
+                int unknown = root.GetProperty("unknown_mode_denials").GetInt32();
+                if (count < 0 || enforcing < 0 || permissive < 0 || unknown < 0 ||
+                    count != (long)enforcing + permissive + unknown)
+                    throw new InvalidDataException();
+                report.Text = "Audit window: recent (ausearch)" + Environment.NewLine +
+                    "Read status: " + state + Environment.NewLine +
+                    "Audit daemon: " + root.GetProperty("audit_health").GetString() + Environment.NewLine +
+                    "Kernel audit lost total: " + root.GetProperty("audit_lost_total").ToString() + Environment.NewLine +
+                    "Related denial events: " + count + Environment.NewLine +
+                    "    Enforcing: " + enforcing + Environment.NewLine +
+                    "    Permissive: " + permissive + Environment.NewLine +
+                    "    Unknown mode: " + unknown + Environment.NewLine +
+                    "Parsed / unparsed AVC records: " + root.GetProperty("parsed_records").GetInt32() +
+                    " / " + root.GetProperty("unparsed_records").GetInt32() + Environment.NewLine + Environment.NewLine +
+                    "Historical hints only. No matches, unavailable logs or matching contexts do not prove runtime access." +
+                    Environment.NewLine + "No policy changes or raw audit data exported.";
+                status.Text = count > 0 ? "Related AVC denials observed; review the Linux audit log." :
+                    "No related denials established by this sample. Access remains unverified.";
+            }
+            catch (Exception ex) { status.Text = "AVC diagnosis unavailable: " + ex.GetType().Name; }
             finally { SetBusy(false); }
         };
         selinux.Click += async (_, _) =>

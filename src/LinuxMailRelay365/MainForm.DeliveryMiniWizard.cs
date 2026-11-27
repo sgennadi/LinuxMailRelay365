@@ -181,7 +181,10 @@ internal sealed partial class MainForm
                 {
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     var endpoint = Endpoint();
-                    string script = EmbeddedAssets.BuildSmtpTlsRotation(action, candidate, domain, sha);
+                    if (action == "avc-preview" && (candidate is not null || domain is not null || sha is not null))
+                        throw new ArgumentException("Unexpected AVC review arguments.");
+                    string script = action == "avc-preview" ? EmbeddedAssets.BuildSmtpTlsAvcDiagnosis() :
+                        EmbeddedAssets.BuildSmtpTlsRotation(action, candidate, domain, sha);
                     var timeout = TimeSpan.FromSeconds(action is "activate" or "recover" ? 600 : 180);
                     var result = endpoint.Username == "root"
                         ? await SshRemote.ExecuteAsync(endpoint, "bash -s", script, timeout)
