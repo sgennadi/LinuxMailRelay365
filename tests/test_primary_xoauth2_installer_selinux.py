@@ -107,6 +107,37 @@ class WorkflowShellSyntaxTests(unittest.TestCase):
             self.assertEqual(result.returncode,0,result.stderr)
 
 
+class VtpmProviderReceiptTests(unittest.TestCase):
+    def test_required_provider_cannot_pass_with_skipped_signing(self):
+        source=(ROOT/"tests/rocky_vm_boot_enforcing.sh").read_text()
+        block=source.split("# BEGIN VTPM_PROVIDER_RECEIPT_CHECK\n",1)[1].split(
+            "# END VTPM_PROVIDER_RECEIPT_CHECK",1)[0]
+        positive=["LMR365_VM_VTPM_PROVIDER=native_openssl3_provider",
+                  "LMR365_VM_VTPM_PS256=verified_emulated_tpm_certificate",
+                  "TPM_PROVISION_SERVICE_ACCOUNT_PS256_VERIFIED=yes",
+                  "TPM_PROVISION_PERSISTENT_KEY_CREATED=yes",
+                  "TPM_PROVISION_CERTIFICATE_CREATED=yes"]
+        skipped=["LMR365_VM_VTPM_PROVIDER=unavailable_in_configured_repos",
+                 "LMR365_VM_VTPM_PS256=not_tested"]
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt=Path(tmp)/"vtpm-receipt"
+            def run(rows,required):
+                receipt.write_text("\n".join(rows)+"\n")
+                return subprocess.run(["bash","-c",
+                    'set -Eeuo pipefail\nwork="$1"\nLMR365_KVM_VTPM_PROVIDER_REQUIRED="$2"\n'+block,
+                    "provider-receipt",tmp,required],
+                    stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+            self.assertEqual(run(positive,"true").returncode,0)
+            self.assertEqual(run(positive,"false").returncode,0)
+            self.assertEqual(run(skipped,"false").returncode,0)
+            self.assertNotEqual(run(skipped,"true").returncode,0)
+            self.assertNotEqual(run(positive+skipped,"true").returncode,0)
+            self.assertNotEqual(run(skipped+positive,"false").returncode,0)
+            for i in range(len(positive)):
+                with self.subTest(missing=positive[i]):
+                    self.assertNotEqual(run(positive[:i]+positive[i+1:],"true").returncode,0)
+
+
 class PrimaryVmReceiptTests(unittest.TestCase):
     def test_every_required_marker_is_checked_by_actual_bash(self):
         source=(ROOT/"tests/rocky_vm_boot_enforcing.sh").read_text()

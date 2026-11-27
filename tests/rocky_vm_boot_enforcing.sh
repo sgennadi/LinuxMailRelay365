@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Boot genuine Rocky Linux 9.9 VM under KVM with isolated disk and SSH key.
+# Boot genuine Rocky Linux 9.9 (full suite) or 10.3 (native TPM provider)
+# under KVM with isolated disk and SSH key.
 # No Microsoft 365 login, SMTP DATA, persisted credentials or production host.
 set -Eeuo pipefail
 bash tests/rocky_vm_kvm_probe.sh
@@ -31,8 +32,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
-image="Rocky-9-GenericCloud-Base-9.9-20261112.0.x86_64.qcow2"
-url="https://download.rockylinux.org/pub/rocky/9/images/x86_64"
+# Rocky 9 remains the full existing acceptance suite. Rocky 10 is a
+# separate, mandatory-provider experiment; it cannot substitute for Rocky 9.
+case "${LMR365_KVM_ROCKY_MAJOR:-9}" in
+  9)
+    image="Rocky-9-GenericCloud-Base-9.9-20261112.0.x86_64.qcow2"
+    url="https://download.rockylinux.org/pub/rocky/9/images/x86_64"
+    expected_version=9.9
+    ;;
+  10)
+    test "${LMR365_KVM_VTPM_ACCEPTANCE:-false}" = true
+    test "${LMR365_KVM_VTPM_PROVIDER_REQUIRED:-false}" = true
+    test "${LMR365_KVM_QUEUE_ACCEPTANCE:-false}" = false
+    test "${LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE:-false}" = false
+    test "${LMR365_KVM_CLIENT_TLS_ACCEPTANCE:-false}" = false
+    image="Rocky-10-GenericCloud-Base-10.3-20261112.0.x86_64.qcow2"
+    url="https://download.rockylinux.org/pub/rocky/10/images/x86_64"
+    expected_version=10.3
+    ;;
+  *) echo "LMR365_GUEST_UNSUPPORTED_ROCKY_MAJOR"; exit 1 ;;
+esac
 curl --fail --silent --show-error --location --retry 3 --connect-timeout 20 --max-time 90 \
     "$url/$image.CHECKSUM" --output "$work/checksum"
 curl --fail --silent --show-error --location --retry 3 --connect-timeout 20 --max-time 480 \
@@ -129,11 +148,12 @@ done
 test "$ready" = yes || { echo "LMR365_GUEST_SSH_TIMEOUT"; exit 1; }
 echo "LMR365_GUEST_SSH=ready"
 
-ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash -s' <<'GUEST'
+ssh "${ssh_opts[@]}" ci@127.0.0.1 "bash -s -- '$expected_version'" <<'GUEST'
 set -Eeuo pipefail
 source /etc/os-release
 test "$ID" = rocky
-test "$VERSION_ID" = 9.9
+test "$VERSION_ID" = "$1"
+case "$1" in 9.9|10.3) ;; *) exit 1 ;; esac
 test "$(uname -m)" = x86_64
 test "$(cat /proc/1/comm)" = systemd
 test "$(getenforce)" = Enforcing
@@ -146,13 +166,14 @@ test "$(timeout 5 hostname -f)" = rocky-selinux-ci.example.invalid
 getent -s files hosts rocky-selinux-ci.example.invalid >/dev/null
 getent -s files hosts rocky-selinux-ci >/dev/null
 echo "LMR365_GUEST_LOCAL_FQDN=verified"
-echo "LMR365_GUEST_DISTRO=rocky_9_9"
+echo "LMR365_GUEST_DISTRO=rocky_${VERSION_ID//./_}"
 echo "LMR365_GUEST_PID1=systemd"
 echo "LMR365_GUEST_SELINUX=enforcing"
 echo "LMR365_GUEST_SELINUXFS=active"
 echo "LMR365_GUEST_SSHD=active"
 GUEST
 
+if test "$expected_version" = 9.9; then
 # Real systemd + SELinux Enforcing; a synthetic auditor exercises only the
 # optional proof-timer lifecycle, NOT mail authentication or cloud delivery.
 scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
@@ -192,6 +213,7 @@ grep -Fxq 'SMTP_AUTH_ENFORCING_TESTED=no' "$work/doctor"
 grep -Fxq 'CHANGES_APPLIED=no' "$work/doctor"
 grep -Eq '^SELINUX_ACCEPTANCE_STATUS=(smtp_port_policy_review|file_context_review|manual_avc_and_runtime_test_required)$' "$work/doctor"
 echo "LMR365_GUEST_DOCTOR_ENFORCING=verified_read_only"
+fi
 
 # Test an actual guest Postfix daemon under SELinux Enforcing. Its SMTP
 # listener is loopback-only; do not create mail or contact any relay.
@@ -211,7 +233,13 @@ if test "${LMR365_KVM_VTPM_ACCEPTANCE:-false}" = "true"; then
 set -Eeuo pipefail
 sudo dnf -y -q install tpm2-tools openssl policycoreutils
 provider=unavailable
-if rpm -q tpm2-openssl >/dev/null; then
+source /etc/os-release
+if test "$VERSION_ID" = 10.3; then
+    # Mandatory distro-native provider; no third-party repo or source build.
+    sudo dnf -y -q install tpm2-openssl
+    rpm -q tpm2-openssl
+    provider=present
+elif rpm -q tpm2-openssl >/dev/null; then
     provider=present
 else
     # Only already configured signed distribution repositories. Do not
@@ -239,13 +267,31 @@ VTPM_SETUP
         'LMR365_VM_VTPM_CLOUD_OR_MAIL_TESTED=no'; do
         grep -Fxq "$expected" "$work/vtpm-receipt"
     done
+    # BEGIN VTPM_PROVIDER_RECEIPT_CHECK
+    if test "${LMR365_KVM_VTPM_PROVIDER_REQUIRED:-false}" = true; then
+        grep -Fxq 'LMR365_VM_VTPM_PROVIDER=native_openssl3_provider' "$work/vtpm-receipt"
+    fi
     if grep -Fxq 'LMR365_VM_VTPM_PROVIDER=native_openssl3_provider' "$work/vtpm-receipt"; then
         grep -Fxq 'LMR365_VM_VTPM_PS256=verified_emulated_tpm_certificate' "$work/vtpm-receipt"
         grep -Fxq 'TPM_PROVISION_SERVICE_ACCOUNT_PS256_VERIFIED=yes' "$work/vtpm-receipt"
+        grep -Fxq 'TPM_PROVISION_PERSISTENT_KEY_CREATED=yes' "$work/vtpm-receipt"
+        grep -Fxq 'TPM_PROVISION_CERTIFICATE_CREATED=yes' "$work/vtpm-receipt"
+        if grep -Fxq 'LMR365_VM_VTPM_PS256=not_tested' "$work/vtpm-receipt" ||
+           grep -Fxq 'LMR365_VM_VTPM_PROVIDER=unavailable_in_configured_repos' "$work/vtpm-receipt"; then
+            exit 1
+        fi
     else
         grep -Fxq 'LMR365_VM_VTPM_PROVIDER=unavailable_in_configured_repos' "$work/vtpm-receipt"
         grep -Fxq 'LMR365_VM_VTPM_PS256=not_tested' "$work/vtpm-receipt"
+        if grep -Fxq 'LMR365_VM_VTPM_PS256=verified_emulated_tpm_certificate' "$work/vtpm-receipt"; then
+            exit 1
+        fi
     fi
+    # END VTPM_PROVIDER_RECEIPT_CHECK
+fi
+if test "$expected_version" = 10.3; then
+    echo "LMR365_GUEST_VTPM_NATIVE_PROVIDER_ONLY=passed"
+    exit 0
 fi
 
 # Native two-file XOAUTH2 transaction with real SELinux labels. This is

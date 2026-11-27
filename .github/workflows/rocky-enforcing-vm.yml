@@ -90,3 +90,25 @@ jobs:
           LMR365_KVM_PRIMARY_MAILBOX_ACCEPTANCE: ${{ github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' || github.ref_name == 'feature/primary-xoauth2-pipe-enforcing' || github.ref_name == 'feature/primary-xoauth2-pipe-network-enforcing' }}
           LMR365_KVM_CLIENT_TLS_ACCEPTANCE: ${{ inputs.client-tls-acceptance || github.ref_name == 'feature/post-rc19-primary-mailbox-candidate' }}
         run: bash tests/rocky_vm_boot_enforcing.sh
+
+  kvm-native-tpm-provider:
+    name: Rocky 10.3 native OpenSSL TPM2 provider acceptance (swtpm)
+    if: github.ref_name == 'feature/primary-tpm-virtual-device'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Check fixture syntax
+        shell: bash
+        run: |
+          bash -n tests/rocky_vm_boot_enforcing.sh
+          python3 -m py_compile tests/rocky_vm_primary_tpm_device.py linux/manage-tpm-oauth-key.py
+      - name: Boot Rocky 10.3 and require native TPM2 provider PS256
+        shell: bash
+        env:
+          LMR365_KVM_ROCKY_MAJOR: '10'
+          LMR365_KVM_VTPM_ACCEPTANCE: 'true'
+          LMR365_KVM_VTPM_PROVIDER_REQUIRED: 'true'
+        run: bash tests/rocky_vm_boot_enforcing.sh
