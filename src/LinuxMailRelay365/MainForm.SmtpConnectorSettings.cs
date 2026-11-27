@@ -7,7 +7,8 @@ namespace LinuxMailRelay365;
 
 internal sealed partial class MainForm
 {
-    private sealed record ConnectorSettingsEdit(string Domains, string Ips, string Certificate);
+    private sealed record ConnectorSettingsEdit(string Domains, string Ips, string Certificate,
+        string ExpectedSecurityFlags = "");
 
     private static bool CanEditConnectorSettings(CloudConnectorObject connector) =>
         connector.Ownership == "verified" && !connector.Enabled &&
@@ -80,7 +81,14 @@ internal sealed partial class MainForm
         CheckCloudTenant(inventory.Tenant);
         var edit = PromptConnectorSettings(owner, connector);
         if (edit is null) return false;
+        return await ApplyReviewedConnectorSettingsAsync(owner, inventory, connector, edit, contextGuard);
+    }
+
+    private async Task<bool> ApplyReviewedConnectorSettingsAsync(Form owner, CloudObjectsInventory inventory,
+        CloudConnectorObject connector, ConnectorSettingsEdit edit, Action contextGuard, string? restoreSource = null)
+    {
         contextGuard();
+        CheckCloudTenant(inventory.Tenant);
         const string operation = "EditSettings";
         string report = await RunCloudConnectorOperationAsync(inventory.Tenant, connector, operation,
             "", "Review", edit: edit);
@@ -95,13 +103,16 @@ internal sealed partial class MainForm
             "Sender Domains: " + string.Join(", ", connector.SenderDomains) + " -> " + edit.Domains + Environment.NewLine +
             "Public IPv4: " + string.Join(", ", connector.SenderIps) + " -> " + edit.Ips + Environment.NewLine +
             "TLS certificate: " + connector.TlsCertificateName + " -> " + edit.Certificate + Environment.NewLine +
+            (restoreSource is null ? "" : "Restore source: " + restoreSource + Environment.NewLine +
+                "Live security flags must still match the backup. The source is an unsigned local settings snapshot." + Environment.NewLine) +
             "Backup: " + backup + Environment.NewLine + Environment.NewLine +
             "This modifies a real Exchange Online connector. Confirm ownership of the new public IP or certificate. " +
             "Authentication mode and security flags are preserved. Other servers may depend on this connector. " +
             "The connector remains disabled; re-enabling it is a separate reviewed operation. " +
             "Backup records previous settings, not automatic rollback. No Linux or DNS changes.";
-        if (!ConfirmDestructive("LinuxMailRelay365 | Edit Exchange Connector", display,
-            "EDIT M365 CONNECTOR", owner)) return false;
+        if (!ConfirmDestructive(restoreSource is null ? "LinuxMailRelay365 | Edit Exchange Connector" :
+            "LinuxMailRelay365 | Restore Exchange Connector settings", display,
+            restoreSource is null ? "EDIT M365 CONNECTOR" : "RESTORE M365 CONNECTOR", owner)) return false;
         contextGuard();
         CheckCloudTenant(inventory.Tenant);
         connectorApproved.Checked = false;
@@ -125,7 +136,8 @@ internal sealed partial class MainForm
                 root.GetProperty("reviewedSha256").GetString() != sha ||
                 root.GetProperty("before").GetProperty("enabled").GetBoolean())
                 throw new InvalidDataException("Backup identity or reviewed SHA mismatch.");
-            WriteLine("Exchange Connector settings edit verified. Connector remains disabled. Backup: " + backup);
+            WriteLine("Exchange Connector settings " + (restoreSource is null ? "edit" : "restore") +
+                " verified. Connector remains disabled. Backup: " + backup);
             MessageBox.Show(owner, "Settings verified. The connector remains disabled. Refresh inventory before enabling." +
                 Environment.NewLine + "Private backup: " + backup, "Exchange Connector", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return true;

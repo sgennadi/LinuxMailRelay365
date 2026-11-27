@@ -99,6 +99,7 @@ internal sealed partial class MainForm
             Add("-ExpectedSenderDomains", string.Join(",", connector.SenderDomains));
             Add("-ExpectedPublicIps", string.Join(",", connector.SenderIps));
             Add("-ExpectedCertificateName", connector.TlsCertificateName);
+            Add("-ExpectedSecurityFlags", edit.ExpectedSecurityFlags);
             if (backupPath is not null) Add("-BackupPath", backupPath);
         }
         else if (edit is not null || backupPath is not null)

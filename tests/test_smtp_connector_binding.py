@@ -134,3 +134,16 @@ class ConnectorBindingTests(unittest.TestCase):
         self.assertIn('Add("-BackupPath"',runner)
         shell=(ROOT/"windows/Manage-LinuxMailRelay365Object.ps1").read_text()
         self.assertIn("selected_settings_changed_refresh_inventory",shell)
+
+    def test_connector_restore_checks_exact_snapshot_and_live_flags(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        restore=(src/"MainForm.SmtpConnectorRestore.cs").read_text()
+        for marker in ("current != expectedCurrent", "previous == current", "connector.Identity", "tenantId.ToString", "ExpectedSecurityFlags = flags", "ExactFields", "FileAttributes.ReparsePoint", "ApplyReviewedConnectorSettingsAsync"):
+            self.assertIn(marker,restore)
+        settings=(src/"MainForm.SmtpConnectorSettings.cs").read_text()
+        self.assertIn('"RESTORE M365 CONNECTOR"',settings)
+        self.assertIn('WriteRestrictedGraphPayload(backup, "")',settings)
+        shell=(ROOT/"windows/Manage-LinuxMailRelay365Object.ps1").read_text()
+        self.assertIn("backup_security_flags_changed_manual_review_required",shell)
+        self.assertIn("restore-flags:",shell)
+        self.assertIn('Add("-ExpectedSecurityFlags"',(src/"MainForm.CloudConnectorChanges.cs").read_text())

@@ -16,6 +16,7 @@ param(
   [string]$ExpectedSenderDomains='',
   [string]$ExpectedPublicIps='',
   [string]$ExpectedCertificateName='',
+  [string]$ExpectedSecurityFlags='',
   [string]$ExpectedSha256='',
   [string]$TypedConfirmation='',
   [string]$ResultPath='',
@@ -175,6 +176,15 @@ function Reviewed-Settings($current,[object[]]$all,[object[]]$accepted,[string]$
     ($oldCanonical -join ',') -cne ($ips -join ',') -or $oldCert -cne $certificate) 'no_settings_change'
   return [ordered]@{senderDomains=$domains; senderIps=$ips; certificateName=$certificate}
 }
+function Security-Flags($item) {
+  return (-join @(
+    [int][bool]$item.RequireTls,
+    [int][bool]$item.RestrictDomainsToIPAddresses,
+    [int][bool]$item.RestrictDomainsToCertificate,
+    [int][bool]$item.CloudServicesMailEnabled,
+    [int][bool]$item.TreatMessagesAsInternal
+  ))
+}
 function Write-Settings-Backup([string]$path,[guid]$tenant,[string]$sha,$current,$edit) {
   Require ([IO.Path]::IsPathFullyQualified($path)) 'private_backup_path_required'
   $file=Get-Item -LiteralPath $path -ErrorAction Stop
@@ -227,6 +237,7 @@ if ($SelfTest) {
   $accepted=@([pscustomobject]@{DomainName='example.org';DomainType='Authoritative'},
     [pscustomobject]@{DomainName='relay.example.org';DomainType='InternalRelay'})
   Action-Allowed $ok 'EditSettings' '' @($sample)
+  Require ((Security-Flags $ok) -ceq '01000') 'security_flags_selftest_failed'
   $edit=Reviewed-Settings $ok @($sample) $accepted 'example.org,relay.example.org' '8.8.4.4' ''
   Require ($edit.senderDomains.Count -eq 2 -and $edit.senderIps[0] -ceq '8.8.4.4') 'edit_settings_selftest_failed'
   $editSha=Plan-Hash $tenant 'EditSettings' $sample.Name $sample.Identity '' @($sample) ($edit | ConvertTo-Json -Compress)
@@ -256,7 +267,8 @@ if ($Phase -eq 'Review') {
 if ($Operation -ne 'Rename') { Require (-not $NewName) 'new_name_is_only_for_rename' }
 if ($Operation -ne 'EditSettings') {
   Require (-not $NewSenderDomains -and -not $NewPublicIps -and -not $NewCertificateName -and -not $BackupPath -and
-    -not $ExpectedSenderDomains -and -not $ExpectedPublicIps -and -not $ExpectedCertificateName) 'unexpected_edit_arguments'
+    -not $ExpectedSenderDomains -and -not $ExpectedPublicIps -and -not $ExpectedCertificateName -and
+    -not $ExpectedSecurityFlags) 'unexpected_edit_arguments'
 } elseif ($Phase -eq 'Review') {
   Require (-not $BackupPath) 'review_cannot_create_backup'
 } else {
@@ -281,6 +293,10 @@ try {
   $edit=$null
   $editJson=''
   if ($Operation -eq 'EditSettings') {
+    if ($ExpectedSecurityFlags) {
+      Require ($ExpectedSecurityFlags -cmatch '^[01]{5}$' -and
+        (Security-Flags $current) -ceq $ExpectedSecurityFlags) 'backup_security_flags_changed_manual_review_required'
+    }
     # Reject stale UI inventory before review as well as before Apply.
     $oldDomains=@(Exact-Domain-List (@($current.SenderDomains | ForEach-Object { [string]$_ }) -join ','))
     $oldIps=@($current.SenderIPAddresses | ForEach-Object { [string]$_ } | Where-Object { $_ })
@@ -293,6 +309,7 @@ try {
     $accepted=@(Get-AcceptedDomain -ErrorAction Stop)
     $edit=Reviewed-Settings $current $all $accepted $NewSenderDomains $NewPublicIps $NewCertificateName
     $editJson=$edit | ConvertTo-Json -Depth 4 -Compress
+    if ($ExpectedSecurityFlags) { $editJson += '|restore-flags:' + $ExpectedSecurityFlags }
   }
   $sha=Plan-Hash $TenantId $Operation $ConnectorName $ConnectorIdentity $NewName $all $editJson
   $out=[Collections.Generic.List[string]]::new()
