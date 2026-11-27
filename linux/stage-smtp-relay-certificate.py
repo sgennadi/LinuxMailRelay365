@@ -4,15 +4,20 @@ import argparse
 import hashlib
 import importlib.util
 import os
+import hmac
+import re
 import stat
 import tempfile
 from pathlib import Path
 
 ROOT=Path("/etc/postfix/lmr365-smtp-tls")
 
-def stage(cert,chain,key,name,ca):
+def stage(cert,chain,key,name,ca,expected_certificate_sha256=None):
     if os.geteuid()!=0:
         raise ValueError("root required")
+    if expected_certificate_sha256 is not None and (not isinstance(expected_certificate_sha256,str)
+            or not re.fullmatch(r"[a-f0-9]{64}",expected_certificate_sha256)):
+        raise ValueError("invalid expected certificate fingerprint")
     os.umask(0o077)
     ROOT.mkdir(mode=0o700,exist_ok=True)
     for p in [ROOT]+list(ROOT.parents):
@@ -37,6 +42,10 @@ def stage(cert,chain,key,name,ca):
                     raise ValueError("invalid source size")
             (tmp/label).write_bytes(data)
         checker.inspect(str(tmp/"cert.pem"),str(tmp/"chain.pem"),name,ca,str(tmp/"key.pem"))
+        if expected_certificate_sha256 is not None:
+            actual=hashlib.sha256(checker.openssl("x509","-in",str(tmp/"cert.pem"),"-outform","DER")).hexdigest()
+            if not hmac.compare_digest(actual,expected_certificate_sha256):
+                raise ValueError("certificate changed after review")
         bundle=(tmp/"cert.pem").read_bytes().rstrip()+b"\n"+(tmp/"chain.pem").read_bytes()
         key_bytes=(tmp/"key.pem").read_bytes()
         combined=key_bytes.rstrip()+b"\n"+bundle

@@ -213,6 +213,41 @@ def inspect_existing(request,root=None,inspect=evaluate):
     return report
 
 
+STAGE_CONFIRM="STAGE_REVIEWED_EVALUATION"
+
+
+def stage_existing(envelope,inspect=inspect_existing,resolve=lineage,stage=None):
+    """Prepare a candidate only; retain the existing strict client TLS gate."""
+    if (not isinstance(envelope,dict) or set(envelope)!={"request","confirm","certificate_sha256"}
+            or envelope["confirm"]!=STAGE_CONFIRM
+            or not isinstance(envelope["certificate_sha256"],str)
+            or not re.fullmatch(r"[a-f0-9]{64}",envelope["certificate_sha256"])):
+        raise ValueError("explicit staging confirmation and fingerprint required")
+    req=envelope["request"]
+    report=inspect(req)
+    result=dict(version=1,status="refused",accepted_domain=report["accepted_domain"],
+                certificate_name=report["certificate_name"],certificate_sha256=envelope["certificate_sha256"],
+                candidate=None,staging_attempted=False,postfix_config_modified=False,postfix_reloaded=False,
+                issuance_attempted=False,dns_modified=False,exchange_acceptance_verified=False)
+    if (report["status"]!="material_verified" or report["local_chain_name_key_verified"] is not True
+            or report["local_sslclient"]!="passed"
+            or report["certificate_sha256"]!=envelope["certificate_sha256"]):
+        return result
+    try:
+        paths=resolve(ROOT/report["certificate_name"],report["certificate_name"])
+        stage=stage or load("stage-smtp-relay-certificate").stage
+        result["staging_attempted"]=True
+        candidate=stage(paths["cert"],paths["chain"],paths["privkey"],report["certificate_name"],
+                        "auto",expected_certificate_sha256=envelope["certificate_sha256"])
+        if not isinstance(candidate,str) or not re.fullmatch(r"candidate-[a-f0-9]{64}",candidate):
+            raise ValueError("invalid candidate")
+        result.update(status="staged",candidate=candidate)
+    except Exception:
+        if result["staging_attempted"]:
+            result["status"]="staging_unverified"
+    return result
+
+
 def main():
     fd=None
     try:
@@ -233,6 +268,9 @@ def main():
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         if sys.argv[1:]==["--inspect"]:
             print(json.dumps(inspect_existing(json.loads(raw)),sort_keys=True))
+            return 0
+        if sys.argv[1:]==["--stage"]:
+            print(json.dumps(stage_existing(json.loads(raw)),sort_keys=True))
             return 0
         if sys.argv[1:]:
             raise ValueError("invalid operation")

@@ -130,6 +130,40 @@ class ProductionEvaluationTests(unittest.TestCase):
         self.assertIn('inspectExisting: true',(src/"MainForm.DeliveryMiniWizard.cs").read_text())
         self.assertIn('--inspect',(src/"EmbeddedAssets.cs").read_text())
 
+    def test_stage_reviewed_evaluation_rechecks_fingerprint_and_purpose(self):
+        req={k:self.req[k] for k in ("accepted_domain","certificate_name")}
+        envelope=dict(request=req,confirm=M.STAGE_CONFIRM,certificate_sha256="b"*64)
+        inspect=Mock(return_value=dict(req,status="material_verified",local_chain_name_key_verified=True,
+                                        local_sslclient="passed",certificate_sha256="b"*64))
+        resolve=Mock(return_value={"cert":"/cert","chain":"/chain","privkey":"/key"})
+        stage=Mock(return_value="candidate-"+"c"*64)
+        result=M.stage_existing(envelope,inspect,resolve,stage)
+        self.assertEqual(result["status"],"staged")
+        self.assertEqual(result["candidate"],"candidate-"+"c"*64)
+        for flag in ("postfix_config_modified","postfix_reloaded","issuance_attempted","dns_modified","exchange_acceptance_verified"):
+            self.assertFalse(result[flag])
+        stage.assert_called_once_with("/cert","/chain","/key",req["certificate_name"],"auto",
+                                      expected_certificate_sha256="b"*64)
+        stage.reset_mock()
+        inspect.return_value["local_sslclient"]="refused_or_unverified"
+        self.assertEqual(M.stage_existing(envelope,inspect,resolve,stage)["status"],"refused")
+        inspect.return_value["local_sslclient"]="passed"
+        inspect.return_value["certificate_sha256"]="d"*64
+        self.assertEqual(M.stage_existing(envelope,inspect,resolve,stage)["status"],"refused")
+        stage.assert_not_called()
+        with self.assertRaises(ValueError):
+            M.stage_existing(dict(envelope,confirm="no"),inspect,resolve,stage)
+        inspect.return_value["certificate_sha256"]="b"*64
+        stage.side_effect=ValueError("changed certificate")
+        result=M.stage_existing(envelope,inspect,resolve,stage)
+        self.assertEqual(result["status"],"staging_unverified")
+        self.assertIsNone(result["candidate"])
+
+    def test_stager_checks_copied_certificate_before_publish(self):
+        source=(ROOT/"linux/stage-smtp-relay-certificate.py").read_text()
+        self.assertLess(source.index("checker.inspect("),source.index('"-outform","DER"'))
+        self.assertLess(source.index("certificate changed after review"),source.index("dest.mkdir("))
+
 
 class StagingReceiptTests(unittest.TestCase):
     def test_binding_changes_with_credentials_or_request(self):
