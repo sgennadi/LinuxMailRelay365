@@ -7,7 +7,7 @@ namespace LinuxMailRelay365;
 
 internal sealed class SmtpAcmeIssuanceReviewDialog : Form
 {
-    internal SmtpAcmeIssuanceReviewDialog(Func<string, bool, Task<string>> review, string acceptedDomain,
+    internal SmtpAcmeIssuanceReviewDialog(Func<string, string, Task<string>> review, string acceptedDomain,
         string certificateName, string provider)
     {
         Text = "ACME | Local issuance review";
@@ -31,18 +31,26 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
             ScrollBars = ScrollBars.Vertical, WordWrap = true, MinimumSize = new Size(0, 130) };
         var run = new Button { Text = "Check local readiness", AutoSize = true };
         var challenge = new Button { Text = "Test staging DNS-01", AutoSize = true, Enabled = false };
+        var production = new Button { Text = "Issue production evaluation", AutoSize = true, Enabled = false };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         bool busy = false;
-        string? reviewedRequest = null, reviewedSha = null;
+        string? reviewedRequest = null, reviewedSha = null, receipt = null;
+        DateTimeOffset receiptUntil = DateTimeOffset.MinValue;
         void InvalidateReport()
         {
             reviewedRequest = reviewedSha = null;
-            challenge.Enabled = false;
+            challenge.Enabled = production.Enabled = false;
             result.Clear();
             result.ForeColor = SystemColors.WindowText;
         }
-        email.TextChanged += (_, _) => InvalidateReport();
-        credential.TextChanged += (_, _) => InvalidateReport();
+        void InvalidateInputs()
+        {
+            receipt = null;
+            receiptUntil = DateTimeOffset.MinValue;
+            InvalidateReport();
+        }
+        email.TextChanged += (_, _) => InvalidateInputs();
+        credential.TextChanged += (_, _) => InvalidateInputs();
         environment.SelectedIndexChanged += (_, _) => InvalidateReport();
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
         run.Click += async (_, _) =>
@@ -67,7 +75,7 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
                     accepted_domain = acceptedDomain, certificate_name = certificateName,
                     provider, environment = target, email = contact, credentials_path = path
                 });
-                using var response = JsonDocument.Parse(await review(request, false));
+                using var response = JsonDocument.Parse(await review(request, "review"));
                 var root = response.RootElement;
                 string ca = target == "staging" ? "https://acme-staging-v02.api.letsencrypt.org/directory" :
                     "https://acme-v02.api.letsencrypt.org/directory";
@@ -97,6 +105,12 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
                     reviewedSha = root.GetProperty("review_sha256").GetString();
                     challenge.Enabled = true;
                 }
+                else if (ready && target == "production" && receipt is not null && DateTimeOffset.UtcNow < receiptUntil)
+                {
+                    reviewedRequest = request;
+                    reviewedSha = root.GetProperty("review_sha256").GetString();
+                    production.Enabled = true;
+                }
                 result.ForeColor = ready ? Color.SeaGreen : Color.DarkOrange;
                 result.Text = string.Join(Environment.NewLine, new[] {
                     ready ? "Local preflight passed (not issuance approval)." : "Local preflight incomplete.",
@@ -105,6 +119,7 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
                     "The credential check is structural only; DNS API permissions and ownership are not tested.",
                     "CA client-auth eligibility and Exchange accepted-domain status remain unverified.",
                     "Staging is a test environment, not a production SMTP identity.",
+                    target == "production" ? (production.Enabled ? "Staging evidence available. Explicit production evaluation may be requested." : "Run a successful staging test first with these same inputs.") : "A successful staging test with unchanged observed TXT enables a separate production review.",
                     "No certificate issued, no DNS or Postfix changes. No secrets returned to Windows."
                 });
             }
@@ -135,13 +150,13 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
             string payload = JsonSerializer.Serialize(new {
                 request = request.RootElement, confirm = "TEST_PUBLIC_DNS_CHALLENGE", review_sha256 = sha
             });
-            InvalidateReport();
+            InvalidateInputs();
             busy = true;
             run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
             result.Text = "Running approved staging DNS-01 test. Checking the public TXT snapshot before and after...";
             try
             {
-                using var response = JsonDocument.Parse(await review(payload, true));
+                using var response = JsonDocument.Parse(await review(payload, "staging"));
                 var root = response.RootElement;
                 if (root.GetProperty("version").GetInt32() != 1 ||
                     root.GetProperty("review_sha256").GetString() != sha ||
@@ -178,12 +193,19 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
                         throw new InvalidDataException("Inconsistent TXT snapshot.");
                     counts = Environment.NewLine + $"Observed TXT added: {added}; missing: {missing}";
                 }
+                if (passed && observation == "unchanged" && root.TryGetProperty("staging_receipt", out var proof) &&
+                    proof.ValueKind == JsonValueKind.String && Regex.IsMatch(proof.GetString() ?? "", @"\A[a-f0-9]{64}\z"))
+                {
+                    receipt = proof.GetString();
+                    receiptUntil = DateTimeOffset.UtcNow.AddMinutes(14);
+                }
                 result.ForeColor = passed && observation == "unchanged" ? Color.SeaGreen : Color.DarkOrange;
                 result.Text = "Staging DNS-01: " + state + Environment.NewLine +
                     "Attempted: " + (attempted ? "Yes" : "No") + Environment.NewLine +
                     "TXT snapshot via 1.1.1.1: " + observation + counts + Environment.NewLine + Environment.NewLine +
                     "Matching observations do not prove authoritative cleanup; caches and concurrent updates may hide changes." +
                     Environment.NewLine + "Review public DNS and the provider before retrying if cleanup is uncertain." +
+                    Environment.NewLine + (receipt is not null ? "Switch to Production and run local readiness within 14 minutes for evaluation." : "No usable staging evidence for production evaluation.") +
                     Environment.NewLine + "No production certificate activation or Postfix configuration change requested.";
             }
             catch (Exception ex)
@@ -198,15 +220,104 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
                 if (!IsDisposed) run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
             }
         };
+        production.Click += async (_, _) =>
+        {
+            if (busy || reviewedRequest is null || reviewedSha is null || receipt is null) return;
+            if (DateTimeOffset.UtcNow >= receiptUntil)
+            {
+                InvalidateInputs();
+                result.Text = "Staging evidence expired. Repeat the staging test.";
+                return;
+            }
+            if (MessageBox.Show(this,
+                "Issue a real production Let's Encrypt certificate for " + certificateName + " using " + provider + "?" +
+                Environment.NewLine + Environment.NewLine +
+                "You authorize public DNS changes, CA registration/terms and production issuance (subject to CA rate limits)." +
+                Environment.NewLine + "The certificate and key will remain in a new private evaluation directory on Linux. Existing lineages, Postfix and Exchange will not be changed." +
+                Environment.NewLine + "Client TLS suitability is not guaranteed. Exclude any concurrent DNS validation or renewal." +
+                Environment.NewLine + "An interrupted or failed attempt retains its evaluation directory; review it before any retry.",
+                "Confirm production certificate issuance", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            string sha = reviewedSha;
+            using var request = JsonDocument.Parse(reviewedRequest);
+            string payload = JsonSerializer.Serialize(new {
+                request = request.RootElement, confirm = "ISSUE_PRODUCTION_FOR_EVALUATION",
+                review_sha256 = sha, staging_receipt = receipt
+            });
+            InvalidateInputs();
+            busy = true;
+            run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
+            result.Text = "Issuing the explicitly approved production certificate into isolated evaluation state...";
+            try
+            {
+                using var response = JsonDocument.Parse(await review(payload, "production"));
+                var root = response.RootElement;
+                if (root.GetProperty("version").GetInt32() != 1 ||
+                    root.GetProperty("review_sha256").GetString() != sha ||
+                    root.GetProperty("certificate_name").GetString() != certificateName ||
+                    root.GetProperty("accepted_domain").GetString() != acceptedDomain ||
+                    root.GetProperty("provider").GetString() != provider ||
+                    root.GetProperty("ca_directory").GetString() != "https://acme-v02.api.letsencrypt.org/directory")
+                    throw new InvalidDataException("Unexpected production evidence.");
+                foreach (string flag in new[] { "postfix_modified", "activation_supported", "exchange_acceptance_verified", "txt_cleanup_verified" })
+                    if (root.GetProperty(flag).GetBoolean()) throw new InvalidDataException("Unexpected activation claim.");
+                string? state = root.GetProperty("status").GetString();
+                bool attempted = root.GetProperty("attempted").GetBoolean();
+                bool reserved = root.GetProperty("state_reserved").GetBoolean();
+                bool issued = root.GetProperty("certificate_issued").GetBoolean();
+                bool material = root.GetProperty("local_chain_name_key_verified").GetBoolean();
+                string? path = root.GetProperty("evaluation_path").GetString();
+                string? eku = root.GetProperty("client_auth_eku").GetString();
+                string? purpose = root.GetProperty("local_sslclient").GetString();
+                string? fingerprint = root.GetProperty("certificate_sha256").GetString();
+                string expectedPath = "/var/lib/linuxmailrelay365/smtp-acme-evaluation/" + certificateName;
+                if (state is not ("evaluation_complete" or "issued_unverified" or "failed" or "outcome_unverified" or
+                    "refused" or "baseline_unverified" or "existing_txt_requires_review" or "evaluation_exists") ||
+                    issued != (state == "evaluation_complete") || material != issued ||
+                    attempted != (state is "evaluation_complete" or "issued_unverified" or "failed" or "outcome_unverified") ||
+                    (attempted && !reserved) || (reserved ? path != expectedPath : path is not null) ||
+                    (issued ? (eku is not ("explicit" or "not_explicit") || purpose is not ("passed" or "refused_or_unverified") ||
+                        !Regex.IsMatch(fingerprint ?? "", @"\A[a-f0-9]{64}\z")) :
+                        (eku != "unverified" || purpose != "unverified" || fingerprint is not null)))
+                    throw new InvalidDataException("Inconsistent production evaluation.");
+                var snapshot = root.GetProperty("txt_snapshot");
+                string? observation = snapshot.GetProperty("status").GetString();
+                if (snapshot.GetProperty("txt_cleanup_verified").GetBoolean() ||
+                    observation is not ("unchanged" or "changed" or "unverified"))
+                    throw new InvalidDataException("Unexpected TXT observation.");
+                result.ForeColor = issued && purpose == "passed" && observation == "unchanged" ? Color.SeaGreen : Color.DarkOrange;
+                result.Text = "Production evaluation: " + state + Environment.NewLine +
+                    "Directory: " + (path ?? (state == "evaluation_exists" ? expectedPath + " (already exists; review manually)" : "not reserved")) +
+                    Environment.NewLine + "Certificate chain / name / key: " + (material ? "verified locally" : "unverified") +
+                    Environment.NewLine + "SHA-256: " + (fingerprint ?? "unverified") +
+                    Environment.NewLine + "Client Authentication EKU: " + eku +
+                    Environment.NewLine + "OpenSSL sslclient purpose: " + purpose +
+                    Environment.NewLine + "TXT snapshot (public resolver only): " + observation +
+                    Environment.NewLine + Environment.NewLine +
+                    "No certificate staged or activated. Existing Postfix TLS checks remain mandatory. Exchange acceptance is unverified." +
+                    Environment.NewLine + "Review retained evaluation state and DNS before any retry.";
+            }
+            catch (Exception ex)
+            {
+                result.ForeColor = Color.DarkOrange;
+                result.Text = "Production outcome unavailable: " + ex.GetType().Name +
+                    ". DNS changes or certificate issuance may have occurred. Review the evaluation directory and DNS before retrying.";
+            }
+            finally
+            {
+                busy = false;
+                if (!IsDisposed) run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
+            }
+        };
         layout.Controls.Add(new Label { Text = "DNS identity: " + certificateName + " | " + provider, AutoSize = true }, 0, 0);
-        layout.Controls.Add(new Label { Text = "CA environment (preview only)", AutoSize = true }, 0, 1);
+        layout.Controls.Add(new Label { Text = "CA environment (production evaluation is separately confirmed)", AutoSize = true }, 0, 1);
         layout.Controls.Add(environment, 0, 2);
         layout.Controls.Add(new Label { Text = "ACME account contact email", AutoSize = true }, 0, 3);
         layout.Controls.Add(email, 0, 4);
         layout.Controls.Add(new Label { Text = "Existing private credential file on Linux (path only)", AutoSize = true }, 0, 5);
         layout.Controls.Add(credential, 0, 6);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
-        actions.Controls.AddRange([run, challenge]);
+        actions.Controls.AddRange([run, challenge, production]);
         layout.Controls.Add(actions, 0, 7);
         layout.Controls.Add(result, 0, 8);
         layout.Controls.Add(close, 0, 9);

@@ -6,7 +6,7 @@ namespace LinuxMailRelay365;
 
 internal sealed class SmtpAcmePlanDialog : Form
 {
-    internal SmtpAcmePlanDialog(Func<string, Task<string>> inspect, Func<string, string, Task<string>> discoverProvider, Func<string, bool, Task<string>> reviewIssuance, string acceptedDomain, string certificateName)
+    internal SmtpAcmePlanDialog(Func<string, Task<string>> inspect, Func<string, string, Task<string>> discoverProvider, Func<string, string, Task<string>> reviewIssuance, string acceptedDomain, string certificateName)
     {
         Text = "ACME | DNS-01 readiness (read-only)";
         StartPosition = FormStartPosition.CenterParent;

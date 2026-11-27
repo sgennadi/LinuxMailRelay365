@@ -169,13 +169,18 @@ internal sealed partial class MainForm
                     if (result.ExitCode != 0) throw new InvalidOperationException("ACME provider discovery unavailable.");
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     return result.StdOut;
-                }, async (request, challenge) =>
+                }, async (request, operation) =>
                 {
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     var endpoint = Endpoint();
-                    string script = challenge ? EmbeddedAssets.BuildSmtpAcmeStagingChallenge(request) :
-                        EmbeddedAssets.BuildSmtpAcmeIssuanceReview(request);
-                    var timeout = TimeSpan.FromSeconds(challenge ? 800 : 105);
+                    string script = operation switch
+                    {
+                        "review" => EmbeddedAssets.BuildSmtpAcmeIssuanceReview(request),
+                        "staging" => EmbeddedAssets.BuildSmtpAcmeStagingChallenge(request),
+                        "production" => EmbeddedAssets.BuildSmtpAcmeStagingChallenge(request, production: true),
+                        _ => throw new ArgumentException("Unknown ACME operation.")
+                    };
+                    var timeout = TimeSpan.FromSeconds(operation == "review" ? 105 : 800);
                     var result = endpoint.Username == "root"
                         ? await SshRemote.ExecuteAsync(endpoint, "bash -s", script, timeout)
                         : await SshRemote.RunRootScriptAsync(endpoint, script, timeout);

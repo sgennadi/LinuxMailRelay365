@@ -163,7 +163,19 @@ def main():
         if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_nlink!=1 or st.st_mode & 0o7077:
             raise ValueError("unsafe staging lock")
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        print(json.dumps(execute(envelope),sort_keys=True))
+        receipt=load("smtp-acme-staging-receipt")
+        receipt.clear()
+        req,_=validate_envelope(envelope,load("review-smtp-acme-issuance"))
+        stamp=credential_identity(req["credentials_path"])
+        report=execute(envelope)
+        report["staging_receipt"]=None
+        if report["dns_challenge_verified"] and report["txt_snapshot"]["status"]=="unchanged":
+            try:
+                if credential_identity(req["credentials_path"])==stamp:
+                    report["staging_receipt"]=receipt.issue(req,stamp)
+            except Exception:
+                pass
+        print(json.dumps(report,sort_keys=True))
         return 0
     except Exception:
         print(json.dumps({"version":1,"status":"refused","attempted":False}))
