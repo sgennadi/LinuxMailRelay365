@@ -6,6 +6,7 @@ import argparse
 import email.utils
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import os
 import re
@@ -372,9 +373,192 @@ def trace(req):
             "inbox_verified": False, "tls_handshake_verified": False, "automatic_retry": False}
 
 
+# Display only bounded allowlisted configuration values. Unknown syntax or
+# map expressions are never exported, and credentials are never requested.
+AUDIT_SETTINGS = (
+    "myhostname", "mydomain", "myorigin", "mydestination", "relay_domains",
+    "inet_interfaces", "inet_protocols", "relayhost", "smtp_bind_address",
+    "smtp_bind_address6", "smtp_tls_security_level", "smtp_sasl_auth_enable",
+    "default_transport", "relay_transport", "local_transport", "virtual_transport",
+)
+AUDIT_FLAGS = tuple(sorted(set(EMPTY + (
+    "multi_instance_directories", "smtpd_milters", "masquerade_domains",
+    "relocated_maps", "smtp_tls_chain_files", "smtp_tls_cert_file",
+    "smtp_tls_key_file", "smtp_tls_eccert_file", "smtp_tls_eckey_file",
+))))
+AUDIT_KEYS = tuple(sorted(set(AUDIT_SETTINGS + AUDIT_FLAGS + ("config_directory",))))
+QUEUE_NAMES = ("active", "deferred", "incoming", "hold", "maildrop", "other")
+
+
+def audit_request(req):
+    if (not isinstance(req, dict) or set(req) != {"accepted_domain", "mx"}
+            or not isinstance(req["accepted_domain"], str) or len(req["accepted_domain"]) > 253
+            or not DNS.fullmatch(req["accepted_domain"]) or not isinstance(req["mx"], str)
+            or (req["mx"] and (len(req["mx"]) > 253 or not DNS.fullmatch(req["mx"])
+                              or not req["mx"].endswith(".mail.protection.outlook.com")))):
+        raise ValueError("invalid primary audit selection")
+    return req
+
+
+def audit_values(pf):
+    raw = pf.run(pf.postconf, "-x", *AUDIT_KEYS)
+    if len(raw) > 131072:
+        raise ValueError("oversized configuration")
+    values = {}
+    for line in raw.splitlines():
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if (not sep or key not in AUDIT_KEYS or key in values or len(value) > 8192
+                or any(ord(c) < 32 and c != "\t" for c in value)):
+            raise ValueError("invalid configuration evidence")
+        values[key] = value
+    if set(values) != set(AUDIT_KEYS):
+        raise ValueError("incomplete configuration")
+    return values
+
+
+def dns_token(value):
+    return value == "localhost" or (len(value) <= 253 and bool(DNS.fullmatch(value.lower())))
+
+
+def address_token(value):
+    try:
+        return str(ipaddress.ip_address(value.strip("[]")))
+    except ValueError:
+        return None
+
+
+def display_value(key, value):
+    if not value:
+        return ""
+    if key in ("myhostname", "mydomain", "myorigin"):
+        return value if dns_token(value) else None
+    if key in ("mydestination", "relay_domains"):
+        rows = [s for s in re.split(r"[\s,]+", value) if s]
+        return ", ".join(rows) if len(rows) <= 40 and all(dns_token(s) for s in rows) else None
+    if key == "inet_interfaces":
+        rows = [s for s in re.split(r"[\s,]+", value) if s]
+        if len(rows) > 40:
+            return None
+        if all(s in ("all", "loopback-only") or dns_token(s) or address_token(s) is not None for s in rows):
+            return ", ".join(rows)
+        return None
+    if key in ("smtp_bind_address", "smtp_bind_address6"):
+        try:
+            addr = ipaddress.ip_address(value)
+            if addr.version == (4 if key == "smtp_bind_address" else 6):
+                return str(addr)
+        except ValueError:
+            pass
+        return None
+    if key == "inet_protocols":
+        rows = [s for s in re.split(r"[\s,]+", value) if s]
+        return ", ".join(rows) if len(rows) <= 3 and all(s in ("all", "ipv4", "ipv6") for s in rows) else None
+    if key == "relayhost":
+        match = re.fullmatch(r"(\[([a-zA-Z0-9.-]+)\]|([a-zA-Z0-9.-]+))(?::([0-9]{1,5}))?", value)
+        if match:
+            host = match.group(2) or match.group(3)
+            if dns_token(host) or address_token(host) is not None:
+                port = int(match.group(4) or 25)
+                if 1 <= port <= 65535:
+                    return value
+        return None
+    if key == "smtp_tls_security_level":
+        return value if value in ("none", "may", "encrypt", "verify", "secure", "dane", "dane-only", "fingerprint") else None
+    if key == "smtp_sasl_auth_enable":
+        return value if value in ("yes", "no") else None
+    if key.endswith("_transport"):
+        return value if value in ("smtp", "relay", "local", "virtual", "error", "discard", "lmtp") else None
+    return None
+
+
+def summarize_queue(rows):
+    if rows is None or len(rows) > 100000:
+        return {"status": "unavailable", "total": None, "counts": {}}
+    counts = dict((name, 0) for name in QUEUE_NAMES)
+    seen = set()
+    for row in rows:
+        if (not isinstance(row, dict) or not isinstance(row.get("queue_id"), str)
+                or not QID.fullmatch(row["queue_id"]) or row["queue_id"] in seen
+                or not isinstance(row.get("queue_name"), str)):
+            return {"status": "unavailable", "total": None, "counts": {}}
+        seen.add(row["queue_id"])
+        name = row["queue_name"]
+        counts[name if name in counts else "other"] += 1
+    return {"status": "sampled", "total": len(rows), "counts": counts}
+
+
+def primary_audit(req, adapter=None, queue_reader=queue_rows, config_reader=read_file):
+    audit_request(req)
+    adapter = adapter or load_adapter()
+    pf = adapter.Postfix()
+    def hashes():
+        return {name: digest(config_reader(CONFIG / name, 8 * 1024 * 1024))
+                for name in ("main.cf", "master.cf")}
+    before = hashes()
+    values = audit_values(pf)
+    overrides = pf.run(pf.postconf, "-P")
+    if len(overrides) > 131072:
+        raise ValueError("oversized override evidence")
+    single = values["config_directory"] == str(CONFIG) and not values["multi_instance_directories"]
+    active = "unverified"
+    try:
+        pf.run(pf.postfix, "status")
+        active = "running"
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        pass
+    queue = summarize_queue(queue_reader(adapter) if single and active == "running" else None)
+    shown = dict((key, display_value(key, values[key])) for key in AUDIT_SETTINGS)
+    declared = [key for key in AUDIT_FLAGS if values[key]]
+    blockers = []
+    if not single:
+        blockers.append("not_default_single_instance")
+    if active != "running":
+        blockers.append("service_status_unverified")
+    if overrides:
+        blockers.append("service_specific_overrides")
+    if any(shown[k] is None for k in AUDIT_SETTINGS):
+        blockers.append("unsupported_setting_syntax")
+    if any(k in declared for k in EMPTY + ("smtpd_milters", "masquerade_domains", "relocated_maps")):
+        blockers.append("routing_or_rewrite_policy")
+    if values["default_transport"] != "smtp" or values["relay_transport"] not in ("smtp", "relay"):
+        blockers.append("custom_transport")
+    if values["smtp_sasl_auth_enable"] != "no":
+        blockers.append("smtp_auth_configured_or_unknown")
+    if values["smtp_tls_security_level"] not in ("encrypt", "verify", "secure"):
+        blockers.append("mandatory_tls_not_established")
+    if values["inet_protocols"] != "ipv4":
+        blockers.append("public_ipv4_connector_protocol_review")
+    if values["smtp_bind_address"] or values["smtp_bind_address6"]:
+        blockers.append("explicit_source_bind_review")
+    if shown["mydestination"] is None or any(
+            req["accepted_domain"] == token.lower() or req["accepted_domain"].endswith("." + token.lower())
+            for token in re.split(r"[\s,]+", values["mydestination"]) if token):
+        blockers.append("accepted_domain_local_delivery_review")
+    if queue["status"] != "sampled":
+        blockers.append("queue_unverified")
+    elif queue["total"]:
+        blockers.append("queue_not_empty")
+    mx = req["mx"]
+    if not mx:
+        blockers.append("mx_not_selected")
+    elif values["relayhost"].lower() not in ("[" + mx + "]:25", "[" + mx + "]"):
+        blockers.append("relayhost_differs")
+    if hashes() != before or audit_values(pf) != values or pf.run(pf.postconf, "-P") != overrides:
+        raise ValueError("configuration changed during inspection")
+    # The queue is a moving sample, not a guarantee that it remains empty.
+    return dict(version=1, status="review_required" if blockers else "basic_route_observed",
+                accepted_domain=req["accepted_domain"], mx=mx, settings=shown,
+                declared=declared, service_overrides=bool(overrides),
+                single_instance=single, service=active, queue=queue, blockers=blockers,
+                config_sha256=before, postfix_modified=False, queue_modified=False, mail_sent=False,
+                apply_supported=False, exchange_acceptance_verified=False)
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("preview", "submit", "trace"))
+    parser.add_argument("action", choices=("preview", "submit", "trace", "audit"))
     parser.add_argument("--expected-sha")
     args = parser.parse_args()
     try:
@@ -384,7 +568,13 @@ def main():
         raw = sys.stdin.buffer.read(4097)
         if len(raw) > 4096:
             raise ValueError("request too large")
-        req = validate_request(json.loads(raw, object_pairs_hook=strict_object))
+        req = json.loads(raw, object_pairs_hook=strict_object)
+        if args.action == "audit":
+            if args.expected_sha is not None:
+                raise ValueError("unexpected approval")
+            print(json.dumps(primary_audit(req)))
+            return 0
+        req = validate_request(req)
         if args.action == "submit":
             if not SHA.fullmatch(args.expected_sha or ""):
                 raise ValueError("approval required")

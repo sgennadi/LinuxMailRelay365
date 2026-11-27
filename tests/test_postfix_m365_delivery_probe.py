@@ -105,3 +105,77 @@ class PostfixDeliveryProbeTests(unittest.TestCase):
         result = M.correlate(self.req, "internal", lines, [], "local_submission_accepted")
         self.assertEqual(result["transport"], "deferred")
         self.assertEqual(result["dsn"], "4.4.1")
+
+
+class PrimaryAuditTests(unittest.TestCase):
+    def setUp(self):
+        self.req = {"accepted_domain": "example.org", "mx": "example-org.mail.protection.outlook.com"}
+        self.values = dict((key, "") for key in M.AUDIT_KEYS)
+        self.values.update(config_directory="/etc/postfix", myhostname="mail.local.example.net",
+                           mydomain="local.example.net", myorigin="local.example.net",
+                           mydestination="localhost, mail.local.example.net", inet_interfaces="loopback-only",
+                           inet_protocols="ipv4", relayhost="["+self.req["mx"]+"]:25",
+                           smtp_tls_security_level="encrypt", smtp_sasl_auth_enable="no",
+                           default_transport="smtp", relay_transport="relay", local_transport="local",
+                           virtual_transport="virtual")
+        self.adapter = Mock()
+        self.pf = self.adapter.Postfix.return_value
+        self.pf.postfix = "postfix"
+        self.pf.postconf = "postconf"
+        self.overrides = ""
+        def run(binary, *args):
+            if args[0] == "-x":
+                return "\n".join(k+" = "+self.values[k] for k in args[1:])
+            if args == ("-P",):
+                return self.overrides
+            if args == ("status",):
+                return ""
+            raise AssertionError("unexpected native command")
+        self.pf.run.side_effect = run
+        self.reader = Mock(return_value=b"config")
+        self.queue = Mock(return_value=[])
+
+    def audit(self):
+        return M.primary_audit(self.req,self.adapter,self.queue,self.reader)
+
+    def test_basic_route_and_queue_observation_no_mutation(self):
+        report = self.audit()
+        self.assertEqual(report["status"], "basic_route_observed")
+        self.assertEqual(report["queue"]["total"], 0)
+        self.assertEqual(report["settings"]["inet_protocols"], "ipv4")
+        self.assertEqual(report["settings"]["relayhost"], self.values["relayhost"])
+        for flag in ("postfix_modified", "queue_modified", "mail_sent", "apply_supported", "exchange_acceptance_verified"):
+            self.assertFalse(report[flag])
+        self.assertTrue(all(call.args[1] in ("-x", "-P", "status") for call in self.pf.run.call_args_list))
+
+    def test_complex_route_and_nonempty_queue_refused_without_private_values(self):
+        self.values["transport_maps"] = "ldap:/private/secret"
+        self.values["mydestination"] = "example.org"
+        self.values["relayhost"] = "user:secret@host"
+        self.values["smtp_bind_address"] = "10.1.2.3"
+        self.queue.return_value = [{"queue_id":"ABC123","queue_name":"deferred","sender":"private@example.org"}]
+        report = self.audit()
+        self.assertEqual(report["status"], "review_required")
+        for blocker in ("routing_or_rewrite_policy","accepted_domain_local_delivery_review","explicit_source_bind_review",
+                        "queue_not_empty","unsupported_setting_syntax","relayhost_differs"):
+            self.assertIn(blocker, report["blockers"])
+        self.assertIsNone(report["settings"]["relayhost"])
+        self.assertEqual(report["queue"]["counts"]["deferred"],1)
+        self.assertNotIn("secret",str(report))
+        self.assertNotIn("private@example.org",str(report))
+
+    def test_unverified_queue_not_empty_claim(self):
+        self.values["multi_instance_directories"]="/etc/other"
+        report=self.audit()
+        self.queue.assert_not_called()
+        self.assertIn("not_default_single_instance",report["blockers"])
+        self.assertIsNone(report["queue"]["total"])
+
+    def test_configuration_drift_refused(self):
+        self.reader.side_effect=[b"a",b"b",b"changed",b"b"]
+        with self.assertRaises(ValueError):
+            self.audit()
+
+    def test_duplicate_queue_ids_are_unverified(self):
+        self.queue.return_value=[dict(queue_id="ABC123",queue_name="active")]*2
+        self.assertEqual(self.audit()["queue"]["status"],"unavailable")
