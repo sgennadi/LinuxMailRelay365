@@ -78,12 +78,19 @@ internal static class EmbeddedAssets
 
     internal static string BuildSmtpTlsRotation(string action, string? candidate, string? domain, string? expectedSha)
     {
-        if (action is not ("inventory" or "preview" or "activate" or "recovery-preview" or "recover" or "binding-preview"))
+        if (action is not ("inventory" or "preview" or "activate" or "recovery-preview" or "recover" or "binding-preview" or "selinux-preview" or "selinux-restore"))
             throw new ArgumentException("Invalid TLS action.");
         if (action is "inventory" or "recovery-preview")
         {
             if (candidate is not null || domain is not null || expectedSha is not null)
                 throw new ArgumentException("Unexpected read-only arguments.");
+        }
+        else if (action is "selinux-preview" or "selinux-restore")
+        {
+            if (candidate is null || !Regex.IsMatch(candidate, @"\Acandidate-[a-f0-9]{64}\z") ||
+                domain is not null ||
+                (action == "selinux-restore" ? expectedSha is null || !Regex.IsMatch(expectedSha, @"\A[a-f0-9]{64}\z") : expectedSha is not null))
+                throw new ArgumentException("Invalid reviewed SELinux action.");
         }
         else if (action == "binding-preview")
         {
@@ -108,7 +115,7 @@ internal static class EmbeddedAssets
                      "smtp-tls-transaction.py", "smtp-tls-activate.py", "smtp-tls-validate-generation.py",
                      "plan-smtp-tls-initial.py", "smtp-tls-postfix.py", "check-smtp-relay-certificate.py",
                      "smtp-tls-initial-deploy.py", "smtp-tls-initial-backup.py",
-                     "smtp-tls-initial-candidate.py", "smtp-tls-initial-journal.py" })
+                     "smtp-tls-initial-candidate.py", "smtp-tls-initial-journal.py", "review-smtp-tls-selinux.py" })
         {
             string resource = file == "check-smtp-relay-certificate.py" ? "LinuxMailRelay365.linux.smtp-cert-check.py" :
                 "LinuxMailRelay365.linux." + file;

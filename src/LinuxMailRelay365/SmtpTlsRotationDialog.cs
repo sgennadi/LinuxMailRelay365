@@ -31,7 +31,8 @@ internal sealed class SmtpTlsRotationDialog : Form
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         var recovery = new Button { Text = "Review interrupted transaction", AutoSize = true };
-        buttons.Controls.AddRange([refresh, preview, activate, recovery, close]);
+        var selinux = new Button { Text = "Review SELinux contexts", AutoSize = true };
+        buttons.Controls.AddRange([refresh, preview, activate, recovery, selinux, close]);
         bool busy = false;
         string? approvedSha = null;
         string? approvedName = null;
@@ -46,7 +47,7 @@ internal sealed class SmtpTlsRotationDialog : Form
         void SetBusy(bool value)
         {
             busy = value;
-            domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = recovery.Enabled = close.Enabled = !value;
+            domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = recovery.Enabled = selinux.Enabled = close.Enabled = !value;
             activate.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
@@ -152,6 +153,79 @@ internal sealed class SmtpTlsRotationDialog : Form
             catch
             {
                 status.Text = "Activation refused or outcome uncertain. Inspect the Linux transaction journal before retry.";
+            }
+            finally { SetBusy(false); }
+        };
+        selinux.Click += async (_, _) =>
+        {
+            if (busy || candidates.SelectedItem is not string name) return;
+            Invalidate();
+            SetBusy(true);
+            bool started = false;
+            status.Text = "Inspecting SELinux contexts for the selected generation...";
+            try
+            {
+                using var json = JsonDocument.Parse(await remote("selinux-preview", name, null, null));
+                var root = json.RootElement;
+                string sha = root.GetProperty("plan_sha256").GetString() ?? "";
+                string? mode = root.GetProperty("mode").GetString();
+                if (root.GetProperty("status").GetString() != "selinux_review_ready" ||
+                    root.GetProperty("candidate").GetString() != name ||
+                    root.GetProperty("access_verified").GetBoolean() ||
+                    root.GetProperty("policy_changed").GetBoolean() ||
+                    mode is not ("enforcing" or "permissive" or "disabled") ||
+                    !Regex.IsMatch(sha, @"\A[a-f0-9]{64}\z"))
+                    throw new InvalidDataException("Unexpected SELinux review.");
+                var lines = new List<string> { "SELinux: " + mode,
+                    "Generation: " + name, "Review: " + root.GetProperty("reason").GetString(),
+                    "Plan SHA-256: " + sha, "" };
+                foreach (var row in root.GetProperty("paths").EnumerateArray())
+                {
+                    lines.Add(row.GetProperty("path").GetString() ?? "");
+                    lines.Add("    Current: " + row.GetProperty("actual").GetString());
+                    lines.Add("    Expected: " + row.GetProperty("expected").GetString());
+                    lines.Add(row.GetProperty("matches").GetBoolean() ? "    Matches" :
+                        row.GetProperty("repairable").GetBoolean() ? "    Repair proposed" : "    Manual review required");
+                }
+                lines.Add("");
+                lines.Add("Matching labels do not prove access by the confined Postfix process.");
+                lines.Add("Activation on an enforcing or unknown host remains blocked until independently tested.");
+                report.Text = string.Join(Environment.NewLine, lines);
+                if (!root.GetProperty("apply_supported").GetBoolean())
+                {
+                    status.Text = "SELinux review complete; no automatic repair offered.";
+                    return;
+                }
+                var changes = root.GetProperty("changes");
+                if (changes.GetArrayLength() is < 1 or > 5) throw new InvalidDataException();
+                string targets = string.Join(Environment.NewLine, changes.EnumerateArray().Select(row => row.GetString()));
+                if (MessageBox.Show(this, "Restore default SELinux labels for these exact paths?" +
+                    Environment.NewLine + targets + Environment.NewLine + Environment.NewLine +
+                    "No recursive relabel, policy change, SELinux mode change or Postfix reload.",
+                    "Confirm reviewed SELinux repair", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                {
+                    status.Text = "SELinux repair cancelled.";
+                    return;
+                }
+                started = true;
+                status.Text = "Restoring reviewed default contexts...";
+                using var result = JsonDocument.Parse(await remote("selinux-restore", name, null, sha));
+                var outcome = result.RootElement;
+                if (outcome.GetProperty("status").GetString() != "contexts_verified" ||
+                    outcome.GetProperty("candidate").GetString() != name ||
+                    outcome.GetProperty("mode").GetString() != mode ||
+                    outcome.GetProperty("plan_sha256").GetString() != sha ||
+                    outcome.GetProperty("access_verified").GetBoolean() ||
+                    outcome.GetProperty("policy_changed").GetBoolean())
+                    throw new InvalidDataException("Unexpected SELinux repair result.");
+                status.Text = "Default labels verified. Confined process access remains unverified.";
+                report.AppendText(Environment.NewLine + Environment.NewLine + status.Text);
+            }
+            catch (Exception ex)
+            {
+                status.Text = started ? "Repair failed or partial. Review current labels before retrying."
+                    : "SELinux review refused: " + ex.GetType().Name;
             }
             finally { SetBusy(false); }
         };

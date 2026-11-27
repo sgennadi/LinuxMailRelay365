@@ -531,7 +531,7 @@ def connector_binding(domain, pf=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("inventory", "preview", "activate", "recovery-preview", "recover", "binding-preview"))
+    parser.add_argument("action", choices=("inventory", "preview", "activate", "recovery-preview", "recover", "binding-preview", "selinux-preview", "selinux-restore"))
     parser.add_argument("--candidate")
     parser.add_argument("--domain")
     parser.add_argument("--expected-sha")
@@ -544,6 +544,18 @@ def main():
             if any((args.candidate, args.domain, args.expected_sha)):
                 raise ValueError("unexpected arguments")
             report = inventory()
+        elif args.action in ("selinux-preview", "selinux-restore"):
+            if args.domain or not GEN.fullmatch(args.candidate or ""):
+                raise ValueError("invalid SELinux review arguments")
+            selinux = load("review-smtp-tls-selinux")
+            if args.action == "selinux-preview":
+                if args.expected_sha:
+                    raise ValueError("unexpected approval")
+                report = selinux.review_plan(args.candidate)
+            else:
+                if not SHA.fullmatch(args.expected_sha or ""):
+                    raise ValueError("reviewed SELinux SHA required")
+                report = selinux.execute(args.candidate, args.expected_sha)
         elif args.action == "binding-preview":
             if args.candidate or args.expected_sha or not args.domain:
                 raise ValueError("invalid binding preview arguments")
