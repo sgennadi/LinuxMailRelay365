@@ -448,6 +448,27 @@ class OfflineGuiContracts(unittest.TestCase):
         self.assertIn("PrimaryMailboxOfflineClient.SelfTest",(src/"Program.cs").read_text())
 
 
+class PrimaryMailboxDeliveryGuiContracts(unittest.TestCase):
+    def test_delivery_bundle_dialog_and_trace_lock(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        assets=(src/"EmbeddedAssets.cs").read_text()
+        project=(src/"LinuxMailRelay365.csproj").read_text()
+        ui=(src/"MainForm.PrimaryMailboxDelivery.cs").read_text()
+        for file in ("probe-primary-mailbox-delivery.py","review-postfix-m365-delivery.py"):
+            self.assertIn('"'+file+'"',assets)
+            self.assertIn("../../linux/"+file,project)
+        self.assertIn("PrimaryMailboxBundle(true)",assets)
+        self.assertIn("RequireSameArchiveConnection(endpoint)",ui)
+        self.assertIn("ConfirmDestructive",ui)
+        send=ui.split("send.Click+=",1)[1].split("trace.Click+=",1)[0]
+        self.assertLess(send.index("LockTrace(request,sha)"),send.index('Remote("submit"'))
+        self.assertIn("review.Enabled=!busy && !traceOnly",ui)
+        self.assertIn("LockTrace(request,null)",ui)
+        self.assertIn("Copy trace request",ui)
+        self.assertIn("PrimaryMailboxDeliveryClient.SelfTest",(src/"Program.cs").read_text())
+        self.assertIn("OpenPrimaryMailboxDeliveryAsync",(src/"MainForm.PrimaryMailboxRoute.cs").read_text())
+
+
 class PrimaryMailboxDeliveryProbeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

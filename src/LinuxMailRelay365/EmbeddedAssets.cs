@@ -487,6 +487,12 @@ internal static class EmbeddedAssets
     {
         string args = PrimaryMailboxOfflineClient.Arguments(action,maintenance,mailbox,tenant,client,sha,
             confirmation,authConfirmation);
+        return PrimaryMailboxBundle(false).Append("/usr/bin/python3 -I -B \"$work/manage-primary-mailbox-offline.py\" ")
+            .Append(args).Append('\n').ToString();
+    }
+
+    private static StringBuilder PrimaryMailboxBundle(bool delivery)
+    {
         var script = new StringBuilder("set +x\nset -Eeuo pipefail\numask 077\n" +
             "PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH\n" +
             "work=$(mktemp -d /run/lmr365-primary-mailbox.XXXXXXXX)\n" +
@@ -509,8 +515,27 @@ internal static class EmbeddedAssets
             script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_PRIMARY_OFFLINE_ASSET'\n")
                 .Append(Encode(Text("LinuxMailRelay365.linux." + resource)))
                 .Append("\nLMR365_PRIMARY_OFFLINE_ASSET\n");
-        return script.Append("/usr/bin/python3 -I -B \"$work/manage-primary-mailbox-offline.py\" ")
-            .Append(args).Append('\n').ToString();
+        if (delivery)
+            foreach (string file in new[] {"probe-primary-mailbox-delivery.py","review-postfix-m365-delivery.py"})
+                script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_PRIMARY_OFFLINE_ASSET'\n")
+                    .Append(Encode(Text("LinuxMailRelay365.linux." + file)))
+                    .Append("\nLMR365_PRIMARY_OFFLINE_ASSET\n");
+        return script;
+    }
+
+    internal static string BuildPrimaryMailboxDeliveryProbe(string action,PrimaryMailboxDeliveryRequest request,
+        string? sha,string? confirmation)
+    {
+        if(action is not ("preview" or "submit" or "trace") ||
+            (action=="submit"? !PrimaryMailboxOfflineClient.IsSha(sha) || confirmation!=PrimaryMailboxDeliveryClient.Confirm:
+                sha is not null || confirmation is not null))
+            throw new ArgumentException("Invalid primary mailbox delivery approval.");
+        string json=request.Json();
+        var script=PrimaryMailboxBundle(true);
+        script.Append("base64 -d <<'LMR365_PRIMARY_DELIVERY_REQUEST' | /usr/bin/python3 -I -B \"$work/probe-primary-mailbox-delivery.py\" ")
+            .Append(action);
+        if(action=="submit") script.Append(" --expected-sha=").Append(sha).Append(" --confirm=").Append(confirmation);
+        return script.Append('\n').Append(Encode(json)).Append("\nLMR365_PRIMARY_DELIVERY_REQUEST\n").ToString();
     }
 
     internal static string BuildPrimaryMailboxRoutePreviewBundle(string request)

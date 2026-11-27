@@ -143,6 +143,7 @@
     <EmbeddedResource Include="../../linux/manage-primary-mailbox-offline.py" LogicalName="LinuxMailRelay365.linux.manage-primary-mailbox-offline.py" />
     <EmbeddedResource Include="../../linux/primary-mailbox-transaction.py" LogicalName="LinuxMailRelay365.linux.primary-mailbox-transaction.py" />
     <EmbeddedResource Include="../../linux/primary-mailbox-runtime.py" LogicalName="LinuxMailRelay365.linux.primary-mailbox-runtime.py" />
+    <EmbeddedResource Include="../../linux/probe-primary-mailbox-delivery.py" LogicalName="LinuxMailRelay365.linux.probe-primary-mailbox-delivery.py" />
     <EmbeddedResource Include="../../linux/stage-conditional-postfix-maps.py" LogicalName="LinuxMailRelay365.linux.stage-conditional-postfix-maps.py" />
     <EmbeddedResource Include="../../linux/conditional-postfix-transaction.py" LogicalName="LinuxMailRelay365.linux.conditional-postfix-transaction.py" />
     <EmbeddedResource Include="../../linux/inspect-conditional-postfix-activation.py" LogicalName="LinuxMailRelay365.linux.inspect-conditional-postfix-activation.py" />

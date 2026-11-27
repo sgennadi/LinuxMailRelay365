@@ -83,6 +83,7 @@ internal static class Program
             ("Delivery wizard route-aware forward/back navigation", MainForm.DeliveryNavigationSelfTest),
             ("Primary single-mailbox outbound route preview", PrimaryMailboxRoutePreview.SelfTest),
             ("Primary mailbox offline approvals and strict recovery receipts", PrimaryMailboxOfflineClient.SelfTest),
+            ("Primary mailbox delivery probe request and trace receipts", PrimaryMailboxDeliveryClient.SelfTest),
             ("Recipient-aware read-only delivery recommendations", MailDeliveryAdvisor.SelfTest),
             ("Readable mail discovery overview and safe guidance", MailDiscoveryBrief.SelfTest),
             ("Mail intent and evidence-gated scenario ranking", MailFlowIntent.SelfTest),

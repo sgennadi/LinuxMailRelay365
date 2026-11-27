@@ -22,6 +22,8 @@ internal sealed partial class MainForm
         AddAction(page,T("Экспериментальный Offline Apply / Restore",
             "Experimental offline Apply / Restore","החלה ושחזור במצב לא מקוון (ניסיוני)"),
             OpenPrimaryMailboxOfflineAsync,false,"check","primary-mailbox-offline");
+        AddAction(page,T("Тест доставки XOAUTH2 / Queue ID","XOAUTH2 delivery test / Queue ID","בדיקת מסירה XOAUTH2"),
+            OpenPrimaryMailboxDeliveryAsync,false,"check","primary-mailbox-delivery");
         AddLine(page,MailFlowText(T(
             "Требуется остановленный Postfix, пустая очередь, установленная PEM-идентичность и отдельное подтверждение. Служба не запускается автоматически.",
             "Requires stopped Postfix, empty queues, an installed PEM identity and separate approval. No automatic service start.",
