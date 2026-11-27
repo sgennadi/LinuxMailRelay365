@@ -356,6 +356,26 @@ echo "LMR365_GUEST_POSTFIX_DATA_CONTEXT=verified_unchanged_dac"
 ROCKY10_DATA_CONTEXT
     run_postfix_smoke
     echo "LMR365_GUEST_VTPM_ROCKY10_POSTFIX_SMOKE=passed"
+    if test "${LMR365_KVM_TPM_PIPE_ACCEPTANCE:-false}" = true; then
+        scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+            -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+            linux/m365_xoauth2_transport.py linux/m365_hardware_signer.py \
+            tests/rocky_vm_primary_pipe_worker.py tests/rocky_vm_primary_pipe_enforcing.py \
+            tests/rocky_vm_primary_tpm_pipe.py ci@127.0.0.1:/home/ci/
+        ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+            'sudo install -o root -g root -m 0644 /home/ci/m365_xoauth2_transport.py /home/ci/m365_hardware_signer.py /home/ci/rocky_vm_primary_pipe_worker.py /home/ci/rocky_vm_primary_pipe_enforcing.py /home/ci/rocky_vm_primary_tpm_pipe.py /usr/local/libexec/lmr365-kvm-vtpm/ && sudo restorecon -R /usr/local/libexec/lmr365-kvm-vtpm && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-primary-mailbox-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-primary-mailbox-vm"'
+        ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+            'sudo env GITHUB_ACTIONS=true timeout 300 python3 -I -B /usr/local/libexec/lmr365-kvm-vtpm/rocky_vm_primary_tpm_pipe.py' | tee "$work/tpm-pipe"
+        for expected in \
+            'LMR365_TPM_PIPE_DOMAIN=postfix_pipe_t' \
+            'LMR365_TPM_PIPE_PS256=verified_native_provider' \
+            'LMR365_TPM_PIPE_QUEUE=correlated_and_empty' \
+            'LMR365_TPM_PIPE_BASELINE=restored' \
+            'LMR365_TPM_PIPE_DEVICE=original_metadata_restored' \
+            'LMR365_TPM_PIPE_CLOUD_TESTED=no'; do
+            grep -Fxq "$expected" "$work/tpm-pipe"
+        done
+    fi
     exit 0
 fi
 

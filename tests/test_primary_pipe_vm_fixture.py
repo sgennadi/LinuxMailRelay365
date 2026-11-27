@@ -49,6 +49,17 @@ class PipeFixtureTests(unittest.TestCase):
         self.assertIsNone(P.journal_receipt([cleanup,pipe],self.daemon,nonce))
         self.assertIsNone(P.journal_receipt([cleanup,pipe],self.daemon,self.nonce,True))
 
+    def test_hardware_receipt_cannot_be_satisfied_by_pem_or_network(self):
+        cleanup,pipe=self.cleanup(),self.pipe()
+        self.assertIsNone(P.journal_receipt([cleanup,pipe],self.daemon,self.nonce,tpm=True))
+        hardware=dict(pipe,MESSAGE=pipe["MESSAGE"].replace(
+            W.marker(self.nonce),W.marker(self.nonce,tpm=True)))
+        self.assertEqual(P.journal_receipt([cleanup,hardware],self.daemon,self.nonce,tpm=True),self.qid)
+        self.assertIsNone(P.journal_receipt([cleanup,hardware],self.daemon,self.nonce))
+        self.assertIsNone(P.journal_receipt([cleanup,hardware],self.daemon,self.nonce,True))
+        with self.assertRaises(ValueError):
+            W.marker(self.nonce,True,True)
+
     def test_network_client_uses_only_fixed_loopback_ports_and_exact_reply(self):
         for port in W.PORTS:
             conn=Mock()

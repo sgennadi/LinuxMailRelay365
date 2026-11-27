@@ -13,6 +13,7 @@ on:
       - feature/primary-xoauth2-pipe-network-enforcing
       - feature/primary-tpm-virtual-device
       - feature/primary-tpm-provider-isolated
+      - feature/primary-tpm-pipe-enforcing
     paths:
       - .github/workflows/rocky-enforcing-vm.yml
       - tests/rocky_vm_*.sh
@@ -94,7 +95,7 @@ jobs:
 
   kvm-native-tpm-provider:
     name: Rocky 10.3 native OpenSSL TPM2 provider acceptance (swtpm)
-    if: github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated'
+    if: github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated' || github.ref_name == 'feature/primary-tpm-pipe-enforcing'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -105,11 +106,12 @@ jobs:
         shell: bash
         run: |
           bash -n tests/rocky_vm_boot_enforcing.sh
-          python3 -m py_compile tests/rocky_vm_primary_tpm_device.py linux/manage-tpm-oauth-key.py
+          python3 -m py_compile tests/rocky_vm_primary_tpm_device.py linux/manage-tpm-oauth-key.py tests/rocky_vm_primary_tpm_pipe.py tests/rocky_vm_primary_pipe_worker.py tests/rocky_vm_primary_pipe_enforcing.py
       - name: Boot Rocky 10.3 and require native TPM2 provider PS256
         shell: bash
         env:
           LMR365_KVM_ROCKY_MAJOR: '10'
           LMR365_KVM_VTPM_ACCEPTANCE: 'true'
           LMR365_KVM_VTPM_PROVIDER_REQUIRED: 'true'
+          LMR365_KVM_TPM_PIPE_ACCEPTANCE: ${{ github.ref_name == 'feature/primary-tpm-pipe-enforcing' }}
         run: bash tests/rocky_vm_boot_enforcing.sh
