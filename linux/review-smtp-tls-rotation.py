@@ -529,9 +529,42 @@ def connector_binding(domain, pf=None):
             "exchange_acceptance": "unverified", "mail_sent": False}
 
 
+def candidate_connector_binding(candidate, domain, checker=None, validator=None, lock=None):
+    """Read-only exact certificate identity review, independent of active Postfix."""
+    if (not isinstance(candidate, str) or not GEN.fullmatch(candidate)
+            or not isinstance(domain, str) or len(domain) > 253 or "." not in domain
+            or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part)
+                       for part in domain.split("."))):
+        raise ValueError("invalid candidate or connector DNS identity")
+    directory(ROOT, True)
+    lock = lock or load("smtp-tls-transaction").deployment_lock
+    with lock(ROOT):
+        previous = active_generation()
+        verify_files(candidate)
+        checker = checker or load("check-smtp-relay-certificate")
+        ca = checker.resolve_ca_bundle("auto")
+        ca_sha = digest(read_file(Path(ca), 8 * 1024 * 1024))
+        if validator is None:
+            validator = lambda: load("smtp-tls-validate-generation").validate(
+                ROOT, candidate, domain, ca, load("smtp-tls-generation"), checker)
+        checked = validator()
+        if checked.get("status") != "local_checks_passed" or not exact_dns_san(checked.get("extensions", ""), domain):
+            raise ValueError("exact certificate DNS SAN required")
+        verify_files(candidate)
+        if active_generation() != previous or digest(read_file(Path(ca), 8 * 1024 * 1024)) != ca_sha:
+            raise ValueError("candidate review context changed")
+        material = dict(domain=domain, generation=candidate, ca_sha256=ca_sha, active_generation=previous,
+                        certificate_details=checked.get("details", ""), extensions=checked["extensions"])
+        return dict(status="candidate_binding_reviewed", domain=domain, generation=candidate,
+                    binding_sha256=digest(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()),
+                    certificate_details=material["certificate_details"], exact_dns_san=True,
+                    exchange_acceptance="unverified", mail_sent=False, postfix_modified=False,
+                    activation_attempted=False)
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("inventory", "preview", "activate", "recovery-preview", "recover", "binding-preview", "selinux-preview", "selinux-restore"))
+    parser.add_argument("action", choices=("inventory", "preview", "activate", "recovery-preview", "recover", "binding-preview", "candidate-binding-preview", "selinux-preview", "selinux-restore"))
     parser.add_argument("--candidate")
     parser.add_argument("--domain")
     parser.add_argument("--expected-sha")
@@ -556,6 +589,10 @@ def main():
                 if not SHA.fullmatch(args.expected_sha or ""):
                     raise ValueError("reviewed SELinux SHA required")
                 report = selinux.execute(args.candidate, args.expected_sha)
+        elif args.action == "candidate-binding-preview":
+            if not args.candidate or args.expected_sha or not args.domain:
+                raise ValueError("invalid candidate binding preview arguments")
+            report = candidate_connector_binding(args.candidate, args.domain)
         elif args.action == "binding-preview":
             if args.candidate or args.expected_sha or not args.domain:
                 raise ValueError("invalid binding preview arguments")

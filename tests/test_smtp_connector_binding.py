@@ -1,7 +1,8 @@
 import importlib.util
 import pathlib
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from contextlib import nullcontext
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("binding", ROOT / "linux/review-smtp-tls-rotation.py")
@@ -55,3 +56,33 @@ class ConnectorBindingTests(unittest.TestCase):
         self.assertNotIn("connectorApproved.Checked = true", ui)
         main = (source/"MainForm.DeliveryMiniWizard.cs").read_text()
         self.assertIn("outboundFixedSender.Text.Trim(), sessionMx,", main)
+
+    def test_candidate_binding_does_not_require_active_postfix(self):
+        candidate = "candidate-"+"a"*64
+        checker = Mock()
+        checker.resolve_ca_bundle.return_value = "/etc/ssl/test-ca.pem"
+        validator = Mock(return_value=dict(status="local_checks_passed", details="certificate",
+                         extensions="X509v3 Subject Alternative Name:\n    DNS:relay.example.org"))
+        with patch.object(M,"directory"), patch.object(M,"verify_files") as verify, \
+             patch.object(M,"active_generation",return_value=None), patch.object(M,"read_file",return_value=b"CA"):
+            result = M.candidate_connector_binding(candidate,"relay.example.org",checker,validator,lambda _: nullcontext())
+            self.assertEqual(result["status"],"candidate_binding_reviewed")
+            self.assertEqual(result["generation"],candidate)
+            self.assertTrue(result["exact_dns_san"])
+            self.assertFalse(result["postfix_modified"])
+            self.assertFalse(result["activation_attempted"])
+            self.assertEqual(verify.call_count,2)
+            validator.return_value["extensions"]="X509v3 Subject Alternative Name:\n    DNS:*.example.org"
+            with self.assertRaises(ValueError):
+                M.candidate_connector_binding(candidate,"relay.example.org",checker,validator,lambda _: nullcontext())
+
+    def test_candidate_binding_drift_rejected(self):
+        checker = Mock()
+        checker.resolve_ca_bundle.return_value = "/etc/ssl/test-ca.pem"
+        validator = Mock(return_value=dict(status="local_checks_passed",
+                         extensions="X509v3 Subject Alternative Name:\n    DNS:relay.example.org"))
+        with patch.object(M,"directory"), patch.object(M,"verify_files"), \
+             patch.object(M,"active_generation",side_effect=[None,"candidate-"+"b"*64]), \
+             patch.object(M,"read_file",return_value=b"CA"):
+            with self.assertRaises(ValueError):
+                M.candidate_connector_binding("candidate-"+"a"*64,"relay.example.org",checker,validator,lambda _: nullcontext())

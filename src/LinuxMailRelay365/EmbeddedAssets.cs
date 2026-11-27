@@ -157,7 +157,7 @@ internal static class EmbeddedAssets
 
     internal static string BuildSmtpTlsRotation(string action, string? candidate, string? domain, string? expectedSha)
     {
-        if (action is not ("inventory" or "preview" or "activate" or "recovery-preview" or "recover" or "binding-preview" or "selinux-preview" or "selinux-restore"))
+        if (action is not ("inventory" or "preview" or "activate" or "recovery-preview" or "recover" or "binding-preview" or "candidate-binding-preview" or "selinux-preview" or "selinux-restore"))
             throw new ArgumentException("Invalid TLS action.");
         if (action is "inventory" or "recovery-preview")
         {
