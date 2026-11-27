@@ -306,6 +306,54 @@ fi
 if test "$expected_version" = 10.3; then
     grep -Fxq 'LMR365_VM_VTPM_POSTFIX_SCOPE=stopped_empty_native_queue' "$work/vtpm-receipt"
     echo "LMR365_GUEST_VTPM_NATIVE_PROVIDER_ONLY=passed"
+    # Normalize only the mislabeled, empty package data directory in this
+    # newly created Rocky 10.3 VM. This is NOT a production installer action.
+    # Keep the actual Postfix startup and domain/listener assertions mandatory.
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash -s' <<'ROCKY10_DATA_CONTEXT'
+set -Eeuo pipefail
+source /etc/os-release
+test "$ID" = rocky && test "$VERSION_ID" = 10.3
+test "$(hostname -s)" = rocky-selinux-ci
+test "$(cat /proc/1/comm)" = systemd
+test "$(getenforce)" = Enforcing
+test "$(cat /sys/fs/selinux/enforce)" = 1
+test "$(sudo systemctl show -p ActiveState --value postfix.service)" = inactive
+test "$(sudo postconf -xh data_directory)" = /var/lib/postfix
+test "$(sudo postconf -xh queue_directory)" = /var/spool/postfix
+test "$(sudo postconf -xh mail_owner)" = postfix
+test "$(sudo postconf -xh inet_interfaces)" = loopback-only
+test -z "$(sudo postconf -xh relayhost)"
+test -z "$(sudo postqueue -j)"
+for path in /var /var/lib /var/lib/postfix; do
+    sudo test -d "$path"
+    sudo test ! -L "$path"
+done
+test "$(sudo stat -c %u /var/lib/postfix)" = "$(id -u postfix)"
+test "$(sudo stat -c %a /var/lib/postfix)" = 700
+test -z "$(sudo find /var/lib/postfix -mindepth 1 -maxdepth 1 -print -quit)"
+before="$(sudo stat -c '%d:%i:%u:%g:%a' /var/lib/postfix)"
+expected="$(sudo matchpathcon -N -n -m dir /var/lib/postfix)"
+test "$expected" = system_u:object_r:postfix_data_t:s0
+actual="$(sudo stat -c %C /var/lib/postfix)"
+echo "LMR365_GUEST_POSTFIX_DATA_CONTEXT_BEFORE=$actual"
+if test "$actual" = "$expected"; then
+    echo "LMR365_GUEST_POSTFIX_DATA_CONTEXT_ACTION=already_correct"
+else
+    case "$actual" in
+        *:object_r:var_lib_t:s0) ;;
+        *) echo "LMR365_GUEST_POSTFIX_DATA_CONTEXT_UNEXPECTED"; exit 1 ;;
+    esac
+    # Use the installed policy, never chcon, chmod, chown or a policy override.
+    sudo restorecon -F -v /var/lib/postfix
+    echo "LMR365_GUEST_POSTFIX_DATA_CONTEXT_ACTION=restored_native_label"
+fi
+test "$(sudo stat -c %C /var/lib/postfix)" = "$expected"
+sudo matchpathcon -V /var/lib/postfix
+test "$(sudo stat -c '%d:%i:%u:%g:%a' /var/lib/postfix)" = "$before"
+test -z "$(sudo find /var/lib/postfix -mindepth 1 -maxdepth 1 -print -quit)"
+test "$(getenforce)" = Enforcing
+echo "LMR365_GUEST_POSTFIX_DATA_CONTEXT=verified_unchanged_dac"
+ROCKY10_DATA_CONTEXT
     run_postfix_smoke
     echo "LMR365_GUEST_VTPM_ROCKY10_POSTFIX_SMOKE=passed"
     exit 0
