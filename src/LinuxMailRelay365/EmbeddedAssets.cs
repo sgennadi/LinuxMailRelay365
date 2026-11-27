@@ -96,7 +96,7 @@ internal static class EmbeddedAssets
             .Append(Convert.ToBase64String(bytes)).Append("\nLMR365_ISSUANCE_REQUEST\n").ToString();
     }
 
-    internal static string BuildSmtpAcmeStagingChallenge(string request, bool production = false)
+    internal static string BuildSmtpAcmeStagingChallenge(string request, bool production = false, bool inspectExisting = false)
     {
         byte[] bytes = Encoding.UTF8.GetBytes(request);
         if (bytes.Length > 12288) throw new ArgumentException("ACME challenge request too large.");
@@ -118,8 +118,9 @@ internal static class EmbeddedAssets
                 .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux." + resource))))
                 .Append("\nLMR365_CHALLENGE_ASSET\n");
         }
-        string helper = production ? "reviewed-smtp-acme-production.py" : "reviewed-smtp-acme-challenge.py";
-        return script.Append("base64 -d <<'LMR365_CHALLENGE_REQUEST' | /usr/bin/python3 -I -B \"$work/").Append(helper).Append("\"\n")
+        string helper = production || inspectExisting ? "reviewed-smtp-acme-production.py" : "reviewed-smtp-acme-challenge.py";
+        return script.Append("base64 -d <<'LMR365_CHALLENGE_REQUEST' | /usr/bin/python3 -I -B \"$work/").Append(helper)
+            .Append(inspectExisting ? "\" --inspect\n" : "\"\n")
             .Append(Convert.ToBase64String(bytes)).Append("\nLMR365_CHALLENGE_REQUEST\n").ToString();
     }
 

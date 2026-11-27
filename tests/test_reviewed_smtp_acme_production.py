@@ -95,6 +95,41 @@ class ProductionEvaluationTests(unittest.TestCase):
         self.assertEqual(report["client_auth_eku"],"not_explicit")
         self.assertEqual(report["local_sslclient"],"refused_or_unverified")
 
+    def test_inspect_retained_material_without_issuance(self):
+        request={k:self.req[k] for k in ("accepted_domain","certificate_name")}
+        with patch.object(M,"directory") as directory, patch.object(M,"command") as command, patch.object(M,"reserve") as reserve:
+            result=M.inspect_existing(request,inspect=self.inspect)
+            self.assertEqual(result["status"],"material_verified")
+            self.assertTrue(result["local_chain_name_key_verified"])
+            for flag in ("issuance_attempted","dns_modified","postfix_modified","activation_supported","exchange_acceptance_verified"):
+                self.assertFalse(result[flag])
+            self.inspect.assert_called_once_with(M.ROOT/"relay.example.org","relay.example.org")
+            command.assert_not_called()
+            reserve.assert_not_called()
+            self.assertEqual(directory.call_count,3)
+
+    def test_inspect_missing_unsafe_or_incomplete_evaluation(self):
+        request={k:self.req[k] for k in ("accepted_domain","certificate_name")}
+        with patch.object(M,"directory",side_effect=FileNotFoundError):
+            self.assertEqual(M.inspect_existing(request,inspect=self.inspect)["status"],"not_found")
+        with patch.object(M,"directory",side_effect=ValueError("unsafe directory")):
+            self.assertEqual(M.inspect_existing(request,inspect=self.inspect)["status"],"unverified")
+        self.inspect.assert_not_called()
+        with patch.object(M,"directory"):
+            self.inspect.side_effect=FileNotFoundError("missing certificate")
+            self.assertEqual(M.inspect_existing(request,inspect=self.inspect)["status"],"unverified")
+        with self.assertRaises(ValueError):
+            M.inspect_existing(dict(request,certificate_name="../other"),inspect=self.inspect)
+        with self.assertRaises(ValueError):
+            M.inspect_existing(dict(request,credentials_path="/secret"),inspect=self.inspect)
+
+    def test_read_only_inspection_gui_wiring(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        self.assertIn('sys.argv[1:]==["--inspect"]',(ROOT/"linux/reviewed-smtp-acme-production.py").read_text())
+        self.assertIn('review(payload, "inspect")',(src/"SmtpAcmeIssuanceReviewDialog.cs").read_text())
+        self.assertIn('inspectExisting: true',(src/"MainForm.DeliveryMiniWizard.cs").read_text())
+        self.assertIn('--inspect',(src/"EmbeddedAssets.cs").read_text())
+
 
 class StagingReceiptTests(unittest.TestCase):
     def test_binding_changes_with_credentials_or_request(self):

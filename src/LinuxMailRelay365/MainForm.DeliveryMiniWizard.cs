@@ -178,9 +178,10 @@ internal sealed partial class MainForm
                         "review" => EmbeddedAssets.BuildSmtpAcmeIssuanceReview(request),
                         "staging" => EmbeddedAssets.BuildSmtpAcmeStagingChallenge(request),
                         "production" => EmbeddedAssets.BuildSmtpAcmeStagingChallenge(request, production: true),
+                        "inspect" => EmbeddedAssets.BuildSmtpAcmeStagingChallenge(request, inspectExisting: true),
                         _ => throw new ArgumentException("Unknown ACME operation.")
                     };
-                    var timeout = TimeSpan.FromSeconds(operation == "review" ? 105 : 800);
+                    var timeout = TimeSpan.FromSeconds(operation == "review" ? 105 : operation == "inspect" ? 150 : 800);
                     var result = endpoint.Username == "root"
                         ? await SshRemote.ExecuteAsync(endpoint, "bash -s", script, timeout)
                         : await SshRemote.RunRootScriptAsync(endpoint, script, timeout);

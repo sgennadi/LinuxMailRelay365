@@ -182,6 +182,37 @@ def execute(envelope,reviewer=None,challenge=None,runner=subprocess.run,allocate
     return report
 
 
+def inspect_existing(request,root=None,inspect=evaluate):
+    """Reinspect retained material only; no Certbot, DNS, receipt or MTA operation."""
+    if (not isinstance(request,dict) or set(request)!={"accepted_domain","certificate_name"}
+            or any(not isinstance(v,str) for v in request.values())):
+        raise ValueError("invalid evaluation inspection request")
+    plan=load("plan-smtp-certificate-acme").plan(dict(request,provider="manual"))
+    root=ROOT if root is None else root
+    name=plan["certificate_name"]
+    dest=root/name
+    report=dict(version=1,status="unverified",accepted_domain=plan["accepted_domain"],
+                certificate_name=name,evaluation_path=str(dest),local_chain_name_key_verified=False,
+                local_sslclient="unverified",client_auth_eku="unverified",certificate_sha256=None,
+                postfix_modified=False,activation_supported=False,exchange_acceptance_verified=False,
+                issuance_attempted=False,dns_modified=False)
+    try:
+        directory(root.parent)
+        directory(root,True)
+        directory(dest,True)
+    except FileNotFoundError:
+        report["status"]="not_found"
+        return report
+    except (OSError,ValueError):
+        return report
+    try:
+        report.update(inspect(dest,name))
+        report["status"]="material_verified"
+    except (OSError,ValueError,subprocess.SubprocessError):
+        pass
+    return report
+
+
 def main():
     fd=None
     try:
@@ -200,6 +231,11 @@ def main():
         if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_nlink!=1 or st.st_mode & 0o7077:
             raise ValueError("unsafe ACME lock")
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        if sys.argv[1:]==["--inspect"]:
+            print(json.dumps(inspect_existing(json.loads(raw)),sort_keys=True))
+            return 0
+        if sys.argv[1:]:
+            raise ValueError("invalid operation")
         envelope=json.loads(raw)
         if not isinstance(envelope,dict):
             raise ValueError("invalid envelope")

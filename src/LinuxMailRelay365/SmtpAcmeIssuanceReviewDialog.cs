@@ -32,6 +32,7 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
         var run = new Button { Text = "Check local readiness", AutoSize = true };
         var challenge = new Button { Text = "Test staging DNS-01", AutoSize = true, Enabled = false };
         var production = new Button { Text = "Issue production evaluation", AutoSize = true, Enabled = false };
+        var inspectExisting = new Button { Text = "Inspect existing evaluation", AutoSize = true };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         bool busy = false;
         string? reviewedRequest = null, reviewedSha = null, receipt = null;
@@ -66,7 +67,7 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
                 return;
             }
             busy = true;
-            run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
+            inspectExisting.Enabled = run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
             result.Text = "Checking the existing credential file and installed plugin on Linux...";
             try
             {
@@ -131,7 +132,7 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
             finally
             {
                 busy = false;
-                if (!IsDisposed) run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
+                if (!IsDisposed) inspectExisting.Enabled = run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
             }
         };
         challenge.Click += async (_, _) =>
@@ -152,7 +153,7 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
             });
             InvalidateInputs();
             busy = true;
-            run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
+            inspectExisting.Enabled = run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
             result.Text = "Running approved staging DNS-01 test. Checking the public TXT snapshot before and after...";
             try
             {
@@ -217,7 +218,7 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
             finally
             {
                 busy = false;
-                if (!IsDisposed) run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
+                if (!IsDisposed) inspectExisting.Enabled = run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
             }
         };
         production.Click += async (_, _) =>
@@ -246,7 +247,7 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
             });
             InvalidateInputs();
             busy = true;
-            run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
+            inspectExisting.Enabled = run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
             result.Text = "Issuing the explicitly approved production certificate into isolated evaluation state...";
             try
             {
@@ -306,7 +307,63 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
             finally
             {
                 busy = false;
-                if (!IsDisposed) run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
+                if (!IsDisposed) inspectExisting.Enabled = run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
+            }
+        };
+        inspectExisting.Click += async (_, _) =>
+        {
+            if (busy) return;
+            InvalidateReport();
+            busy = true;
+            inspectExisting.Enabled = run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
+            result.Text = "Checking retained evaluation material on Linux. No DNS or CA operation...";
+            try
+            {
+                string payload = JsonSerializer.Serialize(new { accepted_domain = acceptedDomain, certificate_name = certificateName });
+                using var response = JsonDocument.Parse(await review(payload, "inspect"));
+                var root = response.RootElement;
+                string expectedPath = "/var/lib/linuxmailrelay365/smtp-acme-evaluation/" + certificateName;
+                if (root.GetProperty("version").GetInt32() != 1 ||
+                    root.GetProperty("accepted_domain").GetString() != acceptedDomain ||
+                    root.GetProperty("certificate_name").GetString() != certificateName ||
+                    root.GetProperty("evaluation_path").GetString() != expectedPath)
+                    throw new InvalidDataException("Unexpected evaluation identity.");
+                foreach (string flag in new[] { "postfix_modified", "activation_supported",
+                    "exchange_acceptance_verified", "issuance_attempted", "dns_modified" })
+                    if (root.GetProperty(flag).GetBoolean()) throw new InvalidDataException("Unexpected mutation claim.");
+                string? state = root.GetProperty("status").GetString();
+                bool material = root.GetProperty("local_chain_name_key_verified").GetBoolean();
+                string? purpose = root.GetProperty("local_sslclient").GetString();
+                string? eku = root.GetProperty("client_auth_eku").GetString();
+                string? fingerprint = root.GetProperty("certificate_sha256").GetString();
+                if (state is not ("material_verified" or "not_found" or "unverified") ||
+                    material != (state == "material_verified") ||
+                    (material ? (purpose is not ("passed" or "refused_or_unverified") ||
+                        eku is not ("explicit" or "not_explicit") ||
+                        !Regex.IsMatch(fingerprint ?? "", @"\A[a-f0-9]{64}\z")) :
+                        (purpose != "unverified" || eku != "unverified" || fingerprint is not null)))
+                    throw new InvalidDataException("Inconsistent evaluation result.");
+                result.ForeColor = material && purpose == "passed" ? Color.SeaGreen : Color.DarkOrange;
+                result.Text = "Retained production evaluation: " + state + Environment.NewLine +
+                    "Expected directory: " + expectedPath + Environment.NewLine +
+                    "Certificate chain / name / key: " + (material ? "verified locally" : "unverified") + Environment.NewLine +
+                    "SHA-256: " + (fingerprint ?? "unverified") + Environment.NewLine +
+                    "Client Authentication EKU: " + eku + Environment.NewLine +
+                    "OpenSSL sslclient purpose: " + purpose + Environment.NewLine + Environment.NewLine +
+                    (state == "unverified" ? "Material is incomplete, unsafe or unverifiable. Preserve state for manual review." + Environment.NewLine : "") +
+                    "This inspection does not establish original CA issuance outcome, DNS cleanup or Exchange acceptance." + Environment.NewLine +
+                    "No renewal, issuance, staging, activation or deletion was requested.";
+            }
+            catch (Exception ex)
+            {
+                result.ForeColor = Color.DarkOrange;
+                result.Text = "Existing evaluation inspection unavailable: " + ex.GetType().Name +
+                    ". Another reviewed ACME operation may be running. Preserve the directory for review.";
+            }
+            finally
+            {
+                busy = false;
+                if (!IsDisposed) inspectExisting.Enabled = run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
             }
         };
         layout.Controls.Add(new Label { Text = "DNS identity: " + certificateName + " | " + provider, AutoSize = true }, 0, 0);
@@ -317,7 +374,7 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
         layout.Controls.Add(new Label { Text = "Existing private credential file on Linux (path only)", AutoSize = true }, 0, 5);
         layout.Controls.Add(credential, 0, 6);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
-        actions.Controls.AddRange([run, challenge, production]);
+        actions.Controls.AddRange([run, challenge, production, inspectExisting]);
         layout.Controls.Add(actions, 0, 7);
         layout.Controls.Add(result, 0, 8);
         layout.Controls.Add(close, 0, 9);
