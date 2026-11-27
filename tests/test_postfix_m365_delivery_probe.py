@@ -231,7 +231,11 @@ class LocalDeliveryProbeTests(unittest.TestCase):
                 result=M.submit_local(self.req,self.sha,plan,runner)
                 self.assertEqual(result["submission"],"submission_uncertain")
                 self.assertFalse(result["mailbox_verified"])
-                self.assertEqual(M.ledger(self.req,("local",))[1]["local"],"submission_uncertain")
+                # CI is unprivileged; keep production root ownership checks intact.
+                # Exercise ledger parsing with the actual synthetic journal bytes.
+                with patch.object(M,"read_file",return_value=M.ledger_file(self.req).read_bytes()) as read:
+                    self.assertEqual(M.ledger(self.req,("local",))[1]["local"],"submission_uncertain")
+                    read.assert_called_once_with(M.ledger_file(self.req),16384,True)
                 with self.assertRaises(FileExistsError):
                     M.submit_local(self.req,self.sha,plan,runner)
                 runner.assert_called_once()
