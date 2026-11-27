@@ -787,3 +787,26 @@ in a future reviewed migration. Preview does NOT authorize Apply, verify
 cloud grants or deliver messages. In-place Apply/Restore for the common
 XOAUTH2 route remains a separate development block. Force Replace is
 explicitly blocked for the in-place migration selection.
+
+
+## Acceptance with managed ingress proof renewal
+
+The direct two-recipient multi-mailbox diagnostic now uses a distinct
+read-only installed-route review instead of Restore preview. Restore still
+refuses any proof-timer artifact. With no timer, the existing supervised
+manual proof publication remains available. With a timer present, acceptance
+requires the exact manifest-pinned installed timer manager, its protected
+state and unit bytes bound to the same active marker and runtime map, an
+active/enabled timer, loaded unit identities, no drop-ins or pending daemon
+reload, and a fresh receipt. It does not publish a competing receipt or change
+the timer. Before each SMTP attempt, a fresh static ingress inspection and
+route/policy review are required; the transport independently checks the
+receipt before OAuth. The proof mode and stable timer identity are SHA-bound.
+Prospective SELinux proof context is bound even before first publication;
+actual context or route drift still blocks submission. Restore binds actual
+receipt presence and bytes independently. A racing timer refresh or an
+expired receipt may conservatively refuse the test; never retry an uncertain
+SMTP attempt. Existing staged scripts do not auto-upgrade: use a fresh
+supported stage after reviewing the existing installed runtime and recovery
+state. These changes do not establish live Microsoft 365 delivery, primary
+Postfix multi-mailbox routing, or real Enforcing service-domain acceptance.
