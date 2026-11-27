@@ -157,15 +157,52 @@ def run_command(argv, *, input_data=None, env=None, timeout=60, operation="comma
     return r.stdout
 
 
-def check_runtime_files():
-    for tool in COMMANDS.values():
-        try:
-            info = tool.lstat()
-        except OSError:
-            raise Refused("missing_tpm2_or_openssl_utility")
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or
-                info.st_mode & 0o022 or not info.st_mode & 0o111):
+def runtime_tool_metadata(meta):
+    return [meta.st_dev,meta.st_ino,meta.st_mode,meta.st_uid,meta.st_gid,
+            meta.st_size,meta.st_mtime_ns,meta.st_ctime_ns]
+
+
+def trusted_runtime_tool(tool):
+    """Accept a native executable or the fixed distro TPM2 multicall alias.
+
+    Never invoke the resolved binary instead of its original alias: tpm2
+    selects the command from argv[0]. No PATH search or arbitrary symlink
+    chain is allowed. Directory and executable trust are checked separately.
+    """
+    if tool not in COMMANDS.values() or tool.parent!=Path("/usr/bin"):
+        raise Refused("unsafe_tpm2_or_openssl_utility")
+    check_dir(tool.parent)
+    try:
+        before=tool.lstat()
+        target=tool
+        link=None
+        if stat.S_ISLNK(before.st_mode):
+            # tpm2-tools packages commonly install tpm2_* as symlinks to
+            # the same multicall /usr/bin/tpm2 binary. The symlink's mode
+            # is not a write-access grant; its owner and parent matter.
+            if tool==COMMANDS["openssl"] or before.st_uid!=0:
+                raise Refused("unsafe_tpm2_or_openssl_utility")
+            link=os.readlink(str(tool))
+            if link not in ("tpm2","/usr/bin/tpm2"):
+                raise Refused("unsafe_tpm2_or_openssl_utility")
+            target=Path("/usr/bin/tpm2")
+        actual=target.lstat()
+        if (not stat.S_ISREG(actual.st_mode) or actual.st_uid!=0 or
+                actual.st_mode&0o6022 or not actual.st_mode&0o111):
             raise Refused("unsafe_tpm2_or_openssl_utility")
+        evidence=[str(tool),runtime_tool_metadata(before),link,
+                  str(target),runtime_tool_metadata(actual)]
+        if (runtime_tool_metadata(tool.lstat())!=evidence[1] or
+                runtime_tool_metadata(target.lstat())!=evidence[4] or
+                (link is not None and os.readlink(str(tool))!=link)):
+            raise Refused("tpm_runtime_utility_changed")
+        return evidence
+    except OSError:
+        raise Refused("missing_tpm2_or_openssl_utility") from None
+
+
+def check_runtime_files():
+    return {name:trusted_runtime_tool(tool) for name,tool in sorted(COMMANDS.items())}
 
 
 def read_capabilities():
@@ -309,7 +346,7 @@ def prepare(target, handle):
     check_dir(directory)
     require_root()
     check_hardware()
-    check_runtime_files()
+    utilities=check_runtime_files()
     try:
         gid = grp.getgrnam("m365mailer").gr_gid
         pwd.getpwnam("m365mailer")
@@ -350,7 +387,10 @@ def prepare(target, handle):
     if access is not None:
         if primary_service_device_evidence(gid) != access:
             raise Refused("primary_tpm_service_access_changed")
+        if check_runtime_files()!=utilities:
+            raise Refused("tpm_runtime_utility_changed")
         evidence["primary_service_access"] = access
+        evidence["primary_runtime_utilities"] = utilities
     digest = sha(json.dumps(evidence, sort_keys=True,
                             separators=(",", ":")).encode("utf-8"))
     return {"sha": digest, "target": target, "handle": handle,
@@ -486,8 +526,12 @@ def verify_service_signature(plan, cert, scratch):
 
 
 def verify_primary_creation_access(plan):
-    if plan["target"]=="primary" and primary_service_device_evidence(plan["gid"])!=plan["evidence"].get("primary_service_access"):
+    if plan["target"]!="primary":
+        return
+    if primary_service_device_evidence(plan["gid"])!=plan["evidence"].get("primary_service_access"):
         raise Refused("primary_tpm_service_access_changed")
+    if check_runtime_files()!=plan["evidence"].get("primary_runtime_utilities"):
+        raise Refused("tpm_runtime_utility_changed")
 
 
 def apply(target, handle, approved_sha, confirmation):

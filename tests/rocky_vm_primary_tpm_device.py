@@ -81,7 +81,15 @@ def main():
     spec.loader.exec_module(T)
     need(T.DEVICE==DEVICE and T.TARGETS["primary"]==IDENTITY and T.check_hardware()=="2",
          "native_tpm2_resource_manager_required")
+    # Fixed native executable metadata, before calling the product guard.
+    # This logs no config, secrets, certificate or TPM private material.
+    for name,path in sorted(T.COMMANDS.items()):
+        meta=path.lstat()
+        target=os.readlink(str(path)) if stat.S_ISLNK(meta.st_mode) else "-"
+        print("LMR365_VM_VTPM_TOOL "+name+" mode="+oct(meta.st_mode)+
+              " uid="+str(meta.st_uid)+" link="+repr(target),flush=True)
     T.check_runtime_files()
+    print("LMR365_VM_VTPM_UTILITIES=verified_native_executables",flush=True)
     need(T.read_capabilities()==set(),"vtpm_persistent_inventory_not_empty")
     need(not os.path.lexists(str(IDENTITY)),"existing_vtpm_identity")
     need(command("/usr/sbin/postqueue","-j").strip()==b"" and
