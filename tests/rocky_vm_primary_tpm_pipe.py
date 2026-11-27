@@ -49,6 +49,59 @@ def policy_matches():
     for name in NAMES:
         command("/usr/sbin/matchpathcon","-V",P.CONFIG+"/"+name)
 
+def service_device_diagnostics():
+    """Read-only evidence from the actual master process, not a namespace entry."""
+    F.disposable()
+    props=("MainPID","PrivateDevices","PrivateMounts","DevicePolicy","DeviceAllow",
+           "RootDirectory","RootImage","InaccessiblePaths","BindPaths","BindReadOnlyPaths",
+           "ProtectSystem","NoNewPrivileges","SystemCallFilter")
+    try:
+        raw=command("/usr/bin/systemctl","show","postfix.service",
+                    *("-p"+name for name in props)).decode("utf-8","strict")
+        rows={}
+        for line in raw.splitlines():
+            key,sep,value=line.partition("=")
+            if sep and key in props and key not in rows and len(value)<=8192:
+                rows[key]=value
+        for name in ("PrivateDevices","PrivateMounts","DevicePolicy","NoNewPrivileges","ProtectSystem"):
+            value=rows.get(name,"")
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,40}",value):
+                print("LMR365_TPM_PIPE_SYSTEMD="+name+"="+value,flush=True)
+        for name in ("RootDirectory","RootImage","InaccessiblePaths","BindPaths",
+                     "BindReadOnlyPaths","DeviceAllow","SystemCallFilter"):
+            if name in rows:
+                value=rows[name]
+                # Do not disclose arbitrary configured paths or command data.
+                print("LMR365_TPM_PIPE_SYSTEMD="+name+"="+
+                      ("set" if value else "empty"),flush=True)
+        pid=int(rows.get("MainPID","0"))
+        need(pid>1,"master_pid_unverified")
+        proc=Path("/proc")/str(pid)
+        need((proc/"exe").resolve()==Path("/usr/libexec/postfix/master") and
+             b":postfix_master_t:" in (proc/"attr/current").read_bytes(),
+             "master_identity_unverified")
+        hostns=os.readlink("/proc/self/ns/mnt")
+        masterns=os.readlink(str(proc/"ns/mnt"))
+        print("LMR365_TPM_PIPE_MASTER_MOUNT_NAMESPACE="+
+              ("same" if hostns==masterns else "separate"),flush=True)
+        try:
+            visible=(proc/"root/dev/tpmrm0").lstat()
+            host=DEVICE.lstat()
+            state=("same_character_device" if stat.S_ISCHR(visible.st_mode) and
+                   (visible.st_dev,visible.st_ino,visible.st_rdev)==
+                   (host.st_dev,host.st_ino,host.st_rdev) else "different_device")
+        except FileNotFoundError:
+            state="absent"
+        except OSError:
+            state="unverified"
+        # Verify master identity again before accepting the snapshot.
+        need(command("/usr/bin/systemctl","show","postfix.service","-pMainPID","--value").strip()==
+             str(pid).encode("ascii") and (proc/"exe").resolve()==Path("/usr/libexec/postfix/master"),
+             "master_changed")
+        print("LMR365_TPM_PIPE_MASTER_DEVICE="+state,flush=True)
+    except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):
+        print("LMR365_TPM_PIPE_MASTER_DEVICE=unverified",flush=True)
+
 def failure_diagnostics():
     # Disposable boot-bound guest only. Report fixed native metadata and
     # AVC records concerning the actual pipe domain; no message/secret dump.
@@ -61,6 +114,7 @@ def failure_diagnostics():
                 print("LMR365_TPM_PIPE_METADATA="+path+" "+value,flush=True)
         except (OSError,ValueError,subprocess.SubprocessError):
             print("LMR365_TPM_PIPE_METADATA_UNVERIFIED="+path,flush=True)
+    service_device_diagnostics()
     count=0
     for argv in (("/usr/sbin/ausearch","-m","AVC,USER_AVC","-ts","recent","--raw"),
                  ("/usr/bin/journalctl","-b","-k","--no-pager","-n","1000")):

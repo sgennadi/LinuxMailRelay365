@@ -4,6 +4,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 import socket
+import errno
+import stat
 import threading
 
 HERE=Path(__file__).resolve().parent
@@ -71,13 +73,33 @@ class PipeFixtureTests(unittest.TestCase):
         for raw,code in expected.items():
             self.assertEqual(W.classify_tpm_error(raw),code)
         self.assertEqual(str(W.FixtureSignFailure("arbitrary private text")),"tpm_sign_unknown")
-        with patch.object(W.os,"open",side_effect=PermissionError("fixture")) as opener:
-            with self.assertRaisesRegex(W.FixtureSignFailure,"tpm_device_denied"):
+        device=Mock(st_mode=stat.S_IFCHR|0o660,st_dev=1,st_ino=2,st_rdev=3)
+        for error,code in ((PermissionError(errno.EACCES,"fixture"),"tpm_device_stat_denied"),
+                           (FileNotFoundError(errno.ENOENT,"fixture"),"tpm_device_missing")):
+            with patch.object(W.os,"lstat",side_effect=error), patch.object(W.os,"open") as opener:
+                with self.assertRaisesRegex(W.FixtureSignFailure,code):
+                    W.tpm_device_probe()
+                opener.assert_not_called()
+        with patch.object(W.os,"lstat",return_value=device):
+            for error,code in ((PermissionError(errno.EACCES,"fixture"),"tpm_device_denied"),
+                               (FileNotFoundError(errno.ENOENT,"fixture"),"tpm_device_missing_on_open"),
+                               (OSError(errno.EBUSY,"fixture"),"tpm_device_busy"),
+                               (OSError(errno.ENODEV,"fixture"),"tpm_device_unsupported"),
+                               (OSError(errno.EIO,"fixture"),"tpm_device_io")):
+                with patch.object(W.os,"open",side_effect=error) as opener:
+                    with self.assertRaisesRegex(W.FixtureSignFailure,code):
+                        W.tpm_device_probe()
+                    opener.assert_called_once()
+            with patch.object(W.os,"open",return_value=17), \
+                    patch.object(W.os,"fstat",return_value=device), patch.object(W.os,"close") as close:
                 W.tpm_device_probe()
-            opener.assert_called_once()
-        with patch.object(W.os,"open",side_effect=FileNotFoundError("fixture")):
-            with self.assertRaisesRegex(W.FixtureSignFailure,"tpm_device_unverified"):
-                W.tpm_device_probe()
+                close.assert_called_once_with(17)
+            changed=Mock(st_mode=stat.S_IFCHR|0o660,st_dev=1,st_ino=8,st_rdev=3)
+            with patch.object(W.os,"open",return_value=17), \
+                    patch.object(W.os,"fstat",return_value=changed), patch.object(W.os,"close") as close:
+                with self.assertRaisesRegex(W.FixtureSignFailure,"tpm_device_identity_changed"):
+                    W.tpm_device_probe()
+                close.assert_called_once_with(17)
 
     def test_network_client_uses_only_fixed_loopback_ports_and_exact_reply(self):
         for port in W.PORTS:

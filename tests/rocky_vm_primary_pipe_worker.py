@@ -5,6 +5,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from email import policy
 from email.parser import BytesHeaderParser
 import importlib.util
+import errno
 import io
 import os
 from pathlib import Path
@@ -73,7 +74,10 @@ def context_type():
 
 # Fixed, non-secret failure classes. Never print arbitrary OpenSSL stderr,
 # assertion bytes, identity JSON or an exception containing file contents.
-TPM_FAILURES=frozenset(("tpm_device_denied","tpm_device_unverified","tpm_config",
+TPM_FAILURES=frozenset(("tpm_device_denied","tpm_device_unverified",
+    "tpm_device_missing","tpm_device_missing_on_open","tpm_device_stat_denied",
+    "tpm_device_busy","tpm_device_unsupported","tpm_device_io",
+    "tpm_device_identity_changed","tpm_config",
     "tpm_provider_signature","tpm_certificate","tpm_signature_mismatch",
     "tpm_io","tpm_sign_unknown"))
 
@@ -100,22 +104,42 @@ def classify_tpm_error(stderr):
     return "tpm_sign_unknown"
 
 def tpm_device_probe():
-    # Check real pipe-domain open/close permission before provider execution.
-    # No TPM command, key access, permission or label change.
+    # Distinguish missing mount-namespace device from a denied open, a
+    # driver error and an identity mismatch. No TPM command is issued.
+    path="/dev/tpmrm0"
     try:
-        fd=os.open("/dev/tpmrm0",os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
-        try:
-            opened=os.fstat(fd)
-            current=os.lstat("/dev/tpmrm0")
-            need(stat.S_ISCHR(opened.st_mode) and
-                 (opened.st_dev,opened.st_ino,opened.st_rdev)==
-                 (current.st_dev,current.st_ino,current.st_rdev),"device_changed")
-        finally:
-            os.close(fd)
+        before=os.lstat(path)
+    except FileNotFoundError:
+        raise FixtureSignFailure("tpm_device_missing") from None
+    except PermissionError:
+        raise FixtureSignFailure("tpm_device_stat_denied") from None
+    except OSError:
+        raise FixtureSignFailure("tpm_device_unverified") from None
+    if not stat.S_ISCHR(before.st_mode):
+        raise FixtureSignFailure("tpm_device_identity_changed")
+    try:
+        fd=os.open(path,os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC)
     except PermissionError:
         raise FixtureSignFailure("tpm_device_denied") from None
-    except (OSError,ValueError):
+    except FileNotFoundError:
+        raise FixtureSignFailure("tpm_device_missing_on_open") from None
+    except OSError as error:
+        code=error.errno
+        reason=("tpm_device_busy" if code in (errno.EBUSY,errno.EAGAIN) else
+                "tpm_device_unsupported" if code in (errno.ENODEV,errno.ENXIO,errno.EOPNOTSUPP) else
+                "tpm_device_io" if code==errno.EIO else "tpm_device_unverified")
+        raise FixtureSignFailure(reason) from None
+    try:
+        opened=os.fstat(fd)
+        current=os.lstat(path)
+        identity=lambda s:(s.st_dev,s.st_ino,s.st_rdev)
+        if not stat.S_ISCHR(opened.st_mode) or not stat.S_ISCHR(current.st_mode) or \
+                identity(before)!=identity(opened) or identity(opened)!=identity(current):
+            raise FixtureSignFailure("tpm_device_identity_changed")
+    except OSError:
         raise FixtureSignFailure("tpm_device_unverified") from None
+    finally:
+        os.close(fd)
 
 def real_sign(tpm_handle=None):
     sys.dont_write_bytecode=True
