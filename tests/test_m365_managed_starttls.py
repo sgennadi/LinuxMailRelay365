@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+from contextlib import nullcontext
 import unittest
 from unittest.mock import Mock, patch
 
@@ -81,4 +82,48 @@ class ManagedStartTlsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_probe()
         self.tls.context.assert_not_called()
+        self.tls.inspect.assert_not_called()
+
+
+class CandidateStartTlsTests(unittest.TestCase):
+    # Reuse the setup without invoking a real SMTP server.
+    def candidate_probe(self):
+        with patch.object(M.os, "geteuid", return_value=0):
+            return M.inspect_candidate(MX, GEN, "relay.example.org", self.tls, self.review,
+                                       self.validator, lambda _: nullcontext())
+
+    def setUp(self):
+        ManagedStartTlsTests.setUp(self)
+        self.review.active_generation.return_value = None
+        self.validator = Mock(return_value={"status": "local_checks_passed"})
+
+    def test_inactive_candidate_no_activation_or_presentation_claim(self):
+        result = self.candidate_probe()
+        self.assertEqual(result["client_identity_mode"], "inactive_candidate")
+        self.assertEqual(result["client_generation"], GEN)
+        self.assertEqual(result["certificate_domain"], "relay.example.org")
+        self.assertTrue(result["active_generation_unchanged"])
+        for flag in ("activation_attempted", "postfix_modified", "mail_sent", "client_certificate_presentation_verified", "exchange_connector_verified"):
+            self.assertFalse(result[flag])
+        self.assertEqual(self.review.verify_files.call_count, 3)
+        self.validator.assert_called_once()
+        self.tls.inspect.assert_called_once()
+
+    def test_ineligible_candidate_never_connects(self):
+        self.validator.return_value = {"status": "refused"}
+        with self.assertRaises(ValueError):
+            self.candidate_probe()
+        self.tls.context.assert_not_called()
+        self.tls.inspect.assert_not_called()
+
+    def test_active_candidate_rejected(self):
+        self.review.active_generation.return_value = GEN
+        with self.assertRaises(ValueError):
+            self.candidate_probe()
+        self.tls.inspect.assert_not_called()
+
+    def test_active_pointer_drift_refuses_network(self):
+        self.review.active_generation.side_effect = [None, "candidate-"+"b"*64]
+        with self.assertRaises(ValueError):
+            self.candidate_probe()
         self.tls.inspect.assert_not_called()

@@ -81,6 +81,54 @@ def inspect(mx, tls=None, review=None, pf=None):
     return report
 
 
+def inspect_candidate(mx, candidate, domain, tls=None, review=None, validator=None, lock=None):
+    """Test an inactive, validated candidate; never alter the active pointer or Postfix."""
+    if os.geteuid() != 0:
+        raise ValueError("root required")
+    tls = tls or load("inspect-m365-starttls")
+    tls.validate(mx)
+    if (not isinstance(candidate, str) or not re.fullmatch(r"candidate-[a-f0-9]{64}", candidate)
+            or not isinstance(domain, str) or len(domain) > 253 or "." not in domain
+            or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part)
+                       for part in domain.split("."))):
+        raise ValueError("invalid candidate or certificate identity")
+    review = review or load("review-smtp-tls-rotation")
+    lock = lock or load("smtp-tls-transaction").deployment_lock
+    review.directory(review.ROOT, True)
+    with lock(review.ROOT):
+        active = review.active_generation()
+        if active == candidate:
+            raise ValueError("use active managed certificate diagnosis")
+        review.verify_files(candidate)
+        if validator is None:
+            checker = load("check-smtp-relay-certificate")
+            validator = lambda: load("smtp-tls-validate-generation").validate(
+                review.ROOT, candidate, domain, "auto", load("smtp-tls-generation"), checker)
+        if validator().get("status") != "local_checks_passed":
+            raise ValueError("candidate TLS validation refused")
+        path = review.ROOT / candidate
+        full = review.read_file(path / "fullchain.pem", 3 * 1024 * 1024, True)
+        leaf = re.search(rb"-----BEGIN CERTIFICATE-----[\\s\\S]*?-----END CERTIFICATE-----", full)
+        if leaf is None:
+            raise ValueError("certificate unavailable")
+        fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(leaf.group().decode("ascii"))).hexdigest()
+        ctx = tls.context()
+        ctx.load_cert_chain(str(path / "fullchain.pem"), str(path / "key.pem"), password=password_refused)
+        def guard():
+            review.verify_files(candidate)
+            if review.active_generation() != active:
+                raise ValueError("active generation changed during candidate probe")
+        guard()
+        report = tls.inspect(mx, context_fn=lambda: ctx)
+        guard()
+        report.update(client_certificate_loaded=True, client_certificate_sha256=fingerprint,
+                      client_generation=candidate, certificate_domain=domain,
+                      client_identity_mode="inactive_candidate", active_generation_unchanged=True,
+                      client_certificate_presentation_verified=False, postfix_modified=False,
+                      activation_attempted=False)
+        return report
+
+
 def main():
     tls = load("inspect-m365-starttls")
     try:
@@ -90,9 +138,15 @@ def main():
         if len(raw) > 1024:
             raise ValueError("request too large")
         request = json.loads(raw)
-        if not isinstance(request, dict) or set(request) != {"mx"}:
+        if not isinstance(request, dict):
             raise ValueError("invalid request")
-        print(json.dumps(inspect(request["mx"], tls=tls)))
+        if set(request) == {"mx"}:
+            report = inspect(request["mx"], tls=tls)
+        elif set(request) == {"mx", "candidate", "domain", "confirm"} and request["confirm"] == "TEST_STAGED_CLIENT_CERTIFICATE":
+            report = inspect_candidate(request["mx"], request["candidate"], request["domain"], tls=tls)
+        else:
+            raise ValueError("invalid request")
+        print(json.dumps(report))
         return 0
     except Exception:
         print(json.dumps({"status": "refused_or_uncertain", "mail_sent": False,
