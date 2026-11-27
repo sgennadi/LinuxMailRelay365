@@ -410,7 +410,7 @@ class OfflineGuiContracts(unittest.TestCase):
             "internal static string BuildPrimaryMailboxRoutePreviewBundle",1)[0]
         project=(src/"LinuxMailRelay365.csproj").read_text()
         for file in ("manage-primary-mailbox-offline.py","primary-mailbox-transaction.py",
-                     "primary-mailbox-runtime.py","preview-primary-mailbox-route.py",
+                     "primary-mailbox-runtime.py","preview-primary-mailbox-route.py","smtp-tls-postfix.py",
                      "manage-primary-oauth-rotation.py","m365_xoauth2_transport.py",
                      "m365_hardware_signer.py","export-hardware-oauth-cert.py",
                      "manage-conditional-postfix-offline.py","inspect-conditional-postfix-activation.py",
@@ -430,6 +430,15 @@ class OfflineGuiContracts(unittest.TestCase):
         self.assertIn('LinuxAsync("apply",identity,plan.Sha,PrimaryMailboxOfflineClient.Apply,PrimaryMailboxOfflineClient.Auth)',ui)
         self.assertIn('LinuxAsync("inspect-backup",null,sha,null)',ui)
         self.assertIn('LinuxAsync("verify-applied",identity,sha,PrimaryMailboxOfflineClient.Auth)',ui)
+        self.assertIn('LinuxAsync("start",identity,evidence.Sha,PrimaryMailboxOfflineClient.Start,PrimaryMailboxOfflineClient.Auth)',ui)
+        self.assertIn('bool ready=!busy && !startAttempted && maintenance.Checked',ui)
+        self.assertIn('start.Enabled=verifyApplied.Enabled && verifiedApplied is not null',ui)
+        self.assertIn('result.RuntimeSha!=evidence.RuntimeSha',ui)
+        start_handler=ui.split("start.Click+=",1)[1].split("restore.Click+=",1)[0]
+        self.assertLess(start_handler.index("startAttempted=true"),start_handler.index('LinuxAsync("start"'))
+        self.assertIn("mutationAttempted=true",start_handler)
+        self.assertNotIn('LinuxAsync("restore"',start_handler)
+        self.assertIn("Postfix MAY be running",ui)
         self.assertIn('inspectedPhase=="after" && target',ui)
         self.assertIn('LinuxAsync("restore",null,sha,PrimaryMailboxOfflineClient.Restore)',ui)
         self.assertIn('inspectedPhase is "after" or "pipe_only"',ui)

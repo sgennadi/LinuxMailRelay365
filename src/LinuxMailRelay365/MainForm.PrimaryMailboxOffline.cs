@@ -69,17 +69,20 @@ internal sealed partial class MainForm
         var apply=new Button { Text="Backup / Apply",AutoSize=true };
         var inspect=new Button { Text="Inspect backup",AutoSize=true };
         var verifyApplied=new Button { Text="Reverify applied + AUTH",AutoSize=true };
+        var start=new Button { Text="Check / Start Postfix",AutoSize=true };
         var restore=new Button { Text="Restore",AutoSize=true };
         var copy=new Button { Text="Copy SHA",AutoSize=true };
         var close=new Button { Text="Close",AutoSize=true,DialogResult=DialogResult.Cancel };
         var actions=new FlowLayoutPanel { Dock=DockStyle.Fill,AutoSize=true,WrapContents=true };
-        actions.Controls.AddRange([review,apply,inspect,verifyApplied,restore,copy,close]);
-        bool busy=false, mutationAttempted=false;
+        actions.Controls.AddRange([review,apply,inspect,verifyApplied,start,restore,copy,close]);
+        bool busy=false, mutationAttempted=false, startAttempted=false;
         PrimaryMailboxOfflineReceipt? approved=null;
         string? inspectedSha=null, inspectedPhase=null;
-        (string Mailbox,Guid Tenant,Guid Client)? approvedIdentity=null;
-        void ClearReview() { approved=null;approvedIdentity=null; }
-        void ClearInspection() { inspectedSha=inspectedPhase=null; }
+        (string Mailbox,Guid Tenant,Guid Client)? approvedIdentity=null, verifiedIdentity=null;
+        PrimaryMailboxOfflineReceipt? verifiedApplied=null;
+        void ClearVerified() { verifiedApplied=null;verifiedIdentity=null; }
+        void ClearReview() { approved=null;approvedIdentity=null;ClearVerified(); }
+        void ClearInspection() { inspectedSha=inspectedPhase=null;ClearVerified(); }
         bool TryTarget(out (string Mailbox,Guid Tenant,Guid Client) value)
         {
             value=default;
@@ -95,7 +98,7 @@ internal sealed partial class MainForm
         }
         void Update()
         {
-            bool ready=!busy && maintenance.Checked, target=TryTarget(out var identity);
+            bool ready=!busy && !startAttempted && maintenance.Checked, target=TryTarget(out var identity);
             review.Enabled=ready && target && !mutationAttempted;
             apply.Enabled=review.Enabled && approved is not null && approvedIdentity==identity &&
                 recovery.Text.Trim()==approved.Sha;
@@ -104,13 +107,18 @@ internal sealed partial class MainForm
                 inspectedPhase is "after" or "pipe_only";
             verifyApplied.Enabled=inspect.Enabled && inspectedSha==recovery.Text.Trim() &&
                 inspectedPhase=="after" && target;
-            sender.Enabled=tenantInput.Enabled=appInput.Enabled=!busy && !mutationAttempted;
-            recovery.Enabled=maintenance.Enabled=close.Enabled=!busy;
+            start.Enabled=verifyApplied.Enabled && verifiedApplied is not null &&
+                verifiedApplied.Sha==recovery.Text.Trim() && verifiedIdentity==identity &&
+                PrimaryMailboxOfflineClient.IsSha(verifiedApplied.RuntimeSha);
+            sender.Enabled=tenantInput.Enabled=appInput.Enabled=!busy && !mutationAttempted && !startAttempted;
+            recovery.Enabled=maintenance.Enabled=!busy && !startAttempted;
+            recovery.ReadOnly=startAttempted;
+            close.Enabled=!busy;
             copy.Enabled=!busy && PrimaryMailboxOfflineClient.IsSha(recovery.Text.Trim());
         }
         async Task RunAsync(string message,Func<Task> work)
         {
-            if(busy || !maintenance.Checked) return;
+            if(busy || startAttempted || !maintenance.Checked) return;
             busy=true;Update();
             status.ForeColor=SystemColors.ControlText;status.Text=message;
             try { Guard();await work();Guard(); }
@@ -118,9 +126,27 @@ internal sealed partial class MainForm
             {
                 ClearReview();ClearInspection();
                 status.ForeColor=Color.DarkOrange;
-                status.Text="Refused or uncertain ("+ex.GetType().Name+"). Keep Postfix stopped. Retain SHA and inspect recovery before retrying.";
+                if(startAttempted)
+                {
+                    status.Text="Start outcome unverified. Postfix MAY be running. Do not retry or restore automatically.";
+                    report.Text="Recovery SHA-256: "+recovery.Text.Trim()+Environment.NewLine+
+                        "SSH or startup result unverified ("+ex.GetType().Name+"). Keep submissions blocked. "+
+                        "Check actual service and queue state on the host. No automatic stop or rollback. "+
+                        "Close and rediscover before any further operation.";
+                }
+                else
+                    status.Text="Refused or uncertain ("+ex.GetType().Name+"). Keep Postfix stopped. Retain SHA and inspect recovery before retrying.";
             }
-            finally { busy=false;Update(); }
+            finally
+            {
+                if(startAttempted)
+                {
+                    maintenance.Checked=false;
+                    maintenance.Text="Startup attempted. Offline operations locked; retain the SHA and rediscover.";
+                    WrapMaintenance();
+                }
+                busy=false;Update();
+            }
         }
         async Task<PrimaryMailboxOfflineReceipt> LinuxAsync(string action,
             (string Mailbox,Guid Tenant,Guid Client)? target,string? sha,string? approval,string? authApproval=null)
@@ -218,6 +244,7 @@ internal sealed partial class MainForm
         {
             if(!verifyApplied.Enabled || inspectedSha is not { } sha || inspectedPhase!="after" ||
                 recovery.Text.Trim()!=sha || !TryTarget(out var identity)) return;
+            ClearVerified();Update();
             if(!ConfirmDestructive("Reverify applied primary mailbox",
                 TargetDescription(identity)+Environment.NewLine+"Recovery SHA-256: "+sha+Environment.NewLine+
                 "Recheck the exact applied configuration and original installed runtime, with fresh SMTP AUTH. "+
@@ -229,11 +256,49 @@ internal sealed partial class MainForm
                     !TryTarget(out var current) || current!=identity)
                     throw new InvalidOperationException("Verification context changed.");
                 var result=await LinuxAsync("verify-applied",identity,sha,PrimaryMailboxOfflineClient.Auth);
+                verifiedApplied=result;verifiedIdentity=identity;
                 report.Text=TargetDescription(identity)+Environment.NewLine+"Recovery SHA-256: "+sha+
                     Environment.NewLine+"Runtime SHA-256: "+result.RuntimeSha+
                     Environment.NewLine+"Applied pair, native snapshot and original runtime reverified. Fresh no-mail SMTP AUTH observed."+
-                    Environment.NewLine+"Postfix remains stopped. This is not service-start approval or delivery acceptance.";
+                    Environment.NewLine+"Postfix remains stopped. Check / Start requires separate approval; delivery remains unverified.";
                 status.Text="Applied route reverified offline; service start and delivery not tested.";
+                status.ForeColor=Color.SeaGreen;
+            });
+        };
+        start.Click+=async (_,_) =>
+        {
+            if(!start.Enabled || verifiedApplied is not { } evidence || !TryTarget(out var identity) ||
+                verifiedIdentity!=identity || inspectedPhase!="after" || inspectedSha!=evidence.Sha ||
+                recovery.Text.Trim()!=evidence.Sha) return;
+            if(!ConfirmDestructive("Check and start primary Postfix",
+                TargetDescription(identity)+Environment.NewLine+"Recovery SHA-256: "+evidence.Sha+Environment.NewLine+
+                "Keep all external and local submissions blocked. This repeats fresh SMTP AUTH and "+
+                "runs native postfix check (may repair metadata), then starts postfix.service. "+
+                "Existing listeners may become active. Queue activity and delivery are not verified. "+
+                "A timeout may leave the service running; no automatic stop or rollback will be attempted. "+
+                "Use only on a controlled test host until acceptance is complete.",
+                PrimaryMailboxOfflineClient.Start,dialog)) return;
+            await RunAsync("Rechecking the reviewed route, native Postfix check and controlled startup...",async () =>
+            {
+                if(verifiedApplied!=evidence || verifiedIdentity!=identity || !TryTarget(out var current) ||
+                    current!=identity || recovery.Text.Trim()!=evidence.Sha || inspectedPhase!="after" ||
+                    inspectedSha!=evidence.Sha) throw new InvalidOperationException("Startup approval changed.");
+                Guard();
+                // Mark before SSH: a lost response cannot prove the service did not start.
+                startAttempted=true;
+                mutationAttempted=true;
+                ClearReview();ClearInspection();Update();
+                WriteLine("Primary mailbox controlled Start requested. Recovery SHA-256: "+evidence.Sha+
+                    ". Service and queue state must be checked after any uncertainty.");
+                var result=await LinuxAsync("start",identity,evidence.Sha,PrimaryMailboxOfflineClient.Start,PrimaryMailboxOfflineClient.Auth);
+                if(result.RuntimeSha!=evidence.RuntimeSha)
+                    throw new InvalidDataException("Startup runtime receipt differs from the verified runtime.");
+                report.Text=TargetDescription(identity)+Environment.NewLine+"Recovery SHA-256: "+result.Sha+
+                    Environment.NewLine+"Runtime SHA-256: "+result.RuntimeSha+
+                    Environment.NewLine+"Native check, active service and applied configuration observed."+
+                    Environment.NewLine+"No delivery test; external submissions and queue activity not verified."+
+                    Environment.NewLine+"Close and rediscover. Offline operations remain locked.";
+                status.Text="Postfix running observed; actual mail delivery not verified.";
                 status.ForeColor=Color.SeaGreen;
             });
         };
