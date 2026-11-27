@@ -7,7 +7,7 @@ namespace LinuxMailRelay365;
 
 internal sealed class SmtpTlsRotationDialog : Form
 {
-    internal SmtpTlsRotationDialog(Func<string, string?, string?, string?, Task<string>> remote, string dnsName)
+    internal SmtpTlsRotationDialog(Func<string, string?, string?, string?, Task<string>> remote, string dnsName, string acceptedDomain = "", string configuredMx = "")
     {
         Text = "SMTP TLS | Reviewed deployment";
         StartPosition = FormStartPosition.CenterParent;
@@ -15,13 +15,22 @@ internal sealed class SmtpTlsRotationDialog : Form
         ClientSize = new Size(820, 600);
         MinimumSize = new Size(500, 350);
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1,
-            RowCount = 9, Padding = new Padding(12) };
+            RowCount = 10, Padding = new Padding(12) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 7; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 8; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var domain = new TextBox { Text = dnsName, Dock = DockStyle.Top };
-        var mx = new TextBox { Dock = DockStyle.Top, PlaceholderText = "tenant.mail.protection.outlook.com", MaxLength = 253 };
+        var mx = new TextBox { Text = configuredMx, Dock = DockStyle.Fill, PlaceholderText = "tenant.mail.protection.outlook.com", MaxLength = 253 };
+        string senderDomain = acceptedDomain.Trim().ToLowerInvariant();
+        var discoverMx = new Button { Text = "Discover MX", AutoSize = true };
+        var mxStatus = new Label { AutoSize = true, Dock = DockStyle.Top,
+            Text = "Accepted domain: " + (senderDomain.Length == 0 ? "not selected" : senderDomain) };
+        var mxRow = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
+        mxRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        mxRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        mxRow.Controls.Add(mx, 0, 0);
+        mxRow.Controls.Add(discoverMx, 1, 0);
         var candidates = new ComboBox { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList };
         var status = new Label { Text = "Select a staged generation.", AutoSize = true, Dock = DockStyle.Top };
         var report = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, Multiline = true,
@@ -51,7 +60,7 @@ internal sealed class SmtpTlsRotationDialog : Form
         void SetBusy(bool value)
         {
             busy = value;
-            mx.Enabled = candidateTls.Enabled = domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = recovery.Enabled = selinux.Enabled = avc.Enabled = close.Enabled = !value;
+            discoverMx.Enabled = mx.Enabled = candidateTls.Enabled = domain.Enabled = candidates.Enabled = refresh.Enabled = preview.Enabled = recovery.Enabled = selinux.Enabled = avc.Enabled = close.Enabled = !value;
             activate.Enabled = !value && approvedSha is not null;
         }
         FormClosing += (_, e) => { if (busy) e.Cancel = true; };
@@ -82,7 +91,84 @@ internal sealed class SmtpTlsRotationDialog : Form
             finally { SetBusy(false); }
         }
         refresh.Click += async (_, _) => await RefreshAsync();
-        Shown += async (_, _) => await RefreshAsync();
+        async Task DiscoverMxAsync()
+        {
+            if (busy || Uri.CheckHostName(senderDomain) != UriHostNameType.Dns || !senderDomain.Contains('.')) return;
+            Invalidate();
+            SetBusy(true);
+            mxStatus.ForeColor = SystemColors.ControlText;
+            mxStatus.Text = "Checking public MX for " + senderDomain + " via 1.1.1.1...";
+            try
+            {
+                using var json = JsonDocument.Parse(await remote("mx-discovery", null, senderDomain, null));
+                var root = json.RootElement;
+                if (root.GetProperty("version").GetInt32() != 1 ||
+                    root.GetProperty("domain").GetString() != senderDomain ||
+                    root.GetProperty("resolver").GetString() != "1.1.1.1")
+                    throw new InvalidDataException("Unexpected MX discovery identity.");
+                foreach (string flag in new[] { "tenant_verified", "postfix_modified", "mail_sent" })
+                    if (root.GetProperty(flag).GetBoolean()) throw new InvalidDataException("Unexpected MX claim.");
+                string? state = root.GetProperty("status").GetString();
+                if (state is not ("direct_m365" or "mixed_or_gateway" or "multiple_preferred" or "no_mx" or "null_mx" or "nxdomain" or "dns_unverified" or "dig_missing"))
+                    throw new InvalidDataException("Unexpected MX status.");
+                var records = root.GetProperty("records");
+                if (records.GetArrayLength() > 32) throw new InvalidDataException("Too many MX records.");
+                var rows = new List<(int Preference, string Host, bool Eop)>();
+                foreach (var row in records.EnumerateArray())
+                {
+                    int preference = row.GetProperty("preference").GetInt32();
+                    string host = row.GetProperty("host").GetString() ?? "";
+                    bool eop = row.GetProperty("microsoft365").GetBoolean();
+                    if (preference is < 0 or > 65535 || host.Length > 253 ||
+                        !Regex.IsMatch(host, @"\A[a-z0-9.-]+\z") || Uri.CheckHostName(host) != UriHostNameType.Dns ||
+                        eop != host.EndsWith(".mail.protection.outlook.com", StringComparison.Ordinal))
+                        throw new InvalidDataException("Invalid MX record.");
+                    rows.Add((preference, host, eop));
+                }
+                if (rows.Distinct().Count() != rows.Count) throw new InvalidDataException("Duplicate MX record.");
+                string? recommendation = root.GetProperty("recommended_mx").GetString();
+                var best = rows.OrderBy(x => x.Preference).ToArray();
+                bool direct = best.Length > 0 && best.All(x => x.Eop) &&
+                    (best.Length == 1 || best[0].Preference < best[1].Preference);
+                if ((state == "direct_m365") != direct ||
+                    (direct ? recommendation != best[0].Host : recommendation is not null))
+                    throw new InvalidDataException("Inconsistent MX recommendation.");
+                string existing = mx.Text.Trim();
+                if (recommendation is not null && existing.Length == 0)
+                    mx.Text = recommendation;
+                bool matches = recommendation is not null && string.Equals(mx.Text.Trim(), recommendation, StringComparison.OrdinalIgnoreCase);
+                mxStatus.ForeColor = matches ? Color.SeaGreen : Color.DarkOrange;
+                mxStatus.Text = matches ? "Public MX observed: " + recommendation :
+                    recommendation is not null ? "Public MX differs from entered MX; existing value preserved." :
+                    "No unique direct Microsoft 365 MX: " + state + ". Enter the exact tenant MX manually.";
+                report.Text = "Accepted domain: " + senderDomain + Environment.NewLine +
+                    "Public resolver: 1.1.1.1" + Environment.NewLine +
+                    "Discovery: " + state + Environment.NewLine +
+                    string.Join(Environment.NewLine, best.Select(r => r.Preference + "  " + r.Host +
+                        (r.Eop ? "  [Microsoft 365 suffix]" : "  [other MX]"))) + Environment.NewLine +
+                    "Suggested MX: " + (recommendation ?? "none") + Environment.NewLine +
+                    "Current MX: " + mx.Text + Environment.NewLine +
+                    "Public DNS is not tenant ownership or connector verification. Existing route is not changed.";
+            }
+            catch (Exception ex)
+            {
+                mxStatus.ForeColor = Color.DarkOrange;
+                mxStatus.Text = "MX discovery unavailable: " + ex.GetType().Name + ". Existing value preserved.";
+            }
+            finally { SetBusy(false); }
+        }
+        discoverMx.Click += async (_, _) => await DiscoverMxAsync();
+        Shown += async (_, _) =>
+        {
+            await RefreshAsync();
+            if (Uri.CheckHostName(senderDomain) == UriHostNameType.Dns && senderDomain.Contains('.'))
+                await DiscoverMxAsync();
+        };
+        mx.TextChanged += (_, _) =>
+        {
+            mxStatus.ForeColor = SystemColors.ControlText;
+            mxStatus.Text = "MX entered; confirm the intended tenant before testing.";
+        };
         preview.Click += async (_, _) =>
         {
             if (busy) return;
@@ -441,10 +527,11 @@ internal sealed class SmtpTlsRotationDialog : Form
         layout.Controls.Add(new Label { Text = "Certificate DNS name", AutoSize = true }, 0, 2);
         layout.Controls.Add(domain, 0, 3);
         layout.Controls.Add(new Label { Text = "Microsoft 365 MX (for staged STARTTLS test)", AutoSize = true }, 0, 4);
-        layout.Controls.Add(mx, 0, 5);
-        layout.Controls.Add(status, 0, 6);
-        layout.Controls.Add(report, 0, 7);
-        layout.Controls.Add(buttons, 0, 8);
+        layout.Controls.Add(mxRow, 0, 5);
+        layout.Controls.Add(mxStatus, 0, 6);
+        layout.Controls.Add(status, 0, 7);
+        layout.Controls.Add(report, 0, 8);
+        layout.Controls.Add(buttons, 0, 9);
         Controls.Add(layout);
         CancelButton = close;
     }

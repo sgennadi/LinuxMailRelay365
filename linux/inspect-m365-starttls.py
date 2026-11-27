@@ -9,6 +9,7 @@ import signal
 import smtplib
 import socket
 import ssl
+import subprocess
 import sys
 
 MX = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
@@ -202,6 +203,72 @@ def alarm_handler(*_):
     raise DeadlineExceeded("diagnostic deadline")
 
 
+def public_mx(domain, runner=subprocess.run):
+    """Observe public MX records, without assuming domain-to-EOP name conversion."""
+    if not isinstance(domain, str) or len(domain) > 253 or not MX.fullmatch(domain):
+        raise ValueError("invalid accepted domain")
+    report = dict(version=1, status="dns_unverified", domain=domain, resolver="1.1.1.1",
+                  records=[], recommended_mx=None, tenant_verified=False,
+                  postfix_modified=False, mail_sent=False)
+    try:
+        reply = runner(["/usr/bin/dig", "-r", "@1.1.1.1", domain+".", "MX",
+                        "+time=3", "+tries=1", "+noall", "+comments", "+answer"],
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8,
+                       env={"PATH":"/usr/bin:/bin", "LC_ALL":"C"})
+        if reply.returncode or len(reply.stdout) > 65536:
+            return report
+        text = reply.stdout.decode("ascii", "strict")
+        statuses = re.findall(r"\bstatus:\s*([A-Z]+),", text)
+        if len(statuses) != 1 or statuses[0] not in ("NOERROR","NXDOMAIN"):
+            return report
+        if any("tc" in line.split(";",1)[0].split() for line in
+               (x[len(";; flags:"):].strip() for x in text.splitlines()
+                if x.startswith(";; flags:"))):
+            return report
+        records = set()
+        for line in text.splitlines():
+            if not line.strip() or line.startswith(";"):
+                continue
+            fields = line.split()
+            if (len(fields) != 6 or fields[0].lower() != domain+"." or not fields[1].isdigit()
+                    or fields[2:4] != ["IN","MX"] or not re.fullmatch(r"[0-9]{1,5}", fields[4])):
+                return report
+            preference = int(fields[4])
+            host = fields[5].lower()
+            if preference > 65535 or (host != "." and
+                    (not host.endswith(".") or len(host) > 254 or not MX.fullmatch(host[:-1]))):
+                return report
+            records.add((preference, host.rstrip(".") or "."))
+            if len(records) > 32:
+                return report
+        if statuses[0] == "NXDOMAIN":
+            if not records:
+                report["status"] = "nxdomain"
+            return report
+        if not records:
+            report["status"] = "no_mx"
+            return report
+        if any(host == "." for _, host in records):
+            if records == {(0, ".")}:
+                report["status"] = "null_mx"
+            return report
+        rows = [dict(preference=p, host=h, microsoft365=h.endswith(".mail.protection.outlook.com"))
+                for p,h in sorted(records)]
+        report["records"] = rows
+        best = [r for r in rows if r["preference"] == rows[0]["preference"]]
+        if not all(r["microsoft365"] for r in rows):
+            report["status"] = "mixed_or_gateway"
+        elif len(best) != 1:
+            report["status"] = "multiple_preferred"
+        else:
+            report.update(status="direct_m365", recommended_mx=best[0]["host"])
+    except FileNotFoundError:
+        report["status"] = "dig_missing"
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return report
+
+
 def main():
     try:
         signal.signal(signal.SIGALRM, alarm_handler)
@@ -210,9 +277,15 @@ def main():
         if len(raw) > 1024:
             raise ValueError("request too large")
         request = json.loads(raw)
-        if not isinstance(request, dict) or set(request) != {"mx"}:
+        if not isinstance(request, dict):
             raise ValueError("invalid request")
-        print(json.dumps(inspect(request["mx"])))
+        if set(request) == {"mx"}:
+            report = inspect(request["mx"])
+        elif set(request) == {"accepted_domain"}:
+            report = public_mx(request["accepted_domain"])
+        else:
+            raise ValueError("invalid request")
+        print(json.dumps(report))
         return 0
     except (ValueError, OSError, DeadlineExceeded):
         print(json.dumps({"status": "refused_or_timeout", "mail_sent": False}))

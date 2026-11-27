@@ -101,3 +101,59 @@ class StartTlsDiagnosisTests(unittest.TestCase):
             for key in keys:
                 self.assertNotIn(key, os.environ)
             self.assertTrue(ctx.check_hostname)
+
+
+class PublicMxTests(unittest.TestCase):
+    def answer(self, records="", status="NOERROR"):
+        runner = Mock(return_value=Mock(returncode=0, stdout=(
+            ";; ->>HEADER<<- opcode: QUERY, status: "+status+", id: 42\n"
+            ";; flags: qr rd ra; QUERY: 1, ANSWER: 1\n"+records).encode()))
+        result = M.public_mx("example.org", runner)
+        self.assertFalse(result["tenant_verified"])
+        self.assertFalse(result["postfix_modified"])
+        self.assertFalse(result["mail_sent"])
+        return result
+
+    def test_unique_preferred_direct_mx(self):
+        result = self.answer("example.org. 300 IN MX 20 backup.mail.protection.outlook.com.\n"
+                             "example.org. 300 IN MX 10 primary.mail.protection.outlook.com.\n")
+        self.assertEqual(result["status"], "direct_m365")
+        self.assertEqual(result["recommended_mx"], "primary.mail.protection.outlook.com")
+
+    def test_gateway_mixed_and_tied_no_guess(self):
+        for records, status in (
+            ("example.org. 300 IN MX 1 gateway.example.net.\n", "mixed_or_gateway"),
+            ("example.org. 300 IN MX 1 primary.mail.protection.outlook.com.\n"
+             "example.org. 300 IN MX 10 gateway.example.net.\n", "mixed_or_gateway"),
+            ("example.org. 300 IN MX 1 a.mail.protection.outlook.com.\n"
+             "example.org. 300 IN MX 1 b.mail.protection.outlook.com.\n", "multiple_preferred"),
+            ("example.org. 300 IN MX 0 .\n", "null_mx"),
+            ("example.org. 300 IN CNAME elsewhere.example.net.\n", "dns_unverified"),
+            ("other.example.org. 300 IN MX 0 a.mail.protection.outlook.com.\n", "dns_unverified"),
+            ("example.org. 300 IN MX 65536 a.mail.protection.outlook.com.\n", "dns_unverified"),
+            ("example.org. 300 IN MX 0 a.mail.protection.outlook.com.evil.net.\n", "mixed_or_gateway"),
+            ("", "no_mx")):
+            with self.subTest(status=status, records=records):
+                result = self.answer(records)
+                self.assertEqual(result["status"], status)
+                self.assertIsNone(result["recommended_mx"])
+
+    def test_nxdomain_and_missing_dig(self):
+        self.assertEqual(self.answer(status="NXDOMAIN")["status"], "nxdomain")
+        result = M.public_mx("example.org", Mock(side_effect=FileNotFoundError()))
+        self.assertEqual(result["status"], "dig_missing")
+        self.assertIsNone(result["recommended_mx"])
+
+    def test_invalid_domain_never_queries(self):
+        runner = Mock()
+        with self.assertRaises(ValueError):
+            M.public_mx("@evil.example.org", runner)
+        runner.assert_not_called()
+
+    def test_gui_wiring_preserves_configured_mx(self):
+        src = ROOT / "src/LinuxMailRelay365"
+        self.assertIn("BuildM365MxDiscovery", (src/"EmbeddedAssets.cs").read_text())
+        self.assertIn('action == "mx-discovery"', (src/"MainForm.DeliveryMiniWizard.cs").read_text())
+        ui = (src/"SmtpTlsRotationDialog.cs").read_text()
+        self.assertIn("existing.Length == 0", ui)
+        self.assertIn("Existing value preserved", ui)

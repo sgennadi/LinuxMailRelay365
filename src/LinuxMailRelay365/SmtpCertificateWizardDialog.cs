@@ -12,7 +12,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
     internal SmtpConnectorIdentity Identity => (SmtpConnectorIdentity)identity.SelectedIndex;
     internal SmtpCertificateSource Source => (SmtpCertificateSource)source.SelectedIndex;
 
-    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form> deliveryProbe)
+    internal SmtpCertificateWizardDialog(Func<Task<string>> discover, Func<string, string, string, string, Task<string>> validate, Func<System.Security.Cryptography.X509Certificates.X509Certificate2, System.Security.Cryptography.X509Certificates.X509Certificate2Collection, string, Task<string>> transfer, Func<string, Task<string>> inspectAcme, Func<string, string, Task<string>> discoverAcmeProvider, Func<string, string, Task<string>> reviewAcmeIssuance, string acceptedDomain, Func<Task<string>> inspectRenewal, Func<string?, Task<string>> dryRun, Func<string, string?, string?, string?, Task<string>> rotateTls, Func<string, string?, Task<string>> systemd, Func<Form, string, Task> bindExchange, Action<Form> deliveryProbe, string configuredMx = "")
     {
         Text = "SMTP Relay Connector | Setup plan";
         StartPosition = FormStartPosition.CenterParent;
@@ -151,7 +151,7 @@ internal sealed class SmtpCertificateWizardDialog : Form
                 MessageBox.Show(this, "Select TLS certificate authentication first.");
                 return;
             }
-            using var dialog = new SmtpTlsRotationDialog(rotateTls, domain.Text.Trim());
+            using var dialog = new SmtpTlsRotationDialog(rotateTls, domain.Text.Trim(), acceptedDomain, configuredMx);
             dialog.ShowDialog(this);
         };
         layout.Controls.Add(rotate, 0, 11);

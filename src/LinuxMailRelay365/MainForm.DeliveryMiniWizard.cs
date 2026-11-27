@@ -213,6 +213,17 @@ internal sealed partial class MainForm
                 {
                     if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                     var endpoint = Endpoint();
+                    if (action == "mx-discovery")
+                    {
+                        if (candidate is not null || sha is not null || domain is null ||
+                            !string.Equals(domain, acceptedDomain.Text.Trim(), StringComparison.OrdinalIgnoreCase))
+                            throw new ArgumentException("Selected accepted domain changed.");
+                        var dnsResult = await SshRemote.ExecuteAsync(endpoint,
+                            EmbeddedAssets.BuildM365MxDiscovery(domain), "", TimeSpan.FromSeconds(30));
+                        if (dnsResult.ExitCode != 0 || TryCurrentIdentity() != context)
+                            throw new InvalidOperationException("Public MX discovery unavailable.");
+                        return dnsResult.StdOut;
+                    }
                     if (action == "avc-preview" && (candidate is not null || domain is not null || sha is not null))
                         throw new ArgumentException("Unexpected AVC review arguments.");
                     string script = action == "avc-preview" ? EmbeddedAssets.BuildSmtpTlsAvcDiagnosis() :
@@ -271,7 +282,7 @@ internal sealed partial class MainForm
                             return result.StdOut;
                         });
                     probe.ShowDialog(owner);
-                });
+                }, outboundMxHost.Text.Trim());
                 dialog.ShowDialog(this);
             };
             AddLine(page, smtp);

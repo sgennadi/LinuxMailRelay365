@@ -312,6 +312,17 @@ internal static class EmbeddedAssets
             "\"))' <<'LMR365_STARTTLS_REQUEST'\n" + payload + "\nLMR365_STARTTLS_REQUEST\n";
     }
 
+    internal static string BuildM365MxDiscovery(string acceptedDomain)
+    {
+        if (!Regex.IsMatch(acceptedDomain, @"\A[a-z0-9.-]{1,253}\z") ||
+            Uri.CheckHostName(acceptedDomain) != UriHostNameType.Dns)
+            throw new ArgumentException("Invalid accepted domain.");
+        string payload = System.Text.Json.JsonSerializer.Serialize(new { accepted_domain = acceptedDomain });
+        return "/usr/bin/python3 -I -B -c 'import base64;exec(base64.b64decode(\"" +
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux.m365-starttls-diagnosis.py"))) +
+            "\"))' <<'LMR365_MX_REQUEST'\n" + payload + "\nLMR365_MX_REQUEST\n";
+    }
+
     internal static string BuildPostfixM365DeliveryProbe(string action, string request, string? sha)
     {
         if (action is not ("preview" or "submit" or "trace") || request.Length > 4096 ||
