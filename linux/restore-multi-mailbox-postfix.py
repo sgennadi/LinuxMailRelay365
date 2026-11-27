@@ -179,9 +179,13 @@ def preview():
         "proof": file_evidence(*proof) if proof is not None else None,
         "primary": primary,
     }
+    # Always bind the installed policy for the proof's destination, even
+    # before its first publication. Acceptance excludes volatile receipt
+    # metadata, but must retain a stable policy digest across that publication.
+    # Restore still binds the actual receipt presence and bytes above.
     policy=install.policy_snapshot(install.route_policy_targets()+
         [(backup_dir,True),(backup_dir/"main.cf",False),(backup_dir/"master.cf",False),
-         (backup_dir/"manifest.json",False)]+([(PROOF,False)] if proof is not None else []))
+         (backup_dir/"manifest.json",False),(PROOF,False)])
     review.update(install.policy_evidence(policy))
     install.require_policy(policy)
     reviewed_sha = install.digest(json.dumps(
