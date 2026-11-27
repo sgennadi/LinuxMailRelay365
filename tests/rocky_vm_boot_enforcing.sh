@@ -15,6 +15,12 @@ cleanup() {
       sudo kill "$pid" 2>/dev/null || true
     fi
   fi
+  if test -f "$work/tpm.pid"; then
+    pid="$(cat "$work/tpm.pid" || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  fi
   if test "$result" -ne 0 && test -f "$work/console.log"; then
     echo "LMR365_GUEST_SERIAL_TAIL_BEGIN"
     sudo tail -n 55 "$work/console.log" || true
@@ -84,8 +90,21 @@ local-hostname: rocky-selinux-ci.example.invalid
 EOF
 cloud-localds "$work/seed.iso" "$work/user-data" "$work/meta-data"
 qemu-img create -q -f qcow2 -F qcow2 -b "$work/$image" "$work/overlay.qcow2" 16G
+tpm_args=()
+if test "${LMR365_KVM_VTPM_ACCEPTANCE:-false}" = "true"; then
+  # New, private simulator state; never attach the runner's physical TPM.
+  sudo apt-get install -y -qq swtpm >/dev/null
+  install -d -m 0700 "$work/tpm-state"
+  swtpm socket --tpm2 --tpmstate dir="$work/tpm-state" \
+    --ctrl type=unixio,path="$work/tpm.sock" --pid file="$work/tpm.pid" --daemon
+  test -S "$work/tpm.sock" && test -s "$work/tpm.pid"
+  tpm_args=(-chardev "socket,id=lmr-tpm,path=$work/tpm.sock"
+            -tpmdev emulator,id=lmr-tpm-dev,chardev=lmr-tpm
+            -device tpm-tis,tpmdev=lmr-tpm-dev)
+  echo "LMR365_GUEST_TPM=isolated_swtpm2"
+fi
 echo "LMR365_GUEST_VM_START=kvm"
-sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m 4096 \
+sudo qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m 4096 "${tpm_args[@]}" \
   -drive "if=virtio,format=qcow2,file=$work/overlay.qcow2" \
   -drive "if=virtio,format=raw,file=$work/seed.iso,media=cdrom" \
   -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:22222-:22" \
@@ -181,6 +200,53 @@ scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
     tests/rocky_vm_postfix_enforcing.sh ci@127.0.0.1:/tmp/lmr365-postfix-smoke.sh
 ssh "${ssh_opts[@]}" ci@127.0.0.1 \
     'bash /tmp/lmr365-postfix-smoke.sh'
+
+# Independent virtual TPM acceptance. The native pipe tests remain separate.
+if test "${LMR365_KVM_VTPM_ACCEPTANCE:-false}" = "true"; then
+    scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+        -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+        linux/manage-tpm-oauth-key.py tests/rocky_vm_primary_tpm_device.py \
+        ci@127.0.0.1:/home/ci/
+    ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash -s' <<'VTPM_SETUP' | tee "$work/vtpm-receipt"
+set -Eeuo pipefail
+sudo dnf -y -q install tpm2-tools openssl policycoreutils
+provider=unavailable
+if rpm -q tpm2-openssl >/dev/null; then
+    provider=present
+else
+    # Only already configured signed distribution repositories. Do not
+    # silently introduce a third-party provider or compile unreviewed code.
+    candidates="$(dnf -q repoquery --available --qf '%{name}' tpm2-openssl)"
+    if grep -Fxq tpm2-openssl <<<"$candidates"; then
+        sudo dnf -y -q install tpm2-openssl
+        provider=present
+    fi
+fi
+sudo install -d -o root -g root -m 0755 /usr/local/libexec/lmr365-kvm-vtpm
+sudo install -o root -g root -m 0644 /home/ci/manage-tpm-oauth-key.py /home/ci/rocky_vm_primary_tpm_device.py /usr/local/libexec/lmr365-kvm-vtpm/
+sudo restorecon -R /usr/local/libexec/lmr365-kvm-vtpm
+sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-vtpm-vm
+sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-vtpm-vm"
+sudo env GITHUB_ACTIONS=true LMR365_KVM_VTPM_GUEST=true LMR365_VTPM_PROVIDER_PACKAGE="$provider" \
+    /usr/bin/python3 -B /usr/local/libexec/lmr365-kvm-vtpm/rocky_vm_primary_tpm_device.py
+VTPM_SETUP
+    for expected in \
+        'LMR365_VM_VTPM_DENIAL=refused_before_key_creation' \
+        'LMR365_VM_VTPM_OPEN=verified_exact_service_credentials' \
+        'LMR365_VM_VTPM_DEVICE=original_metadata_restored' \
+        'LMR365_VM_VTPM_PHYSICAL_HARDWARE=no' \
+        'LMR365_VM_VTPM_PIPE_DOMAIN_TESTED=no' \
+        'LMR365_VM_VTPM_CLOUD_OR_MAIL_TESTED=no'; do
+        grep -Fxq "$expected" "$work/vtpm-receipt"
+    done
+    if grep -Fxq 'LMR365_VM_VTPM_PROVIDER=native_openssl3_provider' "$work/vtpm-receipt"; then
+        grep -Fxq 'LMR365_VM_VTPM_PS256=verified_emulated_tpm_certificate' "$work/vtpm-receipt"
+        grep -Fxq 'TPM_PROVISION_SERVICE_ACCOUNT_PS256_VERIFIED=yes' "$work/vtpm-receipt"
+    else
+        grep -Fxq 'LMR365_VM_VTPM_PROVIDER=unavailable_in_configured_repos' "$work/vtpm-receipt"
+        grep -Fxq 'LMR365_VM_VTPM_PS256=not_tested' "$work/vtpm-receipt"
+    fi
+fi
 
 # Native two-file XOAUTH2 transaction with real SELinux labels. This is
 # separate from SMTP AUTH/pipe acceptance and uses a boot-bound lab marker.
