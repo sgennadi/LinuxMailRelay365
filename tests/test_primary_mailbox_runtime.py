@@ -625,6 +625,7 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
              patch.object(CLI.O,"route_lock",return_value=3) as lock, \
              patch.object(CLI.A.C,"lock",return_value=4), \
              patch.object(CLI.O.P,"open_directory",side_effect=lambda *a,**k:5), \
+             patch.object(CLI,"review_host") as review, \
              patch.object(CLI,"apply_host",return_value="b"*64) as apply, \
              patch.object(CLI,"restore_host",return_value="b"*64) as restore, \
              patch.object(CLI,"inspect_backup_host",return_value="pipe_only") as inspect, \
@@ -639,6 +640,30 @@ class OfflineReviewIntegrationTests(unittest.TestCase):
             self.assertEqual(rc,2)
             lock.assert_not_called()
             apply.assert_not_called()
+            for kind,reason,code in (
+                    (A.Refused,"unsupported_service_account_or_groups","service_account_review"),
+                    (A.Refused,"tpm_service_device_access_requires_review","tpm_device_access_review"),
+                    (A.Refused,"tpm_resource_manager_changed","tpm_device_changed"),
+                    (A.Refused,"invalid_tpm_resource_manager_fingerprint","tpm_device_metadata_review"),
+                    (CLI.O.Refused,"selinux_metadata_restore_not_implemented","selinux_offline_blocked"),
+                    (CLI.O.Refused,"extended_directory_metadata_unsupported","extended_metadata_review")):
+                review.side_effect=kind(reason)
+                rc,report=call(["--review","--confirm",A.CONFIRM]+identity)
+                self.assertEqual(rc,2)
+                self.assertIn("REVIEW_GUIDANCE="+code+"\n",report)
+                self.assertIn("POSTFIX_CHANGED=no\n",report)
+                self.assertIn("SERVICE_STARTED=no\n",report)
+                self.assertIn("MAIL_SUBMITTED=no\n",report)
+                self.assertIn("QUEUE_MODIFIED=no\n",report)
+                self.assertNotIn("SHA256=",report)
+            for error in (A.Refused("private detail\nREVIEW_GUIDANCE=tpm_device_access_review"),
+                          RuntimeError("tpm_service_device_access_requires_review"),
+                          A.Refused("unknown private detail")):
+                review.side_effect=error
+                rc,report=call(["--review","--confirm",A.CONFIRM]+identity)
+                self.assertEqual(rc,2)
+                self.assertNotIn("REVIEW_GUIDANCE=",report)
+                self.assertNotIn("private detail",report)
             rc,report=call(["--apply","--expected-sha256","b"*64,"--confirm",CLI.X.APPLY,
                             "--auth-confirmation",A.CONFIRM]+identity)
             self.assertEqual(rc,0)

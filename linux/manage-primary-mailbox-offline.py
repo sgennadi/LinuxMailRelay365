@@ -305,6 +305,23 @@ def parse_request(args):
                args.auth_confirmation is None,"invalid_review_approval")
 
 
+# Only explicit internal refusal codes are exported, never raw exceptions.
+# This is informational, review-only, and cannot authorize any action.
+REVIEW_GUIDANCE={
+    "unsupported_service_account_or_groups":"service_account_review",
+    "tpm_service_device_access_requires_review":"tpm_device_access_review",
+    "tpm_resource_manager_changed":"tpm_device_changed",
+    "invalid_tpm_resource_manager_fingerprint":"tpm_device_metadata_review",
+    "selinux_metadata_restore_not_implemented":"selinux_offline_blocked",
+    "extended_directory_metadata_unsupported":"extended_metadata_review",
+}
+
+def review_guidance(error):
+    if type(error) not in (A.Refused,O.Refused):
+        return None
+    return REVIEW_GUIDANCE.get(str(error))
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     modes=parser.add_mutually_exclusive_group(required=True)
@@ -404,12 +421,16 @@ def main(argv=None):
         print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED=inspect_recovery")
     except (A.Refused,A.C.Refused,A.R.E.Refused,X.Refused,X.R.E.Refused,
             O.Refused,O.P.Refused,O.T.Refused,O.M.Refused,
-            OSError,ValueError,TypeError,KeyError,RuntimeError,subprocess.SubprocessError):
+            OSError,ValueError,TypeError,KeyError,RuntimeError,subprocess.SubprocessError) as error:
         # No raw exception, token, config contents or SMTP transcript.
         print("PRIMARY_MAILBOX_OFFLINE_STATUS="+("start_outcome_unverified" if start_attempted else
               "native_check_outcome_unverified" if check_attempted else "refused_or_unverified"))
         print("PRIMARY_MAILBOX_OFFLINE_SMTP_AUTH=unverified")
         print("PRIMARY_MAILBOX_OFFLINE_POSTFIX_CHANGED="+("inspect_recovery" if attempted or check_attempted else "no"))
+        if args.review and not attempted and not check_attempted and not start_attempted:
+            guidance=review_guidance(error)
+            if guidance is not None:
+                print("PRIMARY_MAILBOX_OFFLINE_REVIEW_GUIDANCE="+guidance)
     finally:
         signal.alarm(0)
         for fd in reversed(fds):

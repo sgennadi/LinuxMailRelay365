@@ -94,6 +94,36 @@ internal static class PrimaryMailboxOfflineClient
         return new(sha!,runtime,phase);
     }
 
+    // The failure channel is separate from the successful receipt parser.
+    // No remote exception, path, identity, or SMTP transcript is displayed.
+    // Only an exact read-only refusal envelope with one known reason is useful.
+    internal static string? ReviewFailureGuidance(string output)
+    {
+        if (output.Length > 4096 || output.Contains('\0')) return null;
+        var fields=new Dictionary<string,string>(StringComparer.Ordinal);
+        foreach (string line in output.Replace("\r\n","\n",StringComparison.Ordinal).Split('\n'))
+        {
+            if (line.Length==0) continue;
+            int at=line.IndexOf('=');
+            if (at<=Prefix.Length || !line.StartsWith(Prefix,StringComparison.Ordinal) ||
+                !fields.TryAdd(line[Prefix.Length..at],line[(at+1)..])) return null;
+        }
+        string? Read(string key)=>fields.GetValueOrDefault(key);
+        if(fields.Count!=7 || Read("STATUS")!="refused_or_unverified" ||
+            Read("SMTP_AUTH")!="unverified" || Read("POSTFIX_CHANGED")!="no" ||
+            Read("SERVICE_STARTED")!="no" || Read("MAIL_SUBMITTED")!="no" ||
+            Read("QUEUE_MODIFIED")!="no") return null;
+        return Read("REVIEW_GUIDANCE") switch {
+            "service_account_review"=>"Review the dedicated m365mailer account and its groups. The current route requires its own primary group without supplementary groups.",
+            "tpm_device_access_review"=>"The restricted m365mailer credentials could not open the TPM2 resource manager. Ask the Linux security administrator to review the device access and SELinux context. Do not make the device world-writable or disable SELinux.",
+            "tpm_device_changed"=>"TPM2 resource-manager evidence changed during the review. Rediscover the Linux host and obtain a fresh review.",
+            "tpm_device_metadata_review"=>"TPM2 resource-manager metadata is outside the supported security profile. Ask the Linux security administrator to review the device.",
+            "selinux_offline_blocked"=>"Offline Apply on active SELinux is not enabled in this build. Use the read-only SELinux readiness check. Do not disable SELinux.",
+            "extended_metadata_review"=>"The Postfix directory has extended metadata requiring manual review. Do not remove labels or ACLs to bypass this check.",
+            _=>null
+        };
+    }
+
     internal static bool SelfTest()
     {
         string a=new('a',64), b=new('b',64);
@@ -122,6 +152,27 @@ internal static class PrimaryMailboxOfflineClient
             Parse(review,"review",null)!=new PrimaryMailboxOfflineReceipt(a,b,null) ||
             Parse(apply,"apply",a).Sha!=a || Parse(restore,"restore",a).Sha!=a ||
             Parse(inspect,"inspect-backup",a).Phase!="pipe_only") return false;
+        string refused=Row("STATUS","refused_or_unverified")+Row("SMTP_AUTH","unverified")+
+            Row("POSTFIX_CHANGED","no")+common;
+        foreach (string reason in new[] {"service_account_review","tpm_device_access_review",
+            "tpm_device_changed","tpm_device_metadata_review","selinux_offline_blocked","extended_metadata_review"})
+        {
+            string failure=refused+Row("REVIEW_GUIDANCE",reason);
+            if (ReviewFailureGuidance(failure) is null ||
+                ReviewFailureGuidance(failure+Row("REVIEW_GUIDANCE",reason)) is not null ||
+                ReviewFailureGuidance(failure.Replace("POSTFIX_CHANGED=no","POSTFIX_CHANGED=inspect_recovery")) is not null ||
+                ReviewFailureGuidance(failure.Replace("SERVICE_STARTED=no","SERVICE_STARTED=unverified")) is not null ||
+                ReviewFailureGuidance(failure.Replace("QUEUE_MODIFIED=no","QUEUE_MODIFIED=not_verified")) is not null ||
+                ReviewFailureGuidance(failure.Replace("MAIL_SUBMITTED=no","MAIL_SUBMITTED=yes")) is not null ||
+                ReviewFailureGuidance(failure.Replace("SMTP_AUTH=unverified","SMTP_AUTH=observed")) is not null ||
+                ReviewFailureGuidance(failure.Replace("STATUS=refused_or_unverified","STATUS=reviewed_experimental")) is not null ||
+                ReviewFailureGuidance(failure+Row("RECOVERY_SHA256",a)) is not null) return false;
+            try { Parse(failure,"review",null);return false; } catch(InvalidDataException) {}
+        }
+        if (ReviewFailureGuidance(refused) is not null ||
+            ReviewFailureGuidance(refused+Row("REVIEW_GUIDANCE","private server output")) is not null ||
+            ReviewFailureGuidance(review+Row("REVIEW_GUIDANCE","tpm_device_access_review")) is not null)
+            return false;
         string args=Arguments("apply",Maintenance,mail,tenant,app,a,Apply,Auth);
         if (!args.Contains("--expected-sha256="+a,StringComparison.Ordinal) ||
             !args.Contains("--auth-confirmation="+Auth,StringComparison.Ordinal) ||

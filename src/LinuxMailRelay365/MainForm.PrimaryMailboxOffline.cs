@@ -5,6 +5,11 @@ namespace LinuxMailRelay365;
 
 internal sealed partial class MainForm
 {
+    private sealed class PrimaryMailboxReviewRefusedException(string guidance) : Exception
+    {
+        internal string Guidance { get; }=guidance;
+    }
+
     private Task OpenPrimaryMailboxOfflineAsync()
     {
         string context=TryCurrentIdentity() ?? throw new InvalidOperationException("Discover Linux first.");
@@ -134,6 +139,12 @@ internal sealed partial class MainForm
                         "Check actual service and queue state on the host. No automatic stop or rollback. "+
                         "Close and rediscover before any further operation.";
                 }
+                else if(ex is PrimaryMailboxReviewRefusedException refusal && !mutationAttempted)
+                {
+                    status.Text="Review refused. No configuration change or mail submission reported.";
+                    report.Text=refusal.Guidance+Environment.NewLine+
+                        "Keep the maintenance conditions in force and request a new review after resolving the issue.";
+                }
                 else
                     status.Text="Refused or uncertain ("+ex.GetType().Name+"). Keep Postfix stopped. Retain SHA and inspect recovery before retrying.";
             }
@@ -159,7 +170,13 @@ internal sealed partial class MainForm
                 ? await SshRemote.ExecuteAsync(endpoint,"bash -s",script,TimeSpan.FromMinutes(9))
                 : await SshRemote.RunRootScriptAsync(endpoint,script,TimeSpan.FromMinutes(9));
             Guard();
-            if(result.ExitCode!=0) throw new InvalidOperationException("Offline manager refused or result unavailable.");
+            if(result.ExitCode!=0)
+            {
+                if(result.ExitCode==2 && action=="review" &&
+                    PrimaryMailboxOfflineClient.ReviewFailureGuidance(result.StdOut) is { } guidance)
+                    throw new PrimaryMailboxReviewRefusedException(guidance);
+                throw new InvalidOperationException("Offline manager refused or result unavailable.");
+            }
             return PrimaryMailboxOfflineClient.Parse(result.StdOut,action,sha);
         }
         string TargetDescription((string Mailbox,Guid Tenant,Guid Client) identity)=>
