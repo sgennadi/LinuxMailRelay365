@@ -165,6 +165,29 @@ class MultiMailboxRestoreTests(unittest.TestCase):
             self.assertEqual((self.conf/"main.cf").read_bytes(),self.installed["main.cf"])
             self.assertFalse(list(self.recovery.glob("pre-restore-*")))
 
+    def test_first_proof_keeps_prospective_selinux_policy_digest(self):
+        # Synthetic installed-policy results. The live proof is volatile,
+        # but the expected destination label must remain SHA-bound.
+        def snapshot(paths):
+            return {"mode":"enforcing","labels":{
+                str(path):[directory,"system_u:object_r:etc_t:s0"]
+                for path,directory in paths}}
+        with mock.patch.object(install,"policy_snapshot",side_effect=snapshot), \
+             mock.patch.object(install,"require_policy"):
+            before=restore.preview()
+            self.proof.unlink()
+            missing=restore.preview()
+            self.assertIsNone(missing["review"]["proof"])
+            self.assertIn(str(self.proof),missing["policy"]["labels"])
+            self.assertEqual(before["review"]["selinux_policy_sha256"],
+                             missing["review"]["selinux_policy_sha256"])
+            # Restore continues to bind the actual receipt's presence.
+            self.assertNotEqual(before["sha"],missing["sha"])
+            put(self.proof,self.proof_bytes,0o640)
+            present=restore.preview()
+            self.assertEqual(missing["review"]["selinux_policy_sha256"],
+                             present["review"]["selinux_policy_sha256"])
+
     def test_active_timer_artifacts_refuse_restore_before_looking_at_snapshot(self):
         for artifact in restore.TIMER_ARTIFACTS:
             with self.subTest(artifact=str(artifact)):
