@@ -54,6 +54,11 @@ class UpdaterPreview25Contracts(unittest.TestCase):
         self.assertLess(smoke.index(rc19), smoke.index("gh release download $SourceTag"))
         self.assertIn("equal_version_file_replacement_rehearsal_only", smoke)
         self.assertIn("REAL_GUI_AND_HELPER_ACCEPTANCE=NOT_TESTED", smoke)
+        self.assertEqual(smoke.count("    Assert ($asset.digest -cmatch '^sha256:[a-f0-9]{64}$') 'Missing source-reported SHA256.'"), 1)
+        self.assertEqual(smoke.count("gh release download $SourceTag"), 1)
+        self.assertIn("[System.Management.Automation.Language.Parser]::ParseFile", WORKFLOW)
+        self.assertLess(WORKFLOW.index("- name: Parse disposable updater rehearsal before build"),
+                        WORKFLOW.index("- name: Build portable single EXE x64"))
 
     def test_transaction_owns_lock_and_rollback_evidence(self):
         helper = UPDATER.split("internal static int ApplyFromHelper(", 1)[1].split(

@@ -592,6 +592,18 @@ jobs:
           ./windows/Manage-LinuxMailRelay365Object.ps1 -SelfTest
           ./windows/Manage-LinuxMailRelay365EntraCertificate.ps1 -SelfTest
           ./scripts/Test-LinuxMailRelay365SignedRelease.ps1 -SelfTest
+      - name: Parse disposable updater rehearsal before build
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          $file = (Resolve-Path ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1).Path
+          $null = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors)
+          if (@($errors).Count -ne 0) {
+              $errors | ForEach-Object { Write-Host $_.Message }
+              throw 'Updater rehearsal has PowerShell parser errors.'
+          }
+          Write-Output 'UPDATER_REHEARSAL_POWERSHELL_PARSE=PASS'
       - name: Build portable single EXE x64
         shell: pwsh
         run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-x64 --self-contained true -p:UseSharedUpdater=false -o out/win-x64
