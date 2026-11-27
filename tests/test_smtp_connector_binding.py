@@ -111,3 +111,13 @@ class ConnectorBindingTests(unittest.TestCase):
         self.assertIn("if (busy) e.Cancel = true", ui)
         self.assertIn("stale = true", ui)
         self.assertIn("InspectWizardConnectorsAsync(owner, context)", (src/"MainForm.DeliveryMiniWizard.cs").read_text())
+
+    def test_settings_edit_requires_backup_and_preserves_mode(self):
+        source=(ROOT/"windows/Manage-LinuxMailRelay365Object.ps1").read_text()
+        self.assertIn("edit_requires_disabled_connector",source)
+        self.assertIn("public_ip_mode_must_be_preserved",source)
+        self.assertIn("certificate_mode_must_be_preserved",source)
+        self.assertIn("exact_accepted_domain_required",source)
+        self.assertIn("backup_acl_not_private",source)
+        self.assertLess(source.index("Write-Settings-Backup $BackupPath"),source.index("Set-InboundConnector @settings"))
+        self.assertIn("unreviewed_connector_setting_changed",source)
