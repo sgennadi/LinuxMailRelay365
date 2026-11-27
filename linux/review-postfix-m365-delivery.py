@@ -721,8 +721,13 @@ def forward_evidence(account,settings,read_default_filter,read_filter,diagnostic
         os.close(fd)
 
 
+
+def strict_local_overrides(pf):
+    return pf.run(pf.postconf,"-P")
+
+
 def prepare_local(req,adapter=None,account_reader=local_account,alias_reader=alias_evidence,
-                  forward_reader=forward_evidence):
+                  forward_reader=forward_evidence,override_reader=strict_local_overrides):
     local_request(req)
     adapter=adapter or load_adapter()
     pf=adapter.Postfix()
@@ -733,7 +738,7 @@ def prepare_local(req,adapter=None,account_reader=local_account,alias_reader=ali
     def read(key):
         args=("-h",key) if key=="forward_path" else ("-h","-x",key)
         return pf.run(pf.postconf,*args)
-    settings=local_policy(read,pf.run(pf.postconf,"-P"),req)
+    settings=local_policy(read,override_reader(pf),req)
     account=account_reader(settings["user"])
     def redirects():
         return {
@@ -752,7 +757,7 @@ def prepare_local(req,adapter=None,account_reader=local_account,alias_reader=ali
     if len(fields)!=8 or fields[0:2]!=["local","unix"] or fields[7]!="local":
         raise ValueError("nonstandard local delivery service")
     pf.run(pf.postfix,"status")
-    if (hashes()!=before or local_policy(read,pf.run(pf.postconf,"-P"),req)!=settings or
+    if (hashes()!=before or local_policy(read,override_reader(pf),req)!=settings or
             account_reader(settings["user"])!=account or redirects()!=routing or hashes()!=before):
         raise ValueError("local configuration changed")
     st=os.stat(resolved)
@@ -1243,7 +1248,8 @@ def mailbox_presence(context,mail_gid):
 
 def diagnose_local_route(req,adapter=None,account_reader=local_account,
                          alias_reader=alias_evidence,forward_reader=forward_evidence,
-                         drop=drop_mailbox_privileges,presence=mailbox_presence,reader=read_file):
+                         drop=drop_mailbox_privileges,presence=mailbox_presence,reader=read_file,
+                         override_reader=strict_local_overrides):
     """No submit approval: report selected route and metadata only."""
     local_request(req)
     result={"status":"local_route_observation","run_id":req["run_id"],"recipient":req["recipient"],
@@ -1259,7 +1265,7 @@ def diagnose_local_route(req,adapter=None,account_reader=local_account,
         return {name:digest(reader(CONFIG/name,8*1024*1024)) for name in ("main.cf","master.cf")}
     try:
         before=hashes()
-        settings=local_policy(read,pf.run(pf.postconf,"-P"),req)
+        settings=local_policy(read,override_reader(pf),req)
         account=account_reader(settings["user"])
     except (OSError,ValueError,KeyError,RuntimeError,subprocess.SubprocessError):
         result["policy"]="manual_review_required"
@@ -1283,7 +1289,7 @@ def diagnose_local_route(req,adapter=None,account_reader=local_account,
         return tuple(values)
     alias,forward=observe()
     try:
-        if (hashes()!=before or local_policy(read,pf.run(pf.postconf,"-P"),req)!=settings or
+        if (hashes()!=before or local_policy(read,override_reader(pf),req)!=settings or
                 account_reader(settings["user"])!=account or observe()!=(alias,forward) or hashes()!=before):
             return result
     except (OSError,ValueError,KeyError,RuntimeError,subprocess.SubprocessError):

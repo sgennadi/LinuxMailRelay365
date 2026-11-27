@@ -177,6 +177,35 @@ class NativePrimaryCandidateTests(unittest.TestCase):
             with self.subTest(section=section,key=key),self.assertRaises(M.E.Refused):
                 M.compare_native_candidate(before,bad)
 
+    def test_stock_relay_options_are_exact_and_preserved(self):
+        master="relay unix - - n - - smtp -o syslog_name=postfix/$service_name\n"
+        raw="relay/unix/syslog_name = postfix/$service_name\nrelay/unix/smtp_fallback_relay =\n"
+        self.assertEqual(M.reviewed_relay_overrides(raw,master),M.RELAY_OVERRIDES)
+        self.assertEqual(M.reviewed_relay_overrides("",""),{})
+        for invalid in (raw+"relay/unix/syslog_name = postfix/$service_name\n",
+                        "relay/unix/syslog_name = other\n",
+                        "relay/unix/smtp_fallback_relay = [relay.example.org]\n",
+                        "smtp/inet/smtpd_relay_restrictions = permit\n",
+                        "local/unix/mailbox_command = other\n",
+                        "m365xoauth2/unix/argv = other\n"):
+            with self.subTest(invalid=invalid),self.assertRaises(M.E.Refused):
+                M.reviewed_relay_overrides(invalid,master)
+        for invalid in ("",master.replace(" smtp "," pipe "),master+master):
+            with self.assertRaises(M.E.Refused):
+                M.reviewed_relay_overrides(raw,invalid)
+        route=PrimaryMailboxRouteTests().values()
+        self.assertEqual(M.classify(("a"*64,route,master,raw))["route"],"migration_candidate")
+        self.assertEqual(M.classify(("a"*64,route,master,raw+"local/unix/mailbox_command = other\n"))["route"],
+                         "review_required")
+        before,after=self.state()
+        for state in (before,after):
+            state["services"]["relay/unix"]=master.split()
+            state["relay_overrides"]=dict(M.RELAY_OVERRIDES)
+        M.compare_native_candidate(before,after)
+        after["relay_overrides"].pop("relay/unix/smtp_fallback_relay")
+        with self.assertRaises(M.E.Refused):
+            M.compare_native_candidate(before,after)
+
     def test_native_parameter_spacing_and_empty_rhs(self):
         for assignment in ("multi_instance_directories =\n",
                            "multi_instance_directories = \n",

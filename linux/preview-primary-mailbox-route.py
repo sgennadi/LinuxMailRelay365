@@ -234,6 +234,37 @@ def parameter_map(raw):
     return result
 
 
+# Only these stock options on the unused legacy SMTP relay service are
+# admitted. Neither affects the local agent, ingress, cleanup or new pipe.
+# Every other service-specific setting remains a manual-review gate.
+RELAY_OVERRIDES={
+    "relay/unix/syslog_name":"postfix/$service_name",
+    "relay/unix/smtp_fallback_relay":"",
+}
+
+
+def reviewed_relay_overrides(raw,master):
+    need(type(raw) is str and not any(
+        (ord(c)<32 and c not in ("\n","\t")) or ord(c)==127 for c in raw),
+        "invalid_service_override_output")
+    result={}
+    lines=raw.split("\n")
+    if lines[-1]=="":
+        lines.pop()
+    for line in lines:
+        match=re.fullmatch(r"(relay/unix/[A-Za-z][A-Za-z0-9_]*)[ \t]*=[ \t]?(.*)",line)
+        need(match is not None and match[1] in RELAY_OVERRIDES and
+             match[1] not in result and match[2]==RELAY_OVERRIDES[match[1]],
+             "native_service_overrides_require_review")
+        result[match[1]]=match[2]
+    if result:
+        relay=[line.split() for line in master.splitlines()
+               if line.split()[:2]==["relay","unix"]]
+        need(len(relay)==1 and len(relay[0])>=8 and relay[0][7]=="smtp",
+             "native_legacy_relay_service_unverified")
+    return result
+
+
 def native_snapshot(directory,runner=command):
     directory=Path(directory)
     def read(*args):
@@ -248,26 +279,41 @@ def native_snapshot(directory,runner=command):
     need(set(expanded)==set(PRESERVED_KEYS) and
          expanded["config_directory"]==str(directory),"native_directory_or_fields_unverified")
     services={}
-    for line in read("-M").splitlines():
+    master=read("-M")
+    for line in master.splitlines():
         tokens=line.split()
         need(len(tokens)>=8,"invalid_native_master_service")
         key=tokens[0]+"/"+tokens[1]
         need(key not in services,"duplicate_native_master_service")
         services[key]=tokens
-    need(not read("-P").strip(),"native_service_overrides_require_review")
+    overrides=reviewed_relay_overrides(read("-P"),master)
     # A temporary config root can affect derived path defaults. Normalize
     # only that exact generated path, then compare against the live sample.
     def normalize(value):
         return value.replace(str(directory),str(ROOT)) if directory!=ROOT else value
-    return {"explicit":{k:normalize(v) for k,v in explicit.items()},
+    result={"explicit":{k:normalize(v) for k,v in explicit.items()},
             "expanded":{k:normalize(v) for k,v in expanded.items()},
             "services":{k:[normalize(v) for v in row] for k,row in services.items()}}
+    # Preserve the existing digest shape for hosts/backups without overrides.
+    if overrides:
+        result["relay_overrides"]=overrides
+    return result
 
 
 def compare_native_candidate(before,after):
     targets=dict(ROUTE_CHANGES)
-    need(set(before)==set(after)=={"explicit","expanded","services"},
+    base={"explicit","expanded","services"}
+    need(set(before)==set(after) and set(before) in (base,base|{"relay_overrides"}),
          "native_snapshot_shape")
+    if "relay_overrides" in before:
+        overrides=before["relay_overrides"]
+        need(type(overrides) is dict and bool(overrides) and
+             all(k in RELAY_OVERRIDES and RELAY_OVERRIDES[k]==v for k,v in overrides.items()) and
+             after["relay_overrides"]==overrides,"native_legacy_relay_override_changed")
+        for state in (before,after):
+            relay=state["services"].get("relay/unix",[])
+            need(len(relay)>=8 and relay[:2]==["relay","unix"] and relay[7]=="smtp",
+                 "native_legacy_relay_service_unverified")
     old,new=before["explicit"],after["explicit"]
     need({k:v for k,v in old.items() if k not in targets}==
          {k:v for k,v in new.items() if k not in targets},
@@ -377,11 +423,17 @@ def classify(sampled):
                    if re.match(r"^m365xoauth2\s+unix(?:\s|$)",line)]
     pipe=E.classify_postfix_route("primary",values,
         service_lines[0] if len(service_lines)==1 else "",overrides)
+
+    try:
+        reviewed_relay_overrides(overrides,master)
+        unsafe_overrides=False
+    except E.Refused:
+        unsafe_overrides=True
     maps=any(values[k] for k in MAPS)
     expected=(pipe["DEFAULT_TRANSPORT"]=="expected" and pipe["RELAY_TRANSPORT"]=="expected" and
               pipe["MASTER_PIPE"]=="expected" and pipe["RECIPIENT_LIMIT"]=="expected" and
-              not maps and not values["relayhost"] and not overrides)
-    conflicts=(maps or bool(overrides) or
+              not maps and not values["relayhost"] and not unsafe_overrides)
+    conflicts=(maps or unsafe_overrides or
         values["default_transport"] not in ("smtp","smtp:","m365xoauth2:") or
         values["relay_transport"] not in ("relay","relay:","smtp","smtp:","m365xoauth2:") or
         (bool(service_lines) and pipe["MASTER_PIPE"]!="expected"))

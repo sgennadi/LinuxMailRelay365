@@ -756,6 +756,18 @@ class PrimaryMailboxDeliveryProbeTests(unittest.TestCase):
                 D.policy(dict(values,**{key:value}).__getitem__,"",self.req)
         with self.assertRaises(ValueError):
             D.policy(values.__getitem__,"m365xoauth2/unix/argv=other",self.req)
+        overrides="relay/unix/syslog_name = postfix/$service_name\n"
+        master="relay unix - - n - - smtp -o syslog_name=postfix/$service_name\n"
+        self.assertEqual(D.policy(values.__getitem__,overrides,self.req,master)["reviewed_relay_overrides"],
+                         {"relay/unix/syslog_name":"postfix/$service_name"})
+        with self.assertRaises(ValueError):
+            D.policy(values.__getitem__,overrides,self.req,"")
+        pf=Mock(postconf="postconf")
+        pf.run.side_effect=[overrides,master]
+        self.assertEqual(D.migration_local_overrides(pf),"")
+        pf.run.side_effect=[overrides+"local/unix/mailbox_command = other\n",master]
+        with self.assertRaises(ValueError):
+            D.migration_local_overrides(pf)
 
     def test_trace_binds_full_request_and_ledger_time_for_cloud_query(self):
         D=self.D

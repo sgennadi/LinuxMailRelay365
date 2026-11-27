@@ -127,6 +127,11 @@ def main():
              "native_fixture_scope_mismatch")
         policy,guard=C.native_selinux_offline(config,queue,parent)
         baseline=X.snapshot(config,0,policy)
+        # Only disposable fixture output; no live customer config or secrets.
+        overrides=C.X.R.command("postconf",("-c",O.P.CONFIG,"-P"))
+        need(overrides.returncode==0 and not overrides.stderr.strip() and
+             len(overrides.stdout)<=4096,"fixture_overrides_unverified")
+        print("LMR365_PRIMARY_VM_STOCK_OVERRIDES="+repr(overrides.stdout),flush=True)
         native=C.read_native()
         def fixture_identity(mailbox):
             need(mailbox==MAIL,"unexpected_fixture_mailbox")

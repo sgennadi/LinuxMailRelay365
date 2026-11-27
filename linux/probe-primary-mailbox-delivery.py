@@ -58,8 +58,11 @@ def validate_request(req):
          "recipient_domain_mismatch")
     return req
 
-def policy(read,overrides,req):
-    need(not overrides.strip(),"service_specific_override")
+def policy(read,overrides,req,master=""):
+    try:
+        reviewed=X.R.reviewed_relay_overrides(overrides,master)
+    except X.R.E.Refused:
+        raise ValueError("service_specific_override") from None
     values={key:read(key) for key in EMPTY+("config_directory","multi_instance_enable",
         "multi_instance_directories","queue_directory","mail_owner","default_transport",
         "relay_transport","relayhost","syslog_name","cleanup_service_name","mydestination",
@@ -77,6 +80,9 @@ def policy(read,overrides,req):
         if key=="mydestination":
             need(not any(P.domain_of(req[role])==d or P.domain_of(req[role]).endswith("."+d)
                          for role in P.ROLES for d in domains),"recipient_may_be_local")
+
+    if reviewed:
+        values["reviewed_relay_overrides"]=reviewed
     return values
 
 def running_guard(config,queue,parent,identity):
@@ -106,7 +112,7 @@ def prepare(req,config,queue,parent,adapter=None):
     pf=adapter.Postfix()
     def current_policy():
         return policy(lambda key:pf.run(pf.postconf,"-h","-x",key),
-                      pf.run(pf.postconf,"-P"),req)
+                      pf.run(pf.postconf,"-P"),req,pf.run(pf.postconf,"-M"))
     values=current_policy()
     binary=adapter.trusted_binary("/usr/sbin/sendmail")
     need(binary==adapter.trusted_binary(values["sendmail_path"]),"sendmail_identity_mismatch")
@@ -233,7 +239,22 @@ def applied_local_guard(req,config,queue,parent):
     verify()
     return verify,info["native_after_sha256"]
 
-def prepare_local_migration(req,config,queue,parent,prepare_fn=P.prepare_local):
+def migration_local_overrides(pf):
+    # The full applied native snapshot is independently verified around
+    # this probe. Only the same narrow legacy SMTP allowlist may be ignored
+    # by the shared local-policy reader; any local/ingress/pipe option fails.
+    try:
+        X.R.reviewed_relay_overrides(pf.run(pf.postconf,"-P"),pf.run(pf.postconf,"-M"))
+    except X.R.E.Refused:
+        raise ValueError("service_specific_override") from None
+    return ""
+
+
+def migration_prepare_local(req):
+    return P.prepare_local(req,override_reader=migration_local_overrides)
+
+
+def prepare_local_migration(req,config,queue,parent,prepare_fn=migration_prepare_local):
     local=local_context(req,"local-preview")
     verify,native_sha=applied_local_guard(req,config,queue,parent)
     plan=prepare_fn(local)
@@ -292,7 +313,7 @@ def local_operation(action,req,config,queue,parent,expected,confirm):
         def drop(account):
             verify()
             P.drop_mailbox_privileges(account)
-        return P.diagnose_local_route(local,drop=drop)
+        return P.diagnose_local_route(local,drop=drop,override_reader=migration_local_overrides)
     raise ValueError("invalid_local_operation")
 
 def main(argv=None):
