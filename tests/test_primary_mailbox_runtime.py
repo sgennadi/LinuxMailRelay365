@@ -325,6 +325,16 @@ class NativePrimarySelinuxAdapterTests(unittest.TestCase):
             with self.assertRaises(CLI.X.Refused):
                 CLI.native_selinux_label("/etc/postfix/main.cf","file",command)
 
+    def test_native_context_comparison_requires_full_context(self):
+        X=CLI.X
+        expected=X.T.checked_label(b"system_u:object_r:postfix_etc_t:s0\0")
+        X.same_label(X.T.checked_label(b"system_u:object_r:postfix_etc_t:s0"),expected)
+        for raw in (b"unconfined_u:object_r:postfix_etc_t:s0\0",
+                    b"system_u:object_r:postfix_etc_t:s0:c1\0",
+                    b"system_u:object_r:etc_t:s0\0"):
+            with self.assertRaises(X.Refused):
+                X.same_label(X.T.checked_label(raw),expected)
+
     def test_bound_stopped_guard_rechecks_mode_scope_and_queue(self):
         policy=Mock(initial={"mode":"enforcing"})
         policy.evidence.return_value=policy.initial

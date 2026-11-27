@@ -2,7 +2,9 @@
 """Native SELinux v2 primary Postfix transaction acceptance, disposable VM ONLY.
 
 No real credentials, SMTP AUTH, message submission, service startup with the
-candidate, policy installation or weakening. Synthetic auth is an explicit
+candidate, policy installation or weakening. The disposable fixture may normalize the
+original two configuration labels to exact installed policy before review.
+Synthetic auth is an explicit
 test dependency, never part of the manager's production CLI.
 """
 import importlib.util
@@ -25,6 +27,57 @@ def command(*args):
     return subprocess.run(list(args),check=True,stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE,timeout=60,
                           env={"LC_ALL":"C","PATH":"/usr/sbin:/usr/bin:/sbin:/bin"}).stdout
+
+def prepare_fixture_labels(C,config,queue,parent):
+    """CI-only baseline preparation; never called by the product manager."""
+    X,O=C.X,C.O
+    O.same_directory(config,O.P.CONFIG)
+    O.same_directory(queue,O.P.QUEUE)
+    O.same_directory(parent,C.RECOVERY_PARENT)
+    O.P.stopped_units()
+    O.P.no_postfix_processes()
+    O.P.empty_queue(queue)
+    need(C.native_selinux_mode()=="enforcing","enforcing_fixture_required")
+    before=tuple(X.T.config_file(config,name,0) for name in X.NAMES)
+    expected=tuple(C.native_selinux_label("/etc/postfix/"+name,"file") for name in X.NAMES)
+    mismatched=[]
+    for name,(_,meta),label in zip(X.NAMES,before,expected):
+        actual=X.normalized_label(meta["selinux"])
+        desired=X.normalized_label(label)
+        # Context strings contain no configuration values or identity data.
+        print("LMR365_PRIMARY_VM_FIXTURE_LABEL "+name+" actual="+actual.decode("ascii")+
+              " expected="+desired.decode("ascii"),flush=True)
+        if actual!=desired:
+            mismatched.append(name)
+    if mismatched:
+        # Prove the original refusal before changing even the lab fixture.
+        try:
+            C.native_selinux_offline(config,queue,parent)
+        except X.Refused as error:
+            need(str(error)=="selinux_label_policy_mismatch","unexpected_fixture_guard_refusal")
+        else:
+            raise RuntimeError("mismatched_label_was_accepted")
+        need(tuple(X.T.config_file(config,name,0) for name in X.NAMES)==before and
+             not (Path(C.RECOVERY_PARENT)/X.BASE).exists(),
+             "refused_review_changed_original_configuration")
+        print("LMR365_PRIMARY_VM_LABEL_MISMATCH=refused_without_write",flush=True)
+        # Normalize only the known test files to installed policy.
+        command("/usr/sbin/restorecon","-F",*["/etc/postfix/"+name for name in mismatched])
+    else:
+        print("LMR365_PRIMARY_VM_LABEL_MISMATCH=not_present",flush=True)
+    after=tuple(X.T.config_file(config,name,0) for name in X.NAMES)
+    for (old_data,old_meta),(new_data,new_meta),label in zip(before,after,expected):
+        need(old_data==new_data and
+             {k:v for k,v in old_meta.items() if k!="selinux"}==
+             {k:v for k,v in new_meta.items() if k!="selinux"},
+             "fixture_normalization_changed_bytes_or_permissions")
+        X.same_label(new_meta["selinux"],label)
+    O.P.stopped_units()
+    O.P.no_postfix_processes()
+    O.P.empty_queue(queue)
+    need(C.native_selinux_mode()=="enforcing","fixture_enforcement_changed")
+    print("LMR365_PRIMARY_VM_FIXTURE_POLICY=exact_context_baseline",flush=True)
+
 
 def main():
     need(os.geteuid()==0 and os.environ.get("GITHUB_ACTIONS")=="true",
@@ -63,6 +116,7 @@ def main():
         for path in (C.RECOVERY_PARENT,O.P.CONFIG,O.P.QUEUE):
             fds.append(O.P.open_directory(path,strict=path!=O.P.QUEUE))
         parent,config,queue=fds[-3:]
+        prepare_fixture_labels(C,config,queue,parent)
         policy,guard=C.native_selinux_offline(config,queue,parent)
         baseline=X.snapshot(config,0,policy)
         native=C.read_native()
