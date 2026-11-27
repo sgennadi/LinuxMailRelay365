@@ -96,13 +96,14 @@ internal static class EmbeddedAssets
             .Append(Convert.ToBase64String(bytes)).Append("\nLMR365_ISSUANCE_REQUEST\n").ToString();
     }
 
-    internal static string BuildSmtpAcmeStagingChallenge(string request, bool production = false, bool inspectExisting = false)
+    internal static string BuildSmtpAcmeStagingChallenge(string request, bool production = false, bool inspectExisting = false, bool stageExisting = false)
     {
         byte[] bytes = Encoding.UTF8.GetBytes(request);
         if (bytes.Length > 12288) throw new ArgumentException("ACME challenge request too large.");
         var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-acme-challenge.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
         foreach (string file in new[] { "reviewed-smtp-acme-challenge.py", "review-smtp-acme-issuance.py",
                      "reviewed-smtp-acme-production.py", "smtp-acme-staging-receipt.py", "check-smtp-relay-certificate.py",
+                     "stage-smtp-relay-certificate.py",
                      "plan-smtp-certificate-acme.py", "check-smtp-acme-credentials.py", "probe-smtp-acme-plugins.py",
                      "smtp-tls-postfix.py", "plan-smtp-acme-challenge-test.py", "check-smtp-acme-txt-cleanup.py",
                      "issue-smtp-acme-azure.py", "issue-smtp-acme-cloudflare.py", "issue-smtp-acme-route53.py",
@@ -112,15 +113,16 @@ internal static class EmbeddedAssets
             {
                 "plan-smtp-certificate-acme.py" => "smtp-acme-plan.py",
                 "check-smtp-relay-certificate.py" => "smtp-cert-check.py",
+                "stage-smtp-relay-certificate.py" => "smtp-cert-stage.py",
                 _ => file
             };
             script.Append("base64 -d > \"$work/").Append(file).Append("\" <<'LMR365_CHALLENGE_ASSET'\n")
                 .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux." + resource))))
                 .Append("\nLMR365_CHALLENGE_ASSET\n");
         }
-        string helper = production || inspectExisting ? "reviewed-smtp-acme-production.py" : "reviewed-smtp-acme-challenge.py";
+        string helper = production || inspectExisting || stageExisting ? "reviewed-smtp-acme-production.py" : "reviewed-smtp-acme-challenge.py";
         return script.Append("base64 -d <<'LMR365_CHALLENGE_REQUEST' | /usr/bin/python3 -I -B \"$work/").Append(helper)
-            .Append(inspectExisting ? "\" --inspect\n" : "\"\n")
+            .Append(stageExisting ? "\" --stage\n" : inspectExisting ? "\" --inspect\n" : "\"\n")
             .Append(Convert.ToBase64String(bytes)).Append("\nLMR365_CHALLENGE_REQUEST\n").ToString();
     }
 

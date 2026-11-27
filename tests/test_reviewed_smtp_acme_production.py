@@ -129,6 +129,9 @@ class ProductionEvaluationTests(unittest.TestCase):
         self.assertIn('review(payload, "inspect")',(src/"SmtpAcmeIssuanceReviewDialog.cs").read_text())
         self.assertIn('inspectExisting: true',(src/"MainForm.DeliveryMiniWizard.cs").read_text())
         self.assertIn('--inspect',(src/"EmbeddedAssets.cs").read_text())
+        self.assertIn('review(payload, "stage")',(src/"SmtpAcmeIssuanceReviewDialog.cs").read_text())
+        self.assertIn('stageExisting: true',(src/"MainForm.DeliveryMiniWizard.cs").read_text())
+        self.assertIn('--stage',(src/"EmbeddedAssets.cs").read_text())
 
     def test_stage_reviewed_evaluation_rechecks_fingerprint_and_purpose(self):
         req={k:self.req[k] for k in ("accepted_domain","certificate_name")}

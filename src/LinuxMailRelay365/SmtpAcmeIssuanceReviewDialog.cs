@@ -33,14 +33,16 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
         var challenge = new Button { Text = "Test staging DNS-01", AutoSize = true, Enabled = false };
         var production = new Button { Text = "Issue production evaluation", AutoSize = true, Enabled = false };
         var inspectExisting = new Button { Text = "Inspect existing evaluation", AutoSize = true };
+        var stageExisting = new Button { Text = "Stage reviewed certificate", AutoSize = true, Enabled = false };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         bool busy = false;
-        string? reviewedRequest = null, reviewedSha = null, receipt = null;
+        string? reviewedRequest = null, reviewedSha = null, receipt = null, stageFingerprint = null;
         DateTimeOffset receiptUntil = DateTimeOffset.MinValue;
         void InvalidateReport()
         {
             reviewedRequest = reviewedSha = null;
-            challenge.Enabled = production.Enabled = false;
+            stageFingerprint = null;
+            challenge.Enabled = production.Enabled = stageExisting.Enabled = false;
             result.Clear();
             result.ForeColor = SystemColors.WindowText;
         }
@@ -343,6 +345,11 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
                         !Regex.IsMatch(fingerprint ?? "", @"\A[a-f0-9]{64}\z")) :
                         (purpose != "unverified" || eku != "unverified" || fingerprint is not null)))
                     throw new InvalidDataException("Inconsistent evaluation result.");
+                if (material && purpose == "passed")
+                {
+                    stageFingerprint = fingerprint;
+                    stageExisting.Enabled = true;
+                }
                 result.ForeColor = material && purpose == "passed" ? Color.SeaGreen : Color.DarkOrange;
                 result.Text = "Retained production evaluation: " + state + Environment.NewLine +
                     "Expected directory: " + expectedPath + Environment.NewLine +
@@ -352,13 +359,71 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
                     "OpenSSL sslclient purpose: " + purpose + Environment.NewLine + Environment.NewLine +
                     (state == "unverified" ? "Material is incomplete, unsafe or unverifiable. Preserve state for manual review." + Environment.NewLine : "") +
                     "This inspection does not establish original CA issuance outcome, DNS cleanup or Exchange acceptance." + Environment.NewLine +
-                    "No renewal, issuance, staging, activation or deletion was requested.";
+                    "No renewal, issuance, staging, activation or deletion was requested." + Environment.NewLine +
+                    (stageExisting.Enabled ? "Eligible for separate reviewed staging." : "Staging is unavailable until all local checks pass.");
             }
             catch (Exception ex)
             {
                 result.ForeColor = Color.DarkOrange;
                 result.Text = "Existing evaluation inspection unavailable: " + ex.GetType().Name +
                     ". Another reviewed ACME operation may be running. Preserve the directory for review.";
+            }
+            finally
+            {
+                busy = false;
+                if (!IsDisposed) inspectExisting.Enabled = run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = true;
+            }
+        };
+        stageExisting.Click += async (_, _) =>
+        {
+            if (busy || stageFingerprint is null) return;
+            string fingerprint = stageFingerprint;
+            if (MessageBox.Show(this,
+                "Stage the reviewed certificate for " + certificateName + "?" + Environment.NewLine +
+                "SHA-256: " + fingerprint + Environment.NewLine + Environment.NewLine +
+                "This copies validated material into a protected Postfix candidate directory. It does not change active settings, reload Postfix, or modify Exchange. Exclude concurrent certificate maintenance.",
+                "Confirm candidate staging", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            InvalidateReport();
+            busy = true;
+            inspectExisting.Enabled = run.Enabled = close.Enabled = environment.Enabled = email.Enabled = credential.Enabled = false;
+            result.Text = "Revalidating reviewed certificate and staging a protected candidate...";
+            try
+            {
+                string payload = JsonSerializer.Serialize(new {
+                    request = new { accepted_domain = acceptedDomain, certificate_name = certificateName },
+                    confirm = "STAGE_REVIEWED_EVALUATION", certificate_sha256 = fingerprint
+                });
+                using var response = JsonDocument.Parse(await review(payload, "stage"));
+                var root = response.RootElement;
+                if (root.GetProperty("version").GetInt32() != 1 ||
+                    root.GetProperty("accepted_domain").GetString() != acceptedDomain ||
+                    root.GetProperty("certificate_name").GetString() != certificateName ||
+                    root.GetProperty("certificate_sha256").GetString() != fingerprint)
+                    throw new InvalidDataException("Unexpected staging identity.");
+                foreach (string flag in new[] { "postfix_config_modified", "postfix_reloaded",
+                    "issuance_attempted", "dns_modified", "exchange_acceptance_verified" })
+                    if (root.GetProperty(flag).GetBoolean()) throw new InvalidDataException("Unexpected mutation claim.");
+                string? state = root.GetProperty("status").GetString();
+                string? candidate = root.GetProperty("candidate").GetString();
+                bool attempted = root.GetProperty("staging_attempted").GetBoolean();
+                if (state is not ("staged" or "refused" or "staging_unverified") ||
+                    attempted != (state is "staged" or "staging_unverified") ||
+                    (state == "staged" ? !Regex.IsMatch(candidate ?? "", @"\Acandidate-[a-f0-9]{64}\z") : candidate is not null))
+                    throw new InvalidDataException("Inconsistent staging result.");
+                result.ForeColor = state == "staged" ? Color.SeaGreen : Color.DarkOrange;
+                result.Text = "Candidate staging: " + state + Environment.NewLine +
+                    "Candidate: " + (candidate ?? "unverified") + Environment.NewLine +
+                    "Certificate SHA-256: " + fingerprint + Environment.NewLine +
+                    (state == "staged" ? "Use Review staged TLS deployment for a separate activation review." :
+                        "Reinspect the retained material and candidate inventory before any retry.") + Environment.NewLine +
+                    "No active Postfix configuration, reload, issuance, DNS or Exchange change was requested.";
+            }
+            catch (Exception ex)
+            {
+                result.ForeColor = Color.DarkOrange;
+                result.Text = "Staging outcome unavailable: " + ex.GetType().Name +
+                    ". Inspect candidate inventory before retrying.";
             }
             finally
             {
@@ -374,7 +439,7 @@ internal sealed class SmtpAcmeIssuanceReviewDialog : Form
         layout.Controls.Add(new Label { Text = "Existing private credential file on Linux (path only)", AutoSize = true }, 0, 5);
         layout.Controls.Add(credential, 0, 6);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
-        actions.Controls.AddRange([run, challenge, production, inspectExisting]);
+        actions.Controls.AddRange([run, challenge, production, inspectExisting, stageExisting]);
         layout.Controls.Add(actions, 0, 7);
         layout.Controls.Add(result, 0, 8);
         layout.Controls.Add(close, 0, 9);
