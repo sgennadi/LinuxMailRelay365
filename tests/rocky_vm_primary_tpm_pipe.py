@@ -221,6 +221,59 @@ def service_device_diagnostics():
     except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):
         print("LMR365_TPM_PIPE_MASTER_DEVICE=unverified",flush=True)
 
+def policy_rule_evidence():
+    """Read the installed binary SELinux policy without modifying it.
+
+    A matching TE rule may be conditional or restricted by constraints.
+    Rule presence is not an authorization, and no rule is ever installed.
+    Query the actual device and service /dev directory types separately.
+    """
+    F.disposable()
+    try:
+        raw=command("/usr/bin/systemctl","show","postfix.service",
+                    "-pMainPID","--value").decode("ascii").strip()
+        need(re.fullmatch(r"[1-9][0-9]{0,9}",raw) is not None and int(raw)>1,
+             "policy_master_pid_unverified")
+        proc=Path("/proc")/raw
+        need((proc/"exe").resolve()==Path("/usr/libexec/postfix/master") and
+             b":postfix_master_t:" in (proc/"attr/current").read_bytes(),
+             "policy_master_identity_unverified")
+        def label_type(path):
+            label=os.getxattr(str(path),"security.selinux",follow_symlinks=False).rstrip(b"\0").decode("ascii")
+            fields=label.split(":",3)
+            need(len(fields)==4 and re.fullmatch(r"[A-Za-z0-9_]+_t",fields[2]) is not None,
+                 "policy_object_type_unverified")
+            return fields[2]
+        target=label_type(DEVICE)
+        directory=label_type(proc/"root/dev")
+        need(command("/usr/bin/systemctl","show","postfix.service","-pMainPID","--value").strip()==raw.encode("ascii"),
+             "policy_master_changed")
+        print("LMR365_TPM_PIPE_POLICY_DEVICE_TYPE="+target,flush=True)
+        print("LMR365_TPM_PIPE_POLICY_DEV_DIRECTORY_TYPE="+directory,flush=True)
+        # Search the live policy image, not an arbitrary policy path or
+        # module from the host. Do not use audit2allow or change dontaudit.
+        policy=Path("/sys/fs/selinux/policy")
+        need(policy.is_file(),"live_policy_unavailable")
+        for kind,cls,permissions in ((directory,"dir",("search","getattr")),
+                (target,"chr_file",("getattr","open","read","write","ioctl"))):
+            for perm in permissions:
+                for rule,option in (("allow","--allow"),("dontaudit","--dontaudit")):
+                    state="unverified"
+                    try:
+                        result=command("/usr/bin/sesearch",option,"-s","postfix_pipe_t",
+                                       "-t",kind,"-c",cls,"-p",perm,str(policy),
+                                       timeout=12).decode("utf-8","strict")
+                        rows=[line.strip() for line in result.splitlines() if line.strip()]
+                        if len(result)<=32768 and len(rows)<=128 and all(
+                                line.startswith(rule+" ") for line in rows):
+                            state="rule_present" if rows else "no_matching_rule"
+                    except (OSError,ValueError,UnicodeError,subprocess.SubprocessError):
+                        pass
+                    print("LMR365_TPM_PIPE_POLICY_RULE="+rule+":"+kind+":"+cls+":"+perm+":"+state,
+                          flush=True)
+    except (OSError,ValueError,RuntimeError,UnicodeError,subprocess.SubprocessError):
+        print("LMR365_TPM_PIPE_POLICY_EVIDENCE=unverified",flush=True)
+
 def failure_diagnostics():
     # Disposable boot-bound guest only. Report fixed native metadata and
     # AVC records concerning the actual pipe domain; no message/secret dump.
@@ -234,6 +287,7 @@ def failure_diagnostics():
         except (OSError,ValueError,subprocess.SubprocessError):
             print("LMR365_TPM_PIPE_METADATA_UNVERIFIED="+path,flush=True)
     service_device_diagnostics()
+    policy_rule_evidence()
     count=0
     for argv in (("/usr/sbin/ausearch","-m","AVC,USER_AVC","-ts","recent","--raw"),
                  ("/usr/bin/journalctl","-b","-k","--no-pager","-n","1000")):

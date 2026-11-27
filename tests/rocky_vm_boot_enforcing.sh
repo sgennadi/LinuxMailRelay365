@@ -357,6 +357,10 @@ ROCKY10_DATA_CONTEXT
     run_postfix_smoke
     echo "LMR365_GUEST_VTPM_ROCKY10_POSTFIX_SMOKE=passed"
     if test "${LMR365_KVM_TPM_PIPE_ACCEPTANCE:-false}" = true; then
+        # Read-only TE rule inventory in the disposable guest. Installing
+        # setools does not install a new local policy or relax Enforcing.
+        ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+            'sudo dnf -y -q install setools-console && test -x /usr/bin/sesearch && test "$(cat /sys/fs/selinux/enforce)" = 1'
         scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
             -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
             linux/m365_xoauth2_transport.py linux/m365_hardware_signer.py \
