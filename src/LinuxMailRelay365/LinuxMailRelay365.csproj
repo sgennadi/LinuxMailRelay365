@@ -40,6 +40,7 @@
     <EmbeddedResource Include="../../linux/review-smtp-acme-dry-run.py" LogicalName="LinuxMailRelay365.linux.review-smtp-acme-dry-run.py" />
     <EmbeddedResource Include="../../linux/review-smtp-tls-rotation.py" LogicalName="LinuxMailRelay365.linux.review-smtp-tls-rotation.py" />
     <EmbeddedResource Include="../../linux/review-postfix-m365-delivery.py" LogicalName="LinuxMailRelay365.linux.review-postfix-m365-delivery.py" />
+    <EmbeddedResource Include="../../linux/inspect-m365-starttls.py" LogicalName="LinuxMailRelay365.linux.m365-starttls-diagnosis.py" />
     <EmbeddedResource Include="../../linux/review-smtp-tls-systemd.py" LogicalName="LinuxMailRelay365.linux.review-smtp-tls-systemd.py" />
     <EmbeddedResource Include="../../linux/manage-smtp-tls-systemd.py" LogicalName="LinuxMailRelay365.linux.manage-smtp-tls-systemd.py" />
     <EmbeddedResource Include="../../linux/plan-smtp-tls-systemd.py" LogicalName="LinuxMailRelay365.linux.plan-smtp-tls-systemd.py" />

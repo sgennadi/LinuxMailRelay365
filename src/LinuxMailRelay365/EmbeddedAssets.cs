@@ -179,6 +179,18 @@ internal static class EmbeddedAssets
         return script.Append('\n').ToString();
     }
 
+    internal static string BuildM365StartTlsDiagnosis(string mx)
+    {
+        if (!Regex.IsMatch(mx, @"\A[a-z0-9.-]{1,253}\z") ||
+            Uri.CheckHostName(mx) != UriHostNameType.Dns ||
+            !mx.EndsWith(".mail.protection.outlook.com", StringComparison.Ordinal))
+            throw new ArgumentException("Invalid Microsoft 365 MX name.");
+        string payload = System.Text.Json.JsonSerializer.Serialize(new { mx });
+        return "/usr/bin/python3 -I -B -c 'import base64;exec(base64.b64decode(\"" +
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux.m365-starttls-diagnosis.py"))) +
+            "\"))' <<'LMR365_STARTTLS_REQUEST'\n" + payload + "\nLMR365_STARTTLS_REQUEST\n";
+    }
+
     internal static string BuildPostfixM365DeliveryProbe(string action, string request, string? sha)
     {
         if (action is not ("preview" or "submit" or "trace") || request.Length > 4096 ||

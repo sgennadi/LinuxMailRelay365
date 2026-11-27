@@ -216,7 +216,16 @@ internal sealed partial class MainForm
                         if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
                         return result.StdOut;
                     }, acceptedDomain.Text.Trim(), outboundFixedSender.Text.Trim(), outboundMxHost.Text.Trim(),
-                        (request, local) => ReadPostfixExchangeTraceAsync(context, request, local));
+                        (request, local) => ReadPostfixExchangeTraceAsync(context, request, local),
+                        async mx =>
+                        {
+                            if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                            var result = await SshRemote.ExecuteAsync(Endpoint(),
+                                EmbeddedAssets.BuildM365StartTlsDiagnosis(mx), "", TimeSpan.FromSeconds(75));
+                            if (result.ExitCode != 0) throw new InvalidOperationException("STARTTLS diagnosis refused or timed out.");
+                            if (TryCurrentIdentity() != context) throw new InvalidOperationException("Linux endpoint changed.");
+                            return result.StdOut;
+                        });
                     probe.ShowDialog(owner);
                 });
                 dialog.ShowDialog(this);
