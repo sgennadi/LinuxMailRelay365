@@ -7,18 +7,23 @@ from pathlib import Path
 
 PHASES=("prepared","switched","verified","rollback_required","rolled_back")
 
-def record(root,phase,backup,original,candidate):
+def record(root,phase,backup,original,candidate,bootstrap_generation=None):
     root=Path(root)
     backup=Path(backup)
     if backup.parent!=root or not re.fullmatch(r"initial-backup-[a-zA-Z0-9_]+",backup.name):
         raise ValueError("invalid backup reference")
     if phase not in PHASES or not all(re.fullmatch(r"[a-f0-9]{64}",v) for v in (original,candidate)):
         raise ValueError("invalid journal state")
+    if bootstrap_generation is not None and not re.fullmatch(r"candidate-[a-f0-9]{64}",bootstrap_generation):
+        raise ValueError("invalid bootstrap generation")
+    state=dict(version=1,phase=phase,backup=backup.name,
+               original_sha256=original,candidate_sha256=candidate)
+    if bootstrap_generation is not None:
+        state["bootstrap_generation"]=bootstrap_generation
     fd,tmp=tempfile.mkstemp(prefix=".initial-journal-",dir=str(root))
     try:
         with os.fdopen(fd,"w") as f:
-            json.dump(dict(version=1,phase=phase,backup=backup.name,
-                           original_sha256=original,candidate_sha256=candidate),f)
+            json.dump(state,f)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp,str(root/"initial-deployment.json"))

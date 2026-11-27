@@ -53,9 +53,10 @@ def main():
                 if not path.exists():
                     print("INITIAL_TLS=no_transaction")
                     return 0
-                result=journal.recover(ROOT,json.loads(path.read_text()),read,backup.restore,
+                state=json.loads(path.read_text())
+                result=journal.recover(ROOT,state,read,backup.restore,
                     lambda:pf.run(pf.postfix,"check"),lambda:None if a.before_start else reload(),
-                    lambda *args:journal.record(ROOT,*args))
+                    lambda *args:journal.record(ROOT,*args,bootstrap_generation=state.get("bootstrap_generation")))
                 print("INITIAL_TLS="+result)
                 return 0
             if a.before_start or not all((a.original_sha,a.candidate_sha,a.generation,a.domain,a.ca_file)):

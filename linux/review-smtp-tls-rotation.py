@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Reviewed staged SMTP client TLS rotation for an already managed Postfix.
-
-Initial setup is preview-only. No inbound SMTP, listener, relayhost, queue,
-Exchange or main.cf changes. Use the existing durable activation transaction.
+"""Reviewed staged SMTP client TLS deployment and rotation.
+Initial deployment changes only smtp_tls_chain_files after approval.
+No inbound SMTP, listener, relayhost, queue or Exchange changes.
 """
 import argparse
 import hashlib
@@ -172,33 +171,134 @@ def prepare(candidate, domain, pf=None):
     checked = validator.validate(ROOT, candidate, domain, ca, gen, checker)
     if checked.get("status") != "local_checks_passed":
         raise ValueError("candidate TLS validation refused")
-    mode = "rotation" if previous is not None and not local["changes"] else "initial_preview"
+    mode = "initial" if local["changes"] else "rotation"
+    initial_config = None
     if mode == "rotation":
+        if previous is None:
+            raise ValueError("managed configuration without generation")
         pf.verify_managed()
         # Ensure the rollback certificate still validates for this identity.
         if validator.validate(ROOT, previous, domain, ca, gen, checker).get("status") != "local_checks_passed":
             raise ValueError("rollback TLS validation refused")
-    elif previous is not None or not local["changes"]:
-        raise ValueError("inconsistent initial deployment state")
+    else:
+        if journals["deployment.json"] != "absent":
+            raise ValueError("existing rotation journal requires manual review")
+        if journals["initial-deployment.json"] != "absent":
+            initial = json.loads(read_file(ROOT / "initial-deployment.json", 16384, True),
+                                 object_pairs_hook=strict_object)
+            if initial.get("phase") != "rolled_back":
+                raise ValueError("existing initial deployment requires manual review")
+            if previous is not None and (initial.get("bootstrap_generation") != previous or previous != candidate):
+                raise ValueError("unreviewed retained pointer")
+        elif previous is not None:
+            raise ValueError("unreviewed existing pointer")
+        original = read_file(CONFIG / "main.cf", 8 * 1024 * 1024)
+        initial_config = load("smtp-tls-initial-candidate").preview(original)
+        if not initial_config["changed"] or initial_config["original_sha256"] != state["main_sha256"]:
+            raise ValueError("invalid initial candidate")
+    version = re.match(r"^(\d+)\.(\d+)", local["postfix_version"])
+    version_supported = bool(version and tuple(map(int, version.groups())) >= (3, 4))
     selinux = selinux_mode()
     material = {"candidate": candidate, "previous": previous, "domain": domain,
                 "mode": mode, "state": state, "journals": journals,
-                "ca_sha256": ca_sha, "selinux": selinux, "changes": local["changes"]}
+                "ca_sha256": ca_sha, "selinux": selinux, "changes": local["changes"],
+                "initial_config": initial_config, "tls_security_level": local["tls_security_level"],
+                "postfix_version_supported": version_supported}
     sha = digest(json.dumps(material, sort_keys=True, separators=(",", ":")).encode())
     if config_state(pf) != state or active_generation() != previous or terminal_journals(previous, state["main_sha256"]) != journals:
         raise ValueError("configuration changed during review")
     return dict(material, status="review_ready", plan_sha256=sha,
-                apply_supported=mode == "rotation" and candidate != previous
+                apply_supported=version_supported and (mode == "initial" or candidate != previous)
                 and selinux in ("disabled", "not_detected"),
                 certificate_details=checked.get("details", ""),
                 exchange_acceptance="unverified", mail_sent=False)
 
 
-def execute(candidate, domain, expected, prepare_fn=prepare, activate_fn=None):
+def initial_deploy(candidate, domain, expected, preview, pf, prepare_fn=prepare):
+    tx = load("smtp-tls-transaction")
+    generation = load("smtp-tls-generation")
+    backup = load("smtp-tls-initial-backup")
+    builder = load("smtp-tls-initial-candidate")
+    journal = load("smtp-tls-initial-journal")
+    deploy = load("smtp-tls-initial-deploy")
+    initial = preview["initial_config"]
+    old_sha, new_sha = initial["original_sha256"], initial["candidate_sha256"]
+    previous = preview["previous"]
+    target = CONFIG / "main.cf"
+
+    def read():
+        return read_file(target, 8 * 1024 * 1024)
+
+    def guard(main_sha):
+        state = dict(preview["state"], main_sha256=main_sha)
+        if config_state(pf) != state:
+            raise ValueError("Postfix configuration changed")
+
+    def preflight():
+        actual = prepare_fn(candidate, domain, pf)
+        if actual["plan_sha256"] != expected or actual["mode"] != "initial" or not actual["apply_supported"]:
+            raise ValueError("initial review changed under deployment lock")
+        pf.run(pf.postfix, "check")
+        guard(old_sha)
+
+    def validate():
+        verify_files(candidate)
+        if active_generation() != previous:
+            raise ValueError("active pointer changed")
+
+    def save():
+        saved = backup.backup(ROOT, target)
+        data, meta = backup.verify(saved)
+        if digest(data) != old_sha or meta["sha256"] != old_sha:
+            raise ValueError("backup does not match reviewed original")
+        return saved
+
+    def prepare_pointer():
+        guard(old_sha)
+        verify_files(candidate)
+        if previous is None:
+            generation.switch(ROOT, candidate, None)
+        elif active_generation() != candidate:
+            raise ValueError("retained pointer changed")
+
+    def replace(data, sha):
+        guard(sha)
+        backup.replace_config(data, sha, target)
+
+    def check():
+        guard(new_sha)
+        pf.check()
+
+    def reload():
+        current = digest(read())
+        if current not in (old_sha, new_sha):
+            raise ValueError("unexpected configuration; manual recovery required")
+        guard(current)
+        if current == new_sha:
+            pf.verify_managed()
+        pf.run(pf.postfix, "check")
+        pf.run(pf.postfix, "status")
+        pf.run(pf.postfix, "reload")
+        pf.run(pf.postfix, "status")
+        guard(current)
+
+    with tx.deployment_lock(ROOT):
+        return deploy.deploy(old_sha, new_sha, read, builder.build, save, replace,
+            lambda saved, sha: backup.restore(saved, sha, target),
+            preflight, validate, check, reload,
+            lambda *args: journal.record(ROOT, *args, bootstrap_generation=candidate),
+            prepare_pointer=prepare_pointer)
+
+
+def execute(candidate, domain, expected, prepare_fn=prepare, activate_fn=None, initial_fn=initial_deploy):
     pf = load("smtp-tls-postfix").Postfix()
     preview = prepare_fn(candidate, domain, pf)
     if preview["plan_sha256"] != expected or not preview["apply_supported"]:
         raise ValueError("review changed or activation unsupported")
+    if preview.get("mode") == "initial":
+        result = initial_fn(candidate, domain, expected, preview, pf, prepare_fn)
+        return {"status": result, "mode": "initial", "plan_sha256": expected,
+                "exchange_acceptance": "unverified", "mail_sent": False}
     generation = load("smtp-tls-generation")
     transaction = load("smtp-tls-transaction")
     activation = load("smtp-tls-activate")

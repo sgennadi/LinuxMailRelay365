@@ -5,7 +5,7 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 def deploy(original_sha, candidate_sha, read, build, backup, replace,
-           restore, preflight, validate, check, reload, journal):
+           restore, preflight, validate, check, reload, journal, prepare_pointer=lambda: None):
     """Caller must hold deployment lock and prepare the active TLS generation."""
     preflight()
     validate()
@@ -23,6 +23,7 @@ def deploy(original_sha, candidate_sha, read, build, backup, replace,
         raise ValueError("configuration changed during backup")
     journal("prepared",saved,original_sha,candidate_sha)
     try:
+        prepare_pointer()
         replace(candidate,original_sha)
         journal("switched",saved,original_sha,candidate_sha)
         check()

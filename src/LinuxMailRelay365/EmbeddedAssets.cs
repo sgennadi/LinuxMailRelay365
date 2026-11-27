@@ -93,7 +93,9 @@ internal static class EmbeddedAssets
         var script = new StringBuilder("set -eu\numask 077\nwork=$(mktemp -d /run/lmr365-tls-review.XXXXXXXX)\ntrap 'rm -rf -- \"$work\"' EXIT\n");
         foreach (string file in new[] { "review-smtp-tls-rotation.py", "smtp-tls-generation.py",
                      "smtp-tls-transaction.py", "smtp-tls-activate.py", "smtp-tls-validate-generation.py",
-                     "plan-smtp-tls-initial.py", "smtp-tls-postfix.py", "check-smtp-relay-certificate.py" })
+                     "plan-smtp-tls-initial.py", "smtp-tls-postfix.py", "check-smtp-relay-certificate.py",
+                     "smtp-tls-initial-deploy.py", "smtp-tls-initial-backup.py",
+                     "smtp-tls-initial-candidate.py", "smtp-tls-initial-journal.py" })
         {
             string resource = file == "check-smtp-relay-certificate.py" ? "LinuxMailRelay365.linux.smtp-cert-check.py" :
                 "LinuxMailRelay365.linux." + file;

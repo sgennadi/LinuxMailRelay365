@@ -27,7 +27,7 @@ internal sealed class SmtpTlsRotationDialog : Form
             ScrollBars = ScrollBars.Both, WordWrap = false };
         var refresh = new Button { Text = "Refresh staged certificates", AutoSize = true };
         var preview = new Button { Text = "Review", AutoSize = true };
-        var activate = new Button { Text = "Activate reviewed rotation", AutoSize = true, Enabled = false };
+        var activate = new Button { Text = "Activate reviewed deployment", AutoSize = true, Enabled = false };
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
         buttons.Controls.AddRange([refresh, preview, activate, close]);
@@ -35,9 +35,10 @@ internal sealed class SmtpTlsRotationDialog : Form
         string? approvedSha = null;
         string? approvedName = null;
         string? approvedDomain = null;
+        string? approvedMode = null;
         void Invalidate()
         {
-            approvedSha = approvedName = approvedDomain = null;
+            approvedSha = approvedName = approvedDomain = approvedMode = null;
             activate.Enabled = false;
             report.Clear();
         }
@@ -105,33 +106,39 @@ internal sealed class SmtpTlsRotationDialog : Form
                     "DNS identity: " + dns + Environment.NewLine +
                     "SELinux: " + root.GetProperty("selinux").GetString() + Environment.NewLine +
                     "Postfix plan: " + root.GetProperty("changes").GetRawText() + Environment.NewLine +
+                    "SMTP TLS security level (unchanged): " + root.GetProperty("tls_security_level").GetString() + Environment.NewLine +
+                    (mode == "initial" ? "main.cf review: " + root.GetProperty("initial_config").GetRawText() + Environment.NewLine +
+                        "The outgoing client certificate is a global Postfix setting; other outbound SMTP routes may use it." + Environment.NewLine : "") +
                     root.GetProperty("certificate_details").GetString() + Environment.NewLine +
                     "Plan SHA-256: " + sha + Environment.NewLine +
                     "Exchange Online acceptance and live delivery remain unverified.";
-                if (root.GetProperty("apply_supported").GetBoolean() && mode == "rotation")
+                if (root.GetProperty("apply_supported").GetBoolean() && mode is ("rotation" or "initial"))
                 {
                     approvedSha = sha;
                     approvedName = name;
                     approvedDomain = dns;
-                    status.Text = "Reviewed managed rotation. Explicit approval required.";
+                    approvedMode = mode;
+                    status.Text = mode == "initial" ? "Reviewed initial deployment. Explicit approval required." :
+                        "Reviewed managed rotation. Explicit approval required.";
                 }
-                else status.Text = "Preview only: initial setup, unchanged certificate or SELinux requires separate review.";
+                else status.Text = "Preview only: unchanged certificate, unsupported Postfix or SELinux requires separate review.";
             }
             catch (Exception ex) { status.Text = "Review refused: " + ex.GetType().Name; }
             finally { SetBusy(false); }
         };
         activate.Click += async (_, _) =>
         {
-            if (busy || approvedSha is null || approvedName is null || approvedDomain is null) return;
-            if (MessageBox.Show(this, "Activate the reviewed SMTP client certificate and reload Postfix? " +
-                "On a local failure the transaction attempts to restore the previous generation. " +
-                "Delivery is not verified. Do not edit Postfix concurrently.",
-                "Confirm managed TLS rotation", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+            if (busy || approvedSha is null || approvedName is null || approvedDomain is null || approvedMode is null) return;
+            string impact = approvedMode == "initial"
+                ? "Back up main.cf and set global outbound smtp_tls_chain_files, then reload Postfix. Other outbound routes may present this certificate. A failed deployment attempts to restore main.cf; staged files are retained. "
+                : "Switch the managed SMTP client certificate and reload Postfix. A failed rotation attempts to restore the previous generation. ";
+            if (MessageBox.Show(this, impact + "Delivery is not verified. Do not edit Postfix concurrently.",
+                "Confirm managed TLS deployment", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                 MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             string sha = approvedSha, name = approvedName, dns = approvedDomain;
             Invalidate();
             SetBusy(true);
-            status.Text = "Activating reviewed rotation...";
+            status.Text = "Activating reviewed deployment...";
             try
             {
                 using var json = JsonDocument.Parse(await remote("activate", name, dns, sha));

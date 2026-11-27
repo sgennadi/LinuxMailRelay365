@@ -44,6 +44,10 @@
     <EmbeddedResource Include="../../linux/smtp-tls-activate.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-activate.py" />
     <EmbeddedResource Include="../../linux/smtp-tls-validate-generation.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-validate-generation.py" />
     <EmbeddedResource Include="../../linux/plan-smtp-tls-initial.py" LogicalName="LinuxMailRelay365.linux.plan-smtp-tls-initial.py" />
+    <EmbeddedResource Include="../../linux/smtp-tls-initial-deploy.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-initial-deploy.py" />
+    <EmbeddedResource Include="../../linux/smtp-tls-initial-backup.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-initial-backup.py" />
+    <EmbeddedResource Include="../../linux/smtp-tls-initial-candidate.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-initial-candidate.py" />
+    <EmbeddedResource Include="../../linux/smtp-tls-initial-journal.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-initial-journal.py" />
     <EmbeddedResource Include="../../linux/smtp-tls-renewal-profile.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-renewal-profile.py" />
     <EmbeddedResource Include="../../linux/smtp-tls-postfix.py" LogicalName="LinuxMailRelay365.linux.smtp-tls-postfix.py" />
     <EmbeddedResource Include="../../linux/check-smtp-acme-credentials.py" LogicalName="LinuxMailRelay365.linux.check-smtp-acme-credentials.py" />
