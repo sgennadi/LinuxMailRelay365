@@ -3,8 +3,10 @@
 
 Requires exclusive maintenance, a stopped default Postfix and empty queues.
 Only an existing simple IPv4, no-AUTH, certificate-verified TLS configuration
-is eligible. Changes one global relayhost assignment. Never starts, stops,
-reloads, sends mail, changes a queue, or touches Exchange. Python 3.6+.
+is eligible. Changes one global relayhost assignment. Never automatically starts, stops,
+reloads or submits mail, or touches Exchange. The separately approved start
+may allow normal Postfix activity; subsequent mail and queue state are not
+claimed. Python 3.6+.
 """
 import argparse
 import importlib.util
@@ -30,6 +32,7 @@ MANIFEST = "transaction.json"
 CONFIRM = "APPLY_STOPPED_PRIMARY_EOP_RELAYHOST"
 RESTORE = "RESTORE_STOPPED_PRIMARY_EOP_RELAYHOST"
 CHECK = "CHECK_STOPPED_PRIMARY_EOP"
+START = "START_REVIEWED_PRIMARY_EOP"
 DNS = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+"
 EMPTY = tuple(sorted(set(P.EMPTY_SETTINGS + (
     "virtual_alias_domains", "virtual_alias_maps", "virtual_mailbox_domains",
@@ -312,6 +315,58 @@ def check_backup(config,parent,sha,uid,confirmation,guard,checker=native_check,
     return sha
 
 
+def native_start():
+    # Do not enable, restart, reload or stop a unit. A timeout or nonzero
+    # return is not proof that the asynchronous systemd job did not start.
+    result = subprocess.run([P.trusted_tool("systemctl"), "start", "postfix.service"],
+                            input=b"", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            timeout=60, env=P.SYSTEM_ENV)
+    need(result.returncode == 0, "postfix_start_unverified")
+
+
+def running_status():
+    raw = P.system_command("systemctl", ["show", "postfix.service",
+                           "--property=LoadState", "--property=ActiveState"])
+    need(P.key_values(raw, ("LoadState", "ActiveState")) ==
+         {"LoadState":"loaded", "ActiveState":"active"}, "postfix_unit_not_confirmed_active")
+    spec = importlib.util.spec_from_file_location(
+        "postfix_adapter", str(Path(__file__).with_name("smtp-tls-postfix.py")))
+    adapter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(adapter)
+    binary = adapter.trusted_invocation("/usr/sbin/postfix")
+    result = subprocess.run([binary, "-c", P.CONFIG, "status"], input=b"",
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            timeout=20, env=P.SYSTEM_ENV)
+    need(result.returncode == 0, "postfix_master_not_confirmed_running")
+
+
+def start_backup(config,parent,sha,uid,mx,domain,confirmation,guard,running_guard,
+                 mark_attempt,checker=native_check,starter=native_start,network=network_check,
+                 reader=read_policy,master_check=P.inspect_master,ca_digest=P.trust_store_digest):
+    """Explicit service start, never rollback or stop after an uncertain start."""
+    need(confirmation == START, "explicit_start_required")
+    validate_target(mx,domain)
+    info,files = load_backup(parent,sha,uid)
+    need(info["mx"] == mx and info["accepted_domain"] == domain, "backup_route_identity_mismatch")
+    verify(config,uid,info,files,"after",guard,reader,master_check,ca_digest)
+    network(info)
+    verify(config,uid,info,files,"after",guard,reader,master_check,ca_digest)
+    checker()
+    verify(config,uid,info,files,"after",guard,reader,master_check,ca_digest)
+    # Maintenance is still mandatory immediately before invoking the start.
+    guard()
+    need(snapshot(config,uid) == ((files["main.after"],info["main_meta"]),
+                                  (files["master.before"],info["master_meta"])),
+         "configuration_drift_before_start")
+    mark_attempt()
+    starter()
+    # From here onward the stopped-state and empty-queue guards cannot be
+    # used. Observe running state, and verify exact bytes and policy again.
+    # No automated file rollback or service action on ANY failure.
+    verify(config,uid,info,files,"after",running_guard,reader,master_check,ca_digest)
+    return sha
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     modes=parser.add_mutually_exclusive_group(required=True)
@@ -319,6 +374,7 @@ def main(argv=None):
     modes.add_argument("--apply",action="store_true")
     modes.add_argument("--restore",metavar="BACKUP_SHA256")
     modes.add_argument("--check",metavar="BACKUP_SHA256")
+    modes.add_argument("--start",metavar="BACKUP_SHA256")
     parser.add_argument("--mx")
     parser.add_argument("--accepted-domain")
     parser.add_argument("--expected-sha256")
@@ -327,12 +383,21 @@ def main(argv=None):
     args=parser.parse_args(argv)
     fds=[]
     attempted=False
+    start_attempted=False
+    start_verified=False
+    def mark_start():
+        nonlocal start_attempted
+        start_attempted=True
     def timeout(*_):
         raise Refused("operation_timeout")
     try:
         need(os.geteuid() == 0 and args.maintenance_confirmation == O.MAINTENANCE,
              "root_and_exclusive_maintenance_required")
-        if args.restore is not None or args.check is not None:
+        if args.start is not None:
+            validate_target(args.mx,args.accepted_domain)
+            need(O.sha(args.start) and args.confirm == START and args.expected_sha256 is None,
+                 "invalid_start_request")
+        elif args.restore is not None or args.check is not None:
             backup_sha = args.restore if args.restore is not None else args.check
             required = RESTORE if args.restore is not None else CHECK
             need(O.sha(backup_sha) and args.confirm == required and
@@ -371,6 +436,20 @@ def main(argv=None):
             print("PRIMARY_EOP_OFFLINE_STATUS=applied_offline_not_started")
             print("PRIMARY_EOP_OFFLINE_BACKUP_SHA256="+sha)
             print("PRIMARY_EOP_OFFLINE_POSTFIX_CHANGED=yes")
+        elif args.start is not None:
+            attempted=True
+            def running_guard():
+                O.same_directory(config,P.CONFIG)
+                O.same_directory(queue,P.QUEUE)
+                M.check_directory(config,0)
+                need(O.mail_identity()==identity,"postfix_account_changed")
+                running_status()
+            sha=start_backup(config,parent,args.start,0,args.mx,args.accepted_domain,
+                             args.confirm,guard,running_guard,mark_start)
+            start_verified=True
+            print("PRIMARY_EOP_OFFLINE_STATUS=started_running_observed")
+            print("PRIMARY_EOP_OFFLINE_BACKUP_SHA256="+sha)
+            print("PRIMARY_EOP_OFFLINE_POSTFIX_CHANGED=no")
         elif args.check is not None:
             attempted=True
             sha=check_backup(config,parent,args.check,0,args.confirm,guard)
@@ -390,15 +469,19 @@ def main(argv=None):
         if O.sha(args.expected_sha256):
             print("PRIMARY_EOP_OFFLINE_BACKUP_SHA256="+args.expected_sha256)
     except (Refused,OSError,ValueError,TypeError,KeyError,IndexError,subprocess.SubprocessError):
-        print("PRIMARY_EOP_OFFLINE_STATUS=refused_or_failed")
+        print("PRIMARY_EOP_OFFLINE_STATUS="+("start_outcome_unverified" if start_attempted else "refused_or_failed"))
         print("PRIMARY_EOP_OFFLINE_POSTFIX_CHANGED="+("inspect_recovery" if attempted else "no"))
+        if args.start is not None and O.sha(args.start):
+            print("PRIMARY_EOP_OFFLINE_BACKUP_SHA256="+args.start)
     finally:
         signal.alarm(0)
         for fd in reversed(fds):
             os.close(fd)
-        print("PRIMARY_EOP_OFFLINE_SERVICE_STARTED=no")
-        print("PRIMARY_EOP_OFFLINE_MAIL_SENT=no")
-        print("PRIMARY_EOP_OFFLINE_QUEUE_MODIFIED="+("not_verified" if args.check is not None and attempted else "no"))
+        print("PRIMARY_EOP_OFFLINE_SERVICE_STARTED="+("observed_running" if start_verified else
+              "unverified" if start_attempted else "no"))
+        print("PRIMARY_EOP_OFFLINE_MAIL_SENT="+("not_verified" if start_attempted else "no"))
+        print("PRIMARY_EOP_OFFLINE_QUEUE_MODIFIED="+("not_verified" if
+              start_attempted or (attempted and (args.check is not None or args.start is not None)) else "no"))
     return 2
 
 

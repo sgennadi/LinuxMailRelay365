@@ -189,6 +189,79 @@ class PrimaryEopOfflineTests(unittest.TestCase):
         self.assertIn("No automatic service start",ui)
         self.assertIn("OpenPrimaryEopOfflineAsync(owner, context, mx)",(src/"MainForm.DeliveryMiniWizard.cs").read_text())
 
+    def start(self,sha,starter,running_guard,mark,checker=None,network=None,mx=None,domain=None,confirmation=None):
+        return E.start_backup(self.fd,self.parent,sha,self.uid,mx or self.mx,domain or self.domain,
+                              confirmation or E.START,self.guard,running_guard,mark,
+                              checker or Mock(),starter,network or self.network,
+                              self.reader,self.master_check,self.ca)
+
+    def test_start_rechecks_before_service_and_verifies_running_without_rollback(self):
+        sha,_,files=self.review()
+        self.apply(sha)
+        calls=[]
+        self.network.reset_mock()
+        self.network.side_effect=lambda _: calls.append("network")
+        checker=Mock(side_effect=lambda: calls.append("check"))
+        mark=Mock(side_effect=lambda: calls.append("mark"))
+        starter=Mock(side_effect=lambda: calls.append("start"))
+        running=Mock(side_effect=lambda: calls.append("running"))
+        self.assertEqual(self.start(sha,starter,running,mark,checker),sha)
+        self.assertEqual(calls[:4],["network","check","mark","start"])
+        self.assertTrue(all(x=="running" for x in calls[4:]))
+        self.assertGreaterEqual(running.call_count,2)
+        self.assertEqual((self.config/"main.cf").read_bytes(),files["main.after"])
+
+    def test_start_wrong_target_or_check_failure_never_starts(self):
+        sha,_,_=self.review()
+        self.apply(sha)
+        starter,mark,running=Mock(),Mock(),Mock()
+        with self.assertRaises(E.Refused):
+            self.start(sha,starter,running,mark,mx="other.mail.protection.outlook.com")
+        with self.assertRaises(E.Refused):
+            self.start(sha,starter,running,mark,confirmation="wrong")
+        with self.assertRaises(E.Refused):
+            self.start(sha,starter,running,mark,Mock(side_effect=E.Refused("check failed")))
+        starter.assert_not_called()
+        mark.assert_not_called()
+        running.assert_not_called()
+
+    def test_start_uncertainty_does_not_rollback_or_repeat(self):
+        sha,_,files=self.review()
+        self.apply(sha)
+        for failure in ("starter","running"):
+            with self.subTest(failure=failure):
+                starter=Mock(side_effect=OSError("uncertain") if failure=="starter" else None)
+                running=Mock(side_effect=E.Refused("status uncertain") if failure=="running" else None)
+                mark=Mock()
+                with patch.object(E,"restore") as restore:
+                    with self.assertRaises((OSError,E.Refused)):
+                        self.start(sha,starter,running,mark)
+                    restore.assert_not_called()
+                starter.assert_called_once()
+                mark.assert_called_once()
+                self.assertEqual((self.config/"main.cf").read_bytes(),files["main.after"])
+
+    def test_start_after_restore_refused(self):
+        sha,_,_=self.review()
+        self.apply(sha)
+        self.restore(sha)
+        starter=Mock()
+        with self.assertRaises(E.Refused):
+            self.start(sha,starter,Mock(),Mock())
+        starter.assert_not_called()
+
+    def test_start_gui_and_command_contract(self):
+        src=ROOT/"src/LinuxMailRelay365"
+        assets=(src/"EmbeddedAssets.cs").read_text()
+        ui=(src/"MainForm.PrimaryEopOffline.cs").read_text()
+        self.assertIn(E.START,assets)
+        self.assertIn("checkedSha != sha",ui)
+        self.assertIn("START REVIEWED POSTFIX",ui)
+        self.assertIn("startAttempted = true;",ui)
+        self.assertIn("!startAttempted",ui)
+        self.assertIn('await LinuxAsync("start", sha)',ui)
+        self.assertIn("do not retry or restore blindly",ui)
+
 
 if __name__=="__main__":
     unittest.main()

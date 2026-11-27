@@ -335,8 +335,8 @@ internal static class EmbeddedAssets
         static bool ValidDns(string name) => name.Length is >= 4 and <= 253 &&
             Regex.IsMatch(name, @"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\z") &&
             Uri.CheckHostName(name) == UriHostNameType.Dns;
-        bool target = action is "review" or "apply";
-        if (action is not ("review" or "apply" or "restore" or "check") ||
+        bool target = action is "review" or "apply" or "start";
+        if (action is not ("review" or "apply" or "restore" or "check" or "start") ||
             (target ? !ValidDns(mx) || !mx.EndsWith(".mail.protection.outlook.com", StringComparison.Ordinal) || !ValidDns(domain) :
                 mx.Length != 0 || domain.Length != 0) ||
             (action == "review" ? sha is not null : !Regex.IsMatch(sha ?? "", @"\A[a-f0-9]{64}\z")))
@@ -349,10 +349,13 @@ internal static class EmbeddedAssets
                 .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(Text("LinuxMailRelay365.linux." + file))))
                 .Append("\nLMR365_PRIMARY_EOP_ASSET\n");
         script.Append("/usr/bin/python3 -I -B \"$work/manage-primary-eop-offline.py\" --").Append(action);
+        if (action == "start") script.Append('=').Append(sha);
         if (target)
             script.Append(" --mx=").Append(mx).Append(" --accepted-domain=").Append(domain);
         if (action == "apply")
             script.Append(" --expected-sha256=").Append(sha).Append(" --confirm=APPLY_STOPPED_PRIMARY_EOP_RELAYHOST");
+        else if (action == "start")
+            script.Append(" --confirm=START_REVIEWED_PRIMARY_EOP");
         else if (action is "restore" or "check")
             script.Append('=').Append(sha).Append(" --confirm=")
                 .Append(action == "restore" ? "RESTORE_STOPPED_PRIMARY_EOP_RELAYHOST" : "CHECK_STOPPED_PRIMARY_EOP");

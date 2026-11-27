@@ -46,23 +46,29 @@ internal sealed partial class MainForm
         var review = new Button { AutoSize = true, Text = "Preview offline route" };
         var apply = new Button { AutoSize = true, Text = "Backup / Apply" };
         var check = new Button { AutoSize = true, Text = "Run postfix check" };
+        var start = new Button { AutoSize = true, Text = "Start reviewed Postfix" };
         var restore = new Button { AutoSize = true, Text = "Restore backup" };
         var copy = new Button { AutoSize = true, Text = "Copy SHA" };
         var close = new Button { AutoSize = true, Text = "Close", DialogResult = DialogResult.Cancel };
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true };
-        actions.Controls.AddRange([review, apply, check, restore, copy, close]);
+        actions.Controls.AddRange([review, apply, check, start, restore, copy, close]);
         bool busy = false;
-        string? approvedSha = null, reviewedOld = null;
+        string? approvedSha = null, reviewedOld = null, checkedSha = null;
+        bool startAttempted = false;
         bool ValidSha(string? sha) => Regex.IsMatch(sha ?? "", @"\A[a-f0-9]{64}\z");
-        void Invalidate() { approvedSha = reviewedOld = null; }
+        void Invalidate() { approvedSha = reviewedOld = checkedSha = null; }
         void Update()
         {
-            bool available = !busy && maintenance.Checked;
+            bool available = !busy && maintenance.Checked && !startAttempted;
             review.Enabled = available && mx.EndsWith(".mail.protection.outlook.com", StringComparison.Ordinal);
             apply.Enabled = available && approvedSha is not null && backup.Text.Trim() == approvedSha &&
                 acceptedDomainApproved.Checked && SmtpPublicIpConnectorDialog.IsPublicIpv4(ip);
             check.Enabled = restore.Enabled = available && ValidSha(backup.Text.Trim());
-            maintenance.Enabled = backup.Enabled = close.Enabled = !busy;
+            start.Enabled = available && checkedSha is not null && backup.Text.Trim() == checkedSha &&
+                acceptedDomainApproved.Checked && SmtpPublicIpConnectorDialog.IsPublicIpv4(ip) &&
+                mx.EndsWith(".mail.protection.outlook.com", StringComparison.Ordinal);
+            maintenance.Enabled = !busy && !startAttempted;
+            backup.Enabled = close.Enabled = !busy;
             copy.Enabled = !busy && ValidSha(backup.Text.Trim());
         }
         async Task RunAsync(string message, Func<Task> work)
@@ -76,7 +82,9 @@ internal sealed partial class MainForm
             catch (Exception ex)
             {
                 Invalidate();
-                status.Text = "Refused or uncertain: " + ex.GetType().Name + ". Keep Postfix stopped; inspect retained backup.";
+                status.Text = "Refused or uncertain: " + ex.GetType().Name +
+                    (startAttempted ? ". Service may be running. Inspect status and queue; do not retry or restore blindly." :
+                        ". Keep Postfix stopped; inspect retained backup.");
                 status.ForeColor = Color.DarkOrange;
             }
             finally { busy = false; Update(); }
@@ -98,7 +106,7 @@ internal sealed partial class MainForm
         {
             Guard();
             if (!maintenance.Checked) throw new InvalidOperationException("Maintenance attestation missing.");
-            bool target = action is "review" or "apply";
+            bool target = action is "review" or "apply" or "start";
             string script = EmbeddedAssets.BuildPrimaryEopOffline(action, target ? mx : "", target ? domain : "", sha);
             var result = endpoint.Username == "root"
                 ? await SshRemote.ExecuteAsync(endpoint, "bash -s", script, TimeSpan.FromSeconds(270))
@@ -107,8 +115,9 @@ internal sealed partial class MainForm
             result.EnsureSuccess();
             var fields = Fields(result.StdOut);
             if (fields.Count != (action == "review" ? 8 : 6) ||
-                fields[prefix+"SERVICE_STARTED"] != "no" || fields[prefix+"MAIL_SENT"] != "no" ||
-                fields[prefix+"QUEUE_MODIFIED"] != (action == "check" ? "not_verified" : "no"))
+                fields[prefix+"SERVICE_STARTED"] != (action == "start" ? "observed_running" : "no") ||
+                fields[prefix+"MAIL_SENT"] != (action == "start" ? "not_verified" : "no") ||
+                fields[prefix+"QUEUE_MODIFIED"] != (action is "check" or "start" ? "not_verified" : "no"))
                 throw new InvalidDataException("Unexpected operation flags.");
             if (action == "review")
             {
@@ -123,6 +132,7 @@ internal sealed partial class MainForm
                 string expectedStatus = action switch {
                     "apply" => "applied_offline_not_started",
                     "restore" => "restored_offline_not_started",
+                    "start" => "started_running_observed",
                     _ => "checked_offline_not_started" };
                 string expectedChange = action == "apply" ? "yes" : action == "restore" ? "restored" : "no";
                 if (fields[prefix+"STATUS"] != expectedStatus || fields[prefix+"POSTFIX_CHANGED"] != expectedChange ||
@@ -210,6 +220,7 @@ internal sealed partial class MainForm
                 connectorApproved.Checked = false;
                 previewedTenantConnectorSha = previewedTenantConnectorContext = null;
                 await LinuxAsync(action, sha);
+                if (action == "check") checkedSha = sha;
                 report.Text = (action == "check" ? "Native postfix check completed; reviewed configuration verified afterwards." :
                     "Previous main.cf restored and native effective policy verified.") +
                     Environment.NewLine + "Recovery SHA-256: " + sha + Environment.NewLine +
@@ -218,6 +229,57 @@ internal sealed partial class MainForm
                 status.ForeColor = Color.SeaGreen;
             });
         }
+        start.Click += async (_, _) =>
+        {
+            if (busy || !start.Enabled || checkedSha is not { } sha || !maintenance.Checked) return;
+            if (!Guid.TryParse(tenant.Text.Trim(), out Guid id) || id == Guid.Empty ||
+                (discoveredTenants.Count > 1 && tenantSelector.SelectedItem is not TenantOption))
+            {
+                status.Text = "Select the exact tenant first."; return;
+            }
+            if (!ConfirmDestructive("Start reviewed primary Postfix",
+                "Tenant: " + id + Environment.NewLine + "Domain: " + domain +
+                Environment.NewLine + "MX: " + mx + ":25" + Environment.NewLine + "Static SMTP IPv4: " + ip +
+                Environment.NewLine + "Applied backup SHA-256: " + sha + Environment.NewLine +
+                "Recheck Exchange Connector, native Postfix configuration, empty queue and verified STARTTLS before starting postfix.service. " +
+                "Confirm the exact SMTP egress IP, tenant MX and all affected remote routes. Keep submissions blocked until post-start review. " +
+                "Starting a mail service may allow normal mail activity; no automatic rollback, stop, restart or delivery is requested.",
+                "START REVIEWED POSTFIX", dialog)) return;
+            await RunAsync("Rechecking Exchange and the exact applied route before service start...", async () =>
+            {
+                Guard();
+                CheckCloudTenant(id);
+                if (!acceptedDomainApproved.Checked || !maintenance.Checked || checkedSha != sha ||
+                    !SmtpPublicIpConnectorDialog.IsPublicIpv4(ip) ||
+                    !Regex.IsMatch(name, @"\A[A-Za-z0-9][A-Za-z0-9._ -]{2,69}\z"))
+                    throw new InvalidOperationException("Start context incomplete.");
+                var options = (Tenant: id, Domain: domain, Name: name, Ip: ip, Certificate: "");
+                var cloud = Fields(await RunTenantConnectorManagerAsync(options, "Inspect"));
+                Guard();
+                CheckCloudTenant(id);
+                if (cloud.Count != 9 || cloud["EXO_CONNECTOR_TENANT"] != "exact_match" ||
+                    cloud["EXO_CONNECTOR_ACCEPTED_DOMAIN"] != "verified" || cloud["EXO_CONNECTOR_PUBLIC_IPV4"] != ip ||
+                    cloud["EXO_CONNECTOR_BINDING"] != "exact_enabled_connector_observed" ||
+                    cloud["EXO_CONNECTOR_EXACT_COUNT"] != "1" || cloud["EXO_CONNECTOR_CONFLICT_COUNT"] != "0" ||
+                    !int.TryParse(cloud["EXO_CONNECTOR_NAME_TAKEN"], out int count) || count is < 0 or > 500 ||
+                    cloud["EXO_CONNECTOR_DELIVERY_VERIFIED"] != "no" || cloud["CHANGES_APPLIED"] != "no" ||
+                    !acceptedDomainApproved.Checked || !maintenance.Checked || checkedSha != sha)
+                    throw new InvalidOperationException("Exact enabled IP Connector not observed.");
+                Invalidate();
+                connectorApproved.Checked = false;
+                previewedTenantConnectorSha = previewedTenantConnectorContext = null;
+                // From this point SSH failure cannot establish stopped state.
+                startAttempted = true;
+                await LinuxAsync("start", sha);
+                report.Text = "Postfix service and master observed running; applied configuration reverified." +
+                    Environment.NewLine + "Recovery SHA-256: " + sha +
+                    Environment.NewLine + "No automatic message submission. Normal mail and queue activity are unverified." +
+                    Environment.NewLine + "Close this window and use primary Postfix audit, then separately approved local and external delivery tests.";
+                status.Text = "Service running observed; delivery unverified.";
+                status.ForeColor = Color.SeaGreen;
+            });
+            if (startAttempted) { maintenance.Checked = false; Update(); }
+        };
         check.Click += async (_, _) => await BackupAction("check");
         restore.Click += async (_, _) => await BackupAction("restore");
         copy.Click += (_, _) => { if (ValidSha(backup.Text.Trim())) Clipboard.SetText(backup.Text.Trim()); };
