@@ -49,17 +49,21 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
         with mock.patch.object(M,"config_bytes",return_value=raw), \
              mock.patch.object(M,"sample",return_value=sample), \
              mock.patch.object(M,"identity_snapshot",return_value=("absent","","")), \
+             mock.patch.object(M,"native_candidate_validation",return_value=("verified","e"*64)), \
              mock.patch.object(M,"command",return_value=mock.Mock(returncode=0,stdout=b"")) as cmd:
             result=M.inspect(req)
             self.assertFalse(result["apply_supported"] or result["changes"] or result["mail_sent"])
             self.assertEqual(result["queue"],"empty")
-            self.assertEqual(result["version"],2)
+            self.assertEqual(result["version"],3)
+            self.assertEqual(result["native_validation"],"verified")
+            self.assertEqual(result["native_sha256"],"e"*64)
             self.assertEqual(result["candidate_status"],"ready")
             self.assertRegex(result["plan_sha256"],r"^[a-f0-9]{64}$")
             self.assertEqual([c[0][0] for c in cmd.call_args_list],["systemctl","postqueue"])
         with mock.patch.object(M,"config_bytes",return_value=raw), \
              mock.patch.object(M,"sample",side_effect=[sample,("b"*64,*sample[1:])]), \
              mock.patch.object(M,"identity_snapshot",return_value=("absent","","")), \
+             mock.patch.object(M,"native_candidate_validation",return_value=("verified","e"*64)), \
              mock.patch.object(M,"command",return_value=mock.Mock(returncode=0,stdout=b"")):
             with self.assertRaisesRegex(M.E.Refused,"configuration_changed"):
                 M.inspect(req)
@@ -102,12 +106,14 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
         plan="a"*64
         report=dict(plan_sha256=plan,scope="primary_only",route="migration_candidate",
                     candidate_status="ready",identity="mailbox_matches",
+                    native_validation="verified",native_sha256="e"*64,
                     service="active",queue="empty")
         M.validate_apply_preconditions(report,plan)
         for key,value in (("plan_sha256","b"*64),("scope","review_required"),
                           ("route","review_required"),("candidate_status","already_configured"),
                           ("identity","different_mailbox"),("identity","absent"),
-                          ("service","unverified"),("queue","nonempty"),("queue","unverified")):
+                          ("service","unverified"),("queue","nonempty"),("queue","unverified"),
+                          ("native_validation","review_required"),("native_sha256","")):
             with self.assertRaises(M.E.Refused):
                 M.validate_apply_preconditions(dict(report,**{key:value}),plan)
         with self.assertRaises(M.E.Refused):
@@ -136,6 +142,84 @@ class PrimaryMailboxRouteTests(unittest.TestCase):
         self.assertIn("mailTransport.SelectedIndex == 0 && oauthSenderMode.SelectedIndex == 0;",wizard)
         self.assertIn("ShowPrimaryMailboxRoutePreviewAction(page",ui)
         self.assertIn("Never use Force Replace to switch the existing relay.",ui)
+
+
+class NativePrimaryCandidateTests(unittest.TestCase):
+    def state(self):
+        explicit={"mydestination":"localhost, mail.example.org",
+                  "inet_interfaces":"loopback-only","relayhost":"[old.example.org]:25"}
+        expanded=dict.fromkeys(M.PRESERVED_KEYS,"")
+        expanded.update(explicit,config_directory="/etc/postfix",
+                        default_transport="smtp",relay_transport="relay",
+                        local_transport="local:mail.example.org")
+        services={"smtp/inet":["smtp","inet","n","-","n","-","-","smtpd"],
+                  "local/unix":["local","unix","-","n","n","-","-","local"]}
+        before=dict(explicit=explicit,expanded=expanded,services=services)
+        after=dict(explicit=dict(explicit,**dict(M.ROUTE_CHANGES)),
+                   expanded=dict(expanded,default_transport="m365xoauth2:",
+                                 relay_transport="m365xoauth2:",relayhost=""),
+                   services=dict(services,**{"m365xoauth2/unix":M.PIPE.decode("ascii").split()}))
+        return before,after
+
+    def test_exact_effective_settings_and_master_preservation(self):
+        import copy
+        before,after=self.state()
+        M.compare_native_candidate(before,after)
+        for section,key,value in (
+            ("explicit","inet_interfaces","all"),
+            ("expanded","mydestination","changed.example.org"),
+            ("expanded","relayhost","old.example.org"),
+            ("explicit","m365xoauth2_destination_recipient_limit","2"),
+            ("services","smtp/inet",["changed"]),
+            ("services","m365xoauth2/unix",["unexpected"])):
+            bad=copy.deepcopy(after)
+            bad[section][key]=value
+            with self.subTest(section=section,key=key),self.assertRaises(M.E.Refused):
+                M.compare_native_candidate(before,bad)
+
+    def test_native_parser_rejects_duplicate_or_unexpected_scope(self):
+        with self.assertRaises(M.E.Refused):
+            M.parameter_map("relayhost = one\nrelayhost = two\n")
+        with self.assertRaises(M.E.Refused):
+            M.parameter_map("arbitrary native output\n")
+        runner=mock.Mock(return_value=mock.Mock(returncode=1,stdout=b"",stderr=b"error"))
+        with self.assertRaises(M.E.Refused):
+            M.native_snapshot(M.ROOT,runner)
+        self.assertEqual(runner.call_args[0][0],"postconf")
+
+    def test_isolated_staging_and_live_drift_check(self):
+        import tempfile
+        before,after=self.state()
+        raw=(b"mydestination = localhost\n",b"smtp inet n - n - - smtpd\n")
+        proposed=(raw[0]+b"default_transport = m365xoauth2:\n",raw[1]+M.PIPE)
+        with tempfile.TemporaryDirectory() as parent:
+            actual=Path(parent)
+            original= M.tempfile.TemporaryDirectory
+            def tmp(*args,**kwargs):
+                return original(prefix="private-",dir=actual)
+            paths=[]
+            def snapshot(directory):
+                if directory==M.ROOT:
+                    return before
+                paths.append(directory)
+                self.assertEqual(directory.stat().st_mode&0o777,0o700)
+                blobs=tuple((directory/name).read_bytes() for name in ("main.cf","master.cf"))
+                self.assertTrue(all((directory/name).stat().st_mode&0o777==0o600
+                                    for name in ("main.cf","master.cf")))
+                return before if blobs==raw else after
+            with mock.patch.object(M.E,"trusted_directory"), \
+                 mock.patch.object(M.tempfile,"TemporaryDirectory",side_effect=tmp), \
+                 mock.patch.object(M,"config_bytes",return_value=raw):
+                status,sha=M.native_candidate_validation(raw,proposed,snapshot)
+            self.assertEqual(status,"verified")
+            self.assertRegex(sha,r"^[a-f0-9]{64}$")
+            self.assertEqual(paths[0],paths[1])
+            self.assertFalse(paths[0].exists())
+            with mock.patch.object(M.E,"trusted_directory"), \
+                 mock.patch.object(M.tempfile,"TemporaryDirectory",side_effect=tmp), \
+                 mock.patch.object(M,"config_bytes",side_effect=[raw,proposed]):
+                self.assertEqual(M.native_candidate_validation(raw,proposed,snapshot),
+                                 ("review_required",""))
 
 
 if __name__=="__main__":

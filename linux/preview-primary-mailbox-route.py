@@ -14,6 +14,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("primary_route_evidence", str(HERE/"export-hardware-oauth-cert.py"))
@@ -192,6 +193,129 @@ def candidate_evidence(raw,sampled,mailbox,identity):
                 candidate_sha256=sha,plan_sha256=plan,change_set=changes)
 
 
+# In addition to every explicit main.cf assignment, sample expanded
+# values for the address classes, listeners and policies that must remain
+# unchanged. This is a native parser check, not a daemon or delivery test.
+PRESERVED_KEYS = (
+    "config_directory","queue_directory","data_directory",
+    "multi_instance_enable","multi_instance_directories",
+    "myhostname","mydomain","myorigin","mydestination","relay_domains",
+    "virtual_alias_domains","virtual_mailbox_domains","local_transport",
+    "virtual_transport","alias_maps","local_recipient_maps",
+    "virtual_alias_maps","virtual_mailbox_maps","relay_recipient_maps",
+    "transport_maps","sender_dependent_default_transport_maps",
+    "sender_dependent_relayhost_maps","content_filter","inet_interfaces",
+    "inet_protocols","mynetworks","smtpd_relay_restrictions",
+    "smtpd_recipient_restrictions","smtpd_sasl_auth_enable",
+    "smtpd_tls_security_level","smtp_sasl_auth_enable","smtp_tls_security_level",
+    "smtp_tls_policy_maps","default_transport","relay_transport","relayhost",
+)
+
+
+def parameter_map(raw):
+    result={}
+    for line in raw.splitlines():
+        name,sep,value=line.partition(" = ")
+        need(sep and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*",name)
+             and name not in result,"ambiguous_native_parameter")
+        result[name]=value
+    return result
+
+
+def native_snapshot(directory,runner=command):
+    directory=Path(directory)
+    def read(*args):
+        r=runner("postconf",("-c",str(directory))+args)
+        need(r.returncode==0 and not r.stderr.strip() and len(r.stdout)<=524288,
+             "native_candidate_postconf_unverified")
+        value=r.stdout.decode("utf-8","strict")
+        need("\0" not in value and "\r" not in value,"invalid_native_output")
+        return value
+    explicit=parameter_map(read("-n"))
+    expanded=parameter_map(read("-x",*PRESERVED_KEYS))
+    need(set(expanded)==set(PRESERVED_KEYS) and
+         expanded["config_directory"]==str(directory),"native_directory_or_fields_unverified")
+    services={}
+    for line in read("-M").splitlines():
+        tokens=line.split()
+        need(len(tokens)>=8,"invalid_native_master_service")
+        key=tokens[0]+"/"+tokens[1]
+        need(key not in services,"duplicate_native_master_service")
+        services[key]=tokens
+    need(not read("-P").strip(),"native_service_overrides_require_review")
+    # A temporary config root can affect derived path defaults. Normalize
+    # only that exact generated path, then compare against the live sample.
+    def normalize(value):
+        return value.replace(str(directory),str(ROOT)) if directory!=ROOT else value
+    return {"explicit":{k:normalize(v) for k,v in explicit.items()},
+            "expanded":{k:normalize(v) for k,v in expanded.items()},
+            "services":{k:[normalize(v) for v in row] for k,row in services.items()}}
+
+
+def compare_native_candidate(before,after):
+    targets=dict(ROUTE_CHANGES)
+    need(set(before)==set(after)=={"explicit","expanded","services"},
+         "native_snapshot_shape")
+    old,new=before["explicit"],after["explicit"]
+    need({k:v for k,v in old.items() if k not in targets}==
+         {k:v for k,v in new.items() if k not in targets},
+         "unexpected_explicit_parameter_change")
+    for key,value in targets.items():
+        if key=="relayhost" and key not in new:
+            need(not after["expanded"]["relayhost"],"native_relayhost_not_cleared")
+        else:
+            need(new.get(key)==value,"native_candidate_parameter_mismatch")
+    previous,current=before["expanded"],after["expanded"]
+    need(set(previous)==set(current)==set(PRESERVED_KEYS),"native_expanded_fields_changed")
+    for key,value in current.items():
+        need(value==(targets[key] if key in targets else previous[key]),
+             "unexpected_effective_parameter_change")
+    pipe="m365xoauth2/unix"
+    old_services,new_services=before["services"],after["services"]
+    need({k:v for k,v in old_services.items() if k!=pipe}==
+         {k:v for k,v in new_services.items() if k!=pipe},
+         "native_unrelated_service_changed")
+    expected=PIPE.decode("ascii").split()
+    need(new_services.get(pipe)==expected and
+         (pipe not in old_services or old_services[pipe]==expected),
+         "native_pipe_not_exact")
+
+
+def native_candidate_validation(raw,candidate,snapshot=native_snapshot):
+    """Private alternate-config postconf only; never call postfix check/start."""
+    try:
+        E.trusted_directory(Path("/run"))
+        live=snapshot(ROOT)
+        need(config_bytes()==raw,"live_configuration_changed")
+        with tempfile.TemporaryDirectory(prefix="lmr365-primary-native-",dir="/run") as work:
+            directory=Path(work)
+            E.trusted_directory(directory)
+            need(stat.S_IMODE(directory.stat().st_mode)==0o700,"native_stage_not_private")
+            for index,blob in enumerate((raw,candidate)):
+                for name,data in zip(("main.cf","master.cf"),blob):
+                    if index==0:
+                        fd=os.open(str(directory/name),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+                        with os.fdopen(fd,"wb") as stream:
+                            stream.write(data)
+                    else:
+                        # Only overwrite the two files in our private scratch directory.
+                        with (directory/name).open("wb") as stream:
+                            stream.write(data)
+                sampled=snapshot(directory)
+                if index==0:
+                    baseline=sampled
+                    need(baseline==live,"alternate_config_baseline_differs")
+                else:
+                    compare_native_candidate(baseline,sampled)
+                    checked=sampled
+            need(config_bytes()==raw and snapshot(ROOT)==live and config_bytes()==raw,
+                 "live_configuration_changed_during_native_review")
+            return "verified",E.digest(encode({"before":live,"after":checked}))
+    except (E.Refused,OSError,ValueError,KeyError,TypeError,UnicodeError,subprocess.TimeoutExpired):
+        # Never emit native output: main.cf may contain sensitive values.
+        return "review_required",""
+
+
 def sample():
     digest=config_hash()
     def read(*args):
@@ -255,6 +379,13 @@ def inspect(req):
     ident=identity_snapshot(req["mailbox"])
     raw=config_bytes()
     candidate=candidate_evidence(raw,first,req["mailbox"],ident)
+    native_status,native_sha="not_attempted",""
+    if candidate["candidate_status"]!="review_required":
+        proposed,_=candidate_configs(raw,first)
+        native_status,native_sha=native_candidate_validation(raw,proposed)
+        if native_status=="verified":
+            candidate["plan_sha256"]=E.digest(encode({
+                "structural_plan":candidate["plan_sha256"],"native_sha256":native_sha}))
     active=command("systemctl",("is-active","--quiet","postfix"))
     try:
         queue=command("postqueue",("-c",str(ROOT),"-j"))
@@ -262,7 +393,8 @@ def inspect(req):
     except (E.Refused,OSError,subprocess.TimeoutExpired):
         queue_status="unverified"
     need(sample()==first and identity_snapshot(req["mailbox"])==ident,"configuration_changed")
-    return dict(version=2,nonce=req["nonce"],mailbox=req["mailbox"],config_sha256=first[0],
+    return dict(version=3,nonce=req["nonce"],mailbox=req["mailbox"],config_sha256=first[0],
+        native_validation=native_status,native_sha256=native_sha,
         identity=ident[0],service="active" if active.returncode==0 else "unverified",
         queue=queue_status,changes=False,mail_sent=False,apply_supported=False,
         local_delivery_changed=False,listener_changed=False,**route,**candidate)
@@ -275,6 +407,8 @@ def validate_apply_preconditions(report, expected_plan):
     need(report["plan_sha256"]==expected_plan,"stale_reviewed_plan")
     need(report["scope"]=="primary_only" and report["route"]!="review_required" and
          report["candidate_status"]=="ready","migration_not_ready")
+    need(report.get("native_validation")=="verified" and
+         SHA.fullmatch(report.get("native_sha256","")),"native_candidate_not_verified")
     need(report["identity"]=="mailbox_matches","identity_not_ready")
     need(report["service"]=="active","service_not_ready")
     need(report["queue"]=="empty","queue_not_empty_or_unverified")

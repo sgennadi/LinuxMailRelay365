@@ -5,7 +5,8 @@ namespace LinuxMailRelay365;
 
 internal sealed record PrimaryMailboxRoutePreview(string Mailbox,string ConfigSha,string Scope,
     string Route,string OverrideStatus,string LocalClasses,string Identity,string Service,string Queue,
-    string CandidateStatus,string CandidateSha,string PlanSha,string[] ChangeSet)
+    string CandidateStatus,string CandidateSha,string PlanSha,string[] ChangeSet,
+    string NativeValidation,string NativeSha)
 {
     internal static bool ValidMailbox(string value) => value.Length<=254 && !value.Contains("..",StringComparison.Ordinal) &&
         Regex.IsMatch(value,@"\A[a-z0-9][a-z0-9._+%-]{0,62}@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z0-9]{2,63}\z");
@@ -18,7 +19,8 @@ internal sealed record PrimaryMailboxRoutePreview(string Mailbox,string ConfigSh
         var root=doc.RootElement;
         string[] fields=["version","nonce","mailbox","config_sha256","identity","service","queue",
             "scope","route","override_status","local_classes","changes","mail_sent","apply_supported",
-            "local_delivery_changed","listener_changed","candidate_status","candidate_sha256","plan_sha256","change_set"];
+            "local_delivery_changed","listener_changed","candidate_status","candidate_sha256","plan_sha256","change_set",
+            "native_validation","native_sha256"];
         if(root.ValueKind!=JsonValueKind.Object || !root.EnumerateObject().Select(p=>p.Name).OrderBy(x=>x,StringComparer.Ordinal)
             .SequenceEqual(fields.OrderBy(x=>x,StringComparer.Ordinal))) throw new InvalidDataException("Unexpected primary route receipt.");
         string Read(string key)=>root.GetProperty(key).GetString() ?? throw new InvalidDataException("Missing route evidence.");
@@ -28,7 +30,7 @@ internal sealed record PrimaryMailboxRoutePreview(string Mailbox,string ConfigSh
             if(!allowed.Contains(value,StringComparer.Ordinal)) throw new InvalidDataException("Unknown route evidence.");
             return value;
         }
-        if(root.GetProperty("version").GetInt32()!=2 || Read("nonce")!=nonce || Read("mailbox")!=mailbox ||
+        if(root.GetProperty("version").GetInt32()!=3 || Read("nonce")!=nonce || Read("mailbox")!=mailbox ||
             !MultiMailboxSourceEditRequest.IsSha(Read("config_sha256")) ||
             new[]{"changes","mail_sent","apply_supported","local_delivery_changed","listener_changed"}
                 .Any(key=>root.GetProperty(key).ValueKind!=JsonValueKind.False))
@@ -44,12 +46,17 @@ internal sealed record PrimaryMailboxRoutePreview(string Mailbox,string ConfigSh
                 Read("route")=="review_required" || (candidateStatus=="ready")!=(changes.Length>0) ||
                 (candidateStatus=="already_configured" && candidateSha!=Read("config_sha256"))))
             throw new InvalidDataException("Invalid candidate evidence.");
+        string native=State("native_validation","not_attempted","review_required","verified");
+        string nativeSha=Read("native_sha256");
+        if ((native=="not_attempted")!=(candidateStatus=="review_required") ||
+            (native=="verified" ? !MultiMailboxSourceEditRequest.IsSha(nativeSha) : nativeSha!=""))
+            throw new InvalidDataException("Invalid native candidate evidence.");
         return new(mailbox,Read("config_sha256"),State("scope","primary_only","review_required"),
             State("route","configured","migration_candidate","review_required"),
             State("override_status","present","absent"),State("local_classes","configured","not_declared"),
             State("identity","absent","mailbox_matches","different_mailbox","unverified"),
             State("service","active","unverified"),State("queue","empty","nonempty","unverified"),
-            candidateStatus,candidateSha,planSha,changes);
+            candidateStatus,candidateSha,planSha,changes,native,nativeSha);
     }
 
     internal string Describe() => "Primary Postfix · one Microsoft 365 sender" + Environment.NewLine +
@@ -63,6 +70,9 @@ internal sealed record PrimaryMailboxRoutePreview(string Mailbox,string ConfigSh
         (CandidateSha.Length==0 ? "Automatic candidate blocked; inspect routing and configuration syntax." :
             "Candidate SHA-256: "+CandidateSha+Environment.NewLine+"Plan SHA-256: "+PlanSha+Environment.NewLine+
             "Changed entries: "+(ChangeSet.Length==0 ? "none" : string.Join(", ",ChangeSet)))+Environment.NewLine+
+        "Native alternate-config parser comparison: "+NativeValidation+
+        (NativeSha.Length==0 ? " (no verified native plan)" : Environment.NewLine+"Native evidence SHA-256: "+NativeSha)+
+        Environment.NewLine+"Native comparison is not a live daemon or delivery test."+Environment.NewLine+
         "Proposed: switch only the default/relay transport, clear the former relayhost, and add or verify the dedicated pipe and limits. "+
         "Envelope sender and From are rewritten to this mailbox. Existing SMTP listener, local/virtual delivery and inbound policy must be preserved. "+
         "A configured local identity is not proof of certificate signing, Graph grants or SMTP AUTH."+
@@ -71,7 +81,8 @@ internal sealed record PrimaryMailboxRoutePreview(string Mailbox,string ConfigSh
     internal static bool SelfTest()
     {
         string mailbox="alerts@example.org",nonce=new('a',64);
-        string body=JsonSerializer.Serialize(new {version=2,nonce,mailbox,config_sha256=new string('b',64),
+        string body=JsonSerializer.Serialize(new {version=3,nonce,mailbox,config_sha256=new string('b',64),
+            native_validation="verified",native_sha256=new string('e',64),
             identity="absent",service="active",queue="empty",scope="primary_only",route="migration_candidate",
             override_status="absent",local_classes="configured",changes=false,mail_sent=false,apply_supported=false,
             local_delivery_changed=false,listener_changed=false,candidate_status="ready",
@@ -82,6 +93,8 @@ internal sealed record PrimaryMailboxRoutePreview(string Mailbox,string ConfigSh
             body.Replace("\"apply_supported\":false","\"apply_supported\":true"),
             body.Replace("\"listener_changed\":false","\"listener_changed\":true"),
             body.Replace("master.cf:m365xoauth2","inet_interfaces"),
+            body.Replace("\"native_validation\":\"verified\"","\"native_validation\":\"not_attempted\""),
+            body.Replace("\"native_sha256\":\""+new string('e',64)+"\"","\"native_sha256\":\"\""),
             body.Replace("\"candidate_status\":\"ready\"","\"candidate_status\":\"already_configured\"")})
         {
             try {Parse(bad,mailbox,nonce);return false;} catch(InvalidDataException){}
