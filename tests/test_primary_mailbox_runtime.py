@@ -284,7 +284,7 @@ class ManagedTpmRuntimeTests(unittest.TestCase):
                     st_mode=stat.S_IFCHR|0o660)
         with patch.object(A.T,"check_hardware"), \
              patch.object(A.T,"DEVICE",Mock(lstat=Mock(return_value=device))), \
-             patch.object(A,"system_executable",return_value=["trusted"]), \
+             patch.object(A.T,"trusted_runtime_tool",return_value=["trusted"]) as tool, \
              patch.object(A.tempfile,"TemporaryDirectory") as temporary, \
              patch.object(A.T,"run_command") as runner, \
              patch.object(A.R.E,"secure_read",return_value=b"public key\n"), \
@@ -298,6 +298,18 @@ class ManagedTpmRuntimeTests(unittest.TestCase):
             openssl.side_effect=[b"different public key",b""]
             with self.assertRaises(A.Refused):
                 A.tpm_public_evidence("0x81010001",self.identity["certificate"])
+
+
+            tool.assert_called_with(A.T.COMMANDS["readpublic"])
+            openssl.side_effect=[b"public key\n",b""]
+            tool.side_effect=[["original-alias-and-target"],["changed-alias-and-target"]]
+            with self.assertRaisesRegex(A.Refused,"tpm_readpublic_changed"):
+                A.tpm_public_evidence("0x81010001",self.identity["certificate"])
+            runner.reset_mock()
+            tool.side_effect=A.T.Refused("unsafe_tpm2_or_openssl_utility")
+            with self.assertRaisesRegex(A.Refused,"tpm_readpublic_utility_unverified"):
+                A.tpm_public_evidence("0x81010001",self.identity["certificate"])
+            runner.assert_not_called()
 
 
 class PrimarySelinuxReadinessTests(unittest.TestCase):

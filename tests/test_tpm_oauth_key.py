@@ -25,6 +25,76 @@ ACTIVE = {
 }
 
 
+class TpmRuntimeUtilityTests(unittest.TestCase):
+    @staticmethod
+    def metadata(mode,uid=0,inode=10):
+        return SimpleNamespace(st_dev=1,st_ino=inode,st_mode=mode,
+                               st_uid=uid,st_gid=0,st_size=128,
+                               st_mtime_ns=100,st_ctime_ns=101)
+
+    def test_native_multicall_alias_and_regular_executable(self):
+        alias=TPM.COMMANDS["getcap"]
+        common=Path("/usr/bin/tpm2")
+        link=self.metadata(stat.S_IFLNK|0o777)
+        binary=self.metadata(stat.S_IFREG|0o755,inode=11)
+        for value in ("tpm2","/usr/bin/tpm2"):
+            with self.subTest(link=value), \
+                 mock.patch.object(TPM,"check_dir") as directory, \
+                 mock.patch.object(Path,"lstat",lambda p:link if p==alias else binary), \
+                 mock.patch.object(TPM.os,"readlink",return_value=value):
+                result=TPM.trusted_runtime_tool(alias)
+                self.assertEqual(result[0],str(alias))
+                self.assertEqual(result[2],value)
+                self.assertEqual(result[3],str(common))
+                directory.assert_called_once_with(Path("/usr/bin"))
+        with mock.patch.object(TPM,"check_dir"), \
+             mock.patch.object(Path,"lstat",return_value=binary), \
+             mock.patch.object(TPM.os,"readlink") as readlink:
+            result=TPM.trusted_runtime_tool(alias)
+            self.assertEqual(result[3],str(alias))
+            self.assertIsNone(result[2])
+            readlink.assert_not_called()
+
+    def test_rejects_untrusted_alias_target_and_drift(self):
+        alias=TPM.COMMANDS["getcap"]
+        link=self.metadata(stat.S_IFLNK|0o777)
+        binary=self.metadata(stat.S_IFREG|0o755,inode=11)
+        for value in ("../bin/tpm2","/tmp/tpm2","/usr/bin/other","tpm2_getcap"):
+            with mock.patch.object(TPM,"check_dir"), \
+                 mock.patch.object(Path,"lstat",return_value=link), \
+                 mock.patch.object(TPM.os,"readlink",return_value=value), \
+                 self.assertRaisesRegex(TPM.Refused,"unsafe_tpm"):
+                TPM.trusted_runtime_tool(alias)
+        for target in (link,self.metadata(stat.S_IFREG|0o775),
+                       self.metadata(stat.S_IFREG|0o755,uid=1000),
+                       self.metadata(stat.S_IFREG|0o4755),
+                       self.metadata(stat.S_IFREG|0o644)):
+            with mock.patch.object(TPM,"check_dir"), \
+                 mock.patch.object(Path,"lstat",side_effect=[link,target]), \
+                 mock.patch.object(TPM.os,"readlink",return_value="tpm2"), \
+                 self.assertRaisesRegex(TPM.Refused,"unsafe_tpm"):
+                TPM.trusted_runtime_tool(alias)
+        with mock.patch.object(TPM,"check_dir"), \
+             mock.patch.object(Path,"lstat",return_value=self.metadata(stat.S_IFLNK|0o777,uid=1000)), \
+             self.assertRaisesRegex(TPM.Refused,"unsafe_tpm"):
+            TPM.trusted_runtime_tool(alias)
+        with mock.patch.object(TPM,"check_dir"), \
+             mock.patch.object(Path,"lstat",return_value=link), \
+             mock.patch.object(TPM.os,"readlink",return_value="tpm2"), \
+             self.assertRaisesRegex(TPM.Refused,"unsafe_tpm"):
+            TPM.trusted_runtime_tool(TPM.COMMANDS["openssl"])
+        changed=self.metadata(stat.S_IFLNK|0o777,inode=99)
+        with mock.patch.object(TPM,"check_dir"), \
+             mock.patch.object(Path,"lstat",side_effect=[link,binary,changed]), \
+             mock.patch.object(TPM.os,"readlink",return_value="tpm2"), \
+             self.assertRaisesRegex(TPM.Refused,"utility_changed"):
+            TPM.trusted_runtime_tool(alias)
+        with mock.patch.object(TPM,"check_dir"), \
+             mock.patch.object(Path,"lstat",side_effect=FileNotFoundError()), \
+             self.assertRaisesRegex(TPM.Refused,"missing_tpm"):
+            TPM.trusted_runtime_tool(alias)
+
+
 class TpmOAuthKeyTests(unittest.TestCase):
     def setUp(self):
         self.handle = "0x81010001"
@@ -35,7 +105,7 @@ class TpmOAuthKeyTests(unittest.TestCase):
             (TPM, "require_root", {}),
             (TPM, "check_dir", {}),
             (TPM, "check_hardware", {"return_value": "2"}),
-            (TPM, "check_runtime_files", {}),
+            (TPM, "check_runtime_files", {"return_value":{"getcap":["trusted_fixture"]}}),
             (TPM, "read_checked", {"return_value": self.active}),
             (TPM, "check_empty_destination", {}),
             (TPM, "provider_ready", {"return_value": "OpenSSL 3.0.9"})]:
@@ -76,7 +146,12 @@ class TpmOAuthKeyTests(unittest.TestCase):
         with mock.patch.object(TPM,"primary_service_device_evidence",return_value=access) as probe:
             primary=TPM.prepare("primary",self.handle)
             self.assertEqual(primary["evidence"]["primary_service_access"],access)
-            self.assertEqual(probe.call_count,2)
+            self.assertEqual(primary["evidence"]["primary_runtime_utilities"],
+                             {"getcap":["trusted_fixture"]})
+            with mock.patch.object(TPM,"check_runtime_files",return_value={"getcap":["changed"]}):
+                with self.assertRaisesRegex(TPM.Refused,"utility_changed"):
+                    TPM.verify_primary_creation_access(primary)
+            self.assertEqual(probe.call_count,3)
             probe.return_value=dict(access,device=[1,2,4,0,999,0o20660])
             self.assertNotEqual(TPM.prepare("primary",self.handle)["sha"],primary["sha"])
             with self.assertRaisesRegex(TPM.Refused,"service_access_changed"):

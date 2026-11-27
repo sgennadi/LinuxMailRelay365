@@ -162,7 +162,13 @@ def tpm_public_evidence(handle,certificate):
     device=T.DEVICE.lstat()
     need(stat.S_ISCHR(device.st_mode) and device.st_uid==0 and not device.st_mode&0o002,
          "untrusted_tpm_resource_manager")
-    binary=system_executable(str(T.COMMANDS["readpublic"]))
+    # Use the same narrow distro-multicall trust policy as provisioning.
+    # Retain the original alias for argv[0] dispatch and bind both alias and
+    # target metadata, not just the resolved executable.
+    try:
+        binary=T.trusted_runtime_tool(T.COMMANDS["readpublic"])
+    except T.Refused:
+        raise Refused("tpm_readpublic_utility_unverified") from None
     with tempfile.TemporaryDirectory(prefix="lmr365-tpm-runtime-",dir="/run") as work:
         public=Path(work)/"public.pem"
         T.run_command([str(T.COMMANDS["readpublic"]),"-c",handle,
@@ -172,8 +178,11 @@ def tpm_public_evidence(handle,certificate):
     expected=C.openssl(["x509","-pubkey","-noout","-in",certificate]).strip()
     need(bool(expected) and expected==raw.strip(),"tpm_handle_certificate_mismatch")
     C.openssl(["x509","-in",certificate,"-noout","-checkend","0"])
-    need(system_executable(str(T.COMMANDS["readpublic"]))==binary,
-         "tpm_readpublic_changed")
+    try:
+        observed=T.trusted_runtime_tool(T.COMMANDS["readpublic"])
+    except T.Refused:
+        raise Refused("tpm_readpublic_utility_unverified") from None
+    need(observed==binary,"tpm_readpublic_changed")
     after=T.DEVICE.lstat()
     need(tpm_device_fingerprint(after)==tpm_device_fingerprint(device),
          "tpm_resource_manager_changed")
