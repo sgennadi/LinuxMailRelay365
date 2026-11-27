@@ -13,8 +13,10 @@ internal static class SmtpCertificateTransfer
         if (Uri.CheckHostName(domain) != UriHostNameType.Dns ||
             !System.Text.RegularExpressions.Regex.IsMatch(domain, @"\A[A-Za-z0-9.-]{1,253}\z"))
             throw new ArgumentException("Invalid certificate DNS name.");
-        if (!string.IsNullOrEmpty(endpoint.SudoPassword))
+        bool directRoot = string.Equals(endpoint.Username, "root", StringComparison.Ordinal);
+        if (!directRoot && !string.IsNullOrEmpty(endpoint.SudoPassword))
             throw new InvalidOperationException("Certificate transfer requires root or passwordless sudo.");
+        string command = (directRoot ? "" : "sudo -n ") + EmbeddedAssets.BuildSmtpCertificateImportCommand(domain);
         using var rsa = leaf.GetRSAPrivateKey();
         using var ec = leaf.GetECDsaPrivateKey();
         byte[] key = rsa is not null ? rsa.ExportPkcs8PrivateKey() :
@@ -34,7 +36,7 @@ internal static class SmtpCertificateTransfer
                 key = Encode(PemEncoding.WriteString("PRIVATE KEY", key))
             });
             var result = await SshRemote.ExecuteAsync(endpoint,
-                "sudo -n /usr/bin/python3 /usr/local/libexec/linuxmailrelay365/receive-smtp-certificate-import.py --domain=" + domain,
+                command,
                 payload, TimeSpan.FromSeconds(120), cancellationToken);
             if (result.ExitCode != 0)
                 throw new InvalidOperationException("Remote certificate import refused.");

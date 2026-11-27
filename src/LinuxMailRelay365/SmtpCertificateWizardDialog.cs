@@ -134,6 +134,6 @@ internal sealed class SmtpCertificateWizardDialog : Form
         summary.Text = "Planned steps (preview only)" + Environment.NewLine + Environment.NewLine +
             string.Join(Environment.NewLine, SmtpCertificateWizardPlan.Steps(Identity, Source)
                 .Select((step, index) => (index + 1) + ". " + step)) +
-            Environment.NewLine + Environment.NewLine + (SelectedCertificate is { } cert ? "Selected: " + cert.GetProperty("lineage").GetString() + " (unverified)" + Environment.NewLine : "") + "No Linux or Microsoft 365 settings will be changed.";
+            Environment.NewLine + Environment.NewLine + (SelectedCertificate is { } cert ? "Selected: " + cert.GetProperty("lineage").GetString() + " (unverified)" + Environment.NewLine : "") + "Import creates protected candidate files on Linux only. Active Postfix and Microsoft 365 configuration remain unchanged.";
     }
 }

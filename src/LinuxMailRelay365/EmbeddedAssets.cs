@@ -33,6 +33,27 @@ internal static class EmbeddedAssets
             " <<'LMR365_CERT_CHECK'\n" + Text("LinuxMailRelay365.linux.smtp-cert-check.py") +
             "\nLMR365_CERT_CHECK\n";
     }
+    // Command arguments contain only shipped public helper source and the DNS name.
+    // The private key package must stay on SSH stdin, never in argv or command logs.
+    internal static string BuildSmtpCertificateImportCommand(string domain)
+    {
+        if (Uri.CheckHostName(domain) != UriHostNameType.Dns ||
+            !Regex.IsMatch(domain, @"\A[A-Za-z0-9.-]{1,253}\z"))
+            throw new ArgumentException("Invalid certificate DNS name.");
+        string EncodeAsset(string name) => Convert.ToBase64String(Encoding.UTF8.GetBytes(Text(name)));
+        string launcher = EncodeAsset("LinuxMailRelay365.linux.smtp-cert-import-launcher.py");
+        string command = "/usr/bin/python3 -I -B -c 'import base64;exec(base64.b64decode(\"" +
+            launcher + "\"))' --domain=" + domain + " " +
+            string.Join(" ", new[] {
+                "LinuxMailRelay365.linux.smtp-cert-check.py",
+                "LinuxMailRelay365.linux.smtp-cert-stage.py",
+                "LinuxMailRelay365.linux.smtp-cert-receive.py"
+            }.Select(EncodeAsset));
+        if (command.Length > 65536)
+            throw new InvalidDataException("Certificate helper bundle exceeds command size limit.");
+        return command;
+    }
+
     internal static string SmtpCertificateDiscovery => "set -eu\n/usr/bin/python3 - <<'LMR365_CERT_DISCOVERY'\n" + Text("LinuxMailRelay365.linux.smtp-cert-discovery.py") + "\nLMR365_CERT_DISCOVERY\n";
     internal static string Installer => Text("LinuxMailRelay365.linux.install.sh");
     internal static string Transport => Text("LinuxMailRelay365.linux.transport.py");

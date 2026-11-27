@@ -31,6 +31,9 @@
     <ProjectReference Include="../../modules/UniversalUpdater/src/UniversalUpdater.Core/UniversalUpdater.Core.csproj"
                       Condition="'$(UseSharedUpdater)' == 'true'" />
     <EmbeddedResource Include="../../linux/check-smtp-relay-certificate.py" LogicalName="LinuxMailRelay365.linux.smtp-cert-check.py" />
+    <EmbeddedResource Include="../../linux/stage-smtp-relay-certificate.py" LogicalName="LinuxMailRelay365.linux.smtp-cert-stage.py" />
+    <EmbeddedResource Include="../../linux/receive-smtp-certificate-import.py" LogicalName="LinuxMailRelay365.linux.smtp-cert-receive.py" />
+    <EmbeddedResource Include="../../linux/run-smtp-certificate-import.py" LogicalName="LinuxMailRelay365.linux.smtp-cert-import-launcher.py" />
     <EmbeddedResource Include="../../linux/discover-smtp-relay-certificates.py" LogicalName="LinuxMailRelay365.linux.smtp-cert-discovery.py" />
     <EmbeddedResource Include="../../linux/install-postfix-m365-xoauth2.sh" LogicalName="LinuxMailRelay365.linux.install.sh" />
     <EmbeddedResource Include="../../linux/m365_xoauth2_transport.py" LogicalName="LinuxMailRelay365.linux.transport.py" />
