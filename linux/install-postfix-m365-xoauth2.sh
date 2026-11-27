@@ -149,6 +149,90 @@ if [ -n "$LISTEN_IP" ]; then
   fi
 fi
 
+# BEGIN PRIMARY_INSTALLER_SELINUX_HELPERS
+# This legacy installer may label its explicitly owned identity/runtime paths.
+# Never change enforcement, policy rules, port types or unrelated files.
+read_installer_selinux_mode() {
+  local kernel='' reported=''
+  if [ -e /sys/fs/selinux/enforce ]; then
+    kernel="$(cat /sys/fs/selinux/enforce)" || return 1
+    case "$kernel" in
+      1) kernel=Enforcing ;;
+      0) kernel=Permissive ;;
+      *) echo 'SELinux kernel mode is unverified.' >&2; return 1 ;;
+    esac
+  fi
+  if command -v getenforce >/dev/null 2>&1; then
+    reported="$(getenforce)" || {
+      echo 'Cannot determine SELinux mode.' >&2; return 1;
+    }
+    case "$reported" in
+      Enforcing|Permissive|Disabled) ;;
+      *) echo 'Unexpected SELinux mode.' >&2; return 1 ;;
+    esac
+    if [ -n "$kernel" ] && [ "$reported" != "$kernel" ]; then
+      echo 'Conflicting SELinux mode observations.' >&2; return 1
+    fi
+  fi
+  printf '%s\n' "${kernel:-${reported:-inactive_or_unavailable}}"
+}
+
+check_installer_selinux_paths() {
+  local operation="$1" path expected actual observed
+  shift
+  case "$operation" in label|verify) ;; *) return 1 ;; esac
+  observed="$(read_installer_selinux_mode)" || return 1
+  if [ "$observed" != "$SELINUX_SETUP_MODE" ]; then
+    echo 'SELinux mode changed during installation.' >&2; return 1
+  fi
+  case "$observed" in
+    Disabled|inactive_or_unavailable) return 0 ;;
+    Enforcing|Permissive) ;;
+    *) return 1 ;;
+  esac
+  for path in "$@"; do
+    if [ -L "$path" ] || { [ ! -f "$path" ] && [ ! -d "$path" ]; }; then
+      echo "Unexpected SELinux object: $path" >&2; return 1
+    fi
+    if [ "$operation" = label ]; then
+      # Preserve the normal restorecon behavior, not a forced full-context
+      # reset. A mismatch after restorecon requires administrator review.
+      restorecon -- "$path" || {
+        echo "SELinux restorecon failed: $path" >&2; return 1;
+      }
+    fi
+    expected="$(matchpathcon -N -n "$path")" || {
+      echo "SELinux policy context unavailable: $path" >&2; return 1;
+    }
+    actual="$(stat -c '%C' -- "$path")" || {
+      echo "SELinux actual context unavailable: $path" >&2; return 1;
+    }
+    if ! [[ "$expected" =~ ^[A-Za-z0-9_]+:[A-Za-z0-9_]+:[A-Za-z0-9_]+:[^[:space:]]+$ ]] ||
+       [ "$actual" != "$expected" ]; then
+      echo "SELinux context mismatch: $path. Manual policy review required." >&2
+      return 1
+    fi
+  done
+  observed="$(read_installer_selinux_mode)" || return 1
+  [ "$observed" = "$SELINUX_SETUP_MODE" ] || {
+    echo 'SELinux mode changed during verification.' >&2; return 1;
+  }
+}
+# END PRIMARY_INSTALLER_SELINUX_HELPERS
+
+SELINUX_SETUP_MODE="$(read_installer_selinux_mode)" || exit 1
+case "$SELINUX_SETUP_MODE" in
+  Enforcing|Permissive)
+    for tool in restorecon matchpathcon stat; do
+      command -v "$tool" >/dev/null 2>&1 || {
+        echo "SELinux is active; required tool is missing: $tool. No setup changes made." >&2
+        exit 1
+      }
+    done
+    ;;
+esac
+printf 'SELINUX_SETUP_MODE=%s\n' "$SELINUX_SETUP_MODE"
+
 CONF_DIR=/etc/postfix/m365-oauth
 if [ "$ACTIVATE_ONLY" -eq 1 ]; then
   [ -f "$CONF_DIR/app.next.key" ] && [ -f "$CONF_DIR/app.next.crt" ] || {
@@ -318,6 +402,12 @@ chown root:m365mailer "$CONF_DIR/app.key" "$CONF_DIR/app.crt"
 chmod 0640 "$CONF_DIR/app.key"
 chmod 0644 "$CONF_DIR/app.crt"
 
+# Check the identity even when prepare-only returns before the full install.
+check_installer_selinux_paths label "$CONF_DIR" "$CONF_DIR/app.key" "$CONF_DIR/app.crt" || {
+  echo 'Certificate files retained; SELinux readiness is unverified. Do not register/activate yet.' >&2
+  exit 1
+}
+
 if [ "$PREPARE_ONLY" -eq 1 ]; then
   echo 'Certificate preparation complete; upload PUBLIC app.crt in the Microsoft 365 provisioning step.'
   echo 'PUBLIC_CERT_PATH=/etc/postfix/m365-oauth/app.crt'
@@ -346,6 +436,13 @@ install -D -o root -g root -m 0755 \
 install -D -o root -g root -m 0644 \
   "$SCRIPT_DIR/m365_hardware_signer.py" \
   /usr/local/libexec/m365_hardware_signer.py
+
+# Refuse before editing the primary route if labeling either installed
+# helper or the identity fails. The previous recursive restorecon touched
+# unrelated files and ignored failures.
+check_installer_selinux_paths label "$CONF_DIR/app.json" \
+  /usr/local/libexec/m365_xoauth2_transport.py \
+  /usr/local/libexec/m365_hardware_signer.py || exit 1
 
 STAMP="$(date -u +'%Y%m%dT%H%M%SZ')"
 cp -p /etc/postfix/main.cf "/etc/postfix/main.cf.pre-m365.$STAMP"
@@ -389,9 +486,10 @@ path.write_text(s)
 PY
 
 postfix check
-if command -v restorecon >/dev/null 2>&1; then
-  restorecon -R "$CONF_DIR" /usr/local/libexec/m365_xoauth2_transport.py || true
-fi
+check_installer_selinux_paths verify "$CONF_DIR" "$CONF_DIR/app.key" \
+  "$CONF_DIR/app.crt" "$CONF_DIR/app.json" \
+  /usr/local/libexec/m365_xoauth2_transport.py \
+  /usr/local/libexec/m365_hardware_signer.py || exit 1
 if command -v systemctl >/dev/null 2>&1; then
   systemctl enable --now postfix
   systemctl restart postfix
@@ -414,6 +512,10 @@ printf '%s\n' 'INSTALLED (Microsoft 365 authorization is not yet completed).' \
  '   sudo -u m365mailer /usr/bin/python3 /usr/local/libexec/m365_xoauth2_transport.py --token-check' \
  '4) Send test mail using /usr/sbin/sendmail -t.' \
  '5) Monitor queue with postqueue -p and journalctl -u postfix.'
-if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" = 'Enforcing' ]; then
-  echo 'SELinux is enforcing: verify AVC logs if the pipe transport cannot read the key or connect to SMTP.'
-fi
+case "$SELINUX_SETUP_MODE" in
+  Enforcing|Permissive)
+    echo 'SELINUX_FILE_CONTEXTS=policy_matched'
+    echo 'SELINUX_PIPE_DOMAIN=not_verified'
+    echo 'File contexts and runuser checks do not prove Postfix pipe-domain signing or network access. Verify actual pipe execution and AVC logs.'
+    ;;
+esac
