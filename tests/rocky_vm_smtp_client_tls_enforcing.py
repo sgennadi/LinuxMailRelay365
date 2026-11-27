@@ -111,7 +111,8 @@ def certificates():
     for name, cn, purpose, san in (
             ("server", "sink.lab.invalid", "serverAuth", "DNS:sink.lab.invalid,IP:127.0.0.2"),
             ("first", IDENTITY, "clientAuth", "DNS:" + IDENTITY),
-            ("second", IDENTITY, "clientAuth", "DNS:" + IDENTITY)):
+            ("second", IDENTITY, "clientAuth", "DNS:" + IDENTITY),
+            ("renewed", IDENTITY, "clientAuth", "DNS:" + IDENTITY)):
         run("openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=" + cn,
             "-keyout", str(WORK / (name + ".key")), "-out", str(WORK / (name + ".csr")))
         ext = WORK / (name + ".ext")
@@ -358,6 +359,7 @@ def verify_reboot():
             or run("postqueue", "-j").strip()):
         raise ValueError("isolated fixture route not verified after reboot")
     probe("second", "boot_recovery")
+    load("rocky_vm_smtp_tls_renewal").run(sys.modules[__name__])
     run("systemctl", "stop", "postfix.service")
     run("systemctl", "disable", *BOOT_UNITS)
     for name in BOOT_UNITS:

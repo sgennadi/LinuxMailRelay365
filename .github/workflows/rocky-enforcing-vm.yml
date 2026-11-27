@@ -59,7 +59,7 @@ jobs:
         shell: bash
         run: |
           python3 -m py_compile linux/manage-multi-mailbox-proof-timer.py linux/refresh-multi-mailbox-proof.py linux/audit-oauth-ingress.py linux/audit-oauth-sender-map.py
-          python3 -m py_compile tests/rocky_vm_smtp_client_tls_enforcing.py
+          python3 -m py_compile tests/rocky_vm_smtp_client_tls_enforcing.py tests/rocky_vm_smtp_tls_renewal.py
           bash -n tests/rocky_vm_multi_proof_timer_enforcing.sh tests/rocky_vm_boot_enforcing.sh tests/rocky_vm_sendmail_systemd_enforcing.sh
           python3 -m py_compile linux/foreign-mta-config-backup.py linux/restore-foreign-mta-config.py tests/rocky_vm_sendmail_product_restore.py
           python3 -m py_compile linux/inspect-mail-queue.py tests/smoke_native_sendmail_queue_preview.py
