@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import stat
 import re
+import shlex
 import subprocess
 import uuid
 import pwd
@@ -56,37 +57,66 @@ def policy_matches():
 # policy or product code may infer authorization from this experiment.
 UNIT_PROPERTIES=("PrivateDevices","DevicePolicy","DeviceAllow","BindPaths",
     "BindReadOnlyPaths","ProtectSystem","NoNewPrivileges","SystemCallFilter",
-    "RootDirectory","RootImage","InaccessiblePaths","PrivateMounts","DropInPaths")
+    "RootDirectory","RootImage","InaccessiblePaths","PrivateMounts","DropInPaths",
+    "TemporaryFileSystem")
+# D-Bus exposes arrays even when systemctl show omits an empty list.
+# Read the typed property rather than interpreting missing output as empty.
+UNIT_ARRAYS={
+    "DeviceAllow":("Service","a(ss)",2),
+    "BindPaths":("Service","a(ssbt)",4),
+    "BindReadOnlyPaths":("Service","a(ssbt)",4),
+    "InaccessiblePaths":("Service","as",1),
+    "TemporaryFileSystem":("Service","a(ss)",2),
+    "DropInPaths":("Unit","as",1),
+}
 RUNTIME_DIR=Path("/run/systemd/system/postfix.service.d")
 DROPIN=RUNTIME_DIR/"99-lmr365-disposable-tpm.conf"
 DROPIN_BYTES=b"[Service]\nBindPaths=/dev/tpmrm0:/dev/tpmrm0\nDeviceAllow=/dev/tpmrm0 rw\n"
 
+def unit_array(name):
+    interface,signature,width=UNIT_ARRAYS[name]
+    raw=command("/usr/bin/busctl","--system","--no-pager","get-property",
+                "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1/unit/postfix_2eservice",
+                "org.freedesktop.systemd1."+interface,name).decode("utf-8","strict")
+    need(len(raw)<=16384 and len(raw.splitlines())==1,"unit_array_unverified:"+name)
+    tokens=shlex.split(raw)
+    need(len(tokens)>=2 and tokens[0]==signature and
+         re.fullmatch(r"(?:0|[1-9][0-9]{0,3})",tokens[1]),"unit_array_type_unverified:"+name)
+    count=int(tokens[1])
+    need(count<=128 and len(tokens)==2+count*width and
+         all("\\" not in token and not any(ord(c)<32 for c in token)
+             for token in tokens[2:]),"unit_array_count_unverified:"+name)
+    return tuple(tuple(tokens[i:i+width]) for i in range(2,len(tokens),width))
+
 def unit_snapshot():
     F.disposable()
+    scalar=tuple(name for name in UNIT_PROPERTIES if name not in UNIT_ARRAYS)
     raw=command("/usr/bin/systemctl","show","--all","postfix.service",
-                *("-p"+name for name in UNIT_PROPERTIES)).decode("utf-8","strict")
+                *("-p"+name for name in scalar)).decode("utf-8","strict")
     rows={}
     for line in raw.splitlines():
         key,sep,value=line.partition("=")
-        need(sep and key in UNIT_PROPERTIES and key not in rows and len(value)<=8192,
+        need(sep and key in scalar and key not in rows and len(value)<=8192,
              "unit_property_unverified")
         rows[key]=value
-    need(set(rows)==set(UNIT_PROPERTIES),"unit_property_missing")
+    need(set(rows)==set(scalar),"unit_property_missing:"+",".join(sorted(set(scalar)-set(rows))))
+    for name in UNIT_ARRAYS:
+        rows[name]=unit_array(name)
     return rows
 
 def validate_unit_scope(before,after):
     for key in UNIT_PROPERTIES:
         if key not in ("BindPaths","DeviceAllow","DropInPaths"):
-            need(after[key]==before[key],"unexpected_unit_hardening_change")
+            need(after[key]==before[key],"unexpected_unit_hardening_change:"+key)
     need(after["PrivateDevices"]=="yes" and after["DevicePolicy"]=="closed",
          "private_device_policy_changed")
-    # Native systemd renders the one bind with an optional destination and
-    # rbind/norbind option. No extra devices or unrelated binds are accepted.
-    need(after["BindPaths"] in ("/dev/tpmrm0","/dev/tpmrm0:/dev/tpmrm0",
-        "/dev/tpmrm0:/dev/tpmrm0:rbind","/dev/tpmrm0:/dev/tpmrm0:norbind"),
+    need(after["BindPaths"] in (
+        (("/dev/tpmrm0","/dev/tpmrm0","false","0"),),
+        (("/dev/tpmrm0","/dev/tpmrm0","false","16384"),)),
         "device_bind_scope_unverified")
-    need(after["DeviceAllow"].split()==["/dev/tpmrm0","rw"],"device_allow_scope_unverified")
-    need(set(after["DropInPaths"].split())==set(before["DropInPaths"].split())|{str(DROPIN)},
+    need(after["DeviceAllow"]==(("/dev/tpmrm0","rw"),),"device_allow_scope_unverified")
+    need(set(after["DropInPaths"])==set(before["DropInPaths"])|{(str(DROPIN),)},
          "unexpected_dropin_change")
 
 @contextmanager
@@ -95,7 +125,7 @@ def scoped_fixture_device(queue):
     before=unit_snapshot()
     need(before["PrivateDevices"]=="yes" and before["DevicePolicy"]=="closed" and
          not any(before[key] for key in ("BindPaths","BindReadOnlyPaths","DeviceAllow",
-             "RootDirectory","RootImage","InaccessiblePaths")),"unexpected_unit_baseline")
+             "RootDirectory","RootImage","InaccessiblePaths","TemporaryFileSystem")),"unexpected_unit_baseline")
     for parent in (Path("/run"),Path("/run/systemd"),Path("/run/systemd/system")):
         st=parent.lstat()
         need(stat.S_ISDIR(st.st_mode) and st.st_uid==0 and not st.st_mode&0o022,
