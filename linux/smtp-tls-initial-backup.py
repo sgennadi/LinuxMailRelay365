@@ -3,21 +3,61 @@ import hashlib
 import os
 import stat
 import json
+import re
 import tempfile
 from pathlib import Path
 
-def backup(root, source=Path("/etc/postfix/main.cf")):
-    root=Path(root)
-    for p in [root]+list(root.parents):
-        st=p.lstat()
+def private_directory(path):
+    path=Path(path)
+    for item in [path]+list(path.parents):
+        st=item.lstat()
         if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o022:
             raise ValueError("unsafe backup directory")
-    if root.stat().st_mode & 0o077:
+    if path.lstat().st_mode & 0o077:
         raise ValueError("backup directory must be private")
+
+
+def read_private(path,limit):
+    path=Path(path)
+    private_directory(path.parent)
+    fd=os.open(str(path),os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(fd,"rb") as f:
+        st=os.fstat(f.fileno())
+        if (not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_nlink!=1
+                or st.st_mode & 0o7077 or st.st_size>limit):
+            raise ValueError("unsafe private backup file")
+        data=f.read(limit+1)
+        if len(data)>limit:
+            raise ValueError("backup file too large")
+        return data
+
+
+def strict_object(pairs):
+    value={}
+    for key,item in pairs:
+        if key in value:
+            raise ValueError("duplicate backup or journal field")
+        value[key]=item
+    return value
+
+
+def metadata(meta):
+    if (not isinstance(meta,dict) or set(meta)!={"sha256","uid","gid","mode"}
+            or not isinstance(meta["sha256"],str) or not re.fullmatch(r"[a-f0-9]{64}",meta["sha256"])
+            or type(meta["uid"]) is not int or meta["uid"]!=0
+            or type(meta["gid"]) is not int or not 0<=meta["gid"]<2**32-1
+            or type(meta["mode"]) is not int or not 0<=meta["mode"]<=0o777 or meta["mode"] & 0o022):
+        raise ValueError("invalid backup metadata")
+    return meta
+
+
+def backup(root, source=Path("/etc/postfix/main.cf")):
+    root=Path(root)
+    private_directory(root)
     fd=os.open(str(source),os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
     with os.fdopen(fd,"rb") as f:
         st=os.fstat(f.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o022:
+        if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_nlink!=1 or st.st_mode & 0o7022:
             raise ValueError("unsafe configuration")
         data=f.read(8388609)
         if len(data)>8388608:
@@ -25,7 +65,9 @@ def backup(root, source=Path("/etc/postfix/main.cf")):
     dest=Path(tempfile.mkdtemp(prefix="initial-backup-",dir=str(root)))
     meta={"sha256":hashlib.sha256(data).hexdigest(),"mode":stat.S_IMODE(st.st_mode),"uid":st.st_uid,"gid":st.st_gid}
     for name,content in (("main.cf",data),("manifest.json",json.dumps(meta).encode("ascii"))):
-        with (dest/name).open("xb") as f:
+        fd=os.open(str(dest/name),os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,"wb") as f:
+            os.fchmod(f.fileno(),0o600)
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
@@ -37,10 +79,19 @@ def backup(root, source=Path("/etc/postfix/main.cf")):
 
 def verify(dest):
     dest=Path(dest)
-    meta=json.loads((dest/"manifest.json").read_text())
-    data=(dest/"main.cf").read_bytes()
+    meta=metadata(json.loads(read_private(dest/"manifest.json",16384),object_pairs_hook=strict_object))
+    data=read_private(dest/"main.cf",8388608)
     if hashlib.sha256(data).hexdigest()!=meta["sha256"]:
         raise ValueError("backup digest mismatch")
+    return data,meta
+
+def verify_for_journal(dest,original,candidate,build):
+    if (not all(isinstance(v,str) and re.fullmatch(r"[a-f0-9]{64}",v) for v in (original,candidate))
+            or original==candidate):
+        raise ValueError("invalid journal configuration hashes")
+    data,meta=verify(dest)
+    if meta["sha256"]!=original or hashlib.sha256(build(data)).hexdigest()!=candidate:
+        raise ValueError("backup differs from the journaled TLS-only change")
     return data,meta
 
 def restore(dest, expected_current_sha256, target=Path("/etc/postfix/main.cf")):
@@ -61,7 +112,7 @@ def replace_config(data, expected_current_sha256, target=Path("/etc/postfix/main
     fd=os.open(str(target),os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
     with os.fdopen(fd,"rb") as f:
         st=os.fstat(f.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_mode & 0o022:
+        if not stat.S_ISREG(st.st_mode) or st.st_uid!=0 or st.st_nlink!=1 or st.st_mode & 0o7022:
             raise ValueError("unsafe configuration")
         current=f.read(8388609)
         if len(current)>8388608 or hashlib.sha256(current).hexdigest()!=expected_current_sha256:
