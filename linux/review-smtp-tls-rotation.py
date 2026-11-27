@@ -162,7 +162,7 @@ def prepare(candidate, domain, pf=None):
     state = config_state(pf)
     journals = terminal_journals(previous, state["main_sha256"])
     planner = load("plan-smtp-tls-initial")
-    local = planner.plan(lambda key: pf.run(pf.postconf, "-h", key), pf.run(pf.postconf, "-P"))
+    local = planner.plan_postfix(pf)
     pf.run(pf.postfix, "status")
     gen, checker = load("smtp-tls-generation"), load("check-smtp-relay-certificate")
     validator = load("smtp-tls-validate-generation")

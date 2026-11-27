@@ -25,15 +25,20 @@ def plan(read, overrides):
             "tls_security_level":read("smtp_tls_security_level"),
             "apply_supported":False}
 
+def plan_postfix(postfix):
+    # Postfix defaults can be parameter references, not effective values.
+    # In particular smtp_tls_key_file can refer to smtp_tls_cert_file.
+    # Use Postfix expansion itself rather than resolving variables in Python.
+    return plan(lambda key: postfix.run(postfix.postconf, "-h", "-x", key),
+                postfix.run(postfix.postconf, "-P"))
+
 def main():
     spec=importlib.util.spec_from_file_location("adapter",str(Path(__file__).with_name("smtp-tls-postfix.py")))
     adapter=importlib.util.module_from_spec(spec)
     spec.loader.exec_module(adapter)
     try:
         postfix=adapter.Postfix()
-        def read(key):
-            return postfix.run(postfix.postconf,"-h",key)
-        print(json.dumps(plan(read,postfix.run(postfix.postconf,"-P"))))
+        print(json.dumps(plan_postfix(postfix)))
         return 0
     except (ValueError,RuntimeError,OSError) as exc:
         print(json.dumps({"status":"refused","reason":str(exc),"apply_supported":False}))

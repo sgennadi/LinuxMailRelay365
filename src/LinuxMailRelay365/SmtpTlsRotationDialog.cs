@@ -229,8 +229,13 @@ internal sealed class SmtpTlsRotationDialog : Form
                     lines.Add(row.GetProperty("path").GetString() ?? "");
                     lines.Add("    Current: " + row.GetProperty("actual").GetString());
                     lines.Add("    Expected: " + row.GetProperty("expected").GetString());
+                    string? method = row.GetProperty("repair_method").GetString();
+                    if (method is not ("none" or "type_only" or "full_default" or "manual"))
+                        throw new InvalidDataException("Unknown SELinux repair method.");
                     lines.Add(row.GetProperty("matches").GetBoolean() ? "    Matches" :
-                        row.GetProperty("repairable").GetBoolean() ? "    Repair proposed" : "    Manual review required");
+                        method == "type_only" ? "    Repair proposed: restore default type" :
+                        method == "full_default" ? "    Repair proposed: restore full default label (-F; unchanged MLS/MCS)" :
+                        "    Manual review required");
                 }
                 lines.Add("");
                 lines.Add("Matching labels do not prove access by the confined Postfix process.");
@@ -243,10 +248,22 @@ internal sealed class SmtpTlsRotationDialog : Form
                 }
                 var changes = root.GetProperty("changes");
                 if (changes.GetArrayLength() is < 1 or > 5) throw new InvalidDataException();
-                string targets = string.Join(Environment.NewLine, changes.EnumerateArray().Select(row => row.GetString()));
-                if (MessageBox.Show(this, "Restore default SELinux labels for these exact paths?" +
+                var methods = root.GetProperty("paths").EnumerateArray().ToDictionary(
+                    row => row.GetProperty("path").GetString() ?? "",
+                    row => row.GetProperty("repair_method").GetString());
+                string targets = string.Join(Environment.NewLine, changes.EnumerateArray().Select(row =>
+                {
+                    string path = row.GetString() ?? "";
+                    return methods[path] switch
+                    {
+                        "type_only" => path + " (restore default type)",
+                        "full_default" => path + " (restorecon -F, unchanged MLS/MCS)",
+                        _ => throw new InvalidDataException("Unreviewed relabel method.")
+                    };
+                }));
+                if (MessageBox.Show(this, "Restore the reviewed default SELinux labels for these exact private paths?" +
                     Environment.NewLine + targets + Environment.NewLine + Environment.NewLine +
-                    "No recursive relabel, policy change, SELinux mode change or Postfix reload.",
+                    "Full-label restore is used only where reviewed. No MLS/MCS range change, recursive relabel, policy change, SELinux mode change or Postfix reload.",
                     "Confirm reviewed SELinux repair", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                     MessageBoxDefaultButton.Button2) != DialogResult.Yes)
                 {

@@ -35,6 +35,18 @@ def run(*args, data=None, timeout=60):
     result = subprocess.run(args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             timeout=timeout, env=ENV)
     if result.returncode:
+        if any(str(arg).endswith("/manage-smtp-tls-initial.py") for arg in args):
+            # Only fixed product status markers and the journal phase from
+            # this disposable synthetic fixture, not subprocess stderr.
+            for line in result.stdout.decode("ascii", "replace").splitlines():
+                if line in ("INITIAL_TLS=failed; inspect transaction journal", "INITIAL_TLS=unchanged"):
+                    print("LMR365_VM_CLIENT_TLS_INITIAL_HELPER=" + line, flush=True)
+            try:
+                phase = json.loads((ROOT / "initial-deployment.json").read_text())["phase"]
+                if phase in ("prepared", "switched", "rollback_required", "rolled_back", "verified"):
+                    print("LMR365_VM_CLIENT_TLS_INITIAL_JOURNAL=" + phase, flush=True)
+            except (OSError, ValueError, KeyError):
+                print("LMR365_VM_CLIENT_TLS_INITIAL_JOURNAL=unavailable", flush=True)
         raise RuntimeError("lab command failed: " + Path(args[0]).name)
     return result.stdout
 
@@ -257,6 +269,19 @@ def main():
     run("restorecon", str(ROOT / "active"))
     builder = load("smtp-tls-initial-candidate")
     initial = builder.preview(MAIN.read_bytes())
+    # Identify the exact failed phase without exposing private file contents.
+    planner = load("plan-smtp-tls-initial")
+    try:
+        plan = planner.plan_postfix(pf)
+        if not plan["changes"]:
+            raise ValueError("fixture expected new TLS configuration")
+    except (ValueError, RuntimeError) as exc:
+        # These planner errors are fixed messages, never configuration values.
+        print("LMR365_VM_CLIENT_TLS_INITIAL_PREFLIGHT=" + str(exc), flush=True)
+        raise
+    print("LMR365_VM_CLIENT_TLS_INITIAL_PREFLIGHT=verified", flush=True)
+    validate(first)
+    print("LMR365_VM_CLIENT_TLS_INITIAL_MATERIAL=verified", flush=True)
     result = run(sys.executable, "-I", "-B", str(LIB / "manage-smtp-tls-initial.py"),
                  "--confirm", "INITIAL_TLS_DEPLOYMENT", "--original-sha", initial["original_sha256"],
                  "--candidate-sha", initial["candidate_sha256"], "--generation", first,

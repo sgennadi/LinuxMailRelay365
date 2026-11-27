@@ -29,7 +29,8 @@ class SelinuxReviewTests(unittest.TestCase):
     def row(self, path, adapter, repairable):
         return {"path": str(path), "kind": "directory", "actual": "system_u:object_r:etc_t:s0",
                 "expected": "system_u:object_r:postfix_etc_t:s0", "matches": not repairable,
-                "repairable": repairable, "identity": [1, 2, 0, 0, 448, 1]}
+                "repairable": repairable, "repair_method": "type_only" if repairable else "none",
+                "identity": [1, 2, 0, 0, 448, 1]}
 
     def test_enforcing_preview_never_relabels(self):
         with patch.object(M.os, "geteuid", return_value=0), \
@@ -70,10 +71,10 @@ class SelinuxReviewTests(unittest.TestCase):
     def test_exact_restore_and_recheck(self):
         path = self.review.ROOT / GEN
         row = self.row(path, self.adapter, True)
-        before = {"plan_sha256": SHA, "apply_supported": True, "changes": [str(path)],
+        before = {"candidate": GEN, "plan_sha256": SHA, "apply_supported": True, "changes": [str(path)],
                   "mode": "enforcing", "active": None, "journals": {}, "paths": [row]}
-        after = dict(before, reason="contexts_match", paths=[dict(row, matches=True, actual=row["expected"])])
-        with patch.object(M, "command") as cmd:
+        after = dict(before, reason="contexts_match", paths=[dict(row, matches=True, actual=row["expected"], repair_method="none")])
+        with patch.object(M, "command") as cmd, patch.object(M, "label_row", return_value=row):
             result = M.execute(GEN, SHA, self.review, self.adapter, self.tx, Mock(side_effect=[before, after]))
         cmd.assert_called_once_with(self.adapter, "/usr/sbin/restorecon", str(path))
         self.assertEqual(result["status"], "contexts_verified")
@@ -84,3 +85,54 @@ class SelinuxReviewTests(unittest.TestCase):
         for label in ("", "unlabeled", "u:r:t:s0\nextra", "u:r:t:s0;cmd"):
             with self.assertRaises(ValueError):
                 M.safe_label(label)
+
+    def test_context_methods_and_range_guard(self):
+        expected = "system_u:object_r:postfix_etc_t:s0"
+        self.assertEqual(M.repair_method(expected, expected, "file", True), "none")
+        self.assertEqual(M.repair_method("system_u:object_r:etc_t:s0", expected, "file", True), "type_only")
+        self.assertEqual(M.repair_method("unconfined_u:object_r:postfix_etc_t:s0", expected, "directory", True), "full_default")
+        self.assertEqual(M.repair_method("unconfined_u:object_r:etc_t:s0:c1", expected, "file", True), "manual")
+        self.assertEqual(M.repair_method("unconfined_u:object_r:etc_t:s0", expected, "file", False), "manual")
+        self.assertEqual(M.repair_method("unconfined_u:object_r:etc_t:s0", expected, "symlink", True), "manual")
+
+    def test_manual_private_context_blocks_all_changes(self):
+        def row(path, adapter, repairable):
+            r = self.row(path, adapter, repairable)
+            if path.name == "key.pem":
+                r.update(matches=False, repairable=False, repair_method="manual",
+                         actual="system_u:object_r:postfix_etc_t:s0:c1")
+            return r
+        with patch.object(M.os, "geteuid", return_value=0), \
+             patch.object(M, "command", return_value="Enforcing"), \
+             patch.object(M, "label_row", side_effect=row):
+            plan = M.review_plan(GEN, self.review, self.adapter)
+        self.assertFalse(plan["apply_supported"])
+        self.assertEqual(plan["reason"], "context_difference_requires_manual_review")
+
+    def test_full_default_method_uses_exact_force_and_rechecks(self):
+        path = self.review.ROOT / GEN
+        row = dict(self.row(path, self.adapter, True), repair_method="full_default",
+                   actual="unconfined_u:object_r:postfix_etc_t:s0")
+        before = {"candidate": GEN, "plan_sha256": SHA, "apply_supported": True,
+                  "changes": [str(path)], "mode": "enforcing", "active": None, "journals": {}, "paths": [row]}
+        after = dict(before, reason="contexts_match", paths=[dict(row, matches=True, actual=row["expected"], repair_method="none")])
+        with patch.object(M, "command") as cmd, patch.object(M, "label_row", return_value=row):
+            result = M.execute(GEN, SHA, self.review, self.adapter, self.tx, Mock(side_effect=[before, after]))
+        cmd.assert_called_once_with(self.adapter, "/usr/sbin/restorecon", "-F", str(path))
+        self.assertEqual(result["status"], "contexts_verified")
+
+    def test_path_or_method_drift_never_relabels(self):
+        path = self.review.ROOT / GEN
+        row = self.row(path, self.adapter, True)
+        plan = {"candidate": GEN, "plan_sha256": SHA, "apply_supported": True,
+                "changes": [str(path)], "paths": [row]}
+        with patch.object(M, "command") as cmd, \
+             patch.object(M, "label_row", return_value=dict(row, identity=[1, 3, 0, 0, 448, 1])):
+            with self.assertRaises(ValueError):
+                M.execute(GEN, SHA, self.review, self.adapter, self.tx, lambda *args: plan)
+            cmd.assert_not_called()
+        with patch.object(M, "command") as cmd, patch.object(M, "label_row", return_value=row):
+            bad = dict(plan, paths=[dict(row, repair_method="full_default")])
+            with self.assertRaises(ValueError):
+                M.execute(GEN, SHA, self.review, self.adapter, self.tx, lambda *args: bad)
+            cmd.assert_not_called()

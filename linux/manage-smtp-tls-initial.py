@@ -38,12 +38,14 @@ def main():
         def read():
             return CONFIG.read_bytes()
         def preflight():
-            planner.plan(lambda key:pf.run(pf.postconf,"-h",key),pf.run(pf.postconf,"-P"))
+            planner.plan_postfix(pf)
             pf.run(pf.postfix,"status")
         def validate():
             if gen.current(ROOT)!=a.generation:
                 raise ValueError("active generation mismatch")
-            load("smtp-tls-validate-generation").validate(ROOT,a.generation,a.domain,a.ca_file,gen,checker)
+            result=load("smtp-tls-validate-generation").validate(ROOT,a.generation,a.domain,a.ca_file,gen,checker)
+            if result.get("status")!="local_checks_passed":
+                raise ValueError("candidate TLS validation refused")
         def reload():
             pf.run(pf.postfix,"check")
             pf.run(pf.postfix,"reload")

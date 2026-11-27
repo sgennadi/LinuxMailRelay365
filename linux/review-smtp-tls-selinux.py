@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
-LABEL = re.compile(r"[A-Za-z0-9_.:-]+(?:,[A-Za-z0-9_.:-]+)*")
+LABEL = re.compile(r"[A-Za-z0-9_]+:[A-Za-z0-9_]+:[A-Za-z0-9_]+:[A-Za-z0-9_.:,-]+")
 FILES = ("client-chain.pem", "fullchain.pem", "key.pem")
 
 
@@ -31,9 +31,19 @@ def command(adapter, binary, *args):
 
 
 def safe_label(value):
-    if not isinstance(value, str) or not 1 <= len(value) <= 512 or not LABEL.fullmatch(value) or value.count(":") < 2:
+    if not isinstance(value, str) or not 1 <= len(value) <= 512 or not LABEL.fullmatch(value):
         raise ValueError("unknown context")
     return value
+
+
+def repair_method(actual, expected, kind, private_target):
+    current = safe_label(actual).split(":", 3)
+    wanted = safe_label(expected).split(":", 3)
+    if current == wanted:
+        return "none"
+    if not private_target or kind not in ("directory", "file") or current[3] != wanted[3]:
+        return "manual"
+    return "full_default" if current[:2] != wanted[:2] else "type_only"
 
 
 def label_row(path, adapter, repairable):
@@ -52,8 +62,13 @@ def label_row(path, adapter, repairable):
     expected = safe_label(command(adapter, "/usr/sbin/matchpathcon", "-n", str(path)))
     actual = safe_label(os.getxattr(str(path), "security.selinux", follow_symlinks=False)
                         .rstrip(b"\x00").decode("ascii"))
+    # A full default-context restore is permitted only inside the reviewed
+    # root-private managed scope and with identical MLS/MCS ranges.
+    private_target = repairable and not (st.st_mode & 0o077)
+    method = repair_method(actual, expected, kind, private_target)
     return {"path": str(path), "kind": kind, "actual": actual, "expected": expected,
-            "matches": actual == expected, "repairable": repairable and kind != "symlink",
+            "matches": actual == expected, "repairable": method in ("type_only", "full_default"),
+            "repair_method": method,
             "identity": [st.st_dev, st.st_ino, st.st_uid, st.st_gid, st.st_mode, st.st_nlink]}
 
 
@@ -89,7 +104,9 @@ def review_plan(candidate, review=None, adapter=None):
         for name in FILES:
             rows.append(label_row(review.ROOT / candidate / name, adapter, True))
     pending = any(row["phase"] in review.PENDING_PHASES for row in journals.values())
-    external_mismatch = any(not row["matches"] and not row["repairable"] for row in rows)
+    outside = {str(review.ROOT.parent), str(review.ROOT / "active")}
+    external_mismatch = any(not row["matches"] and row["path"] in outside for row in rows)
+    manual_mismatch = any(not row["matches"] and not row["repairable"] for row in rows)
     changes = [row["path"] for row in rows if not row["matches"] and row["repairable"]]
     if pending:
         reason = "pending_transaction"
@@ -97,6 +114,8 @@ def review_plan(candidate, review=None, adapter=None):
         reason = "selinux_disabled"
     elif external_mismatch:
         reason = "parent_or_pointer_context_requires_manual_review"
+    elif manual_mismatch:
+        reason = "context_difference_requires_manual_review"
     elif changes:
         reason = "restore_default_contexts"
     else:
@@ -120,11 +139,25 @@ def execute(candidate, expected, review=None, adapter=None, tx=None, planner=rev
             raise ValueError("review changed or repair unsupported")
         allowed = {str(review.ROOT), str(review.ROOT / candidate)}
         allowed.update(str(review.ROOT / candidate / name) for name in FILES)
-        if not plan["changes"] or not set(plan["changes"]).issubset(allowed):
+        changes = plan["changes"]
+        if (not changes or len(set(changes)) != len(changes) or not set(changes).issubset(allowed)
+                or plan.get("candidate") != candidate):
             raise ValueError("unexpected relabel target")
-        # No -R/-F, no policy modification. A partial failure stays visible.
-        for path in plan["changes"]:
-            command(adapter, "/usr/sbin/restorecon", str(path))
+        rows = {row["path"]: row for row in plan["paths"]}
+        if len(rows) != len(plan["paths"]):
+            raise ValueError("duplicate reviewed paths")
+        # Revalidate each exact path and the approved method immediately
+        # before mutation. Never force an MLS/MCS change or follow a symlink.
+        for path in changes:
+            row = rows[path]
+            method = row.get("repair_method")
+            if (not row["repairable"] or row["matches"]
+                    or method not in ("type_only", "full_default")
+                    or repair_method(row["actual"], row["expected"], row["kind"], True) != method
+                    or label_row(Path(path), adapter, True) != row):
+                raise ValueError("reviewed context or path changed")
+            flags = ("-F",) if method == "full_default" else ()
+            command(adapter, "/usr/sbin/restorecon", *flags, path)
         after = planner(candidate, review, adapter)
         before_rows = {row["path"]: (row["identity"], row["expected"]) for row in plan["paths"]}
         after_rows = {row["path"]: (row["identity"], row["expected"]) for row in after["paths"]}
