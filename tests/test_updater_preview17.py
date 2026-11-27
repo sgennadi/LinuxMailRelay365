@@ -40,8 +40,18 @@ class UpdaterPreview25Contracts(unittest.TestCase):
     def test_published_rc18_baseline_rehearsal(self):
         smoke = (ROOT / "scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1").read_text(encoding="utf-8")
         self.assertIn("-SourceTag 'v0.1.1-rc.18'", WORKFLOW)
-        self.assertIn("[ValidateSet('v0.1.0-preview.24', 'v0.1.1-rc.18')]", smoke)
+        self.assertIn("[ValidateSet('v0.1.0-preview.24', 'v0.1.1-rc.18', 'v0.1.1-rc.19')]", smoke)
         self.assertIn("d778c2107c88eb5dadfb1b2a105be09bd034843e8f7b9c9bae21c0ad9669ae67", smoke)
+        self.assertIn("equal_version_file_replacement_rehearsal_only", smoke)
+        self.assertIn("REAL_GUI_AND_HELPER_ACCEPTANCE=NOT_TESTED", smoke)
+
+    def test_published_rc19_baseline_is_immutable(self):
+        smoke = (ROOT / "scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1").read_text(encoding="utf-8")
+        rc19 = smoke.split("if ($SourceTag -ceq 'v0.1.1-rc.19') {", 1)[1].split("    }", 1)[0]
+        self.assertIn("$asset.digest -ceq 'sha256:6d59f380ac5686a5847b0babb02c0f3858ba2eed289912d990c9654d41610dba'", rc19)
+        self.assertIn("$ExpectedCandidateVersion -cin @('0.1.1-rc.19', '0.1.1-rc.20')", rc19)
+        self.assertIn("-SourceTag 'v0.1.1-rc.19'", WORKFLOW)
+        self.assertLess(smoke.index(rc19), smoke.index("gh release download $SourceTag"))
         self.assertIn("equal_version_file_replacement_rehearsal_only", smoke)
         self.assertIn("REAL_GUI_AND_HELPER_ACCEPTANCE=NOT_TESTED", smoke)
 

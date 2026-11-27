@@ -260,6 +260,8 @@ jobs:
       github.event.pull_request.head.ref == 'release/v0.1.1-rc.19' ||
       github.ref == 'refs/heads/feature/primary-rc20-preflight' ||
       github.event.pull_request.head.ref == 'feature/primary-rc20-preflight' ||
+      github.ref == 'refs/heads/feature/primary-rc20-updater-preflight' ||
+      github.event.pull_request.head.ref == 'feature/primary-rc20-updater-preflight' ||
       github.ref == 'refs/heads/release/v0.1.1-rc.20' ||
       github.event.pull_request.head.ref == 'release/v0.1.1-rc.20'
     runs-on: ubuntu-24.04
@@ -621,6 +623,19 @@ jobs:
         run: |
           $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
           ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.19' -SourceTag 'v0.1.1-rc.18'
+      - name: Test pinned published RC19 to candidate binary replacement and rollback (disposable)
+        if: >-
+          github.ref == 'refs/heads/feature/primary-rc20-updater-preflight' ||
+          github.event.pull_request.head.ref == 'feature/primary-rc20-updater-preflight' ||
+          github.ref == 'refs/heads/release/v0.1.1-rc.20' ||
+          github.event.pull_request.head.ref == 'release/v0.1.1-rc.20'
+        shell: pwsh
+        timeout-minutes: 8
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $binary = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
+          ./scripts/Test-LinuxMailRelay365PreviewUpgrade.ps1 -CandidateExe $binary -ExpectedCandidateVersion '0.1.1-rc.19' -SourceTag 'v0.1.1-rc.19'
       - name: Capture actual Windows Wizard and early-route screens (CI-only)
         shell: pwsh
         timeout-minutes: 3
@@ -2073,6 +2088,8 @@ jobs:
     if: >-
       github.ref == 'refs/heads/feature/primary-rc20-preflight' ||
       github.event.pull_request.head.ref == 'feature/primary-rc20-preflight' ||
+      github.ref == 'refs/heads/feature/primary-rc20-updater-preflight' ||
+      github.event.pull_request.head.ref == 'feature/primary-rc20-updater-preflight' ||
       github.ref == 'refs/heads/release/v0.1.1-rc.20' ||
       github.event.pull_request.head.ref == 'release/v0.1.1-rc.20'
     permissions:
@@ -2089,6 +2106,7 @@ jobs:
     if: >-
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/feature/primary-rc20-preflight' ||
+      github.ref == 'refs/heads/feature/primary-rc20-updater-preflight' ||
       github.ref == 'refs/heads/release/v0.1.1-rc.20')
     needs:
       - linux-tests

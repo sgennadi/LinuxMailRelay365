@@ -1,6 +1,6 @@
 #requires -Version 7.0
 <#
-CI-only disposable migration smoke for published Preview 24 or RC18 -> reviewed candidate.
+CI-only disposable migration smoke for published Preview 24, RC18 or RC19 -> reviewed candidate.
 Exercises real release binaries and a replace/backup/rollback transaction.
 This does NOT prove the interactive GUI or non-elevated updater helper.
 No production files, registry, tenant, SMTP or Linux service is modified.
@@ -10,7 +10,7 @@ param(
     [Parameter(Mandatory=$true)][string]$CandidateExe,
     [ValidatePattern('^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:preview|rc)\.(?:0|[1-9][0-9]*))?$')]
     [string]$ExpectedCandidateVersion = '0.1.1-rc.3',
-    [ValidateSet('v0.1.0-preview.24', 'v0.1.1-rc.18')]
+    [ValidateSet('v0.1.0-preview.24', 'v0.1.1-rc.18', 'v0.1.1-rc.19')]
     [string]$SourceTag = 'v0.1.0-preview.24'
 )
 Set-StrictMode -Version Latest
@@ -98,7 +98,68 @@ try {
         Assert ($asset.digest -ceq 'sha256:d778c2107c88eb5dadfb1b2a105be09bd034843e8f7b9c9bae21c0ad9669ae67') 'Published RC18 asset differs from the pinned baseline.'
         Assert ($ExpectedCandidateVersion -cin @('0.1.1-rc.18', '0.1.1-rc.19')) 'RC18 source requires RC18 rehearsal or RC19 candidate.'
     }
-    Assert ($asset.digest -cmatch '^sha256:[a-f0-9]{64}$') 'Missing source-reported SHA256.'
+    if ($SourceTag -ceq 'v0.1.1-rc.19') {
+        Assert ($asset.digest -ceq 'sha256:6d59f380ac5686a5847b0babb02c0f3858ba2eed289912d990c9654d41610dba') 'Published RC19 asset differs from the pinned baseline.'
+        Assert ($ExpectedCandidateVersion -cin @('0.1.1-rc.19', '0.1.1-rc.20')) 'RC19 source requires RC19 rehearsal or RC20 candidate.'
+    }
+    Assert ($asset.digest -cmatch '^sha256:[a-f0-9]{64}
+    Assert ($asset.browser_download_url -ceq "https://github.com/sgennadi/LinuxMailRelay365/releases/download/$SourceTag/$assetName") 'Untrusted asset URL.'
+    $zipPath = Join-Path $root $assetName
+    gh release download $SourceTag --repo sgennadi/LinuxMailRelay365 --pattern $assetName --dir $root
+    if ($LASTEXITCODE -ne 0) { throw 'Previous release download failed.' }
+    Assert ((Get-Item -LiteralPath $zipPath).Length -eq $asset.size) 'Previous ZIP size mismatch.'
+    Assert ((Sha $zipPath) -ceq $asset.digest.Substring(7)) 'Previous ZIP SHA256 mismatch.'
+    $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        Assert ($archive.Entries.Count -eq 1 -and $archive.Entries[0].FullName -ceq 'LinuxMailRelay365.exe') 'Untrusted ZIP layout.'
+        $oldFolder = Join-Path $root 'previous'
+        [IO.Directory]::CreateDirectory($oldFolder) | Out-Null
+        [IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $oldFolder)
+    }
+    finally { $archive.Dispose() }
+    $oldExe = Join-Path $oldFolder 'LinuxMailRelay365.exe'
+    $sourceVersion = $SourceTag.Substring(1)
+    Assert ((Version $oldExe) -match ('^' + [regex]::Escape($sourceVersion) + '(?:\+.*)?$')) 'Incorrect old version.'
+    Assert ((Version $CandidateExe) -match ('^' + [regex]::Escape($ExpectedCandidateVersion) + '(?:\+.*)?$')) 'Incorrect new version.'
+    Assert ((PeMachine $oldExe) -eq 0x8664) 'Previous EXE is not x64.'
+    Assert ((PeMachine $CandidateExe) -eq 0x8664) 'Candidate EXE is not x64.'
+    Invoke-SelfTest $oldExe
+    Invoke-SelfTest $CandidateExe
+    $live = Join-Path $root 'live'
+    $stage = Join-Path $root 'stage'
+    [IO.Directory]::CreateDirectory($live) | Out-Null
+    [IO.Directory]::CreateDirectory($stage) | Out-Null
+    $target = Join-Path $live 'LinuxMailRelay365.exe'
+    $candidate = Join-Path $stage 'LinuxMailRelay365.exe'
+    $backup = "$target.bak"
+    [IO.File]::Copy($oldExe, $target)
+    [IO.File]::Copy($CandidateExe, $candidate)
+    $oldHash = Sha $target
+    $newHash = Sha $candidate
+    Invoke-VerifiedFileReplace $candidate $target $backup $newHash $oldHash
+    Assert ((Sha $target) -ceq $newHash -and (Sha $backup) -ceq $oldHash) 'Upgrade/backup digest mismatch.'
+    Invoke-SelfTest $target
+    Write-Output 'PUBLISHED_PREVIEW_TO_CANDIDATE_DISPOSABLE_REPLACEMENT=PASS'
+    # Match the actual updater: Windows File.Replace needs a real third path.
+    # The consumed .update-new pathname is available for the failed version.
+    $failedVersion = "$target.update-new"
+    Invoke-VerifiedFileReplace $backup $target $failedVersion $oldHash $newHash
+    Assert ((Sha $failedVersion) -ceq $newHash) 'Preserved failed-version digest mismatch.'
+    Assert ((Sha $target) -ceq $oldHash) 'Rollback digest mismatch.'
+    Invoke-SelfTest $target
+    Write-Output 'CANDIDATE_TO_PUBLISHED_PREVIEW_DISPOSABLE_ROLLBACK=PASS'
+    Write-Output "PUBLISHED_SOURCE_TAG=$SourceTag"
+    if ($sourceVersion -ceq $ExpectedCandidateVersion) {
+        Write-Output 'UPDATE_VERSION_TRANSITION=equal_version_file_replacement_rehearsal_only'
+    } else {
+        Write-Output "UPDATE_VERSION_TRANSITION=$sourceVersion->$ExpectedCandidateVersion"
+    }
+    Write-Output 'REAL_GUI_AND_HELPER_ACCEPTANCE=NOT_TESTED'
+}
+finally {
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+) 'Missing source-reported SHA256.'
     Assert ($asset.browser_download_url -ceq "https://github.com/sgennadi/LinuxMailRelay365/releases/download/$SourceTag/$assetName") 'Untrusted asset URL.'
     $zipPath = Join-Path $root $assetName
     gh release download $SourceTag --repo sgennadi/LinuxMailRelay365 --pattern $assetName --dir $root
