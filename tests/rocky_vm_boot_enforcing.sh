@@ -378,6 +378,9 @@ ROCKY10_DATA_CONTEXT
                 'LMR365_TPM_BROKER_DOMAIN=lmr365_fixture_signer_t' \
                 'LMR365_TPM_BROKER_POLICY=fixture_module_loaded' \
                 'LMR365_TPM_BROKER_POLICY=original_inventory_restored' \
+                'LMR365_TPM_BROKER_DAC=dedicated_signer_group' \
+                'LMR365_TPM_BROKER_DAC=provisioning_group_restored' \
+                'LMR365_TPM_BROKER_GROUPS=verified_actual_process' \
                 'LMR365_TPM_BROKER_SELF_SIGN=verified_fixed_fixture' \
                 'LMR365_TPM_BROKER_SERVICE_PS256=verified_fixed_fixture' \
                 'LMR365_TPM_BROKER_PIPE=verified_fixed_fixture' \

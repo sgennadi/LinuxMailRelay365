@@ -277,11 +277,14 @@ def run_broker(argv):
     ap.add_argument("--uid",required=True,type=int)
     ap.add_argument("--gid",required=True,type=int)
     ap.add_argument("--pipe-uid",required=True,type=int)
+    ap.add_argument("--pipe-gid",required=True,type=int)
     args=ap.parse_args(argv)
     stage="identity"
     try:
         need(args.uid>0 and args.gid>0 and args.pipe_uid>0 and args.pipe_uid!=args.uid and
-             os.getresuid()==(args.uid,)*3 and os.getresgid()==(args.gid,)*3,
+             args.pipe_gid>0 and args.pipe_gid!=args.gid and
+             os.getresuid()==(args.uid,)*3 and os.getresgid()==(args.gid,)*3 and
+             set(os.getgroups())|{args.gid}=={args.gid,args.pipe_gid},
              "disposable_broker_identity")
         stage="hostname"
         need(broker_fixture_hostname(socket.gethostname()),"disposable_broker_hostname")
@@ -308,7 +311,7 @@ def run_broker(argv):
                 conn.settimeout(60)
                 stage="peer"
                 _,uid,gid,domain=peer_identity(conn)
-                need((uid,gid,domain)==(args.pipe_uid,args.gid,"postfix_pipe_t"),"broker_client_identity")
+                need((uid,gid,domain)==(args.pipe_uid,args.pipe_gid,"postfix_pipe_t"),"broker_client_identity")
                 stage="request"
                 need(recv_exact(conn,len(request))==request and conn.recv(1)==b"",
                      "broker_request_exact")
@@ -333,9 +336,10 @@ def run(argv=None):
     ap.add_argument("--tpm-handle",choices=["0x81010002"])
     ap.add_argument("--broker-pid",type=int)
     ap.add_argument("--broker-uid",type=int)
+    ap.add_argument("--broker-gid",type=int)
     ap.add_argument("--broker-domain")
     args=ap.parse_args(argv)
-    broker=args.broker_pid is not None or args.broker_uid is not None or args.broker_domain is not None
+    broker=any(value is not None for value in (args.broker_pid,args.broker_uid,args.broker_gid,args.broker_domain))
     stage="identity"
     try:
         need(args.uid>0 and args.gid>0 and
@@ -343,6 +347,8 @@ def run(argv=None):
         need(not broker or (args.tpm_handle is None and
              type(args.broker_pid) is int and args.broker_pid>1 and
              type(args.broker_uid) is int and args.broker_uid>0 and args.broker_uid!=args.uid and
+             type(args.broker_gid) is int and args.broker_gid>0 and args.broker_gid!=args.gid and
+             args.broker_gid not in os.getgroups() and
              args.broker_domain==BROKER_DOMAIN),"broker_arguments")
         stage="domain"
         need(context_type()=="postfix_pipe_t","not_postfix_pipe_domain")
@@ -365,7 +371,7 @@ def run(argv=None):
         else:
             stage="sign"
             if broker:
-                broker_client(nonce,args.broker_pid,args.broker_uid,args.gid,args.broker_domain)
+                broker_client(nonce,args.broker_pid,args.broker_uid,args.broker_gid,args.broker_domain)
             else:
                 real_sign(args.tpm_handle)
         stage="domain_after"

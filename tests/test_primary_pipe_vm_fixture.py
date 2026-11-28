@@ -82,9 +82,10 @@ class PipeFixtureTests(unittest.TestCase):
                 conn.sendall.assert_not_called()
 
     def test_broker_fixture_requires_exact_confined_domain_before_signing(self):
-        args=["--nonce",self.nonce,"--uid","2","--gid","4","--pipe-uid","3"]
+        args=["--nonce",self.nonce,"--uid","2","--gid","4","--pipe-uid","3","--pipe-gid","5"]
         with (patch.object(W.os,"getresuid",return_value=(2,)*3),
               patch.object(W.os,"getresgid",return_value=(4,)*3),
+              patch.object(W.os,"getgroups",return_value=[5]),
               patch.object(W.socket,"gethostname",return_value="rocky-selinux-ci"),
               patch.object(W.Path,"read_text",return_value="1"),
               patch.object(W,"context_type",return_value="unconfined_service_t"),
@@ -92,6 +93,38 @@ class PipeFixtureTests(unittest.TestCase):
             self.assertEqual(W.run_broker(args),75)
             sign.assert_not_called()
         self.assertEqual(W.BROKER_DOMAIN,"lmr365_fixture_signer_t")
+
+    def test_broker_rejects_shared_or_extra_device_group_before_signing(self):
+        args=["--nonce",self.nonce,"--uid","2","--gid","4","--pipe-uid","3","--pipe-gid","5"]
+        for groups in ([4], [4,5,6], []):
+            with (patch.object(W.os,"getresuid",return_value=(2,)*3),
+                  patch.object(W.os,"getresgid",return_value=(4,)*3),
+                  patch.object(W.os,"getgroups",return_value=groups),
+                  patch.object(W,"real_sign") as sign):
+                self.assertEqual(W.run_broker(args),75)
+                sign.assert_not_called()
+        shared=args[:-1]+["4"]
+        with (patch.object(W.os,"getresuid",return_value=(2,)*3),
+              patch.object(W.os,"getresgid",return_value=(4,)*3),
+              patch.object(W.os,"getgroups",return_value=[4]),
+              patch.object(W,"real_sign") as sign):
+            self.assertEqual(W.run_broker(shared),75)
+            sign.assert_not_called()
+
+    def test_broker_pipe_rejects_signer_group_or_incomplete_peer_before_message(self):
+        args=["--recipient",W.RECIPIENT,"--nonce",self.nonce,
+              "--network-nonce","b"*32,"--uid","2","--gid","3",
+              "--broker-pid","10","--broker-uid","4","--broker-gid","5",
+              "--broker-domain",W.BROKER_DOMAIN]
+        for groups,argv in (([3,5],args),([3],args[:-2]),([3],args[:12]+args[14:])):
+            with (patch.object(W.os,"geteuid",return_value=2),
+                  patch.object(W.os,"getegid",return_value=3),
+                  patch.object(W.os,"getgroups",return_value=groups),
+                  patch.object(W,"broker_client") as client,
+                  patch.object(W,"context_type") as context):
+                self.assertEqual(W.run(argv),75)
+                client.assert_not_called()
+                context.assert_not_called()
 
     def test_broker_fixture_hostname_only_accepts_exact_lab_names(self):
         for hostname in ("rocky-selinux-ci","rocky-selinux-ci.example.invalid"):

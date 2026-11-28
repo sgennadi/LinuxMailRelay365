@@ -506,25 +506,100 @@ def broker_start_diagnostics(nonce,uid,pid):
 
 
 @contextmanager
+def broker_credentials(queue,pipe_uid,pipe_gid):
+    """Separate TPM DAC group from the existing read-only identity group."""
+    stopped(queue)
+    for lookup in (pwd.getpwnam,grp.getgrnam):
+        try:
+            lookup(BROKER_USER)
+        except KeyError:
+            continue
+        raise RuntimeError("existing_broker_user_or_group")
+    need(pwd.getpwnam(F.ACCOUNT).pw_uid==pipe_uid and
+         grp.getgrnam(F.ACCOUNT).gr_gid==pipe_gid and
+         set(os.getgrouplist(F.ACCOUNT,pipe_gid))=={pipe_gid},
+         "broker_pipe_account_unverified")
+    original=DEVICE.lstat()
+    label=os.getxattr(DEVICE,"security.selinux",follow_symlinks=False)
+    need(stat.S_ISCHR(original.st_mode) and
+         (original.st_uid,original.st_gid,stat.S_IMODE(original.st_mode))==(0,pipe_gid,0o660),
+         "broker_device_dac_baseline")
+    def checked_device():
+        F.disposable()
+        st=DEVICE.lstat()
+        need(stat.S_ISCHR(st.st_mode) and
+             (st.st_dev,st.st_ino,st.st_rdev)==(original.st_dev,original.st_ino,original.st_rdev) and
+             os.getxattr(DEVICE,"security.selinux",follow_symlinks=False)==label,
+             "broker_device_identity_changed")
+        return st
+    command("/usr/sbin/useradd","--system","--user-group","--groups",F.ACCOUNT,
+            "--home-dir","/nonexistent","--shell","/sbin/nologin",BROKER_USER)
+    try:
+        account=pwd.getpwnam(BROKER_USER)
+        signer_gid=grp.getgrnam(BROKER_USER).gr_gid
+        need(account.pw_uid>0 and account.pw_uid!=pipe_uid and signer_gid>0 and
+             signer_gid!=pipe_gid and account.pw_gid==signer_gid and
+             set(os.getgrouplist(BROKER_USER,signer_gid))=={signer_gid,pipe_gid} and
+             set(os.getgrouplist(F.ACCOUNT,pipe_gid))=={pipe_gid} and
+             not grp.getgrnam(BROKER_USER).gr_mem,
+             "broker_separate_group_unverified")
+        # Provision first with the existing identity group; only the signer
+        # gets access to the emulator device during the IPC test.
+        checked_device()
+        os.chown(DEVICE,0,signer_gid,follow_symlinks=False)
+        try:
+            current=checked_device()
+            need((current.st_uid,current.st_gid,stat.S_IMODE(current.st_mode))==
+                 (0,signer_gid,0o660),"broker_separate_tpm_dac_unverified")
+            print("LMR365_TPM_BROKER_DAC=dedicated_signer_group",flush=True)
+            yield account.pw_uid,signer_gid
+        finally:
+            checked_device()
+            os.chown(DEVICE,original.st_uid,original.st_gid,follow_symlinks=False)
+            current=checked_device()
+            need((current.st_uid,current.st_gid,current.st_mode)==
+                 (original.st_uid,original.st_gid,original.st_mode),"broker_group_restore_failed")
+            print("LMR365_TPM_BROKER_DAC=provisioning_group_restored",flush=True)
+    finally:
+        command("/usr/sbin/userdel",BROKER_USER)
+        try:
+            grp.getgrnam(BROKER_USER)
+        except KeyError:
+            pass
+        else:
+            command("/usr/sbin/groupdel",BROKER_USER)
+        for lookup in (pwd.getpwnam,grp.getgrnam):
+            try:
+                lookup(BROKER_USER)
+            except KeyError:
+                continue
+            raise RuntimeError("broker_account_cleanup_unverified")
+        need(set(os.getgrouplist(F.ACCOUNT,pipe_gid))=={pipe_gid},"broker_pipe_group_changed")
+
+
+def broker_process_credentials(proc,uid,signer_gid,pipe_gid):
+    raw=(proc/"status").read_text(encoding="ascii")
+    rows={}
+    for line in raw.splitlines():
+        key,sep,value=line.partition(":")
+        if sep and key in ("Uid","Gid","Groups"):
+            need(key not in rows and all(token.isdigit() for token in value.split()),
+                 "broker_process_credentials_unverified")
+            rows[key]=tuple(map(int,value.split()))
+    need(set(rows)=={"Uid","Gid","Groups"} and rows["Uid"]==(uid,)*4 and
+         rows["Gid"]==(signer_gid,)*4 and set(rows["Groups"])|{signer_gid}=={signer_gid,pipe_gid},
+         "broker_process_credentials_unverified")
+
+
+@contextmanager
 def broker_scope(queue,nonce,pipe_uid,gid):
     stopped(queue)
     before=unit_snapshot()
     need(before["PrivateDevices"]=="yes" and before["DevicePolicy"]=="closed" and
          not any(before[key] for key in ("BindPaths","BindReadOnlyPaths","DeviceAllow",
                     "RootDirectory","RootImage","TemporaryFileSystem")),"broker_postfix_baseline")
-    try:
-        pwd.getpwnam(BROKER_USER)
-    except KeyError:
-        pass
-    else:
-        raise RuntimeError("existing_broker_user")
-    command("/usr/sbin/useradd","--system","--gid",F.ACCOUNT,"--home-dir","/nonexistent",
-            "--shell","/sbin/nologin",BROKER_USER)
-    try:
-        uid=pwd.getpwnam(BROKER_USER).pw_uid
-        need(uid>0 and uid!=pipe_uid and pwd.getpwnam(BROKER_USER).pw_gid==gid and
-             sorted(set(os.getgrouplist(BROKER_USER,gid)))==[gid],"broker_user_scope")
-        props=("User="+BROKER_USER,"Group="+F.ACCOUNT,"PrivateDevices=yes",
+    with broker_credentials(queue,pipe_uid,gid) as (uid,signer_gid):
+        props=("User="+BROKER_USER,"Group="+BROKER_USER,"SupplementaryGroups="+F.ACCOUNT,"PrivateDevices=yes",
                "DevicePolicy=closed","DeviceAllow=/dev/tpmrm0 rw",
                "BindPaths=/dev/tpmrm0:/dev/tpmrm0","NoNewPrivileges=yes",
                "ProtectSystem=strict","ProtectHome=yes","PrivateTmp=yes",
@@ -536,7 +611,8 @@ def broker_scope(queue,nonce,pipe_uid,gid):
             command("/usr/bin/systemd-run","--unit="+BROKER_UNIT,"--service-type=exec",
                     *("--property="+prop for prop in props),
                     str(BROKER_EXEC),"-I","-B",str(F.WORKER),"--broker-server",
-                    "--nonce",nonce,"--uid",str(uid),"--gid",str(gid),"--pipe-uid",str(pipe_uid))
+                    "--nonce",nonce,"--uid",str(uid),"--gid",str(signer_gid),
+                    "--pipe-uid",str(pipe_uid),"--pipe-gid",str(gid))
             until=time.monotonic()+85
             domain=""
             while time.monotonic()<until:
@@ -552,6 +628,7 @@ def broker_scope(queue,nonce,pipe_uid,gid):
                     fields=(proc/"attr/current").read_bytes().rstrip(b"\0\n").decode("ascii").split(":",3)
                     need(len(fields)==4 and fields[2]==BROKER_DOMAIN,"broker_domain_unverified")
                     domain=fields[2]
+                    broker_process_credentials(proc,uid,signer_gid,gid)
                     visible=(proc/"root/dev/tpmrm0").lstat()
                     host=DEVICE.lstat()
                     need(stat.S_ISCHR(visible.st_mode) and
@@ -562,11 +639,12 @@ def broker_scope(queue,nonce,pipe_uid,gid):
             need(pid>1 and bool(domain),"broker_ready_unverified")
             print("LMR365_TPM_BROKER_DOMAIN="+domain,flush=True)
             print("LMR365_TPM_BROKER_DEVICE=same_character_device",flush=True)
+            print("LMR365_TPM_BROKER_GROUPS=verified_actual_process",flush=True)
             need(broker_receipt(pid,uid,"LMR365_TPM_BROKER_SELF_PS256="+nonce),
                  "broker_service_self_signing_unverified")
             print("LMR365_TPM_BROKER_SELF_SIGN=verified_fixed_fixture",flush=True)
             need(unit_snapshot()==before,"broker_changed_postfix_sandbox")
-            yield pid,uid,domain
+            yield pid,uid,domain,signer_gid
             need(broker_receipt(pid,uid,"LMR365_TPM_BROKER_PS256="+nonce),
                  "broker_service_signing_receipt_unverified")
             need(unit_snapshot()==before,"broker_changed_postfix_sandbox")
@@ -580,17 +658,17 @@ def broker_scope(queue,nonce,pipe_uid,gid):
             # The fixture never clears a failed queue or restarts Postfix.
             try:
                 command("/usr/bin/systemctl","stop",BROKER_UNIT)
+                need(command("/usr/bin/systemctl","show","-pMainPID","--value",BROKER_UNIT).strip()==b"0",
+                     "broker_service_not_stopped")
             finally:
                 need(unit_snapshot()==before,"broker_changed_postfix_sandbox")
-    finally:
-        command("/usr/sbin/userdel",BROKER_USER)
 
 
 def broker_link_evidence(master,broker_info):
     """Read actual process namespace and active TE policy; no access grant."""
     F.disposable()
     try:
-        pid,uid,domain=broker_info
+        pid,uid,domain,signer_gid=broker_info
         signer=Path("/proc")/str(pid)
         need(broker_status()["MainPID"]==str(pid) and
              (signer/"exe").resolve()==BROKER_EXEC and
@@ -717,7 +795,7 @@ def main():
             scope=broker_scope(queue,nonce,account.pw_uid,gid) if broker else nullcontext(None)
             with (broker_policy_scope(queue) if broker else nullcontext()), scope as broker_info:
                 broker_args=(" --broker-pid "+str(broker_info[0])+" --broker-uid "+str(broker_info[1])+
-                             " --broker-domain "+broker_info[2]) if broker else " --tpm-handle "+HANDLE
+                             " --broker-domain "+broker_info[2]+" --broker-gid "+str(broker_info[3])) if broker else " --tpm-handle "+HANDLE
                 # All nonlocal mail in this isolated guest is routed only to the
                 # fixture, whose strict envelope/nonce refuses anything else.
                 for setting in ("default_transport = m365xoauth2:","relay_transport = m365xoauth2:",
