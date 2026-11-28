@@ -48,10 +48,16 @@ class RC19ReleaseContract(unittest.TestCase):
             self.assertNotIn(marker, release)
 
     def test_version_and_actual_upgrade_baseline(self):
-        self.assertIn("<Version>0.1.1-rc.19</Version>",
-                      (CS / "LinuxMailRelay365.csproj").read_text(encoding="utf-8"))
+        # The historic RC19 publishing job must retain its exact version;
+        # a reviewed RC20 development version may advance independently.
+        release = job("rc19-prerelease-publish")
+        self.assertIn("<Version>0.1.1-rc.19</Version>", release)
+        self.assertEqual(release.count('internal const string Version = "0.1.1-rc.19";'), 2)
+        current = re.findall(r"<Version>(0\.1\.1-rc\.(?:19|20))</Version>",
+                             (CS / "LinuxMailRelay365.csproj").read_text(encoding="utf-8"))
+        self.assertEqual(len(current), 1)
         for name in ("UpdateCheck.cs", "UpdateCheck.Fallback.cs"):
-            self.assertIn('internal const string Version = "0.1.1-rc.19";',
+            self.assertIn('internal const string Version = "' + current[0] + '";',
                           (CS / name).read_text(encoding="utf-8"))
         windows = job("windows-build")
         self.assertIn("-ExpectedCandidateVersion '0.1.1-rc.19' -SourceTag 'v0.1.1-rc.18'", windows)

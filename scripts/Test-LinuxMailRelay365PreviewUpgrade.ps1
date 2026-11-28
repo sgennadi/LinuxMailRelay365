@@ -96,7 +96,7 @@ try {
     $asset = $assets[0]
     if ($SourceTag -ceq 'v0.1.1-rc.18') {
         Assert ($asset.digest -ceq 'sha256:d778c2107c88eb5dadfb1b2a105be09bd034843e8f7b9c9bae21c0ad9669ae67') 'Published RC18 asset differs from the pinned baseline.'
-        Assert ($ExpectedCandidateVersion -cin @('0.1.1-rc.18', '0.1.1-rc.19')) 'RC18 source requires RC18 rehearsal or RC19 candidate.'
+        Assert ($ExpectedCandidateVersion -cin @('0.1.1-rc.18', '0.1.1-rc.19', '0.1.1-rc.20')) 'RC18 source requires RC18 rehearsal or RC19/RC20 candidate.'
     }
     if ($SourceTag -ceq 'v0.1.1-rc.19') {
         Assert ($asset.digest -ceq 'sha256:6d59f380ac5686a5847b0babb02c0f3858ba2eed289912d990c9654d41610dba') 'Published RC19 asset differs from the pinned baseline.'
