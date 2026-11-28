@@ -62,6 +62,37 @@ class RC20PreflightContract(unittest.TestCase):
                        "commit = $env:GITHUB_SHA", "RC20 updater evidence for package review"):
             self.assertIn(marker, windows)
 
+    def test_publication_requires_exact_same_commit_and_never_overwrites(self):
+        publish = job(CI, "rc20-prerelease-publish")
+        self.assertEqual(deps(publish), {"rc20-preflight-result", "windows-build",
+                                         "rc20-package-review"})
+        self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/release/v0.1.1-rc.20'", publish)
+        self.assertIn("contents: write", publish)
+        for marker in ("persist-credentials: false", "LinuxMailRelay365-preview-builds",
+                       "LinuxMailRelay365-rc20-upgrade-receipt",
+                       'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+                       "<Version>0.1.1-rc.20</Version>",
+                       'internal const string Version = "0.1.1-rc.20";',
+                       '--commit "$GITHUB_SHA" --version 0.1.1-rc.20',
+                       "UNSIGNED_RC20_RELEASE_SHA256_AND_ZIP=PASS",
+                       'branch["object"]["sha"] == os.environ["GITHUB_SHA"]',
+                       'error.code == 404', '"/releases/tags/v0.1.1-rc.20", absent=True',
+                       '"/git/ref/tags/v0.1.1-rc.20", absent=True',
+                       'gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs"',
+                       '-f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA"',
+                       'gh release create "$tag"', '--verify-tag --target "$GITHUB_SHA"',
+                       "--prerelease", "UNSIGNED TEST ONLY", "NOT Stable",
+                       "independent verified backup", "experimental TPM2 broker is NOT included",
+                       "RC20_UNSIGNED_PRERELEASE_PUBLISHED=yes"):
+            self.assertIn(marker, publish)
+        for forbidden in ("always()", "continue-on-error", "--clobber", "--latest",
+                          "gh release delete", "gh release edit", "gh release upload",
+                          "git push", "--force"):
+            self.assertNotIn(forbidden, publish)
+        self.assertLess(publish.index("UNSIGNED_RC20_RELEASE_SHA256_AND_ZIP=PASS"),
+                        publish.index("gh api --method POST"))
+        self.assertLess(publish.index("gh api --method POST"), publish.index('gh release create "$tag"'))
+
     def test_exact_branch_requires_both_native_guests(self):
         gate = job(CI, "rc20-full-native-vm")
         for branch in ("feature/primary-rc20-preflight", "feature/primary-rc20-updater-preflight", "feature/primary-rc20-combined", "feature/primary-rc20-native-readiness", "feature/primary-rc20-sandbox-guard", "feature/primary-rc20-release-package", "release/v0.1.1-rc.20"):
