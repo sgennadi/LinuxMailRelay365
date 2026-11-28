@@ -91,6 +91,7 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_primary_mailbox_runtime.py
           python3 -m unittest discover -v -s tests -p test_primary_pipe_vm_fixture.py
           python3 -m unittest discover -v -s tests -p test_primary_tpm_broker_protocol.py
+          python3 -m unittest discover -v -s tests -p test_primary_tpm_broker_identity.py
           python3 -m unittest discover -v -s tests -p test_primary_xoauth2_installer_selinux.py
           python3 -m py_compile linux/export-hardware-oauth-cert.py
           python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
