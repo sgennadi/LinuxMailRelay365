@@ -23,12 +23,12 @@ class PolicyTests(unittest.TestCase):
         self.calls = []
         self.guard = Mock()
         self.stage = P.PolicyStage(self.spec, self.pp, self.guard,
-                                   self.run, Mock(), lambda sha: self.actual)
+                                   self.native_command, Mock(), lambda sha: self.actual)
 
     def inventory(self):
         return self.stage.after if self.installed else self.baseline
 
-    def run(self, name, args, cwd=None):
+    def native_command(self, name, args, cwd=None):
         self.calls.append((name, args))
         if name == "semodule" and args == ["-lfull", "-m"]:
             return "".join("{} {} {} {}sha256:{}\n".format(
