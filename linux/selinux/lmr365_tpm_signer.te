@@ -1,0 +1,47 @@
+# Candidate production-domain policy derived from the successful Rocky 10.3 fixture.
+# Compile offline first; never auto-install, disable Enforcing, or grant TPM to Postfix.
+policy_module(lmr365_tpm_signer, 1.0.0)
+
+gen_require(`
+    type init_t;
+    type postfix_pipe_t;
+    type postfix_etc_t;
+    class process2 { nnp_transition nosuid_transition };
+')
+
+type lmr365_tpm_signer_t;
+type lmr365_tpm_signer_exec_t;
+init_daemon_domain(lmr365_tpm_signer_t, lmr365_tpm_signer_exec_t)
+allow init_t lmr365_tpm_signer_t:process2 { nnp_transition nosuid_transition };
+
+type lmr365_tpm_signer_tmp_t;
+files_tmp_file(lmr365_tpm_signer_tmp_t)
+manage_dirs_pattern(lmr365_tpm_signer_t, lmr365_tpm_signer_tmp_t, lmr365_tpm_signer_tmp_t)
+manage_files_pattern(lmr365_tpm_signer_t, lmr365_tpm_signer_tmp_t, lmr365_tpm_signer_tmp_t)
+files_tmp_filetrans(lmr365_tpm_signer_t, lmr365_tpm_signer_tmp_t, { dir file })
+
+allow lmr365_tpm_signer_t self:process { fork sigchld signal signull sigkill };
+allow lmr365_tpm_signer_t self:fifo_file rw_fifo_file_perms;
+allow lmr365_tpm_signer_t self:unix_stream_socket create_stream_socket_perms;
+allow lmr365_tpm_signer_t self:dir search_dir_perms;
+allow lmr365_tpm_signer_t self:file read_file_perms;
+allow lmr365_tpm_signer_t self:lnk_file read_lnk_file_perms;
+allow postfix_pipe_t lmr365_tpm_signer_t:unix_stream_socket connectto;
+
+allow lmr365_tpm_signer_t postfix_etc_t:dir search_dir_perms;
+allow lmr365_tpm_signer_t postfix_etc_t:file read_file_perms;
+libs_use_ld_so(lmr365_tpm_signer_t)
+libs_use_shared_libs(lmr365_tpm_signer_t)
+corecmd_exec_bin(lmr365_tpm_signer_t)
+files_read_usr_files(lmr365_tpm_signer_t)
+files_read_etc_files(lmr365_tpm_signer_t)
+auth_read_passwd(lmr365_tpm_signer_t)
+init_use_fds(lmr365_tpm_signer_t)
+logging_send_syslog_msg(lmr365_tpm_signer_t)
+kernel_read_system_state(lmr365_tpm_signer_t)
+kernel_read_kernel_sysctls(lmr365_tpm_signer_t)
+selinux_get_enforce_mode(lmr365_tpm_signer_t)
+dev_rw_null(lmr365_tpm_signer_t)
+dev_read_urand(lmr365_tpm_signer_t)
+dev_rw_tpm(lmr365_tpm_signer_t)
+miscfiles_read_localization(lmr365_tpm_signer_t)

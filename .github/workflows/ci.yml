@@ -93,6 +93,7 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_primary_tpm_broker_protocol.py
           python3 -m unittest discover -v -s tests -p test_primary_tpm_broker_identity.py
           python3 -m unittest discover -v -s tests -p test_primary_tpm_broker_service.py
+          python3 -m unittest discover -v -s tests -p test_primary_tpm_broker_deployment.py
           python3 -m unittest discover -v -s tests -p test_primary_xoauth2_installer_selinux.py
           python3 -m py_compile linux/export-hardware-oauth-cert.py
           python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
@@ -340,6 +341,10 @@ jobs:
       - name: Verify actual offline SELinux policy, SMTP types and fail-closed Enforcing gates
         shell: bash
         run: bash tests/smoke_rhel_selinux_offline_policy.sh
+      - name: Compile candidate dedicated TPM broker policy without loading it
+        if: matrix.image == 'rockylinux:10'
+        shell: bash
+        run: bash tests/smoke_primary_tpm_broker_policy_compile.sh
 
   rhel-native-foreign-mta-smoke:
     # Actual RPM Exim/Sendmail in disposable EL containers, NOT RHEL

@@ -1,0 +1,37 @@
+# Candidate only. Installation/enablement is deliberately not implemented.
+[Unit]
+Description=LinuxMailRelay365 primary TPM OAuth assertion broker
+After=systemd-udev-trigger.service
+ConditionSecurity=selinux
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=lmr365-tpm-signer
+Group=lmr365-tpm-signer
+SupplementaryGroups=m365mailer
+ExecStart=/usr/local/libexec/lmr365-tpm-broker/python3 -I -B /usr/local/libexec/lmr365-tpm-broker/bootstrap.py
+SELinuxContext=system_u:system_r:lmr365_tpm_signer_t:s0
+PrivateDevices=yes
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+BindPaths=/dev/tpmrm0:/dev/tpmrm0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=15s
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
