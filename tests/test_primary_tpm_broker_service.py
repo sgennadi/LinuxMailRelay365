@@ -139,6 +139,31 @@ class BrokerServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(B.BrokerError, "^broker_identity_changed$"):
                 B.request_primary_assertion()
 
+    def test_startup_probe_checks_real_protocol_signature_and_identity_snapshot(self):
+        before = Mock()
+        before.matches.return_value = True
+        with patch.object(B.identity, "read_primary_snapshot", return_value=before), \
+                patch.object(B.protocol, "issue_primary_assertion", return_value=b"opaque") as issue, \
+                patch.object(B.protocol, "verify_primary_response") as verify:
+            B.startup_probe()
+            issue.assert_called_once()
+            verify.assert_called_once()
+            before.matches.assert_called_once_with(before)
+            before.matches.return_value = False
+            with self.assertRaisesRegex(B.BrokerError, "^broker_identity_changed$"):
+                B.startup_probe()
+
+    def test_no_listen_or_ready_when_local_startup_signing_fails(self):
+        with patch.object(B, "lookup_accounts", return_value=self.accounts), \
+                patch.object(B, "require_process"), \
+                patch.object(B.socket, "socket") as factory, \
+                patch.object(B, "startup_probe", side_effect=B.BrokerError("sign_failed")), \
+                patch("builtins.print") as log:
+            with self.assertRaisesRegex(B.BrokerError, "^sign_failed$"):
+                B.serve()
+            factory.return_value.__enter__.return_value.listen.assert_not_called()
+            log.assert_not_called()
+
     def test_service_requires_enforcing_before_bind(self):
         with patch.object(B, "lookup_accounts", return_value=self.accounts), \
                 patch.object(B.Path, "read_bytes", return_value=b"0"), \

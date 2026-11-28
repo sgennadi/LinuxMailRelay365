@@ -208,6 +208,16 @@ def handle_connection(conn, accounts, window):
         return False
 
 
+def startup_probe():
+    """Offline local TPM PS256 proof, never exchange the assertion for a token."""
+    before = identity.read_primary_snapshot()
+    nonce = uuid.uuid4().hex
+    response = protocol.issue_primary_assertion(
+        protocol.encode_request(nonce), before.configuration())
+    protocol.verify_primary_response(response, nonce, before.configuration())
+    need(before.matches(identity.read_primary_snapshot()), "broker_identity_changed")
+
+
 def serve():
     """One synchronous worker; no socket activation or filesystem artifacts.
 
@@ -220,6 +230,9 @@ def serve():
     window = RequestWindow()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(SOCKET_ADDRESS)
+        startup_probe()
+        require_process(accounts, signer=True)
+        need(lookup_accounts() == accounts, "broker_account_changed")
         listener.listen(BACKLOG)
         listener.settimeout(1)
         print("LMR365_TPM_BROKER_READY", flush=True)

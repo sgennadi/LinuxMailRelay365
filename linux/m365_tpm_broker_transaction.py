@@ -16,7 +16,7 @@ import re
 import stat
 import uuid
 
-STAGES = ("account", "runtime", "policy", "udev_rule", "device", "unit")
+STAGES = ("account", "runtime", "policy", "udev_rule", "device", "unit", "activation")
 STATE = "transaction.json"
 LOCK = "transaction.lock"
 MAX_STATE = 32768
