@@ -81,6 +81,18 @@ class PipeFixtureTests(unittest.TestCase):
                     W.broker_client(self.nonce,2,3,4,"unconfined_service_t")
                 conn.sendall.assert_not_called()
 
+    def test_broker_fixture_requires_exact_confined_domain_before_signing(self):
+        args=["--nonce",self.nonce,"--uid","2","--gid","4","--pipe-uid","3"]
+        with (patch.object(W.os,"getresuid",return_value=(2,)*3),
+              patch.object(W.os,"getresgid",return_value=(4,)*3),
+              patch.object(W.socket,"gethostname",return_value="rocky-selinux-ci"),
+              patch.object(W.Path,"read_text",return_value="1"),
+              patch.object(W,"context_type",return_value="unconfined_service_t"),
+              patch.object(W,"real_sign") as sign):
+            self.assertEqual(W.run_broker(args),75)
+            sign.assert_not_called()
+        self.assertEqual(W.BROKER_DOMAIN,"lmr365_fixture_signer_t")
+
     def test_broker_fixture_hostname_only_accepts_exact_lab_names(self):
         for hostname in ("rocky-selinux-ci","rocky-selinux-ci.example.invalid"):
             self.assertTrue(W.broker_fixture_hostname(hostname))

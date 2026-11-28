@@ -22,6 +22,7 @@ SUCCESS="Local PS256 signing and certificate match verified; no token requested"
 NONCE=re.compile(r"\A[a-f0-9]{32}\Z")
 LIMIT=32768
 PORTS=(443,587)
+BROKER_DOMAIN="lmr365_fixture_signer_t"
 
 def need(condition,reason):
     if not condition:
@@ -287,7 +288,7 @@ def run_broker(argv):
         stage="enforcing"
         need(Path("/sys/fs/selinux/enforce").read_text().strip()=="1","disposable_broker_enforcing")
         stage="domain"
-        need(context_type()!="postfix_pipe_t","disposable_broker_domain")
+        need(context_type()==BROKER_DOMAIN,"disposable_broker_domain")
         stage="request_nonce"
         request=broker_request(args.nonce)
         # Distinguish successful TPM operations in the service itself from
@@ -342,8 +343,7 @@ def run(argv=None):
         need(not broker or (args.tpm_handle is None and
              type(args.broker_pid) is int and args.broker_pid>1 and
              type(args.broker_uid) is int and args.broker_uid>0 and args.broker_uid!=args.uid and
-             type(args.broker_domain) is str and re.fullmatch(r"[A-Za-z0-9_]+_t",args.broker_domain) and
-             args.broker_domain!="postfix_pipe_t"),"broker_arguments")
+             args.broker_domain==BROKER_DOMAIN),"broker_arguments")
         stage="domain"
         need(context_type()=="postfix_pipe_t","not_postfix_pipe_domain")
         stage="message"

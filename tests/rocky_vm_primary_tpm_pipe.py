@@ -15,6 +15,7 @@ import re
 import shlex
 import subprocess
 import time
+import tempfile
 import uuid
 import pwd
 import grp
@@ -297,7 +298,8 @@ def failure_diagnostics():
         except (OSError,subprocess.SubprocessError):
             continue
         for line in raw.splitlines():
-            if "avc:" not in line.lower() or "postfix_pipe_t:" not in line:
+            if "avc:" not in line.lower() or not any(
+                    kind+":" in line for kind in ("postfix_pipe_t",W.BROKER_DOMAIN)):
                 continue
             # Extract only permission names, source/target type, and object
             # class; omit paths, process arguments and raw audit text.
@@ -305,7 +307,7 @@ def failure_diagnostics():
             source=re.search(r"\bscontext=[^:\s]+:[^:\s]+:([A-Za-z0-9_]+):",line)
             target=re.search(r"\btcontext=[^:\s]+:[^:\s]+:([A-Za-z0-9_]+):",line)
             cls=re.search(r"\btclass=([A-Za-z0-9_]+)\b",line)
-            if perms and source and target and cls and source[1]=="postfix_pipe_t":
+            if perms and source and target and cls and source[1] in ("postfix_pipe_t",W.BROKER_DOMAIN):
                 print("LMR365_TPM_PIPE_AVC="+source[1]+":"+target[1]+":"+cls[1]+":"+
                       ",".join(perms[1].split()),flush=True)
                 count+=1
@@ -317,6 +319,124 @@ def failure_diagnostics():
 
 BROKER_UNIT="lmr365-disposable-tpm-broker.service"
 BROKER_USER="lmr365signer"
+
+BROKER_DOMAIN=W.BROKER_DOMAIN
+BROKER_MODULE="lmr365_fixture_signer"
+BROKER_EXEC=Path("/usr/local/libexec/lmr365-disposable-signer-python")
+
+# Candidate policy for the disposable VM only. Runtime read/execute
+# interfaces are not a reviewed production permission set.
+BROKER_TE="""policy_module(lmr365_fixture_signer, 1.0.0)
+
+gen_require(`
+    type init_t;
+    type postfix_pipe_t;
+    type postfix_etc_t;
+    class process2 { nnp_transition nosuid_transition };
+')
+
+type lmr365_fixture_signer_t;
+type lmr365_fixture_signer_exec_t;
+init_daemon_domain(lmr365_fixture_signer_t, lmr365_fixture_signer_exec_t)
+allow init_t lmr365_fixture_signer_t:process2 { nnp_transition nosuid_transition };
+
+type lmr365_fixture_signer_tmp_t;
+files_tmp_file(lmr365_fixture_signer_tmp_t)
+manage_dirs_pattern(lmr365_fixture_signer_t, lmr365_fixture_signer_tmp_t, lmr365_fixture_signer_tmp_t)
+manage_files_pattern(lmr365_fixture_signer_t, lmr365_fixture_signer_tmp_t, lmr365_fixture_signer_tmp_t)
+files_tmp_filetrans(lmr365_fixture_signer_t, lmr365_fixture_signer_tmp_t, { dir file })
+
+allow lmr365_fixture_signer_t self:process { fork sigchld signal signull sigkill };
+allow lmr365_fixture_signer_t self:fifo_file rw_fifo_file_perms;
+allow lmr365_fixture_signer_t self:unix_stream_socket create_stream_socket_perms;
+allow lmr365_fixture_signer_t self:dir search_dir_perms;
+allow lmr365_fixture_signer_t self:file read_file_perms;
+allow lmr365_fixture_signer_t self:lnk_file read_lnk_file_perms;
+allow postfix_pipe_t lmr365_fixture_signer_t:unix_stream_socket connectto;
+
+allow lmr365_fixture_signer_t postfix_etc_t:dir search_dir_perms;
+allow lmr365_fixture_signer_t postfix_etc_t:file read_file_perms;
+libs_use_ld_so(lmr365_fixture_signer_t)
+libs_use_shared_libs(lmr365_fixture_signer_t)
+corecmd_exec_bin(lmr365_fixture_signer_t)
+files_read_usr_files(lmr365_fixture_signer_t)
+files_read_etc_files(lmr365_fixture_signer_t)
+auth_read_passwd(lmr365_fixture_signer_t)
+init_use_fds(lmr365_fixture_signer_t)
+logging_send_syslog_msg(lmr365_fixture_signer_t)
+kernel_read_system_state(lmr365_fixture_signer_t)
+kernel_read_kernel_sysctls(lmr365_fixture_signer_t)
+selinux_get_enforce_mode(lmr365_fixture_signer_t)
+dev_rw_null(lmr365_fixture_signer_t)
+dev_read_urand(lmr365_fixture_signer_t)
+dev_rw_tpm(lmr365_fixture_signer_t)
+miscfiles_read_localization(lmr365_fixture_signer_t)
+"""
+
+
+def broker_policy_inventory():
+    raw=command("/usr/sbin/semodule","-lfull",timeout=90).decode("ascii","strict")
+    rows=tuple(sorted(tuple(line.split()) for line in raw.splitlines() if line.strip()))
+    need(bool(rows) and all(len(row) in (3,4) and row[0].isdigit() for row in rows),
+         "broker_policy_inventory_unverified")
+    return rows
+
+
+@contextmanager
+def broker_policy_scope(queue):
+    stopped(queue)
+    need(os.environ.get("LMR365_KVM_TPM_BROKER_ACCEPTANCE")=="true" and
+         'VERSION_ID="10.3"' in Path("/etc/os-release").read_text().splitlines(),
+         "broker_policy_disposable_rocky10_only")
+    before=broker_policy_inventory()
+    need(not any(row[1]==BROKER_MODULE for row in before) and
+         not os.path.lexists(BROKER_EXEC),"existing_broker_policy_or_entrypoint")
+    # Copy the native interpreter, never relabel the distro Python or Postfix.
+    source=Path("/usr/bin/python3").resolve(strict=True)
+    st=source.stat()
+    need(stat.S_ISREG(st.st_mode) and st.st_uid==0 and not st.st_mode&0o6022,
+         "broker_python_entrypoint_untrusted")
+    created=False
+    entered=False
+    try:
+        with tempfile.TemporaryDirectory(prefix="lmr365-fixture-policy-",dir="/run") as work:
+            te=Path(work)/(BROKER_MODULE+".te")
+            te.write_text(BROKER_TE,encoding="ascii")
+            try:
+                command("/usr/bin/make","-C",work,"-f","/usr/share/selinux/devel/Makefile",
+                        BROKER_MODULE+".pp",timeout=120)
+            except subprocess.CalledProcessError:
+                print("LMR365_TPM_BROKER_POLICY_BUILD=failed",flush=True)
+                raise
+            command("/usr/sbin/semodule","-X","400","-i",str(te.with_suffix(".pp")),timeout=120)
+        after=broker_policy_inventory()
+        added=tuple(row for row in after if row not in before)
+        need(len(added)==1 and added[0][:2]==("400",BROKER_MODULE) and
+             all(row in after for row in before),"broker_policy_install_unverified")
+        F.disposable()
+        created=True
+        command("/usr/bin/install","-o","root","-g","root","-m","0755",str(source),str(BROKER_EXEC))
+        need(BROKER_EXEC.read_bytes()==source.read_bytes(),"broker_entrypoint_changed")
+        command("/usr/bin/chcon","-t","lmr365_fixture_signer_exec_t",str(BROKER_EXEC))
+        need(os.getxattr(BROKER_EXEC,"security.selinux").split(b":")[2]==b"lmr365_fixture_signer_exec_t",
+             "broker_entrypoint_label_unverified")
+        print("LMR365_TPM_BROKER_POLICY=fixture_module_loaded",flush=True)
+        entered=True
+        yield
+    finally:
+        F.disposable()
+        # Never unload a policy while its service still has a live process.
+        if entered:
+            pid=command("/usr/bin/systemctl","show","-pMainPID","--value",BROKER_UNIT).strip()
+            need(pid==b"0","broker_service_not_stopped_before_policy_removal")
+        if created and os.path.lexists(BROKER_EXEC):
+            BROKER_EXEC.unlink()
+        now=broker_policy_inventory()
+        if any(row[1]==BROKER_MODULE for row in now):
+            command("/usr/sbin/semodule","-X","400","-r",BROKER_MODULE,timeout=120)
+        need(broker_policy_inventory()==before,"broker_policy_baseline_not_restored")
+        F.disposable()
+        print("LMR365_TPM_BROKER_POLICY=original_inventory_restored",flush=True)
 
 
 BROKER_STAGES=("identity","hostname","enforcing","domain","request_nonce","self_sign","listen",
@@ -409,12 +529,13 @@ def broker_scope(queue,nonce,pipe_uid,gid):
                "BindPaths=/dev/tpmrm0:/dev/tpmrm0","NoNewPrivileges=yes",
                "ProtectSystem=strict","ProtectHome=yes","PrivateTmp=yes",
                "RestrictAddressFamilies=AF_UNIX","CapabilityBoundingSet=",
-               "RuntimeMaxSec=280","UMask=0077")
+               "RuntimeMaxSec=280","UMask=0077",
+               "SELinuxContext=system_u:system_r:"+BROKER_DOMAIN+":s0")
         pid=0
         try:
             command("/usr/bin/systemd-run","--unit="+BROKER_UNIT,"--service-type=exec",
                     *("--property="+prop for prop in props),
-                    "/usr/bin/python3","-I","-B",str(F.WORKER),"--broker-server",
+                    str(BROKER_EXEC),"-I","-B",str(F.WORKER),"--broker-server",
                     "--nonce",nonce,"--uid",str(uid),"--gid",str(gid),"--pipe-uid",str(pipe_uid))
             until=time.monotonic()+85
             domain=""
@@ -426,11 +547,10 @@ def broker_scope(queue,nonce,pipe_uid,gid):
                     break
                 if pid>1 and broker_receipt(pid,uid,"LMR365_TPM_BROKER_READY="+nonce):
                     proc=Path("/proc")/str(pid)
-                    need((proc/"exe").resolve()==Path("/usr/bin/python3").resolve(),
+                    need((proc/"exe").resolve()==BROKER_EXEC,
                          "broker_executable_unverified")
                     fields=(proc/"attr/current").read_bytes().rstrip(b"\0\n").decode("ascii").split(":",3)
-                    need(len(fields)==4 and re.fullmatch(r"[A-Za-z0-9_]+_t",fields[2]) and
-                         fields[2]!="postfix_pipe_t","broker_domain_unverified")
+                    need(len(fields)==4 and fields[2]==BROKER_DOMAIN,"broker_domain_unverified")
                     domain=fields[2]
                     visible=(proc/"root/dev/tpmrm0").lstat()
                     host=DEVICE.lstat()
@@ -453,6 +573,7 @@ def broker_scope(queue,nonce,pipe_uid,gid):
             print("LMR365_TPM_BROKER_SERVICE_PS256=verified_fixed_fixture",flush=True)
         except Exception:
             broker_start_diagnostics(nonce,uid,pid)
+            failure_diagnostics()
             raise
         finally:
             F.disposable()
@@ -472,7 +593,7 @@ def broker_link_evidence(master,broker_info):
         pid,uid,domain=broker_info
         signer=Path("/proc")/str(pid)
         need(broker_status()["MainPID"]==str(pid) and
-             (signer/"exe").resolve()==Path("/usr/bin/python3").resolve() and
+             (signer/"exe").resolve()==BROKER_EXEC and
              (master/"exe").resolve()==Path("/usr/libexec/postfix/master"),
              "broker_link_process_unverified")
         fields=(signer/"attr/current").read_bytes().rstrip(b"\0\n").decode("ascii").split(":",3)
@@ -594,7 +715,7 @@ def main():
             nonce,other=uuid.uuid4().hex,uuid.uuid4().hex
             need(nonce!=other,"duplicate_nonce")
             scope=broker_scope(queue,nonce,account.pw_uid,gid) if broker else nullcontext(None)
-            with scope as broker_info:
+            with (broker_policy_scope(queue) if broker else nullcontext()), scope as broker_info:
                 broker_args=(" --broker-pid "+str(broker_info[0])+" --broker-uid "+str(broker_info[1])+
                              " --broker-domain "+broker_info[2]) if broker else " --tpm-handle "+HANDLE
                 # All nonlocal mail in this isolated guest is routed only to the

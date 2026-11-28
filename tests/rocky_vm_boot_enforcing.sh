@@ -369,9 +369,15 @@ ROCKY10_DATA_CONTEXT
         ssh "${ssh_opts[@]}" ci@127.0.0.1 \
             'sudo install -o root -g root -m 0644 /home/ci/m365_xoauth2_transport.py /home/ci/m365_hardware_signer.py /home/ci/rocky_vm_primary_pipe_worker.py /home/ci/rocky_vm_primary_pipe_enforcing.py /home/ci/rocky_vm_primary_tpm_pipe.py /usr/local/libexec/lmr365-kvm-vtpm/ && sudo restorecon -R /usr/local/libexec/lmr365-kvm-vtpm && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-primary-mailbox-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-primary-mailbox-vm"'
         if test "${LMR365_KVM_TPM_BROKER_ACCEPTANCE:-false}" = true; then
+            # Build tools are installed only inside the disposable broker guest.
             ssh "${ssh_opts[@]}" ci@127.0.0.1 \
-                'sudo env GITHUB_ACTIONS=true LMR365_KVM_TPM_BROKER_ACCEPTANCE=true timeout 420 python3 -I -B /usr/local/libexec/lmr365-kvm-vtpm/rocky_vm_primary_tpm_pipe.py' | tee "$work/tpm-broker"
+                'sudo dnf -y -q install selinux-policy-devel make && test "$(getenforce)" = Enforcing'
+            ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+                'sudo env GITHUB_ACTIONS=true LMR365_KVM_TPM_BROKER_ACCEPTANCE=true timeout 600 python3 -I -B /usr/local/libexec/lmr365-kvm-vtpm/rocky_vm_primary_tpm_pipe.py' | tee "$work/tpm-broker"
             for expected in \
+                'LMR365_TPM_BROKER_DOMAIN=lmr365_fixture_signer_t' \
+                'LMR365_TPM_BROKER_POLICY=fixture_module_loaded' \
+                'LMR365_TPM_BROKER_POLICY=original_inventory_restored' \
                 'LMR365_TPM_BROKER_SELF_SIGN=verified_fixed_fixture' \
                 'LMR365_TPM_BROKER_SERVICE_PS256=verified_fixed_fixture' \
                 'LMR365_TPM_BROKER_PIPE=verified_fixed_fixture' \
