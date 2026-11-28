@@ -155,6 +155,13 @@ class IdentitySnapshot:
     def matches(self, other):
         return isinstance(other, IdentitySnapshot) and self._stamp == other._stamp
 
+    def approval_digest(self):
+        # Bind preview to the full observed snapshot without exposing its data.
+        directory, files = self._stamp
+        data = repr((directory, tuple((name, meta, sha.hex())
+                    for name, meta, sha in files))).encode("ascii")
+        return hashlib.sha256(data).hexdigest()
+
     def __repr__(self):
         return "IdentitySnapshot(<protected>)"
 

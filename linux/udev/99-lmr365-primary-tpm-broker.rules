@@ -1,0 +1,2 @@
+# Candidate only. Install after exclusive TPM resource-manager review.
+SUBSYSTEM=="tpmrm", KERNEL=="tpmrm0", OWNER:="root", GROUP:="lmr365-tpm-signer", MODE:="0660", TAG+="systemd"

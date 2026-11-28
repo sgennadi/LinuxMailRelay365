@@ -1,7 +1,8 @@
 # Candidate only. Installation/enablement is deliberately not implemented.
 [Unit]
 Description=LinuxMailRelay365 primary TPM OAuth assertion broker
-After=systemd-udev-trigger.service
+BindsTo=dev-tpmrm0.device
+After=systemd-udev-trigger.service dev-tpmrm0.device
 ConditionSecurity=selinux
 StartLimitIntervalSec=60
 StartLimitBurst=5

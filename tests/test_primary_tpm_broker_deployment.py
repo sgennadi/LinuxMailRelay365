@@ -40,6 +40,8 @@ class BrokerDeploymentTests(unittest.TestCase):
             "KillMode": "control-group", "StandardOutput": "journal",
             "StandardError": "journal",
         })
+        self.assertEqual(unit["Unit"]["BindsTo"], "dev-tpmrm0.device")
+        self.assertEqual(unit["Unit"]["After"], "systemd-udev-trigger.service dev-tpmrm0.device")
         self.assertEqual(unit["Unit"]["ConditionSecurity"], "selinux")
         self.assertEqual(unit["Unit"]["StartLimitIntervalSec"], "60")
         self.assertEqual(unit["Unit"]["StartLimitBurst"], "5")
