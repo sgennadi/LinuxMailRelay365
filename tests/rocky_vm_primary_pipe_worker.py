@@ -35,9 +35,13 @@ def message_id(nonce):
 def marker(nonce,network=False,tpm=False,broker=False):
     message_id(nonce)
     need(sum(bool(value) for value in (network,tpm,broker))<=1,"ambiguous_fixture_marker")
-    result=("isolated_tpm2_broker_probe_verified" if broker else
+    result=("tpm2_broker_verified" if broker else
             "tcp443_587_verified" if network else "tpm2_ps256_verified" if tpm else "ps256_verified")
-    return "LMR365_PRIMARY_PIPE="+nonce+":postfix_pipe_t:"+result
+    receipt="LMR365_PRIMARY_PIPE="+nonce+":postfix_pipe_t:"+result
+    # Native Postfix pipe can truncate successful command output. Keep the
+    # entire nonce-bound receipt within a conservative 90-byte budget.
+    need(len(receipt.encode("ascii"))<=90,"fixture_receipt_too_long")
+    return receipt
 
 def challenge(nonce,port):
     message_id(nonce)

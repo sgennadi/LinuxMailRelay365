@@ -657,9 +657,8 @@ def broker_scope(queue,nonce,pipe_uid,gid):
             F.disposable()
             # The fixture never clears a failed queue or restarts Postfix.
             try:
-                command("/usr/bin/systemctl","stop",BROKER_UNIT)
-                need(command("/usr/bin/systemctl","show","-pMainPID","--value",BROKER_UNIT).strip()==b"0",
-                     "broker_service_not_stopped")
+                F.stop_transient_broker(BROKER_UNIT,broker_status)
+                print("LMR365_TPM_BROKER_STOP=verified_inactive",flush=True)
             finally:
                 need(unit_snapshot()==before,"broker_changed_postfix_sandbox")
 

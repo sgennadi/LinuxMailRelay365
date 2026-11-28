@@ -154,8 +154,43 @@ def wait_receipt(nonce,daemon,started,network=False,tpm=False,broker=False):
           str(len(list(trusted_messages(rows,"cleanup",daemon))))+
           "_pipe_rows_"+str(len(list(trusted_messages(rows,"pipe",daemon))))+
           "_failure_"+("-".join(sorted(failures)) or "unobserved"),flush=True)
+    # Diagnostics classify only the fixed synthetic marker and status fields,
+    # never emit queue contents, message data, recipients or raw journal text.
+    pipe_rows=list(trusted_messages(rows,"pipe",daemon))
+    expected=W.marker(nonce,network,tpm,broker)
+    prefix="LMR365_PRIMARY_PIPE="+nonce+":postfix_pipe_t:"
+    try:
+        queue_state="empty" if not command("/usr/sbin/postqueue","-j").strip() else "nonempty"
+    except (OSError,subprocess.SubprocessError):
+        queue_state="unknown"
+    print("LMR365_PRIMARY_VM_PIPE_RECEIPT=nonce_rows_"+
+          str(sum(prefix in line for line in pipe_rows))+
+          "_marker_rows_"+str(sum(expected in line for line in pipe_rows))+
+          "_sent_rows_"+str(sum(bool(re.search(r"(?:^|, )status=sent\\b",line)) for line in pipe_rows))+
+          "_exact_receipt_"+("yes" if journal_receipt(rows,daemon,nonce,network,tpm,broker) else "no")+
+          "_queue_"+queue_state,flush=True)
     raise RuntimeError("native_pipe_network_receipt_unverified" if network else
                        "native_pipe_signing_receipt_unverified")
+
+def stop_transient_broker(unit,read_status,run=None):
+    """The one-shot service may be collected before our cleanup runs."""
+    need(unit=="lmr365-disposable-tpm-broker.service","unexpected_fixture_unit")
+    run=command if run is None else run
+    absent=False
+    try:
+        run("/usr/bin/systemctl","stop",unit)
+    except subprocess.CalledProcessError as error:
+        if error.returncode!=5:
+            raise
+        absent=True
+    status=read_status()
+    need(status["MainPID"]=="0" and status["ActiveState"]=="inactive" and
+         status["SubState"]=="dead" and
+         status["LoadState"] in ("loaded","not-found") and
+         (not absent or status["LoadState"]=="not-found"),
+         "broker_service_not_stopped")
+    return "already_collected" if absent else "stopped"
+
 
 def port_policy():
     """Read native installed port types, not a claim of domain permission."""

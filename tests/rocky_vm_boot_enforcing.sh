@@ -382,6 +382,7 @@ ROCKY10_DATA_CONTEXT
                 'LMR365_TPM_BROKER_DAC=provisioning_group_restored' \
                 'LMR365_TPM_BROKER_GROUPS=verified_actual_process' \
                 'LMR365_TPM_BROKER_SELF_SIGN=verified_fixed_fixture' \
+                'LMR365_TPM_BROKER_STOP=verified_inactive' \
                 'LMR365_TPM_BROKER_SERVICE_PS256=verified_fixed_fixture' \
                 'LMR365_TPM_BROKER_PIPE=verified_fixed_fixture' \
                 'LMR365_TPM_BROKER_POSTFIX_DEVICE=absent' \

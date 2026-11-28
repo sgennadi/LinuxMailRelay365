@@ -7,6 +7,7 @@ import socket
 import errno
 import stat
 import struct
+import subprocess
 import threading
 
 HERE=Path(__file__).resolve().parent
@@ -177,7 +178,7 @@ class PipeFixtureTests(unittest.TestCase):
 
     def test_broker_receipt_is_distinct_and_nonce_bound(self):
         self.assertNotEqual(W.marker(self.nonce,tpm=True),W.marker(self.nonce,broker=True))
-        self.assertIn("isolated_tpm2_broker_probe_verified",W.marker(self.nonce,broker=True))
+        self.assertIn("tpm2_broker_verified",W.marker(self.nonce,broker=True))
         self.assertEqual(W.broker_address(self.nonce),"\0lmr365-tpm-fixture-"+self.nonce)
         self.assertEqual(W.broker_request(self.nonce),("LMR365_TPM_FIXTURE:"+self.nonce+"\n").encode("ascii"))
         for call in (lambda:W.marker(self.nonce,tpm=True,broker=True),
@@ -194,6 +195,36 @@ class PipeFixtureTests(unittest.TestCase):
             with self.assertRaisesRegex(W.FixtureSignFailure,"broker_device_visibility"):
                 W.broker_client(self.nonce,2,3,4,"unconfined_service_t")
             sock.assert_not_called()
+
+    def test_all_receipts_fit_conservative_pipe_output_budget(self):
+        for flags in ({},{"network":True},{"tpm":True},{"broker":True}):
+            marker=W.marker(self.nonce,**flags)
+            self.assertLessEqual(len(marker.encode("ascii")),90)
+            pipe=self.pipe()
+            pipe["MESSAGE"]=pipe["MESSAGE"].replace(W.marker(self.nonce),marker)
+            self.assertEqual(P.journal_receipt([self.cleanup(),pipe],self.daemon,self.nonce,**flags),self.qid)
+            pipe["MESSAGE"]=pipe["MESSAGE"].replace(marker,marker[:-1])
+            self.assertIsNone(P.journal_receipt([self.cleanup(),pipe],self.daemon,self.nonce,**flags))
+
+    def test_transient_broker_cleanup_requires_proven_absence_or_stop(self):
+        unit="lmr365-disposable-tpm-broker.service"
+        args=("/usr/bin/systemctl","stop",unit)
+        inactive={"MainPID":"0","ActiveState":"inactive","SubState":"dead","LoadState":"not-found"}
+        status=Mock(return_value=inactive)
+        run=Mock(side_effect=subprocess.CalledProcessError(5,list(args)))
+        self.assertEqual(P.stop_transient_broker(unit,status,run),"already_collected")
+        run.assert_called_once_with(*args)
+        status.assert_called_once_with()
+        for altered in (dict(inactive,MainPID="55"),dict(inactive,ActiveState="active"),
+                        dict(inactive,SubState="running"),dict(inactive,LoadState="loaded")):
+            with self.assertRaisesRegex(RuntimeError,"broker_service_not_stopped"):
+                P.stop_transient_broker(unit,Mock(return_value=altered),run)
+        with self.assertRaises(subprocess.CalledProcessError):
+            P.stop_transient_broker(unit,status,Mock(side_effect=subprocess.CalledProcessError(1,list(args))))
+        loaded=dict(inactive,LoadState="loaded")
+        self.assertEqual(P.stop_transient_broker(unit,Mock(return_value=loaded),Mock()),"stopped")
+        with self.assertRaisesRegex(RuntimeError,"unexpected_fixture_unit"):
+            P.stop_transient_broker("postfix.service",status,Mock())
 
     def test_tpm_failure_diagnostics_are_bounded_and_never_success(self):
         expected={
