@@ -62,6 +62,26 @@ class PipeFixtureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             W.marker(self.nonce,True,True)
 
+    def test_broker_receipt_is_distinct_and_nonce_bound(self):
+        self.assertNotEqual(W.marker(self.nonce,tpm=True),W.marker(self.nonce,broker=True))
+        self.assertIn("isolated_tpm2_broker_probe_verified",W.marker(self.nonce,broker=True))
+        self.assertEqual(W.broker_address(self.nonce),"\0lmr365-tpm-fixture-"+self.nonce)
+        self.assertEqual(W.broker_request(self.nonce),("LMR365_TPM_FIXTURE:"+self.nonce+"\n").encode("ascii"))
+        for call in (lambda:W.marker(self.nonce,tpm=True,broker=True),
+                     lambda:W.marker(self.nonce,network=True,broker=True),
+                     lambda:W.broker_request("bad")):
+            with self.assertRaises(ValueError):
+                call()
+        rows=[self.cleanup(),self.pipe()]
+        self.assertIsNone(P.journal_receipt(rows,self.daemon,self.nonce,broker=True))
+        rows[1]["MESSAGE"]=rows[1]["MESSAGE"].replace(W.marker(self.nonce),W.marker(self.nonce,broker=True))
+        self.assertEqual(P.journal_receipt(rows,self.daemon,self.nonce,broker=True),self.qid)
+        self.assertIsNone(P.journal_receipt(rows,self.daemon,self.nonce,tpm=True))
+        with patch.object(W.os,"lstat",return_value=Mock()),patch.object(W.socket,"socket") as sock:
+            with self.assertRaisesRegex(W.FixtureSignFailure,"broker_device_visibility"):
+                W.broker_client(self.nonce,2,3,4,"unconfined_service_t")
+            sock.assert_not_called()
+
     def test_tpm_failure_diagnostics_are_bounded_and_never_success(self):
         expected={
             "4.3.0 hardware_signature_unavailable_no_pem_fallback":"tpm_provider_signature",

@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import socket
 import stat
+import struct
 import sys
 
 PRODUCT=Path("/usr/local/libexec/m365_xoauth2_transport.py")
@@ -30,10 +31,11 @@ def message_id(nonce):
     need(type(nonce) is str and NONCE.fullmatch(nonce),"nonce")
     return "<lmr365-pipe-"+nonce+"@lmr365-pipe.invalid>"
 
-def marker(nonce,network=False,tpm=False):
+def marker(nonce,network=False,tpm=False,broker=False):
     message_id(nonce)
-    need(not (network and tpm),"ambiguous_fixture_marker")
-    result="tcp443_587_verified" if network else "tpm2_ps256_verified" if tpm else "ps256_verified"
+    need(sum(bool(value) for value in (network,tpm,broker))<=1,"ambiguous_fixture_marker")
+    result=("isolated_tpm2_broker_probe_verified" if broker else
+            "tcp443_587_verified" if network else "tpm2_ps256_verified" if tpm else "ps256_verified")
     return "LMR365_PRIMARY_PIPE="+nonce+":postfix_pipe_t:"+result
 
 def challenge(nonce,port):
@@ -79,7 +81,8 @@ TPM_FAILURES=frozenset(("tpm_device_denied","tpm_device_unverified",
     "tpm_device_busy","tpm_device_unsupported","tpm_device_io",
     "tpm_device_identity_changed","tpm_config",
     "tpm_provider_signature","tpm_certificate","tpm_signature_mismatch",
-    "tpm_io","tpm_sign_unknown"))
+    "tpm_io","tpm_sign_unknown","broker_connect","broker_peer","broker_response",
+    "broker_device_visibility","broker_server_signing"))
 
 class FixtureSignFailure(Exception):
     def __init__(self,reason):
@@ -181,6 +184,106 @@ def real_sign(tpm_handle=None):
     need(rc==0 and output.getvalue().strip()==SUCCESS and not errors.getvalue(),
          "signing_result")
 
+def broker_address(nonce):
+    message_id(nonce)
+    return "\0lmr365-tpm-fixture-"+nonce
+
+
+def broker_request(nonce):
+    message_id(nonce)
+    return ("LMR365_TPM_FIXTURE:"+nonce+"\n").encode("ascii")
+
+
+def peer_identity(conn):
+    credentials=conn.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
+    pid,uid,gid=struct.unpack("3i",credentials)
+    context=conn.getsockopt(socket.SOL_SOCKET,getattr(socket,"SO_PEERSEC",31),4096)
+    fields=context.rstrip(b"\0\n").decode("ascii").split(":",3)
+    need(pid>0 and uid>0 and gid>0 and len(fields)==4 and
+         re.fullmatch(r"[A-Za-z0-9_]+_t",fields[2]),"broker_peer_identity")
+    return pid,uid,gid,fields[2]
+
+
+def broker_client(nonce,pid,uid,gid,domain):
+    # The real Postfix pipe must retain its original private /dev.
+    try:
+        os.lstat("/dev/tpmrm0")
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise FixtureSignFailure("broker_device_visibility") from None
+    else:
+        raise FixtureSignFailure("broker_device_visibility")
+    try:
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as conn:
+            conn.settimeout(65)
+            try:
+                conn.connect(broker_address(nonce))
+            except OSError:
+                raise FixtureSignFailure("broker_connect") from None
+            try:
+                need(peer_identity(conn)==(pid,uid,gid,domain),"broker_server_identity")
+            except (OSError,ValueError,struct.error):
+                raise FixtureSignFailure("broker_peer") from None
+            request=broker_request(nonce)
+            conn.sendall(request)
+            conn.shutdown(socket.SHUT_WR)
+            response=b"ACK:"+request
+            need(recv_exact(conn,len(response))==response and conn.recv(1)==b"",
+                 "broker_response")
+    except FixtureSignFailure:
+        raise
+    except (OSError,ValueError,struct.error):
+        raise FixtureSignFailure("broker_response") from None
+
+
+def run_broker(argv):
+    """One-shot disposable proof, not a signing service API.
+
+    Never accepts payload bytes to sign, never exports an assertion or token,
+    and never contacts Microsoft. Uses only the fixed synthetic identity.
+    """
+    ap=argparse.ArgumentParser(allow_abbrev=False)
+    ap.add_argument("--nonce",required=True)
+    ap.add_argument("--uid",required=True,type=int)
+    ap.add_argument("--gid",required=True,type=int)
+    ap.add_argument("--pipe-uid",required=True,type=int)
+    args=ap.parse_args(argv)
+    stage="identity"
+    try:
+        need(args.uid>0 and args.gid>0 and args.pipe_uid>0 and args.pipe_uid!=args.uid and
+             os.getresuid()==(args.uid,)*3 and os.getresgid()==(args.gid,)*3 and
+             socket.gethostname()=="rocky-selinux-ci" and
+             Path("/sys/fs/selinux/enforce").read_text().strip()=="1" and
+             context_type()!="postfix_pipe_t","disposable_broker_identity")
+        request=broker_request(args.nonce)
+        # Abstract Unix socket: no filesystem labels/ACLs changed. The
+        # kernel still enforces SELinux connectto and peer identity.
+        stage="listen"
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as listener:
+            listener.settimeout(90)
+            listener.bind(broker_address(args.nonce))
+            listener.listen(1)
+            print("LMR365_TPM_BROKER_READY="+args.nonce,flush=True)
+            with listener.accept()[0] as conn:
+                conn.settimeout(60)
+                stage="peer"
+                _,uid,gid,domain=peer_identity(conn)
+                need((uid,gid,domain)==(args.pipe_uid,args.gid,"postfix_pipe_t"),"broker_client_identity")
+                stage="request"
+                need(recv_exact(conn,len(request))==request and conn.recv(1)==b"",
+                     "broker_request_exact")
+                stage="sign"
+                real_sign("0x81010002")
+                stage="reply"
+                conn.sendall(b"ACK:"+request)
+            print("LMR365_TPM_BROKER_PS256="+args.nonce,flush=True)
+        return 0
+    except Exception:
+        print("LMR365_TPM_BROKER_FAIL="+stage,flush=True)
+        return 75
+
+
 def run(argv=None):
     ap=argparse.ArgumentParser(allow_abbrev=False)
     ap.add_argument("--recipient",required=True)
@@ -189,11 +292,20 @@ def run(argv=None):
     ap.add_argument("--uid",required=True,type=int)
     ap.add_argument("--gid",required=True,type=int)
     ap.add_argument("--tpm-handle",choices=["0x81010002"])
+    ap.add_argument("--broker-pid",type=int)
+    ap.add_argument("--broker-uid",type=int)
+    ap.add_argument("--broker-domain")
     args=ap.parse_args(argv)
+    broker=args.broker_pid is not None or args.broker_uid is not None or args.broker_domain is not None
     stage="identity"
     try:
         need(args.uid>0 and args.gid>0 and
              os.geteuid()==args.uid and os.getegid()==args.gid,"service_account")
+        need(not broker or (args.tpm_handle is None and
+             type(args.broker_pid) is int and args.broker_pid>1 and
+             type(args.broker_uid) is int and args.broker_uid>0 and args.broker_uid!=args.uid and
+             type(args.broker_domain) is str and re.fullmatch(r"[A-Za-z0-9_]+_t",args.broker_domain) and
+             args.broker_domain!="postfix_pipe_t"),"broker_arguments")
         stage="domain"
         need(context_type()=="postfix_pipe_t","not_postfix_pipe_domain")
         stage="message"
@@ -208,17 +320,20 @@ def run(argv=None):
             validate_message(raw,args.recipient,args.network_nonce)
             nonce,network=args.network_nonce,True
         if network:
-            need(args.tpm_handle is None,"network_not_tpm_receipt")
+            need(args.tpm_handle is None and not broker,"network_not_tpm_receipt")
             for port in PORTS:
                 stage="network_"+str(port)
                 network_probe(nonce,port)
         else:
             stage="sign"
-            real_sign(args.tpm_handle)
+            if broker:
+                broker_client(nonce,args.broker_pid,args.broker_uid,args.gid,args.broker_domain)
+            else:
+                real_sign(args.tpm_handle)
         stage="domain_after"
         need(context_type()=="postfix_pipe_t" and
              os.geteuid()==args.uid and os.getegid()==args.gid,"execution_context_changed")
-        print(marker(nonce,network,tpm=args.tpm_handle is not None),flush=True)
+        print(marker(nonce,network,tpm=args.tpm_handle is not None,broker=broker),flush=True)
         return 0
     except FixtureSignFailure as error:
         print("LMR365_PRIMARY_PIPE_FAIL="+str(error),flush=True)
@@ -228,4 +343,4 @@ def run(argv=None):
         return 75
 
 if __name__=="__main__":
-    sys.exit(run())
+    sys.exit(run_broker(sys.argv[2:]) if sys.argv[1:2]==["--broker-server"] else run())

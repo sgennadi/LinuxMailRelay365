@@ -106,7 +106,7 @@ def trusted_messages(rows,kind,daemon):
                 "\n" not in row["MESSAGE"] and "\r" not in row["MESSAGE"]):
             yield row["MESSAGE"]
 
-def journal_receipt(rows,daemon,nonce,network=False,tpm=False):
+def journal_receipt(rows,daemon,nonce,network=False,tpm=False,broker=False):
     expected=W.message_id(nonce)
     ids=set()
     for line in trusted_messages(rows,"cleanup",daemon):
@@ -117,7 +117,7 @@ def journal_receipt(rows,daemon,nonce,network=False,tpm=False):
         return None
     qid=next(iter(ids))
     prefix=qid+": to=<"+W.RECIPIENT+">,"
-    suffix=" (delivered via m365xoauth2 service ("+W.marker(nonce,network,tpm)+"))"
+    suffix=" (delivered via m365xoauth2 service ("+W.marker(nonce,network,tpm,broker)+"))"
     matches=[]
     for line in trusted_messages(rows,"pipe",daemon):
         if not line.startswith(prefix) or not line.endswith(suffix):
@@ -136,12 +136,12 @@ def journal(started):
     need(len(raw)<=8*1024*1024,"fixture_journal_too_large")
     return [json.loads(line) for line in raw.splitlines()]
 
-def wait_receipt(nonce,daemon,started,network=False,tpm=False):
+def wait_receipt(nonce,daemon,started,network=False,tpm=False,broker=False):
     rows=[]
     until=time.monotonic()+75
     while time.monotonic()<until:
         rows=journal(started)
-        qid=journal_receipt(rows,daemon,nonce,network,tpm)
+        qid=journal_receipt(rows,daemon,nonce,network,tpm,broker)
         if qid is not None and not command("/usr/sbin/postqueue","-j").strip():
             return qid
         time.sleep(1)
@@ -219,12 +219,12 @@ def loopback_challenges(nonce):
         for listener in sockets.values():
             listener.close()
 
-def submit_fixture(nonce,daemon,network=False,tpm=False):
+def submit_fixture(nonce,daemon,network=False,tpm=False,broker=False):
     started=int(time.time())-2
     message=("From: "+W.MAILBOX+"\nTo: "+W.RECIPIENT+"\nMessage-ID: "+W.message_id(nonce)+
              "\nSubject: Disposable local pipe fixture\n\nNo external delivery.\n").encode("ascii")
     command("/usr/sbin/sendmail","-i","-f","<>","--",W.RECIPIENT,data=message)
-    return wait_receipt(nonce,daemon,started,network,tpm)
+    return wait_receipt(nonce,daemon,started,network,tpm,broker)
 
 def run(C,config,queue,policy,guard,baseline,native,files):
     disposable()
