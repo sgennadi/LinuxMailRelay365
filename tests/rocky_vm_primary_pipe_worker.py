@@ -81,7 +81,9 @@ TPM_FAILURES=frozenset(("tpm_device_denied","tpm_device_unverified",
     "tpm_device_busy","tpm_device_unsupported","tpm_device_io",
     "tpm_device_identity_changed","tpm_config",
     "tpm_provider_signature","tpm_certificate","tpm_signature_mismatch",
-    "tpm_io","tpm_sign_unknown","broker_connect","broker_peer","broker_response",
+    "tpm_io","tpm_sign_unknown","broker_connect","broker_connect_denied","broker_connect_refused",
+    "broker_connect_missing","broker_connect_timeout","broker_connect_unsupported",
+    "broker_socket_denied","broker_socket_unavailable","broker_peer","broker_response",
     "broker_device_visibility","broker_server_signing"))
 
 class FixtureSignFailure(Exception):
@@ -204,6 +206,21 @@ def peer_identity(conn):
     return pid,uid,gid,fields[2]
 
 
+def broker_connect_failure(error):
+    code=error.errno
+    if isinstance(error,TimeoutError) or code==errno.ETIMEDOUT:
+        return "broker_connect_timeout"
+    if code in (errno.EACCES,errno.EPERM):
+        return "broker_connect_denied"
+    if code==errno.ECONNREFUSED:
+        return "broker_connect_refused"
+    if code==errno.ENOENT:
+        return "broker_connect_missing"
+    if code in (errno.EAFNOSUPPORT,errno.EPROTONOSUPPORT,errno.EOPNOTSUPP):
+        return "broker_connect_unsupported"
+    return "broker_connect"
+
+
 def broker_client(nonce,pid,uid,gid,domain):
     # The real Postfix pipe must retain its original private /dev.
     try:
@@ -215,12 +232,17 @@ def broker_client(nonce,pid,uid,gid,domain):
     else:
         raise FixtureSignFailure("broker_device_visibility")
     try:
-        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as conn:
+        try:
+            client=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+        except OSError as error:
+            raise FixtureSignFailure("broker_socket_denied" if error.errno in
+                                     (errno.EACCES,errno.EPERM) else "broker_socket_unavailable") from None
+        with client as conn:
             conn.settimeout(65)
             try:
                 conn.connect(broker_address(nonce))
-            except OSError:
-                raise FixtureSignFailure("broker_connect") from None
+            except OSError as error:
+                raise FixtureSignFailure(broker_connect_failure(error)) from None
             try:
                 need(peer_identity(conn)==(pid,uid,gid,domain),"broker_server_identity")
             except (OSError,ValueError,struct.error):
@@ -268,6 +290,11 @@ def run_broker(argv):
         need(context_type()!="postfix_pipe_t","disposable_broker_domain")
         stage="request_nonce"
         request=broker_request(args.nonce)
+        # Distinguish successful TPM operations in the service itself from
+        # a successful request from the real Postfix pipe. Both are needed.
+        stage="self_sign"
+        real_sign("0x81010002")
+        print("LMR365_TPM_BROKER_SELF_PS256="+args.nonce,flush=True)
         # Abstract Unix socket: no filesystem labels/ACLs changed. The
         # kernel still enforces SELinux connectto and peer identity.
         stage="listen"

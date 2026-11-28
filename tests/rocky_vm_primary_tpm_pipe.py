@@ -319,7 +319,7 @@ BROKER_UNIT="lmr365-disposable-tpm-broker.service"
 BROKER_USER="lmr365signer"
 
 
-BROKER_STAGES=("identity","hostname","enforcing","domain","request_nonce","listen",
+BROKER_STAGES=("identity","hostname","enforcing","domain","request_nonce","self_sign","listen",
                "peer","request","sign","reply")
 BROKER_STATUS_PROPERTIES=("LoadState","ActiveState","SubState","Result","MainPID",
                           "ExecMainPID","ExecMainCode","ExecMainStatus")
@@ -369,6 +369,7 @@ def broker_start_diagnostics(nonce,uid,pid):
     try:
         rows=[row for row in broker_rows() if row.get("_SYSTEMD_UNIT")==BROKER_UNIT]
         for expected,label in (("LMR365_TPM_BROKER_READY="+nonce,"ready"),
+                ("LMR365_TPM_BROKER_SELF_PS256="+nonce,"self_signature"),
                 ("LMR365_TPM_BROKER_PS256="+nonce,"signature")):
             matches=[row for row in rows if row.get("MESSAGE")==expected]
             valid=sum(row.get("_PID")==str(pid) and row.get("_UID")==str(uid) for row in matches)
@@ -408,14 +409,14 @@ def broker_scope(queue,nonce,pipe_uid,gid):
                "BindPaths=/dev/tpmrm0:/dev/tpmrm0","NoNewPrivileges=yes",
                "ProtectSystem=strict","ProtectHome=yes","PrivateTmp=yes",
                "RestrictAddressFamilies=AF_UNIX","CapabilityBoundingSet=",
-               "RuntimeMaxSec=180","UMask=0077")
+               "RuntimeMaxSec=280","UMask=0077")
         pid=0
         try:
             command("/usr/bin/systemd-run","--unit="+BROKER_UNIT,"--service-type=exec",
                     *("--property="+prop for prop in props),
                     "/usr/bin/python3","-I","-B",str(F.WORKER),"--broker-server",
                     "--nonce",nonce,"--uid",str(uid),"--gid",str(gid),"--pipe-uid",str(pipe_uid))
-            until=time.monotonic()+15
+            until=time.monotonic()+85
             domain=""
             while time.monotonic()<until:
                 status=broker_status()
@@ -441,6 +442,9 @@ def broker_scope(queue,nonce,pipe_uid,gid):
             need(pid>1 and bool(domain),"broker_ready_unverified")
             print("LMR365_TPM_BROKER_DOMAIN="+domain,flush=True)
             print("LMR365_TPM_BROKER_DEVICE=same_character_device",flush=True)
+            need(broker_receipt(pid,uid,"LMR365_TPM_BROKER_SELF_PS256="+nonce),
+                 "broker_service_self_signing_unverified")
+            print("LMR365_TPM_BROKER_SELF_SIGN=verified_fixed_fixture",flush=True)
             need(unit_snapshot()==before,"broker_changed_postfix_sandbox")
             yield pid,uid,domain
             need(broker_receipt(pid,uid,"LMR365_TPM_BROKER_PS256="+nonce),
@@ -459,6 +463,46 @@ def broker_scope(queue,nonce,pipe_uid,gid):
                 need(unit_snapshot()==before,"broker_changed_postfix_sandbox")
     finally:
         command("/usr/sbin/userdel",BROKER_USER)
+
+
+def broker_link_evidence(master,broker_info):
+    """Read actual process namespace and active TE policy; no access grant."""
+    F.disposable()
+    try:
+        pid,uid,domain=broker_info
+        signer=Path("/proc")/str(pid)
+        need(broker_status()["MainPID"]==str(pid) and
+             (signer/"exe").resolve()==Path("/usr/bin/python3").resolve() and
+             (master/"exe").resolve()==Path("/usr/libexec/postfix/master"),
+             "broker_link_process_unverified")
+        fields=(signer/"attr/current").read_bytes().rstrip(b"\0\n").decode("ascii").split(":",3)
+        need(len(fields)==4 and fields[2]==domain and re.fullmatch(r"[A-Za-z0-9_]+_t",domain),
+             "broker_link_domain_unverified")
+        left=os.readlink(master/"ns/net")
+        right=os.readlink(signer/"ns/net")
+        print("LMR365_TPM_BROKER_NET_NAMESPACE="+("same" if left==right else "different"),flush=True)
+        policy=Path("/sys/fs/selinux/policy")
+        need(policy.is_file(),"broker_live_policy_unavailable")
+        for source,target,cls,permissions in (
+                ("postfix_pipe_t",domain,"unix_stream_socket",("connectto",)),
+                ("postfix_pipe_t","postfix_pipe_t","unix_stream_socket",("create","connect","read","write")),
+                (domain,domain,"unix_stream_socket",("create","bind","listen","accept","read","write"))):
+            for perm in permissions:
+                for rule in ("allow","dontaudit"):
+                    state="unverified"
+                    try:
+                        raw=command("/usr/bin/sesearch","--"+rule,"-s",source,"-t",target,
+                                    "-c",cls,"-p",perm,str(policy),timeout=12).decode("utf-8","strict")
+                        rows=[line.strip() for line in raw.splitlines() if line.strip()]
+                        if len(raw)<=32768 and len(rows)<=128 and all(
+                                line.startswith(rule+" ") for line in rows):
+                            state="rule_present" if rows else "no_matching_rule"
+                    except (OSError,ValueError,UnicodeError,subprocess.SubprocessError):
+                        pass
+                    print("LMR365_TPM_BROKER_IPC_POLICY="+rule+":"+source+":"+target+
+                          ":"+cls+":"+perm+":"+state,flush=True)
+    except (OSError,ValueError,RuntimeError,UnicodeError,subprocess.SubprocessError):
+        print("LMR365_TPM_BROKER_IPC_EVIDENCE=unverified",flush=True)
 
 
 def main():
@@ -593,6 +637,9 @@ def main():
                              "broker_postfix_master_unverified")
                         need(not os.path.lexists(proc/"root/dev/tpmrm0"),"broker_exposed_tpm_to_postfix")
                         print("LMR365_TPM_BROKER_POSTFIX_DEVICE=absent",flush=True)
+                        # A namespace mismatch or absent TE rule is diagnostic
+                        # only. Keep the actual authenticated pipe test mandatory.
+                        broker_link_evidence(proc,broker_info)
                     try:
                         qid=F.submit_fixture(nonce,daemon,tpm=not broker,broker=broker)
                     except Exception:

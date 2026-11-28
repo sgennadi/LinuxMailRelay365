@@ -62,6 +62,25 @@ class PipeFixtureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             W.marker(self.nonce,True,True)
 
+    def test_broker_connect_errno_is_fixed_and_bounded(self):
+        for error,code in ((OSError(errno.EACCES,"private path"),"broker_connect_denied"),
+                           (OSError(errno.EPERM,"private path"),"broker_connect_denied"),
+                           (OSError(errno.ECONNREFUSED,"private path"),"broker_connect_refused"),
+                           (OSError(errno.ENOENT,"private path"),"broker_connect_missing"),
+                           (TimeoutError("private path"),"broker_connect_timeout"),
+                           (OSError(errno.EAFNOSUPPORT,"private path"),"broker_connect_unsupported"),
+                           (OSError(errno.EIO,"private path"),"broker_connect")):
+            self.assertEqual(W.broker_connect_failure(error),code)
+            self.assertIn(code,W.TPM_FAILURES)
+            self.assertNotIn("private",code)
+            with patch.object(W.os,"lstat",side_effect=FileNotFoundError()), \
+                    patch.object(W.socket,"socket") as factory:
+                conn=factory.return_value.__enter__.return_value
+                conn.connect.side_effect=error
+                with self.assertRaisesRegex(W.FixtureSignFailure,"^"+code+"$"):
+                    W.broker_client(self.nonce,2,3,4,"unconfined_service_t")
+                conn.sendall.assert_not_called()
+
     def test_broker_fixture_hostname_only_accepts_exact_lab_names(self):
         for hostname in ("rocky-selinux-ci","rocky-selinux-ci.example.invalid"):
             self.assertTrue(W.broker_fixture_hostname(hostname))
