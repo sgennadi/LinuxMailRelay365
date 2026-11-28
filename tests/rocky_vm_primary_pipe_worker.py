@@ -237,6 +237,12 @@ def broker_client(nonce,pid,uid,gid,domain):
         raise FixtureSignFailure("broker_response") from None
 
 
+def broker_fixture_hostname(name):
+    # Cloud-init may expose the configured short name or the exact fixture
+    # FQDN. Do not accept arbitrary suffixes or production machine names.
+    return name in ("rocky-selinux-ci","rocky-selinux-ci.example.invalid")
+
+
 def run_broker(argv):
     """One-shot disposable proof, not a signing service API.
 
@@ -252,10 +258,15 @@ def run_broker(argv):
     stage="identity"
     try:
         need(args.uid>0 and args.gid>0 and args.pipe_uid>0 and args.pipe_uid!=args.uid and
-             os.getresuid()==(args.uid,)*3 and os.getresgid()==(args.gid,)*3 and
-             socket.gethostname()=="rocky-selinux-ci" and
-             Path("/sys/fs/selinux/enforce").read_text().strip()=="1" and
-             context_type()!="postfix_pipe_t","disposable_broker_identity")
+             os.getresuid()==(args.uid,)*3 and os.getresgid()==(args.gid,)*3,
+             "disposable_broker_identity")
+        stage="hostname"
+        need(broker_fixture_hostname(socket.gethostname()),"disposable_broker_hostname")
+        stage="enforcing"
+        need(Path("/sys/fs/selinux/enforce").read_text().strip()=="1","disposable_broker_enforcing")
+        stage="domain"
+        need(context_type()!="postfix_pipe_t","disposable_broker_domain")
+        stage="request_nonce"
         request=broker_request(args.nonce)
         # Abstract Unix socket: no filesystem labels/ACLs changed. The
         # kernel still enforces SELinux connectto and peer identity.

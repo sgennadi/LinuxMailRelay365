@@ -62,6 +62,13 @@ class PipeFixtureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             W.marker(self.nonce,True,True)
 
+    def test_broker_fixture_hostname_only_accepts_exact_lab_names(self):
+        for hostname in ("rocky-selinux-ci","rocky-selinux-ci.example.invalid"):
+            self.assertTrue(W.broker_fixture_hostname(hostname))
+        for hostname in ("rocky-selinux-ci.example.org","rocky-selinux-ci.attacker.invalid",
+                         "rocky-selinux-ci.example.invalid.","production",""):
+            self.assertFalse(W.broker_fixture_hostname(hostname))
+
     def test_broker_receipt_is_distinct_and_nonce_bound(self):
         self.assertNotEqual(W.marker(self.nonce,tpm=True),W.marker(self.nonce,broker=True))
         self.assertIn("isolated_tpm2_broker_probe_verified",W.marker(self.nonce,broker=True))

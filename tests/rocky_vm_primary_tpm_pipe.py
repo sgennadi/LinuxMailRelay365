@@ -319,13 +319,69 @@ BROKER_UNIT="lmr365-disposable-tpm-broker.service"
 BROKER_USER="lmr365signer"
 
 
-def broker_receipt(pid,uid,expected):
+BROKER_STAGES=("identity","hostname","enforcing","domain","request_nonce","listen",
+               "peer","request","sign","reply")
+BROKER_STATUS_PROPERTIES=("LoadState","ActiveState","SubState","Result","MainPID",
+                          "ExecMainPID","ExecMainCode","ExecMainStatus")
+
+
+def broker_rows():
     raw=command("/usr/bin/journalctl","--no-pager","-u",BROKER_UNIT,
                 "-o","json","-n","100",timeout=10)
     need(len(raw)<=1048576,"broker_journal_too_large")
     rows=[json.loads(line) for line in raw.splitlines()]
+    need(all(type(row) is dict for row in rows),"broker_journal_row_unverified")
+    return rows
+
+
+def broker_receipt(pid,uid,expected):
     return sum(row.get("_SYSTEMD_UNIT")==BROKER_UNIT and row.get("_PID")==str(pid) and
-               row.get("_UID")==str(uid) and row.get("MESSAGE")==expected for row in rows)==1
+               row.get("_UID")==str(uid) and row.get("MESSAGE")==expected
+               for row in broker_rows())==1
+
+
+def broker_status():
+    raw=command("/usr/bin/systemctl","show",BROKER_UNIT,
+                *("-p"+key for key in BROKER_STATUS_PROPERTIES)).decode("ascii","strict")
+    rows={}
+    for line in raw.splitlines():
+        key,sep,value=line.partition("=")
+        need(sep and key in BROKER_STATUS_PROPERTIES and key not in rows and
+             re.fullmatch(r"[A-Za-z0-9_-]{1,40}",value),"broker_status_unverified")
+        rows[key]=value
+    need(set(rows)==set(BROKER_STATUS_PROPERTIES),"broker_status_missing")
+    return rows
+
+
+def broker_start_diagnostics(nonce,uid,pid):
+    # Read-only, bounded classifications. Never print unit arguments, raw
+    # journal text, environment, credential paths or the nonce.
+    F.disposable()
+    try:
+        status=broker_status()
+        for key,value in status.items():
+            if key not in ("MainPID","ExecMainPID"):
+                print("LMR365_TPM_BROKER_STATUS="+key+"="+value,flush=True)
+        pid=int(status["ExecMainPID"]) if int(status["ExecMainPID"])>1 else pid
+        print("LMR365_TPM_BROKER_PID="+("observed" if pid>1 else "absent"),flush=True)
+    except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):
+        print("LMR365_TPM_BROKER_STATUS=unverified",flush=True)
+    try:
+        rows=[row for row in broker_rows() if row.get("_SYSTEMD_UNIT")==BROKER_UNIT]
+        for expected,label in (("LMR365_TPM_BROKER_READY="+nonce,"ready"),
+                ("LMR365_TPM_BROKER_PS256="+nonce,"signature")):
+            matches=[row for row in rows if row.get("MESSAGE")==expected]
+            valid=sum(row.get("_PID")==str(pid) and row.get("_UID")==str(uid) for row in matches)
+            print("LMR365_TPM_BROKER_JOURNAL="+label+":rows_"+str(len(matches))+
+                  "_exact_peer_"+str(valid),flush=True)
+        for stage in BROKER_STAGES:
+            matches=[row for row in rows if row.get("MESSAGE")=="LMR365_TPM_BROKER_FAIL="+stage]
+            if matches:
+                valid=sum(row.get("_PID")==str(pid) and row.get("_UID")==str(uid) for row in matches)
+                print("LMR365_TPM_BROKER_JOURNAL=failure_"+stage+":rows_"+str(len(matches))+
+                      "_exact_peer_"+str(valid),flush=True)
+    except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):
+        print("LMR365_TPM_BROKER_JOURNAL=unverified",flush=True)
 
 
 @contextmanager
@@ -353,18 +409,20 @@ def broker_scope(queue,nonce,pipe_uid,gid):
                "ProtectSystem=strict","ProtectHome=yes","PrivateTmp=yes",
                "RestrictAddressFamilies=AF_UNIX","CapabilityBoundingSet=",
                "RuntimeMaxSec=180","UMask=0077")
-        command("/usr/bin/systemd-run","--unit="+BROKER_UNIT,"--service-type=exec",
-                *("--property="+prop for prop in props),
-                "/usr/bin/python3","-I","-B",str(F.WORKER),"--broker-server",
-                "--nonce",nonce,"--uid",str(uid),"--gid",str(gid),"--pipe-uid",str(pipe_uid))
+        pid=0
         try:
+            command("/usr/bin/systemd-run","--unit="+BROKER_UNIT,"--service-type=exec",
+                    *("--property="+prop for prop in props),
+                    "/usr/bin/python3","-I","-B",str(F.WORKER),"--broker-server",
+                    "--nonce",nonce,"--uid",str(uid),"--gid",str(gid),"--pipe-uid",str(pipe_uid))
             until=time.monotonic()+15
-            pid=0
             domain=""
             while time.monotonic()<until:
-                value=command("/usr/bin/systemctl","show",BROKER_UNIT,"-pMainPID","--value").strip()
-                need(value.isdigit(),"broker_pid_unverified")
-                pid=int(value)
+                status=broker_status()
+                need(status["MainPID"].isdigit(),"broker_pid_unverified")
+                pid=int(status["MainPID"])
+                if status["ActiveState"] in ("failed","inactive"):
+                    break
                 if pid>1 and broker_receipt(pid,uid,"LMR365_TPM_BROKER_READY="+nonce):
                     proc=Path("/proc")/str(pid)
                     need((proc/"exe").resolve()==Path("/usr/bin/python3").resolve(),
@@ -389,6 +447,9 @@ def broker_scope(queue,nonce,pipe_uid,gid):
                  "broker_service_signing_receipt_unverified")
             need(unit_snapshot()==before,"broker_changed_postfix_sandbox")
             print("LMR365_TPM_BROKER_SERVICE_PS256=verified_fixed_fixture",flush=True)
+        except Exception:
+            broker_start_diagnostics(nonce,uid,pid)
+            raise
         finally:
             F.disposable()
             # The fixture never clears a failed queue or restarts Postfix.
@@ -538,7 +599,7 @@ def main():
                         failure_diagnostics()
                         if broker:
                             # Emit fixed service stage codes only; no raw journal.
-                            for stage in ("identity","listen","peer","request","sign","reply"):
+                            for stage in BROKER_STAGES:
                                 if broker_receipt(broker_info[0],broker_info[1],"LMR365_TPM_BROKER_FAIL="+stage):
                                     print("LMR365_TPM_BROKER_FAILURE="+stage,flush=True)
                         raise
