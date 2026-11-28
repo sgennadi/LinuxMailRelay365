@@ -15,6 +15,7 @@ on:
       - feature/primary-tpm-provider-isolated
       - feature/primary-tpm-pipe-enforcing
       - feature/primary-tpm-broker-fixture
+      - feature/primary-tpm-broker-protocol
     paths:
       - .github/workflows/rocky-enforcing-vm.yml
       - tests/rocky_vm_*.sh
@@ -23,6 +24,11 @@ on:
       - linux/manage-tpm-oauth-key.py
       - linux/m365_xoauth2_transport.py
       - linux/m365_hardware_signer.py
+      - linux/m365_tpm_broker_*.py
+      - linux/inspect-primary-tpm-broker-install.py
+      - linux/systemd/linuxmailrelay365-primary-tpm-broker.service
+      - linux/selinux/lmr365_tpm_signer.*
+      - linux/udev/99-lmr365-primary-tpm-broker.rules
       - linux/inspect-primary-mailbox-selinux.py
       - linux/manage-primary-mailbox-offline.py
       - linux/preview-primary-mailbox-route.py
@@ -96,9 +102,9 @@ jobs:
 
   kvm-native-tpm-provider:
     name: Rocky 10.3 native OpenSSL TPM2 provider acceptance (swtpm)
-    if: github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated' || github.ref_name == 'feature/primary-tpm-pipe-enforcing' || github.ref_name == 'feature/primary-tpm-broker-fixture'
+    if: github.ref_name == 'feature/primary-tpm-virtual-device' || github.ref_name == 'feature/primary-tpm-provider-isolated' || github.ref_name == 'feature/primary-tpm-pipe-enforcing' || github.ref_name == 'feature/primary-tpm-broker-fixture' || github.ref_name == 'feature/primary-tpm-broker-protocol'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
         with:
@@ -107,7 +113,8 @@ jobs:
         shell: bash
         run: |
           bash -n tests/rocky_vm_boot_enforcing.sh
-          python3 -m py_compile tests/rocky_vm_primary_tpm_device.py linux/manage-tpm-oauth-key.py tests/rocky_vm_primary_tpm_pipe.py tests/rocky_vm_primary_pipe_worker.py tests/rocky_vm_primary_pipe_enforcing.py
+          python3 -m py_compile tests/rocky_vm_primary_tpm_device.py linux/manage-tpm-oauth-key.py tests/rocky_vm_primary_tpm_pipe.py tests/rocky_vm_primary_pipe_worker.py tests/rocky_vm_primary_pipe_enforcing.py tests/rocky_vm_primary_broker_install.py
+          python3 -m py_compile linux/m365_tpm_broker_*.py linux/inspect-primary-tpm-broker-install.py
       - name: Boot Rocky 10.3 and require native TPM2 provider PS256
         shell: bash
         env:
@@ -116,4 +123,5 @@ jobs:
           LMR365_KVM_VTPM_PROVIDER_REQUIRED: 'true'
           LMR365_KVM_TPM_PIPE_ACCEPTANCE: ${{ github.ref_name == 'feature/primary-tpm-pipe-enforcing' }}
           LMR365_KVM_TPM_BROKER_ACCEPTANCE: ${{ github.ref_name == 'feature/primary-tpm-broker-fixture' }}
+          LMR365_KVM_TPM_BROKER_INSTALL_ACCEPTANCE: ${{ github.ref_name == 'feature/primary-tpm-broker-protocol' }}
         run: bash tests/rocky_vm_boot_enforcing.sh

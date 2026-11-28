@@ -706,6 +706,8 @@ def broker_link_evidence(master,broker_info):
 def main():
     F.disposable()
     broker=os.environ.get("LMR365_KVM_TPM_BROKER_ACCEPTANCE")=="true"
+    install_candidate=os.environ.get("LMR365_KVM_TPM_BROKER_INSTALL_ACCEPTANCE")=="true"
+    need(not (broker and install_candidate),"exclusive_broker_fixture_mode_required")
     need("VERSION_ID=\"10.3\"" in Path("/etc/os-release").read_text().splitlines(),
          "rocky10_pipe_fixture_required")
     os.umask(0o077)
@@ -789,82 +791,86 @@ def main():
             app.write_text(json.dumps(raw),encoding="ascii")
             need(sorted(p.name for p in F.IDENTITY.iterdir())==
                  ["app.json","hardware-app.crt","tpm2.cnf"],"unexpected_pem_material")
-            nonce,other=uuid.uuid4().hex,uuid.uuid4().hex
-            need(nonce!=other,"duplicate_nonce")
-            scope=broker_scope(queue,nonce,account.pw_uid,gid) if broker else nullcontext(None)
-            with (broker_policy_scope(queue) if broker else nullcontext()), scope as broker_info:
-                broker_args=(" --broker-pid "+str(broker_info[0])+" --broker-uid "+str(broker_info[1])+
-                             " --broker-domain "+broker_info[2]+" --broker-gid "+str(broker_info[3])) if broker else " --tpm-handle "+HANDLE
-                # All nonlocal mail in this isolated guest is routed only to the
-                # fixture, whose strict envelope/nonce refuses anything else.
-                for setting in ("default_transport = m365xoauth2:","relay_transport = m365xoauth2:",
-                                "m365xoauth2_destination_recipient_limit = 1"):
-                    command("/usr/sbin/postconf","-e",setting)
-                master=baseline[1][0]
-                need(b"m365xoauth2" not in master,"existing_pipe")
-                candidate=master+(b"" if master.endswith(b"\n") else b"\n")+(
-                    "m365xoauth2 unix - n n - 2 pipe\n"
-                    "  flags=q user=m365mailer argv=/usr/bin/python3 "+str(F.WORKER)+
-                    " --nonce "+nonce+" --network-nonce "+other+" --uid "+str(account.pw_uid)+
-                    " --gid "+str(gid)+broker_args+" --recipient ${recipient}\n").encode("ascii")
-                stopped(queue)
-                P.T.atomic_write(config,"master.cf",candidate,baseline[1][1],0,True)
-                command("/usr/sbin/restorecon","-F",P.CONFIG+"/main.cf")
-                policy_matches()
-                edited=snapshot(config)
-                need(edited[1][0]==candidate and native("default_transport")=="m365xoauth2:" and
-                     native("relay_transport")=="m365xoauth2:" and
-                     all(native(k)==v for k,v in expected.items()),"fixture_route_unverified")
-                daemon=native("daemon_directory")
-                need(daemon=="/usr/libexec/postfix","unexpected_daemon")
-                command("/usr/sbin/postfix","check")
-                stopped(queue)
-                need(snapshot(config)==edited,"fixture_config_changed")
-                with (nullcontext() if broker else scoped_fixture_device(queue)):
-                    command("/usr/bin/systemctl","start","postfix.service")
-                    need(command("/usr/bin/systemctl","is-active","postfix.service").strip()==b"active",
-                         "fixture_postfix_start")
-                    service_device_diagnostics()
-                    if broker:
-                        # Verify the host TPM is still absent from the stock master.
-                        value=command("/usr/bin/systemctl","show","postfix.service","-pMainPID","--value").strip()
-                        need(value.isdigit() and int(value)>1,"broker_postfix_pid_unverified")
-                        proc=Path("/proc")/value.decode("ascii")
-                        need((proc/"exe").resolve()==Path("/usr/libexec/postfix/master") and
-                             b":postfix_master_t:" in (proc/"attr/current").read_bytes(),
-                             "broker_postfix_master_unverified")
-                        need(not os.path.lexists(proc/"root/dev/tpmrm0"),"broker_exposed_tpm_to_postfix")
-                        print("LMR365_TPM_BROKER_POSTFIX_DEVICE=absent",flush=True)
-                        # A namespace mismatch or absent TE rule is diagnostic
-                        # only. Keep the actual authenticated pipe test mandatory.
-                        broker_link_evidence(proc,broker_info)
-                    try:
-                        qid=F.submit_fixture(nonce,daemon,tpm=not broker,broker=broker)
-                    except Exception:
-                        failure_diagnostics()
-                        if broker:
-                            # Emit fixed service stage codes only; no raw journal.
-                            for stage in BROKER_STAGES:
-                                if broker_receipt(broker_info[0],broker_info[1],"LMR365_TPM_BROKER_FAIL="+stage):
-                                    print("LMR365_TPM_BROKER_FAILURE="+stage,flush=True)
-                        raise
-            F.disposable()
-            print("LMR365_TPM_PIPE_DOMAIN=postfix_pipe_t",flush=True)
-            if broker:
-                command("/usr/bin/systemctl","stop","postfix.service")
-                print("LMR365_TPM_BROKER_PIPE=verified_fixed_fixture",flush=True)
-                print("LMR365_TPM_BROKER_POSTFIX_SANDBOX=unchanged",flush=True)
+            if install_candidate:
+                candidate=load("primary_broker_install_fixture","rocky_vm_primary_broker_install.py")
+                candidate.run_fixture(F,T,P,config,queue,baseline,snapshot,stopped)
             else:
-                print("LMR365_TPM_PIPE_PS256=verified_native_provider",flush=True)
-            print("LMR365_TPM_PIPE_QUEUE=correlated_and_empty",flush=True)
-            print("LMR365_TPM_PIPE_QUEUE_ID="+qid,flush=True)
-            stopped(queue)
-            need(snapshot(config)==edited,"fixture_changed_before_restore")
-            for i,name in enumerate(NAMES):
-                P.T.atomic_write(config,name,baseline[i][0],baseline[i][1],0,True)
-            stopped(queue)
-            need(snapshot(config)==baseline,"fixture_restore_changed")
-            policy_matches()
+                nonce,other=uuid.uuid4().hex,uuid.uuid4().hex
+                need(nonce!=other,"duplicate_nonce")
+                scope=broker_scope(queue,nonce,account.pw_uid,gid) if broker else nullcontext(None)
+                with (broker_policy_scope(queue) if broker else nullcontext()), scope as broker_info:
+                    broker_args=(" --broker-pid "+str(broker_info[0])+" --broker-uid "+str(broker_info[1])+
+                                 " --broker-domain "+broker_info[2]+" --broker-gid "+str(broker_info[3])) if broker else " --tpm-handle "+HANDLE
+                    # All nonlocal mail in this isolated guest is routed only to the
+                    # fixture, whose strict envelope/nonce refuses anything else.
+                    for setting in ("default_transport = m365xoauth2:","relay_transport = m365xoauth2:",
+                                    "m365xoauth2_destination_recipient_limit = 1"):
+                        command("/usr/sbin/postconf","-e",setting)
+                    master=baseline[1][0]
+                    need(b"m365xoauth2" not in master,"existing_pipe")
+                    candidate=master+(b"" if master.endswith(b"\n") else b"\n")+(
+                        "m365xoauth2 unix - n n - 2 pipe\n"
+                        "  flags=q user=m365mailer argv=/usr/bin/python3 "+str(F.WORKER)+
+                        " --nonce "+nonce+" --network-nonce "+other+" --uid "+str(account.pw_uid)+
+                        " --gid "+str(gid)+broker_args+" --recipient ${recipient}\n").encode("ascii")
+                    stopped(queue)
+                    P.T.atomic_write(config,"master.cf",candidate,baseline[1][1],0,True)
+                    command("/usr/sbin/restorecon","-F",P.CONFIG+"/main.cf")
+                    policy_matches()
+                    edited=snapshot(config)
+                    need(edited[1][0]==candidate and native("default_transport")=="m365xoauth2:" and
+                         native("relay_transport")=="m365xoauth2:" and
+                         all(native(k)==v for k,v in expected.items()),"fixture_route_unverified")
+                    daemon=native("daemon_directory")
+                    need(daemon=="/usr/libexec/postfix","unexpected_daemon")
+                    command("/usr/sbin/postfix","check")
+                    stopped(queue)
+                    need(snapshot(config)==edited,"fixture_config_changed")
+                    with (nullcontext() if broker else scoped_fixture_device(queue)):
+                        command("/usr/bin/systemctl","start","postfix.service")
+                        need(command("/usr/bin/systemctl","is-active","postfix.service").strip()==b"active",
+                             "fixture_postfix_start")
+                        service_device_diagnostics()
+                        if broker:
+                            # Verify the host TPM is still absent from the stock master.
+                            value=command("/usr/bin/systemctl","show","postfix.service","-pMainPID","--value").strip()
+                            need(value.isdigit() and int(value)>1,"broker_postfix_pid_unverified")
+                            proc=Path("/proc")/value.decode("ascii")
+                            need((proc/"exe").resolve()==Path("/usr/libexec/postfix/master") and
+                                 b":postfix_master_t:" in (proc/"attr/current").read_bytes(),
+                                 "broker_postfix_master_unverified")
+                            need(not os.path.lexists(proc/"root/dev/tpmrm0"),"broker_exposed_tpm_to_postfix")
+                            print("LMR365_TPM_BROKER_POSTFIX_DEVICE=absent",flush=True)
+                            # A namespace mismatch or absent TE rule is diagnostic
+                            # only. Keep the actual authenticated pipe test mandatory.
+                            broker_link_evidence(proc,broker_info)
+                        try:
+                            qid=F.submit_fixture(nonce,daemon,tpm=not broker,broker=broker)
+                        except Exception:
+                            failure_diagnostics()
+                            if broker:
+                                # Emit fixed service stage codes only; no raw journal.
+                                for stage in BROKER_STAGES:
+                                    if broker_receipt(broker_info[0],broker_info[1],"LMR365_TPM_BROKER_FAIL="+stage):
+                                        print("LMR365_TPM_BROKER_FAILURE="+stage,flush=True)
+                            raise
+                F.disposable()
+                print("LMR365_TPM_PIPE_DOMAIN=postfix_pipe_t",flush=True)
+                if broker:
+                    command("/usr/bin/systemctl","stop","postfix.service")
+                    print("LMR365_TPM_BROKER_PIPE=verified_fixed_fixture",flush=True)
+                    print("LMR365_TPM_BROKER_POSTFIX_SANDBOX=unchanged",flush=True)
+                else:
+                    print("LMR365_TPM_PIPE_PS256=verified_native_provider",flush=True)
+                print("LMR365_TPM_PIPE_QUEUE=correlated_and_empty",flush=True)
+                print("LMR365_TPM_PIPE_QUEUE_ID="+qid,flush=True)
+                stopped(queue)
+                need(snapshot(config)==edited,"fixture_changed_before_restore")
+                for i,name in enumerate(NAMES):
+                    P.T.atomic_write(config,name,baseline[i][0],baseline[i][1],0,True)
+                stopped(queue)
+                need(snapshot(config)==baseline,"fixture_restore_changed")
+                policy_matches()
         finally:
             device()
             os.chown(str(DEVICE),original.st_uid,original.st_gid,follow_symlinks=False)

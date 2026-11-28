@@ -356,7 +356,7 @@ echo "LMR365_GUEST_POSTFIX_DATA_CONTEXT=verified_unchanged_dac"
 ROCKY10_DATA_CONTEXT
     run_postfix_smoke
     echo "LMR365_GUEST_VTPM_ROCKY10_POSTFIX_SMOKE=passed"
-    if test "${LMR365_KVM_TPM_PIPE_ACCEPTANCE:-false}" = true || test "${LMR365_KVM_TPM_BROKER_ACCEPTANCE:-false}" = true; then
+    if test "${LMR365_KVM_TPM_PIPE_ACCEPTANCE:-false}" = true || test "${LMR365_KVM_TPM_BROKER_ACCEPTANCE:-false}" = true || test "${LMR365_KVM_TPM_BROKER_INSTALL_ACCEPTANCE:-false}" = true; then
         # Read-only TE rule inventory in the disposable guest. Installing
         # setools does not install a new local policy or relax Enforcing.
         ssh "${ssh_opts[@]}" ci@127.0.0.1 \
@@ -368,7 +368,45 @@ ROCKY10_DATA_CONTEXT
             tests/rocky_vm_primary_tpm_pipe.py ci@127.0.0.1:/home/ci/
         ssh "${ssh_opts[@]}" ci@127.0.0.1 \
             'sudo install -o root -g root -m 0644 /home/ci/m365_xoauth2_transport.py /home/ci/m365_hardware_signer.py /home/ci/rocky_vm_primary_pipe_worker.py /home/ci/rocky_vm_primary_pipe_enforcing.py /home/ci/rocky_vm_primary_tpm_pipe.py /usr/local/libexec/lmr365-kvm-vtpm/ && sudo restorecon -R /usr/local/libexec/lmr365-kvm-vtpm && sudo install -o root -g root -m 0600 /dev/null /run/lmr365-disposable-primary-mailbox-vm && sudo sh -c "cat /proc/sys/kernel/random/boot_id > /run/lmr365-disposable-primary-mailbox-vm"'
-        if test "${LMR365_KVM_TPM_BROKER_ACCEPTANCE:-false}" = true; then
+        if test "${LMR365_KVM_TPM_BROKER_INSTALL_ACCEPTANCE:-false}" = true; then
+            # Separate native integrated candidate, not the transient fixture.
+            ssh "${ssh_opts[@]}" ci@127.0.0.1 \
+                'sudo dnf -y -q install selinux-policy-devel make && test "$(getenforce)" = Enforcing'
+            scp -q -P 22222 -i "$work/guest-key" -o BatchMode=yes \
+                -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$work/known_hosts" \
+                linux/m365_tpm_broker_*.py linux/inspect-primary-tpm-broker-install.py \
+                linux/systemd/linuxmailrelay365-primary-tpm-broker.service \
+                linux/selinux/lmr365_tpm_signer.te linux/selinux/lmr365_tpm_signer.fc \
+                linux/udev/99-lmr365-primary-tpm-broker.rules \
+                tests/rocky_vm_primary_broker_install.py ci@127.0.0.1:/home/ci/
+            ssh "${ssh_opts[@]}" ci@127.0.0.1 'bash -s' <<'BROKER_INSTALL' | tee "$work/tpm-broker-install"
+set -Eeuo pipefail
+test "$(hostname -s)" = rocky-selinux-ci
+test "$(getenforce)" = Enforcing
+root=/usr/local/libexec/lmr365-kvm-vtpm
+sudo install -d -o root -g root -m 0755 "$root/systemd" "$root/selinux" "$root/udev"
+sudo install -o root -g root -m 0644 /home/ci/m365_tpm_broker_*.py /home/ci/inspect-primary-tpm-broker-install.py /home/ci/rocky_vm_primary_broker_install.py "$root/"
+sudo install -o root -g root -m 0644 /home/ci/linuxmailrelay365-primary-tpm-broker.service "$root/systemd/"
+sudo install -o root -g root -m 0644 /home/ci/lmr365_tpm_signer.te /home/ci/lmr365_tpm_signer.fc "$root/selinux/"
+sudo install -o root -g root -m 0644 /home/ci/99-lmr365-primary-tpm-broker.rules "$root/udev/"
+sudo restorecon -R "$root"
+sudo env GITHUB_ACTIONS=true LMR365_KVM_TPM_BROKER_INSTALL_ACCEPTANCE=true timeout 1200 python3 -I -B "$root/rocky_vm_primary_tpm_pipe.py"
+BROKER_INSTALL
+            for expected in \
+                'LMR365_BROKER_INSTALL_REVIEW=verified' \
+                'LMR365_BROKER_INSTALL_APPLY=all_seven_native_stages' \
+                'LMR365_BROKER_INSTALL_PS256=verified_startup' \
+                'LMR365_BROKER_INSTALL_RESTART=new_verified_invocation' \
+                'LMR365_BROKER_INSTALL_ROLLBACK=all_seven_native_stages' \
+                'LMR365_BROKER_INSTALL_BASELINE=restored' \
+                'LMR365_BROKER_INSTALL_CLOUD_TESTED=no' \
+                'LMR365_BROKER_INSTALL_REBOOT_TESTED=no' \
+                'LMR365_BROKER_INSTALL_PHYSICAL_TPM_TESTED=no' \
+                'LMR365_TPM_PIPE_BASELINE=restored' \
+                'LMR365_TPM_PIPE_DEVICE=original_metadata_restored'; do
+                grep -Fxq "$expected" "$work/tpm-broker-install"
+            done
+        elif test "${LMR365_KVM_TPM_BROKER_ACCEPTANCE:-false}" = true; then
             # Build tools are installed only inside the disposable broker guest.
             ssh "${ssh_opts[@]}" ci@127.0.0.1 \
                 'sudo dnf -y -q install selinux-policy-devel make && test "$(getenforce)" = Enforcing'

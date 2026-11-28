@@ -102,6 +102,7 @@ jobs:
           python3 -m unittest discover -v -s tests -p test_primary_tpm_broker_device.py
           python3 -m unittest discover -v -s tests -p test_primary_tpm_broker_activation.py
           python3 -m unittest discover -v -s tests -p test_primary_tpm_broker_coordinator.py
+          python3 -m unittest discover -v -s tests -p test_primary_tpm_broker_native_install_contract.py
           python3 -m unittest discover -v -s tests -p test_primary_xoauth2_installer_selinux.py
           python3 -m py_compile linux/export-hardware-oauth-cert.py
           python3 -m unittest discover -v -s tests -p test_entra_public_oauth_certificate.py
