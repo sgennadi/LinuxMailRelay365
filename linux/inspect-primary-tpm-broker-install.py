@@ -273,7 +273,7 @@ def digest(obj):
                          separators=(",", ":"), ensure_ascii=True).encode("ascii")).hexdigest()
 
 
-def prepare():
+def collect():
     boot = platform()
     hashes = source_hashes()
     version = dependencies()
@@ -294,7 +294,11 @@ def prepare():
                 "identity": before.approval_digest(), "device": device,
                 "postfix": native, "destinations": [str(p) for p in DESTINATIONS],
                 "exclusive_tpm_review": "required", "production_apply": False}
-    return digest(evidence)
+    return evidence
+
+
+def prepare():
+    return digest(collect())
 
 
 def main(argv=None):

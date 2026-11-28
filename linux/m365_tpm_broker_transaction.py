@@ -16,7 +16,7 @@ import re
 import stat
 import uuid
 
-STAGES = ("account", "runtime", "policy", "udev_rule", "device", "unit", "activation")
+STAGES = ("account", "runtime", "policy", "device", "udev_rule", "unit", "activation")
 STATE = "transaction.json"
 LOCK = "transaction.lock"
 MAX_STATE = 32768
@@ -218,7 +218,7 @@ class Journal:
         return value
 
 
-def begin(journal, plan, approved, confirmation, guard, probe):
+def begin(journal, plan, approved, confirmation, guard, probe, transaction_id=None):
     """No host mutation; caller must separately prove the preview is fresh."""
     validate_plan(plan)
     need(confirmation == APPLY and sha(approved) and approved == digest(plan),
@@ -228,7 +228,10 @@ def begin(journal, plan, approved, confirmation, guard, probe):
     for stage in plan["stages"]:
         need(probe(stage["name"]) == stage["before"], "broker_transaction_baseline_changed")
     guard()
-    value = {"schema": 1, "id": uuid.uuid4().hex, "plan": plan,
+    transaction_id = uuid.uuid4().hex if transaction_id is None else transaction_id
+    need(type(transaction_id) is str and TXID.fullmatch(transaction_id),
+         "broker_transaction_invalid_id")
+    value = {"schema": 1, "id": transaction_id, "plan": plan,
              "approval": approved, "completed": 0, "pending": None,
              "phase": "install", "revision": 0}
     return journal.save(None, value)
