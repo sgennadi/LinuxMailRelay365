@@ -43,15 +43,15 @@ class RC17ReleaseContract(unittest.TestCase):
         program = (CS / "Program.cs").read_text(encoding="utf-8")
         for marker in ("ForeignRestorePlan.SelfTest", "EximNativeRestoreReceipt.SelfTest",
                        "ForeignPendingInspection.SelfTest", "EximPendingRollbackPlan.SelfTest",
-                       "CaptureWizardScreens(args[1]) != 37"):
+                       "CaptureWizardScreens(args[1]) != 37", "CaptureWizardScreens(null)"):
             self.assertIn(marker, program)
         form = (CS / "MainForm.cs").read_text(encoding="utf-8")
         for name in ("05-native-recovery-center.png", "05-native-recovery-center-bottom.png",
                      "compact-05-native-recovery-center.png", "compact-05-native-recovery-center-bottom.png"):
             self.assertIn(name, form)
-            self.assertIn(name, CI)
         self.assertIn("Recovery center Back did not restore diagnostics.", form)
-        self.assertIn("ACTUAL_WINDOWS_WIZARD_SCREENS=37", CI)
+        self.assertIn("ACTUAL_WINDOWS_WIZARD_LAYOUT_CHECKS=37", CI)
+        self.assertIn("--validate-wizard-layout", CI)
         smoke = (ROOT / "tests/smoke_native_exim_offline_restore.sh").read_text(encoding="utf-8")
         self.assertIn("os._exit(91)", smoke)
         self.assertIn("EXIM_RESTORE_LAB_INTERRUPTED_ROLLBACK=verified_original_bytes_stopped_empty_queue", smoke)

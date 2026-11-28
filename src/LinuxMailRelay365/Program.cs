@@ -531,6 +531,29 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.SetDefaultFont(new Font("Segoe UI", 10));
+        if (args.Length > 0 && (args[0] == "--validate-wizard-layout" || args[0] == "--validate-queue-layout"))
+        {
+            if (args.Length != 1 ||
+                Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
+                Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT") != "github-hosted" ||
+                string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("RUNNER_TEMP")))
+                return 2;
+            bool wizard = args[0] == "--validate-wizard-layout";
+            int result = 1;
+            using var form = new MainForm();
+            form.Shown += (_, _) => form.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    int count = wizard ? form.CaptureWizardScreens(null) : form.CaptureQueueScreens(null);
+                    result = count == (wizard ? 37 : 42) ? 0 : 1;
+                }
+                catch (Exception) { result = 1; }
+                finally { form.Close(); }
+            }));
+            Application.Run(form);
+            return result;
+        }
         if (args.Length > 0 && args[0] == "--capture-wizard-screens")
         {
             if (args.Length != 2 ||

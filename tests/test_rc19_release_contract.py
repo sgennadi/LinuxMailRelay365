@@ -56,8 +56,19 @@ class RC19ReleaseContract(unittest.TestCase):
         windows = job("windows-build")
         self.assertIn("-ExpectedCandidateVersion '0.1.1-rc.19' -SourceTag 'v0.1.1-rc.18'", windows)
         self.assertIn("STABLE_UNSIGNED_RELEASE_GATE=refused_expected", windows)
-        self.assertIn("ACTUAL_WINDOWS_WIZARD_SCREENS=37", windows)
-        self.assertIn("ACTUAL_WINDOWS_QUEUE_SCREENS=42", windows)
+        self.assertIn("ACTUAL_WINDOWS_WIZARD_LAYOUT_CHECKS=37", windows)
+        self.assertIn("ACTUAL_WINDOWS_QUEUE_LAYOUT_CHECKS=42", windows)
+        self.assertIn("UI_SCREENSHOTS_CREATED=no", windows)
+        for forbidden in ("--capture-wizard-screens", "--capture-queue-screens",
+                          "wizard-screenshots", "queue-screenshots"):
+            self.assertNotIn(forbidden, windows)
+        program = (CS / "Program.cs").read_text(encoding="utf-8")
+        self.assertIn("CaptureWizardScreens(null)", program)
+        self.assertIn("CaptureQueueScreens(null)", program)
+        wizard = (CS / "MainForm.cs").read_text(encoding="utf-8")
+        queue = (CS / "MainForm.QueueScreens.cs").read_text(encoding="utf-8")
+        self.assertIn("if (root is not null)\n            {\n                Size capture = Size;", wizard)
+        self.assertIn("if (target is not null)\n                    {\n                        using var bitmap", queue)
         self.assertIn("Test-LinuxMailRelay365PreviewUpgrade.ps1", windows)
         self.assertIn("docker run --rm --network none", job("rhel-native-sendmail-queues"))
 
