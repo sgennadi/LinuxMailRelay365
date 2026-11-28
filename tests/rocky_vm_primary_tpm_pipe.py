@@ -440,7 +440,7 @@ def broker_policy_scope(queue):
 
 
 BROKER_STAGES=("identity","hostname","enforcing","domain","request_nonce","self_sign","listen",
-               "peer","request","sign","reply")
+               "peer","peer_credentials","peer_context","peer_mismatch","request","sign","reply")
 BROKER_STATUS_PROPERTIES=("LoadState","ActiveState","SubState","Result","MainPID",
                           "ExecMainPID","ExecMainCode","ExecMainStatus")
 

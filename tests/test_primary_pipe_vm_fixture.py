@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import socket
 import errno
 import stat
+import struct
 import threading
 
 HERE=Path(__file__).resolve().parent
@@ -79,6 +80,47 @@ class PipeFixtureTests(unittest.TestCase):
                 conn.connect.side_effect=error
                 with self.assertRaisesRegex(W.FixtureSignFailure,"^"+code+"$"):
                     W.broker_client(self.nonce,2,3,4,"unconfined_service_t")
+                conn.sendall.assert_not_called()
+
+    def test_peer_identity_uses_cpython_buffer_limit_and_exact_context(self):
+        credentials=struct.pack("3i",10,20,30)
+        peersec=getattr(socket,"SO_PEERSEC",31)
+        conn=Mock()
+        def options(level,option,size):
+            self.assertEqual(level,socket.SOL_SOCKET)
+            if option==socket.SO_PEERCRED:
+                self.assertEqual(size,len(credentials))
+                return credentials
+            self.assertEqual(option,peersec)
+            if size>1024:
+                raise OSError("getsockopt buflen out of range")
+            self.assertEqual(size,1024)
+            return label
+        conn.getsockopt.side_effect=options
+        for suffix in (b"",b"\0"):
+            label=b"system_u:system_r:postfix_pipe_t:s0:c1,c2"+suffix
+            self.assertEqual(W.peer_identity(conn),(10,20,30,"postfix_pipe_t"))
+        for label in (b"",b"kernel",b"system_u:system_r:postfix_pipe_t:",
+                      b"system_u:system_r:postfix_pipe_t:s0\0\0",
+                      b"system_u:system_r:postfix_pipe_t:s0\n",
+                      b"system_u:system_r:postfix_pipe_t:s0"+b"x"*1024):
+            with self.subTest(label=label[:80]),self.assertRaisesRegex(W.PeerIdentityError,"^broker_peer_context$"):
+                W.peer_identity(conn)
+        credentials=struct.pack("3i",10,0,30)
+        with self.assertRaisesRegex(W.PeerIdentityError,"^broker_peer_credentials$"):
+            W.peer_identity(conn)
+
+    def test_broker_client_never_sends_request_on_wrong_or_unavailable_peer(self):
+        for peer,error,expected in (((10,21,30,W.BROKER_DOMAIN),None,"broker_peer_mismatch"),
+                                    ((10,20,30,"unconfined_service_t"),None,"broker_peer_mismatch"),
+                                    (None,W.PeerIdentityError("context"),"broker_peer_context"),
+                                    (None,W.PeerIdentityError("credentials"),"broker_peer_credentials")):
+            with (patch.object(W.os,"lstat",side_effect=FileNotFoundError()),
+                  patch.object(W.socket,"socket") as factory,
+                  patch.object(W,"peer_identity",return_value=peer,side_effect=error)):
+                conn=factory.return_value.__enter__.return_value
+                with self.assertRaisesRegex(W.FixtureSignFailure,"^"+expected+"$"):
+                    W.broker_client(self.nonce,10,20,30,W.BROKER_DOMAIN)
                 conn.sendall.assert_not_called()
 
     def test_broker_fixture_requires_exact_confined_domain_before_signing(self):

@@ -85,6 +85,7 @@ TPM_FAILURES=frozenset(("tpm_device_denied","tpm_device_unverified",
     "tpm_io","tpm_sign_unknown","broker_connect","broker_connect_denied","broker_connect_refused",
     "broker_connect_missing","broker_connect_timeout","broker_connect_unsupported",
     "broker_socket_denied","broker_socket_unavailable","broker_peer","broker_response",
+    "broker_peer_credentials","broker_peer_context","broker_peer_mismatch",
     "broker_device_visibility","broker_server_signing"))
 
 class FixtureSignFailure(Exception):
@@ -197,13 +198,36 @@ def broker_request(nonce):
     return ("LMR365_TPM_FIXTURE:"+nonce+"\n").encode("ascii")
 
 
+# CPython socket.getsockopt accepts at most 1024 bytes. Do not
+# silently truncate a larger label or fall back to DAC-only authentication.
+PEERSEC_BUFFER=1024
+
+class PeerIdentityError(ValueError):
+    def __init__(self,stage):
+        self.stage=stage
+        super().__init__("broker_peer_"+stage)
+
+
 def peer_identity(conn):
-    credentials=conn.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
-    pid,uid,gid=struct.unpack("3i",credentials)
-    context=conn.getsockopt(socket.SOL_SOCKET,getattr(socket,"SO_PEERSEC",31),4096)
-    fields=context.rstrip(b"\0\n").decode("ascii").split(":",3)
-    need(pid>0 and uid>0 and gid>0 and len(fields)==4 and
-         re.fullmatch(r"[A-Za-z0-9_]+_t",fields[2]),"broker_peer_identity")
+    try:
+        credentials=conn.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize("3i"))
+        pid,uid,gid=struct.unpack("3i",credentials)
+        need(pid>0 and uid>0 and gid>0,"peer_credentials")
+    except (OSError,ValueError,struct.error):
+        raise PeerIdentityError("credentials") from None
+    try:
+        context=conn.getsockopt(socket.SOL_SOCKET,getattr(socket,"SO_PEERSEC",31),PEERSEC_BUFFER)
+        need(0<len(context)<PEERSEC_BUFFER,"peer_context_length")
+        # Linux may return the trailing NUL or omit it. Reject embedded
+        # terminators, non-ASCII labels, or absent SELinux type/range.
+        if context.endswith(b"\0"):
+            context=context[:-1]
+        fields=context.decode("ascii","strict").split(":",3)
+        need(len(fields)==4 and all(re.fullmatch(r"[A-Za-z0-9_]+",value)
+                 for value in fields[:2]) and re.fullmatch(r"[A-Za-z0-9_]+_t",fields[2]) and
+                 re.fullmatch(r"[A-Za-z0-9_.,:-]+",fields[3]),"peer_context")
+    except (OSError,ValueError):
+        raise PeerIdentityError("context") from None
     return pid,uid,gid,fields[2]
 
 
@@ -245,9 +269,11 @@ def broker_client(nonce,pid,uid,gid,domain):
             except OSError as error:
                 raise FixtureSignFailure(broker_connect_failure(error)) from None
             try:
-                need(peer_identity(conn)==(pid,uid,gid,domain),"broker_server_identity")
-            except (OSError,ValueError,struct.error):
-                raise FixtureSignFailure("broker_peer") from None
+                peer=peer_identity(conn)
+            except PeerIdentityError as error:
+                raise FixtureSignFailure(str(error)) from None
+            if peer!=(pid,uid,gid,domain):
+                raise FixtureSignFailure("broker_peer_mismatch")
             request=broker_request(nonce)
             conn.sendall(request)
             conn.shutdown(socket.SHUT_WR)
@@ -310,7 +336,12 @@ def run_broker(argv):
             with listener.accept()[0] as conn:
                 conn.settimeout(60)
                 stage="peer"
-                _,uid,gid,domain=peer_identity(conn)
+                try:
+                    _,uid,gid,domain=peer_identity(conn)
+                except PeerIdentityError as error:
+                    stage="peer_"+error.stage
+                    raise
+                stage="peer_mismatch"
                 need((uid,gid,domain)==(args.pipe_uid,args.pipe_gid,"postfix_pipe_t"),"broker_client_identity")
                 stage="request"
                 need(recv_exact(conn,len(request))==request and conn.recv(1)==b"",
