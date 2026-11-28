@@ -3930,15 +3930,15 @@ internal sealed partial class MainForm : Form
     /// Screens capture the *actual* WinForms controls with factory defaults,
     /// not an inferred or designed mockup. Production never invokes this.
     /// </summary>
-    internal int CaptureWizardScreens(string directory)
+    internal int CaptureWizardScreens(string? directory)
     {
         if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
             string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("RUNNER_TEMP")))
             throw new InvalidOperationException("Wizard capture requires a disposable GitHub Actions runner.");
         if (!Visible || InvokeRequired)
             throw new InvalidOperationException("Wizard capture must run on its visible UI thread.");
-        string root = Path.GetFullPath(directory);
-        Directory.CreateDirectory(root);
+        string? root = directory is null ? null : Path.GetFullPath(directory);
+        if (root is not null) Directory.CreateDirectory(root);
         Size = new Size(1050, 830);
         WindowState = FormWindowState.Normal;
         int captured = 0;
@@ -4027,9 +4027,23 @@ internal sealed partial class MainForm : Form
             // well as the client area. A ClientSize bitmap silently crops the
             // entire bottom footer by the title-bar/border thickness even when
             // logical control bounds are correct. Capture the full WINDOW.
-            Size capture = Size;
-            using var bitmap = new Bitmap(capture.Width, capture.Height);
-            DrawToBitmap(bitmap, new Rectangle(Point.Empty, capture));
+            // Null directory is the ordinary CI geometry-only path. Do
+            // not allocate a bitmap, capture pixels or write an image.
+            if (root is not null)
+            {
+                Size capture = Size;
+                using var bitmap = new Bitmap(capture.Width, capture.Height);
+                DrawToBitmap(bitmap, new Rectangle(Point.Empty, capture));
+                bitmap.Save(Path.Combine(root, filename),
+                            System.Drawing.Imaging.ImageFormat.Png);
+            }
+            else
+            {
+                PerformLayout();
+                pageHost.PerformLayout();
+                Refresh();
+                Application.DoEvents();
+            }
             // Drawing can trigger an additional WinForms measure pass.
             // Validate AFTER painting as well, so a clipped status is a
             // failing CI test rather than a superficially valid PNG.
@@ -4045,8 +4059,6 @@ internal sealed partial class MainForm : Form
                 if (bottom > ClientSize.Height - 9)
                     throw new InvalidOperationException("Wizard footer overflow after layout.");
             }
-            bitmap.Save(Path.Combine(root, filename),
-                        System.Drawing.Imaging.ImageFormat.Png);
             captured++;
         }
 
@@ -4227,7 +4239,7 @@ internal sealed partial class MainForm : Form
         Size = new Size(1050, 830);
         sshAuthMode.SelectedIndex = 0;
         RenderPage();
-        File.WriteAllText(Path.Combine(root, "README.txt"),
+        if (root is not null) File.WriteAllText(Path.Combine(root, "README.txt"),
             "Actual WinForms Preview wizard screenshots from a disposable CI runner.\n" +
             "Factory defaults only; no real SSH, Microsoft 365 tenant, TPM or SMTP delivery.\n" +
             "Captures top and bottom of all five scrollable pages, Multi-mailbox and recovery center; no real 200% DPI monitor is emulated.\n");

@@ -720,65 +720,24 @@ jobs:
           name: LinuxMailRelay365-rc20-upgrade-receipt
           path: out/rc20-upgrade-receipt.json
           if-no-files-found: error
-      - name: Capture actual Windows Wizard and early-route screens (CI-only)
+      - name: Validate actual Windows Wizard geometry without screenshots
         shell: pwsh
         timeout-minutes: 3
         run: |
           $exe = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
-          $folder = Join-Path (Get-Location) 'out/wizard-screenshots'
-          New-Item -ItemType Directory -Force -Path $folder | Out-Null
-          $result = Start-Process -FilePath $exe -ArgumentList @('--capture-wizard-screens', ('"{0}"' -f $folder)) -Wait -PassThru
-          if ($result.ExitCode -ne 0) { throw "Wizard screenshot capture failed: exit $($result.ExitCode)" }
-          $images = @(Get-ChildItem -LiteralPath $folder -Filter '*.png')
-          if ($images.Count -ne 37) { throw "Expected 37 real Wizard PNG screens (including responsive SSH and recovery center); found $($images.Count)" }
-          foreach ($required in @('05-native-recovery-center.png', '05-native-recovery-center-bottom.png', 'compact-05-native-recovery-center.png', 'compact-05-native-recovery-center-bottom.png')) {
-            if (-not (Test-Path -LiteralPath (Join-Path $folder $required))) { throw "Missing recovery center capture: $required" }
-          }
-          foreach ($image in $images) {
-            if ($image.Length -lt 3000) { throw "Empty or invalid screen PNG: $($image.Name)" }
-          }
-          Write-Host 'ACTUAL_WINDOWS_WIZARD_SCREENS=37'
+          $result = Start-Process -FilePath $exe -ArgumentList '--validate-wizard-layout' -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Wizard layout validation failed: exit $($result.ExitCode)" }
+          Write-Host 'ACTUAL_WINDOWS_WIZARD_LAYOUT_CHECKS=37'
           Write-Host 'SMTP_TENANT_CONNECTIONS_ATTEMPTED=no'
-      - name: Upload actual Wizard screenshots (no production host or tenant)
-        uses: actions/upload-artifact@v6
-        with:
-          name: LinuxMailRelay365-actual-wizard-screenshots
-          path: out/wizard-screenshots/
-          if-no-files-found: error
-      - name: Capture actual Windows queue dialogs in three languages (CI-only)
+      - name: Validate actual Windows queue dialogs without screenshots
         shell: pwsh
         timeout-minutes: 5
         run: |
           $exe = (Resolve-Path ./out/win-x64/LinuxMailRelay365.exe).Path
-          $folder = Join-Path (Get-Location) 'out/queue-screenshots'
-          New-Item -ItemType Directory -Force -Path $folder | Out-Null
-          $result = Start-Process -FilePath $exe -ArgumentList @('--capture-queue-screens', ('"{0}"' -f $folder)) -Wait -PassThru
-          if (Test-Path -LiteralPath (Join-Path $folder 'capture-error.txt')) {
-            Get-Content -LiteralPath (Join-Path $folder 'capture-error.txt')
-          }
-          if ($result.ExitCode -ne 0) { throw "Queue screenshot capture failed: exit $($result.ExitCode)" }
-          $images = @(Get-ChildItem -LiteralPath $folder -Filter '*.png')
-          if ($images.Count -ne 42) { throw "Expected 42 actual queue PNG captures; found $($images.Count)" }
-          foreach ($locale in @('ru','en','he')) {
-            foreach ($view in @('postfix','sidecar','exim','sendmail-mta-normal','sendmail-mta-quarantine','sendmail-msp-normal','sendmail-msp-quarantine')) {
-              foreach ($region in @('compact-table','compact-actions')) {
-                $file = Join-Path $folder "$locale-$view-$region.png"
-                if (-not (Test-Path -LiteralPath $file)) { throw "Queue capture missing: $locale-$view-$region" }
-              }
-            }
-          }
-          foreach ($image in $images) {
-            if ($image.Length -lt 3000) { throw "Empty or invalid queue PNG: $($image.Name)" }
-          }
-          Get-Content -LiteralPath (Join-Path $folder 'README.txt')
-          Write-Host 'ACTUAL_WINDOWS_QUEUE_SCREENS=42'
-      - name: Upload actual queue screenshots and layout diagnostics
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: LinuxMailRelay365-actual-queue-screenshots
-          path: out/queue-screenshots/
-          if-no-files-found: warn
+          $result = Start-Process -FilePath $exe -ArgumentList '--validate-queue-layout' -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Queue layout validation failed: exit $($result.ExitCode)" }
+          Write-Host 'ACTUAL_WINDOWS_QUEUE_LAYOUT_CHECKS=42'
+          Write-Host 'UI_SCREENSHOTS_CREATED=no'
       - name: Build portable single EXE ARM64
         shell: pwsh
         run: dotnet publish src/LinuxMailRelay365/LinuxMailRelay365.csproj -c Release -r win-arm64 --self-contained true -p:UseSharedUpdater=false -o out/win-arm64

@@ -8,7 +8,7 @@ internal sealed partial class MainForm
 {
     // CI-only real queue windows with synthetic metadata. The capture callback
     // disables every remote action in the production dialogs, including Refresh.
-    internal int CaptureQueueScreens(string directory)
+    internal int CaptureQueueScreens(string? directory)
     {
         if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" ||
             Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT") != "github-hosted" ||
@@ -16,8 +16,8 @@ internal sealed partial class MainForm
             !Visible || InvokeRequired)
             throw new InvalidOperationException("Queue capture requires the disposable Windows UI runner.");
 
-        string target = Path.GetFullPath(directory);
-        Directory.CreateDirectory(target);
+        string? target = directory is null ? null : Path.GetFullPath(directory);
+        if (target is not null) Directory.CreateDirectory(target);
         var endpoint = new SshEndpoint("queue-fixture.invalid", 22, "root", "");
         string nonce = new('a', 64);
         long sampled = 1760000000;
@@ -73,12 +73,18 @@ internal sealed partial class MainForm
                 {
                     dialog.Refresh();
                     Application.DoEvents();
-                    using var bitmap = new Bitmap(dialog.Width, dialog.Height);
-                    dialog.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
-                    string name = locale + "-" + variant + "-" + region + ".png";
-                    bitmap.Save(Path.Combine(target, name), ImageFormat.Png);
-                    manifest.Add(name + " | actual DPI=" + dialog.DeviceDpi +
-                        " | client=" + dialog.ClientSize.Width + "x" + dialog.ClientSize.Height);
+                    // Ordinary CI verifies control geometry without
+                    // capturing or retaining any rendered pixels.
+                    if (target is not null)
+                    {
+                        using var bitmap = new Bitmap(dialog.Width, dialog.Height);
+                        dialog.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+                        string name = locale + "-" + variant + "-" + region + ".png";
+                        bitmap.Save(Path.Combine(target, name), ImageFormat.Png);
+                        manifest.Add(name + " | actual DPI=" + dialog.DeviceDpi +
+                            " | client=" + dialog.ClientSize.Width + "x" + dialog.ClientSize.Height);
+                    }
+                    Reach(region == "compact-table" ? grid : (Control)dialog.CancelButton!);
                     captured++;
                 }
 
@@ -132,7 +138,7 @@ internal sealed partial class MainForm
             }
         }
         finally { language.SelectedIndex = originalLanguage; }
-        File.WriteAllLines(Path.Combine(target, "README.txt"),
+        if (target is not null) File.WriteAllLines(Path.Combine(target, "README.txt"),
             new[] { "Real WinForms queue dialogs with synthetic metadata only.",
                 "Normal and compact geometry checked; SSH, SMTP and mutation disabled.",
                 "These screenshots record the actual runner DPI, not simulated 200% monitor DPI." }.Concat(manifest));
